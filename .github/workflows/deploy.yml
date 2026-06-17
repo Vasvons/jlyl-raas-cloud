@@ -40,20 +40,31 @@ jobs:
               echo ">>> .env 文件已存在，跳过创建"
             fi
 
-            # 构建并启动服务
+            # 构建并启动服务（兼容新版Docker使用 docker compose，旧版使用 docker-compose）
+            echo ">>> 检测 docker compose 命令..."
+            if docker compose version > /dev/null 2>&1; then
+              DC="docker compose"
+            elif command -v docker-compose > /dev/null 2>&1; then
+              DC="docker-compose"
+            else
+              echo "错误：未找到 docker compose 或 docker-compose 命令"
+              exit 1
+            fi
+            echo ">>> 使用命令: $DC"
+
             echo ">>> 构建 Docker 镜像..."
-            docker-compose build
+            $DC build
 
             echo ">>> 启动服务..."
-            docker-compose up -d
+            $DC up -d
 
             # 等待服务启动
             echo ">>> 等待服务启动..."
-            sleep 10
+            sleep 15
 
             # 检查服务状态
             echo ">>> 检查服务状态..."
-            docker-compose ps
+            $DC ps
 
             # 清理旧镜像
             echo ">>> 清理旧镜像..."
