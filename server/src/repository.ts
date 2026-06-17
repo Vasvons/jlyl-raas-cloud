@@ -319,6 +319,11 @@ export async function deleteTask(id: number): Promise<void> {
   });
 }
 
+// 更新任务状态
+export async function updateTaskStatus(id: number, status: string): Promise<void> {
+  await query('UPDATE task_info SET status = $1 WHERE id = $2', [status, id]);
+}
+
 export async function getTaskWeights(taskId: number): Promise<any[]> {
   const result = await query('SELECT platform, weight FROM task_platform_weights WHERE task_id = $1', [taskId]);
   return result.rows;

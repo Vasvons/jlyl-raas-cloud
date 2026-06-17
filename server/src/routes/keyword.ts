@@ -165,4 +165,14 @@ router.post('/data/clear', authMiddleware, adminMiddleware, async (req, res) => 
   }
 });
 
+// ============ 平台列表 ============
+router.get('/pt/list', async (req, res) => {
+  try {
+    const data = await getAllPlatforms();
+    res.json({ code: 200, data });
+  } catch (e) {
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
 export default router;
