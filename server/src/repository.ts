@@ -461,3 +461,232 @@ export async function setDailyRandom(taskId: number, date: Date, num: number): P
     [taskId, dateStr, num]
   );
 }
+
+// ============ 核心关键词（distillate_keyword）============
+
+// 分页查询核心关键词
+export async function getDistillateKeywordsByPage(userId: string, pageNum: number, pageSize: number) {
+  const offset = (pageNum - 1) * pageSize;
+  const countResult = await query('SELECT COUNT(*) as total FROM distillate_keyword WHERE user_id = $1', [userId]);
+  const total = parseInt(countResult.rows[0].total);
+  const result = await query(
+    'SELECT id, distillate_keyword, user_id, zt, create_time FROM distillate_keyword WHERE user_id = $1 ORDER BY id LIMIT $2 OFFSET $3',
+    [userId, pageSize, offset]
+  );
+  // 将字段名转为驼峰格式以兼容前端
+  const list = result.rows.map((r: any) => ({
+    id: r.id,
+    userId: r.user_id,
+    distillateKeyword: r.distillate_keyword,
+    zt: String(r.zt),
+    createTime: r.create_time,
+  }));
+  return { list, total };
+}
+
+// 新增核心关键词
+export async function insertDistillateKeyword(userId: string, keyword: string): Promise<number> {
+  const result = await query(
+    'INSERT INTO distillate_keyword (distillate_keyword, user_id, zt) VALUES ($1, $2, 1) RETURNING id',
+    [keyword, userId]
+  );
+  return result.rows[0].id;
+}
+
+// 删除核心关键词
+export async function deleteDistillateKeyword(id: number): Promise<void> {
+  await query('DELETE FROM distillate_keyword WHERE id = $1', [id]);
+}
+
+// ============ 蒸馏关键词库（zlgjc）分页查询和删除 ============
+
+// 分页查询蒸馏关键词库
+export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: number) {
+  const offset = (pageNum - 1) * pageSize;
+  const countResult = await query('SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1', [userId]);
+  const total = parseInt(countResult.rows[0].total);
+  const result = await query(
+    'SELECT id, value, hxgjc, userid, lxfs, create_time FROM zlgjc WHERE userid = $1 ORDER BY id LIMIT $2 OFFSET $3',
+    [userId, pageSize, offset]
+  );
+  const list = result.rows.map((r: any) => ({
+    id: r.id,
+    value: r.value,
+    userId: r.userid,
+    hxgjc: r.hxgjc,
+    lxfs: r.lxfs,
+    createTime: r.create_time,
+  }));
+  return { list, total };
+}
+
+// 删除蒸馏关键词（级联删除跳转链接）
+export async function deleteZlgjc(id: number): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query('DELETE FROM zlgjcurl WHERE zlgjcid = $1', [id]);
+    await client.query('DELETE FROM zlgjc WHERE id = $1', [id]);
+  });
+}
+
+// ============ 蒸馏关键词生成（笛卡尔积）============
+
+// 生成蒸馏关键词（笛卡尔积组合）
+export async function generateZlgjcKeywords(userId: string, wordGroups: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[] }) {
+  const { A, B, C, D, E, F, G } = wordGroups;
+
+  // 根据组合规则生成所有组合
+  const combinations: { keyword: string; hxgjc: string }[] = [];
+  for (const combo of G) {
+    const parts = combo.split('+');
+    const arrays: string[][] = parts.map(p => {
+      switch (p) {
+        case 'A': return A;
+        case 'B': return B;
+        case 'C': return C;
+        case 'D': return D;
+        case 'E': return E;
+        case 'F': return F;
+        default: return [];
+      }
+    });
+
+    // 笛卡尔积
+    const cartesian = arrays.reduce<string[][]>((acc, curr) => {
+      if (acc.length === 0) return curr.map(v => [v]);
+      const result: string[][] = [];
+      for (const a of acc) {
+        for (const c of curr) {
+          result.push([...a, c]);
+        }
+      }
+      return result;
+    }, []);
+
+    for (const c of cartesian) {
+      const keyword = c.join('');
+      combinations.push({ keyword, hxgjc: C[0] || '' });
+    }
+  }
+
+  // 查询已存在的关键词
+  const existingResult = await query('SELECT value FROM zlgjc WHERE userid = $1', [userId]);
+  const existing = new Set(existingResult.rows.map((r: any) => r.value));
+
+  let inserted = 0;
+  let duplicated = 0;
+
+  for (const { keyword, hxgjc } of combinations) {
+    if (existing.has(keyword)) {
+      duplicated++;
+    } else {
+      await query(
+        'INSERT INTO zlgjc (value, hxgjc, userid, lxfs) VALUES ($1, $2, $3, $4)',
+        [keyword, hxgjc, userId, '']
+      );
+      existing.add(keyword);
+      inserted++;
+    }
+  }
+
+  return { inserted, duplicated, total: combinations.length };
+}
+
+// ============ 关键词维护列表 ============
+
+// 关键词维护列表（从 keyword_search_rank 去重查询）
+export async function getKeywordMaintenanceList(params: { userId: string; platform?: string; pageNum: number; pageSize: number; keyword?: string }) {
+  const offset = (params.pageNum - 1) * params.pageSize;
+  let where = ['k.user_id = $1'];
+  let args: any[] = [params.userId];
+  let argIdx = 2;
+
+  if (params.platform) {
+    where.push(`k.platform = $${argIdx++}`);
+    args.push(params.platform);
+  }
+
+  if (params.keyword) {
+    where.push(`k.distillate_keyword ILIKE $${argIdx++}`);
+    args.push(`%${params.keyword}%`);
+  }
+
+  const whereClause = where.join(' AND ');
+
+  // 去重查询
+  const countResult = await query(
+    `SELECT COUNT(*) as total FROM (
+      SELECT DISTINCT k.distillate_keyword, k.platform, k.expanded_keyword
+      FROM keyword_search_rank k
+      LEFT JOIN zlgjc z ON z.value = k.distillate_keyword AND z.userid = k.user_id
+      LEFT JOIN zlgjcurl u ON u.zlgjcid = z.id AND u.pt = k.platform
+      WHERE ${whereClause}
+    ) t`,
+    args
+  );
+  const total = parseInt(countResult.rows[0].total);
+
+  const listResult = await query(
+    `SELECT DISTINCT k.distillate_keyword, k.platform, k.expanded_keyword,
+            z.id as zlgjcid, u.id as urlId, u.url, u.has_lxfs
+     FROM keyword_search_rank k
+     LEFT JOIN zlgjc z ON z.value = k.distillate_keyword AND z.userid = k.user_id
+     LEFT JOIN zlgjcurl u ON u.zlgjcid = z.id AND u.pt = k.platform
+     WHERE ${whereClause}
+     ORDER BY k.distillate_keyword
+     LIMIT $${argIdx++} OFFSET $${argIdx++}`,
+    [...args, params.pageSize, offset]
+  );
+
+  const list = listResult.rows.map((r: any) => ({
+    distillateKeyword: r.distillate_keyword,
+    expandedKeyword: r.expanded_keyword,
+    platform: r.platform,
+    zlgjcid: r.zlgjcid,
+    urlId: r.urlid,
+    url: r.url,
+    hasLxfs: r.has_lxfs,
+  }));
+
+  return { list, total };
+}
+
+// ============ URL 操作 ============
+
+// 新增 URL
+export async function insertZlgjcUrl(item: { zlgjcid: number; pt: string; url: string; hasLxfs: boolean }): Promise<number> {
+  const result = await query(
+    'INSERT INTO zlgjcurl (zlgjcid, pt, url, has_lxfs) VALUES ($1, $2, $3, $4) RETURNING id',
+    [item.zlgjcid, item.pt, item.url, item.hasLxfs ? 1 : 0]
+  );
+  return result.rows[0].id;
+}
+
+// 更新 URL
+export async function updateZlgjcUrl(id: number, url: string, hasLxfs: boolean): Promise<void> {
+  await query('UPDATE zlgjcurl SET url = $1, has_lxfs = $2 WHERE id = $3', [url, hasLxfs ? 1 : 0, id]);
+}
+
+// ============ 数据清零 ============
+
+// 清零关键词配置数据
+export async function clearKeywordData(userId?: string): Promise<string[]> {
+  const cleared: string[] = [];
+  await withTransaction(async (client) => {
+    if (userId) {
+      // 清零指定用户
+      await client.query('DELETE FROM zlgjcurl WHERE zlgjcid IN (SELECT id FROM zlgjc WHERE userid = $1)', [userId]);
+      await client.query('DELETE FROM zlgjc WHERE userid = $1', [userId]);
+      await client.query('DELETE FROM pp WHERE user_id = $1', [userId]);
+      await client.query('DELETE FROM distillate_keyword WHERE user_id = $1', [userId]);
+      cleared.push('品牌关键词', '核心关键词', '蒸馏关键词库', '关键词跳转');
+    } else {
+      // 清零全部
+      await client.query('DELETE FROM zlgjcurl');
+      await client.query('DELETE FROM zlgjc');
+      await client.query('DELETE FROM pp');
+      await client.query('DELETE FROM distillate_keyword');
+      cleared.push('品牌关键词', '核心关键词', '蒸馏关键词库', '关键词跳转');
+    }
+  });
+  return cleared;
+}

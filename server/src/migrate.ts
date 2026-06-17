@@ -155,6 +155,17 @@ export async function migrate() {
       )
     `);
 
+    // 核心关键词表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS distillate_keyword (
+        id SERIAL PRIMARY KEY,
+        distillate_keyword TEXT NOT NULL,
+        user_id TEXT DEFAULT '',
+        zt INTEGER DEFAULT 1,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // 创建索引
     console.log('[Migrate] 创建索引...');
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ksr_user ON keyword_search_rank(user_id)`);
@@ -172,6 +183,7 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_has_lxfs ON zlgjcurl(has_lxfs)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_user ON pp(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dr_task_date ON daily_random(task_id, random_date)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dk_user ON distillate_keyword(user_id)`);
 
     // 初始化平台数据
     const ptCount = await client.query('SELECT COUNT(*) as count FROM pt');
