@@ -19,9 +19,9 @@ COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 
 ENV NODE_ENV=production
-ENV PORT=3001
+ENV PORT=3011
 ENV HOSTNAME=0.0.0.0
 
-EXPOSE 3001
+EXPOSE 3011
 
 CMD ["node", "server.js"]

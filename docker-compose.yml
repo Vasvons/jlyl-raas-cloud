@@ -74,7 +74,7 @@ services:
       NODE_ENV: production
       NEXT_PUBLIC_API_URL: http://server:3002
     ports:
-      - "127.0.0.1:3001:3001"
+      - "127.0.0.1:3011:3011"
     mem_limit: 256m
     networks:
       - jlyl-cloud-network
