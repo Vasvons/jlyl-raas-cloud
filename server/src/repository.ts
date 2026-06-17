@@ -695,3 +695,82 @@ export async function clearKeywordData(userId?: string): Promise<string[]> {
   });
   return cleared;
 }
+
+// ============ 系统监控 ============
+
+// 系统概览统计
+export async function getSystemOverview() {
+  const [usersRes, tasksRes, recordsRes, keywordsRes, todayRes] = await Promise.all([
+    query("SELECT COUNT(*) as total FROM users WHERE level = '0'"),
+    query("SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'running') as running FROM task_info"),
+    query('SELECT COUNT(*) as total FROM keyword_search_rank'),
+    query('SELECT (SELECT COUNT(*) FROM distillate_keyword) + (SELECT COUNT(*) FROM zlgjc) as total'),
+    query("SELECT COUNT(*) as total FROM keyword_search_rank WHERE query_time::date = CURRENT_DATE"),
+  ]);
+  return {
+    totalUsers: parseInt(usersRes.rows[0].total) || 0,
+    totalTasks: parseInt(tasksRes.rows[0].total) || 0,
+    runningTasks: parseInt(tasksRes.rows[0].running) || 0,
+    totalRecords: parseInt(recordsRes.rows[0].total) || 0,
+    totalKeywords: parseInt(keywordsRes.rows[0].total) || 0,
+    todayRecords: parseInt(todayRes.rows[0].total) || 0,
+  };
+}
+
+// 任务状态汇总（按状态分组）
+export async function getTaskStatusSummary() {
+  const result = await query(
+    `SELECT status, COUNT(*) as count FROM task_info GROUP BY status`
+  );
+  return result.rows.map((row: any) => ({
+    status: row.status,
+    count: parseInt(row.count) || 0,
+  }));
+}
+
+// 最近生成记录
+export async function getRecentRecords(limit: number = 20) {
+  const result = await query(
+    `SELECT id, expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time
+     FROM keyword_search_rank
+     ORDER BY create_time DESC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows.map((row: any) => ({
+    id: row.id,
+    expandedKeyword: row.expanded_keyword,
+    distillateKeyword: row.distillate_keyword,
+    platform: row.platform,
+    userId: row.user_id,
+    queryTime: row.query_time,
+    createTime: row.create_time,
+  }));
+}
+
+// 各用户数据量统计
+export async function getUserDataStats() {
+  const result = await query(
+    `SELECT u.id, u.username,
+       COUNT(DISTINCT t.id) as task_count,
+       COUNT(DISTINCT dk.id) as core_keyword_count,
+       COUNT(DISTINCT z.id) as zlgjc_count,
+       COUNT(k.id) as record_count
+     FROM users u
+     LEFT JOIN task_info t ON t.user_id = CAST(u.id AS TEXT)
+     LEFT JOIN distillate_keyword dk ON dk.user_id = CAST(u.id AS TEXT)
+     LEFT JOIN zlgjc z ON z.userid = CAST(u.id AS TEXT)
+     LEFT JOIN keyword_search_rank k ON k.user_id = CAST(u.id AS TEXT)
+     WHERE u.level = '0'
+     GROUP BY u.id, u.username
+     ORDER BY record_count DESC`
+  );
+  return result.rows.map((row: any) => ({
+    userId: row.id,
+    username: row.username,
+    taskCount: parseInt(row.task_count) || 0,
+    coreKeywordCount: parseInt(row.core_keyword_count) || 0,
+    zlgjcCount: parseInt(row.zlgjc_count) || 0,
+    recordCount: parseInt(row.record_count) || 0,
+  }));
+}

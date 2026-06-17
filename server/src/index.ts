@@ -7,6 +7,7 @@ import authRoutes from './routes/auth';
 import dashboardRoutes from './routes/dashboard';
 import taskRoutes from './routes/task';
 import keywordRoutes from './routes/keyword';
+import monitorRoutes from './routes/monitor';
 
 dotenv.config();
 
@@ -30,6 +31,7 @@ app.get('/health', (req, res) => {
 app.use('/users', authRoutes);
 app.use('/dashboard', dashboardRoutes);
 app.use('/task', taskRoutes);
+app.use('/monitor', monitorRoutes);
 app.use('/', keywordRoutes);
 
 // 错误处理
