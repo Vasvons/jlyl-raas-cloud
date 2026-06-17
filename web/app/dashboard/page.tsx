@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, message, Button } from 'antd';
+import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, message, Button, Input } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import api from '@/lib/api';
 import { useRouter } from 'next/navigation';
