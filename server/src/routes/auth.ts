@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { findUserByUsername, findUserById, getAllUsers, createUser, updateUser, deleteUser, getUserLatestDataTime } from '../repository';
+import { findUserByUsername, findUserById, getAllUsers, getUsersByPage, createUser, updateUser, deleteUser, getUserLatestDataTime } from '../repository';
 import { generateToken, hashPassword, comparePassword, authMiddleware, adminMiddleware } from '../auth';
 
 const router = Router();
@@ -91,6 +91,18 @@ router.get('/list', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const users = await getAllUsers();
     res.json({ code: 200, data: users });
+  } catch (e) {
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 分页查询用户（管理员）
+router.get('/queryUserList', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const pageNum = parseInt(req.query.pageNum as string) || 1;
+    const pageSize = parseInt(req.query.pageSize as string) || 30;
+    const result = await getUsersByPage(pageNum, pageSize);
+    res.json({ code: 200, data: { list: result.list, total: result.total, pageNum, pageSize } });
   } catch (e) {
     res.json({ code: 500, message: '服务器错误' });
   }

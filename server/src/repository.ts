@@ -32,6 +32,18 @@ export async function getAllUsers(): Promise<any[]> {
   return result.rows;
 }
 
+// 分页查询用户
+export async function getUsersByPage(pageNum: number, pageSize: number): Promise<{ list: any[]; total: number }> {
+  const offset = (pageNum - 1) * pageSize;
+  const countResult = await query('SELECT COUNT(*) as total FROM users');
+  const total = parseInt(countResult.rows[0].total);
+  const result = await query(
+    'SELECT id, username, phone, email, url, address, level, cid, date_time, create_time FROM users ORDER BY id LIMIT $1 OFFSET $2',
+    [pageSize, offset]
+  );
+  return { list: result.rows, total };
+}
+
 export async function createUser(user: any): Promise<number> {
   const result = await query(
     `INSERT INTO users (username, password, phone, email, url, address, level, cid, date_time)
