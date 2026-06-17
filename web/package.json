@@ -1,0 +1,27 @@
+{
+  "name": "jlyl-cloud-web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3001",
+    "build": "next build",
+    "start": "next start -p 3001",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "antd": "^5.19.0",
+    "axios": "^1.7.2",
+    "echarts": "^5.5.0",
+    "echarts-for-react": "^3.0.2",
+    "@ant-design/icons": "^5.3.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "typescript": "^5.4.5"
+  }
+}

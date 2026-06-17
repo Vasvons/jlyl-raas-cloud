@@ -1,0 +1,21 @@
+# 后端 Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# 安装依赖
+COPY server/package*.json ./
+RUN npm install --production
+
+# 复制源码并构建
+COPY server/tsconfig.json ./
+COPY server/src ./src
+RUN npm install typescript ts-node-dev && npx tsc
+
+# 环境变量
+ENV NODE_ENV=production
+ENV PORT=3002
+
+EXPOSE 3002
+
+CMD ["node", "dist/index.js"]
