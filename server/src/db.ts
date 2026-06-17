@@ -47,3 +47,4 @@ export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>)
 }
 
 export { pool };
+export type { PoolClient };
