@@ -4,6 +4,7 @@ import {
   getTaskStatusSummary,
   getRecentRecords,
   getUserDataStats,
+  bulkImportData,
 } from '../repository';
 import { authMiddleware, adminMiddleware } from '../auth';
 
@@ -51,6 +52,18 @@ router.get('/userStats', authMiddleware, adminMiddleware, async (req, res) => {
   } catch (e) {
     console.error('[Monitor] 获取用户数据统计失败:', e);
     res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 批量导入数据（本地迁移到云端）
+router.post('/import', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const counts = await bulkImportData(req.body);
+    console.log('[Monitor] 数据导入完成:', counts);
+    res.json({ code: 200, data: counts, message: '导入成功' });
+  } catch (e) {
+    console.error('[Monitor] 数据导入失败:', e);
+    res.json({ code: 500, message: '导入失败: ' + (e as Error).message });
   }
 });
 

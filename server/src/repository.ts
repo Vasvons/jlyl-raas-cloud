@@ -774,3 +774,196 @@ export async function getUserDataStats() {
     recordCount: parseInt(row.record_count) || 0,
   }));
 }
+
+// ============ 批量数据导入（本地迁移） ============
+
+export async function bulkImportData(data: {
+  users?: any[];
+  pp?: any[];
+  distillateKeywords?: any[];
+  zlgjc?: any[];
+  zlgjcurl?: any[];
+  tasks?: any[];
+  taskWeights?: any[];
+  taskProgress?: any[];
+  dailyRandom?: any[];
+  keywordSearchRank?: any[];
+}): Promise<{ [key: string]: number }> {
+  const counts: { [key: string]: number } = {};
+
+  await withTransaction(async (client) => {
+    // 1. 导入用户（保留原始ID）
+    if (data.users && data.users.length > 0) {
+      let cnt = 0;
+      for (const u of data.users) {
+        await client.query(
+          `INSERT INTO users (id, username, password, phone, email, url, address, level, cid, date_time)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT (id) DO UPDATE SET
+             username = EXCLUDED.username, phone = EXCLUDED.phone, email = EXCLUDED.email,
+             url = EXCLUDED.url, address = EXCLUDED.address, level = EXCLUDED.level,
+             cid = EXCLUDED.cid, date_time = EXCLUDED.date_time`,
+          [u.id, u.username, u.password, u.phone || '', u.email || '', u.url || '',
+           u.address || '', u.level || '0', u.cid || '', u.dateTime || '']
+        );
+        cnt++;
+      }
+      // 重置序列到最大ID+1
+      await client.query("SELECT setval('users_id_seq', GREATEST((SELECT MAX(id) FROM users), 1))");
+      counts.users = cnt;
+    }
+
+    // 2. 导入品牌关键词
+    if (data.pp && data.pp.length > 0) {
+      let cnt = 0;
+      for (const p of data.pp) {
+        await client.query(
+          `INSERT INTO pp (id, user_id, pp) VALUES ($1, $2, $3)
+           ON CONFLICT DO NOTHING`,
+          [p.id, p.user_id || '', p.pp || '']
+        );
+        cnt++;
+      }
+      counts.pp = cnt;
+    }
+
+    // 3. 导入核心关键词
+    if (data.distillateKeywords && data.distillateKeywords.length > 0) {
+      let cnt = 0;
+      for (const dk of data.distillateKeywords) {
+        await client.query(
+          `INSERT INTO distillate_keyword (id, distillate_keyword, user_id, zt)
+           VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+          [dk.id, dk.distillate_keyword || '', dk.user_id || '', dk.zt || 1]
+        );
+        cnt++;
+      }
+      counts.distillateKeywords = cnt;
+    }
+
+    // 4. 导入蒸馏关键词库
+    if (data.zlgjc && data.zlgjc.length > 0) {
+      let cnt = 0;
+      for (const z of data.zlgjc) {
+        await client.query(
+          `INSERT INTO zlgjc (id, value, userid, lxfs, hxgjc)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+          [z.id, z.value || '', z.userId || z.userid || '', z.lxfs || '', z.hxgjc || '']
+        );
+        cnt++;
+      }
+      counts.zlgjc = cnt;
+    }
+
+    // 5. 导入关键词跳转链接
+    if (data.zlgjcurl && data.zlgjcurl.length > 0) {
+      let cnt = 0;
+      for (const zc of data.zlgjcurl) {
+        await client.query(
+          `INSERT INTO zlgjcurl (id, zlgjcid, pt, url, has_lxfs)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+          [zc.id, zc.zlgjcid, zc.pt || '', zc.url || '', zc.has_lxfs || 0]
+        );
+        cnt++;
+      }
+      counts.zlgjcurl = cnt;
+    }
+
+    // 6. 导入任务
+    if (data.tasks && data.tasks.length > 0) {
+      let cnt = 0;
+      for (const t of data.tasks) {
+        await client.query(
+          `INSERT INTO task_info (id, user_id, start_date, end_date, total_num, status, name, create_time)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (id) DO UPDATE SET
+             user_id = EXCLUDED.user_id, start_date = EXCLUDED.start_date,
+             end_date = EXCLUDED.end_date, total_num = EXCLUDED.total_num,
+             status = EXCLUDED.status, name = EXCLUDED.name`,
+          [t.id, t.user_id || '', t.start_date, t.end_date, t.total_num || 0,
+           t.status || 'completed', t.name || '', t.create_time]
+        );
+        cnt++;
+      }
+      counts.tasks = cnt;
+    }
+
+    // 7. 导入任务平台权重
+    if (data.taskWeights && data.taskWeights.length > 0) {
+      let cnt = 0;
+      for (const w of data.taskWeights) {
+        await client.query(
+          `INSERT INTO task_platform_weights (task_id, platform, weight)
+           VALUES ($1, $2, $3) ON CONFLICT (task_id, platform) DO UPDATE SET weight = EXCLUDED.weight`,
+          [w.task_id, w.platform, w.weight || 1]
+        );
+        cnt++;
+      }
+      counts.taskWeights = cnt;
+    }
+
+    // 8. 导入任务进度
+    if (data.taskProgress && data.taskProgress.length > 0) {
+      let cnt = 0;
+      for (const tp of data.taskProgress) {
+        await client.query(
+          `INSERT INTO task_progress (task_id, generated_num, update_time)
+           VALUES ($1, $2, $3) ON CONFLICT (task_id) DO UPDATE SET
+             generated_num = EXCLUDED.generated_num, update_time = EXCLUDED.update_time`,
+          [tp.task_id, tp.generated_num || 0, tp.update_time]
+        );
+        cnt++;
+      }
+      counts.taskProgress = cnt;
+    }
+
+    // 9. 导入每日随机数
+    if (data.dailyRandom && data.dailyRandom.length > 0) {
+      let cnt = 0;
+      for (const dr of data.dailyRandom) {
+        await client.query(
+          `INSERT INTO daily_random (task_id, random_date, random_num, create_time)
+           VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+          [dr.task_id, dr.random_date, dr.random_num || 0, dr.create_time]
+        );
+        cnt++;
+      }
+      counts.dailyRandom = cnt;
+    }
+
+    // 10. 导入关键词收录记录（核心数据，分批插入）
+    if (data.keywordSearchRank && data.keywordSearchRank.length > 0) {
+      const batchSize = 500;
+      let cnt = 0;
+      for (let i = 0; i < data.keywordSearchRank.length; i += batchSize) {
+        const batch = data.keywordSearchRank.slice(i, i + batchSize);
+        const values: any[] = [];
+        const placeholders: string[] = [];
+        batch.forEach((r, idx) => {
+          const base = idx * 13;
+          placeholders.push(
+            `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13})`
+          );
+          values.push(
+            r.expanded_keyword || '', r.distillate_keyword || '', r.platform || '',
+            r.user_id || '', r.query_time, r.create_time,
+            r.distillate_keyword_id || null, r.update_time, r.w_id || 1,
+            r.url || '', r.is_url || 1, r.ly || '', r.task_id || null
+          );
+        });
+        await client.query(
+          `INSERT INTO keyword_search_rank
+           (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time,
+            distillate_keyword_id, update_time, w_id, url, is_url, ly, task_id)
+           VALUES ${placeholders.join(', ')}
+           ON CONFLICT DO NOTHING`,
+          values
+        );
+        cnt += batch.length;
+      }
+      counts.keywordSearchRank = cnt;
+    }
+  });
+
+  return counts;
+}
