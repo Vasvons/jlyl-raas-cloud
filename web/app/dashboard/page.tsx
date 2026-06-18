@@ -122,13 +122,13 @@ function AICard({ isMobile, userId }: { isMobile: boolean; userId: string }) {
               <div className={styles.aiItemIcon}>
                 <img src={`${IMG}/Frame_2037235605.png`} alt="" />
               </div>
-              <div className={styles.aiItemTitle}>邮箱:{user.email}</div>
+              <div className={styles.aiItemTitle}>邮箱:{user.email && user.email !== '-' ? user.email : ''}</div>
             </div>
             <div className={styles.aiItem}>
               <div className={styles.aiItemIcon}>
                 <img src={`${IMG}/Frame_2037235606.png`} alt="" />
               </div>
-              <div className={styles.aiItemTitle}>网址:{user.url ? <a href={user.url} target="_blank">{user.url}</a> : '-'}</div>
+              <div className={styles.aiItemTitle}>网址:{user.url ? <a href={user.url} target="_blank">{user.url}</a> : ''}</div>
             </div>
           </Col>
         </Row>
