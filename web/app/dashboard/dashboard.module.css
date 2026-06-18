@@ -973,7 +973,9 @@
 /* ===== 移动端全局修正 ===== */
 /* 修正所有卡片标题在移动端的宽度和字体大小 */
 .mobile .gCardHeader {
-  width: calc(100% - 24px) !important;
+  width: auto !important;
+  min-width: 120px;
+  padding-right: 40px;
   font-size: 16px;
   height: 39px;
   line-height: 39px;
@@ -999,17 +1001,21 @@
 
 /* AI名片 */
 .aiMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(1).png") 100% 100%;
   background-size: 100% 100%;
   height: auto;
-  min-height: 150px;
+  min-height: 118px;
 }
 
 .aiMobile .aiCardHeader {
   min-width: unset !important;
-  width: calc(100% - 12px) !important;
-  max-width: 100%;
-  padding-right: 20px;
+  width: auto !important;
+  max-width: 260px;
+  padding-right: 40px;
+}
+
+.aiMobile .aiCardHeader .aiTitle {
+  font-size: 12px;
 }
 
 .aiMobile .aiBaseInfo {
@@ -1024,10 +1030,10 @@
 
 /* 关键词数量 */
 .ksMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(2).png") 100% 100%;
   background-size: 100% 100%;
   height: auto;
-  min-height: 150px;
+  min-height: 164px;
 }
 
 .ksMobile .ksCardHeader {
@@ -1083,10 +1089,10 @@
 
 /* 各平台收录占比 */
 .prMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(3).png") 100% 100%;
   background-size: 100% 100%;
   height: auto;
-  min-height: 420px;
+  min-height: 363px;
 }
 
 .prMobile .prCardHeader {
@@ -1142,10 +1148,10 @@
 
 /* 核心关键词排名 */
 .krMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(4).png") 100% 100%;
   background-size: 100% 100%;
   height: auto;
-  min-height: 500px;
+  min-height: 400px;
   max-height: none;
 }
 
@@ -1158,12 +1164,38 @@
   padding: 10px 12px 12px;
 }
 
+.krMobile .krContentWrapper {
+  gap: 6px;
+}
+
+.krMobile .krItem {
+  grid-template-columns: 90px 1fr 50px;
+  gap: 8px;
+}
+
+.krMobile .krName {
+  font-size: 12px;
+}
+
+.krMobile .krCount {
+  font-size: 12px;
+}
+
+.krMobile .krBarWrapper {
+  height: 10px;
+  border-radius: 5px;
+}
+
+.krMobile .krBar {
+  border-radius: 5px;
+}
+
 /* 搜索排名 */
 .srMobile {
   background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
   background-size: 100% 100%;
   height: auto;
-  min-height: 600px;
+  min-height: 678px;
   max-height: none;
 }
 
@@ -1228,4 +1260,26 @@
 
 .srMobile .srTableWrapper {
   padding: 0;
+  overflow-x: visible;
+}
+
+.srMobile .srTable {
+  min-width: 0;
+}
+
+.srMobile .srTable :global(.ant-table-cell) {
+  white-space: normal;
+  word-break: break-all;
+  font-size: 12px;
+  padding: 8px 4px;
+}
+
+.srMobile .srTable :global(.ant-table-thead > tr > th) {
+  font-size: 12px;
+  padding: 8px 4px;
+  background: rgb(255, 232, 232) !important;
+}
+
+.srMobile .srTable :global(.ant-table-row) {
+  background-color: hsla(0, 0%, 100%, .7);
 }
