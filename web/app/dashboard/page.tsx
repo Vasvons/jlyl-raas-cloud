@@ -186,10 +186,12 @@ function AICard({ isMobile, userId }: { isMobile: boolean; userId: string }) {
 // 各平台收录对比组件
 function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: string }) {
   const [option, setOption] = useState({});
+  const [chartData, setChartData] = useState<Array<{ name: string; count: number; color: string }>>([]);
 
   useEffect(() => {
     if (!userId) {
       setOption({});
+      setChartData([]);
       return;
     }
     (async () => {
@@ -198,50 +200,43 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
         const data = res.data.data;
         if (!data || data.length === 0) {
           setOption({});
+          setChartData([]);
           return;
         }
         const colors = ['#ffb3a7', '#ff9f91', '#ff8a7a', '#ff7563', '#ff6150', '#ff4c3c', '#ff3727', '#ff4c3c', '#ff7563'];
-        const chartData = data.map((e: PlatformRatioItem, i: number) => ({
+        const formatted = data.map((e: PlatformRatioItem, i: number) => ({
           id: i + 1,
           name: e.platform,
           count: e.count,
           color: colors[i % colors.length],
         }));
+        setChartData(formatted);
         setOption({
           tooltip: { trigger: 'item' },
-          legend: {
-            formatter: (name: string) => {
-              const item = chartData.find((s: { name: string }) => s.name === name);
-              return `${name}: ${item?.count}`;
-            },
-            ...(isMobile
-              ? {
-                  orient: 'vertical',
-                  left: '54%',
-                  top: 'center',
-                  itemWidth: 16,
-                  itemHeight: 16,
-                  itemGap: 14,
-                  textStyle: { fontSize: 12 },
-                  data: chartData.map((e: { name: string }) => ({
-                    name: e.name,
-                    icon: PLATFORM_ICONS[e.name] ? `image://${PLATFORM_ICONS[e.name]}` : 'circle',
-                  })),
-                }
-              : { orient: 'vertical', left: '50%', itemGap: 30, top: 'center' }),
-          },
+          legend: isMobile
+            ? { show: false }
+            : {
+                formatter: (name: string) => {
+                  const item = formatted.find((s: { name: string }) => s.name === name);
+                  return `${name}: ${item?.count}`;
+                },
+                orient: 'vertical',
+                left: '50%',
+                itemGap: 30,
+                top: 'center',
+              },
           series: [
             {
               name: '占比',
               type: 'pie',
               radius: ['45%', '70%'],
               label: { show: false },
-              data: chartData.map((e: { count: number; name: string; color: string }) => ({
+              data: formatted.map((e: { count: number; name: string; color: string }) => ({
                 value: e.count,
                 name: e.name,
                 itemStyle: { color: e.color },
               })),
-              ...(isMobile ? { center: ['28%', '50%'] } : { center: ['25%', '50%'] }),
+              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['25%', '50%'] }),
             },
             {
               type: 'pie',
@@ -250,7 +245,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
               label: { show: false },
               itemStyle: { color: 'transparent' },
               data: [{ value: 1 }],
-              ...(isMobile ? { center: ['28%', '50%'] } : { center: ['25%', '50%'] }),
+              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['25%', '50%'] }),
             },
           ],
         });
@@ -270,7 +265,20 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
       }
       className={`${styles.gCard} ${styles.prWrapper} ${isMobile ? styles.prMobile : styles.prPc}`}
     >
-      <ReactECharts option={option} style={{ height: isMobile ? 320 : 400, width: '100%' }} opts={{ renderer: 'canvas' }} />
+      <div className={isMobile ? styles.prMobileChartWrapper : undefined}>
+        <ReactECharts option={option} style={{ height: isMobile ? 240 : 400, width: '100%' }} opts={{ renderer: 'canvas' }} />
+        {isMobile && chartData.length > 0 && (
+          <div className={styles.prMobileLegend}>
+            {chartData.map((e) => (
+              <div key={e.name} className={styles.prMobileLegendItem}>
+                <img src={PLATFORM_ICONS[e.name] || ''} alt="" className={styles.prMobileLegendIcon} />
+                <span className={styles.prMobileLegendName}>{e.name}</span>
+                <span className={styles.prMobileLegendCount}>{e.count}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </Card>
   );
 }
@@ -914,11 +922,11 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className={styles.mobile}>
-            <div className={styles.baseInfo}><AICard isMobile={false} userId={selectedUserId} /></div>
-            <div className={styles.info3}><KeywordStats isMobile={false} userId={selectedUserId} /></div>
-            <div className={styles.info1}><PlatformRatioChart isMobile={false} userId={selectedUserId} /></div>
-            <div className={styles.info2}><KeywordRankChart isMobile={false} userId={selectedUserId} /></div>
-            <div className={styles.info4}><SearchRank isMobile={false} userId={selectedUserId} /></div>
+            <div className={styles.baseInfo}><AICard isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info3}><KeywordStats isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info1}><PlatformRatioChart isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info2}><KeywordRankChart isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info4}><SearchRank isMobile={true} userId={selectedUserId} /></div>
           </div>
         )}
       </div>

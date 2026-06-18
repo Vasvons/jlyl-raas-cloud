@@ -994,3 +994,238 @@
 .mobile .header .headerName div {
   font-size: 18px;
 }
+
+/* ===== 移动端卡片单独样式（匹配 7asi 参考布局） ===== */
+
+/* AI名片 */
+.aiMobile {
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background-size: 100% 100%;
+  height: auto;
+  min-height: 150px;
+}
+
+.aiMobile .aiCardHeader {
+  min-width: unset !important;
+  width: calc(100% - 12px) !important;
+  max-width: 100%;
+  padding-right: 20px;
+}
+
+.aiMobile .aiBaseInfo {
+  width: 100%;
+  margin: 0 !important;
+}
+
+.aiMobile :global(.ant-card-body) {
+  flex: 1;
+  padding: 12px;
+}
+
+/* 关键词数量 */
+.ksMobile {
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background-size: 100% 100%;
+  height: auto;
+  min-height: 150px;
+}
+
+.ksMobile .ksCardHeader {
+  width: auto;
+  padding-right: 40px;
+}
+
+.ksMobile :global(.ant-card-body) {
+  flex: 1;
+  padding: 12px;
+}
+
+.ksMobile .ksItemsWrapper {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 4px;
+}
+
+.ksMobile .ksItemWrapper {
+  background: #fff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  box-shadow: 0 2px 8px rgba(255, 81, 81, 0.06);
+  width: auto !important;
+  height: auto !important;
+}
+
+.ksMobile .ksIcon {
+  height: 36px;
+  width: 36px;
+  margin-right: 10px;
+  flex-shrink: 0;
+}
+
+.ksMobile .ksSplitLine {
+  display: none;
+}
+
+.ksMobile .ksContentWrapper .ksTitle2 {
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+}
+
+.ksMobile .ksContentWrapper .ksCount {
+  font-size: 22px;
+  font-weight: 700;
+  color: #161e54;
+}
+
+/* 各平台收录占比 */
+.prMobile {
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background-size: 100% 100%;
+  height: auto;
+  min-height: 420px;
+}
+
+.prMobile .prCardHeader {
+  width: auto;
+  padding-right: 40px;
+}
+
+.prMobile :global(.ant-card-body) {
+  padding: 0 8px 16px;
+}
+
+.prMobileChartWrapper {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.prMobileLegend {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 16px;
+  width: 100%;
+  padding: 0 12px 12px;
+}
+
+.prMobileLegendItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #333;
+}
+
+.prMobileLegendIcon {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.prMobileLegendName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prMobileLegendCount {
+  color: #666;
+}
+
+/* 核心关键词排名 */
+.krMobile {
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background-size: 100% 100%;
+  height: auto;
+  min-height: 500px;
+  max-height: none;
+}
+
+.krMobile .krCardHeader {
+  width: auto;
+  padding-right: 40px;
+}
+
+.krMobile :global(.ant-card-body) {
+  padding: 10px 12px 12px;
+}
+
+/* 搜索排名 */
+.srMobile {
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background-size: 100% 100%;
+  height: auto;
+  min-height: 600px;
+  max-height: none;
+}
+
+.srMobile .srCardHeader {
+  width: auto;
+  padding-right: 40px;
+}
+
+.srMobile :global(.ant-card-body) {
+  padding: 12px;
+}
+
+.srMobile .srBtnsWrapper {
+  padding: 0;
+}
+
+.srMobile .srBtnWrapper {
+  width: 100%;
+  display: flex;
+}
+
+.srMobile .srBtn {
+  flex: 1;
+  font-size: 13px;
+  height: 32px;
+}
+
+.srMobile .srTabsWrapper {
+  display: block;
+  padding: 0;
+}
+
+.srMobile .srTabs {
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  margin-bottom: 8px;
+  scrollbar-width: none;
+}
+
+.srMobile .srTabs::-webkit-scrollbar {
+  display: none;
+}
+
+.srMobile .srTab {
+  min-width: auto;
+  white-space: nowrap;
+  font-size: 11px;
+  height: 26px;
+  line-height: 26px;
+  padding: 0 8px;
+}
+
+.srMobile .srSelectWrapper {
+  width: 100%;
+  text-align: right;
+  margin-top: 8px;
+}
+
+.srMobile .srSelectWrapper :global(.ant-select) {
+  width: 100%;
+}
+
+.srMobile .srTableWrapper {
+  padding: 0;
+}
