@@ -861,19 +861,36 @@
   overflow-y: auto;
 }
 
-/* 小视口（手机/平板）参考7asi.com：wrapper无padding，Col有padding抵消Row负margin */
+/* 小视口（手机/平板）参考7asi.com：改为单列垂直布局 */
 @media (max-width: 768px) {
   .wrapper {
-    padding: 0;
-  }
-  .pc {
-    padding: 0;
-  }
-  /* 内容区 Row 的直接 Col 子元素添加 padding，抵消 Row gutter 负 margin */
-  .leftWrapper > :global(.ant-col) {
     padding: 0 12px;
+    height: auto;
+    min-height: 100vh;
+    overflow-y: visible;
   }
-  /* AI 名片卡片内部：小视口下改为 2x2 网格布局，避免 Col 太窄 */
+  /* 移动端内容区单列布局 */
+  .mobile {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 100%;
+  }
+  .mobile > div {
+    width: 100%;
+  }
+  /* 移动端卡片全宽且高度自适应 */
+  .mobile .aiWrapper,
+  .mobile .ksWrapper,
+  .mobile .prWrapper,
+  .mobile .krWrapper,
+  .mobile .srWrapper {
+    width: 100% !important;
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+  }
+  /* AI 名片卡片内部：移动端 2x2 网格布局 */
   .aiBaseInfo {
     display: grid !important;
     grid-template-columns: 1fr 1fr !important;
@@ -886,7 +903,7 @@
     max-width: none !important;
     min-width: 0 !important;
   }
-  /* 关键词数量卡片内部：小视口下改为 2x2 网格布局 */
+  /* 关键词数量卡片内部：移动端 2x2 网格布局 */
   .ksContentWrapper {
     display: grid !important;
     grid-template-columns: 1fr 1fr !important;
@@ -899,39 +916,72 @@
     max-width: none !important;
     min-width: 0 !important;
   }
-  /* AI 名片图标在小视口下缩小 */
-  .aiPc .aiBaseInfo .aiItemIcon {
-    height: 3vh;
-    width: 3vh;
-    margin: 0 auto 0.5vh auto;
+  /* AI 名片图标在移动端缩小 */
+  .aiMobile .aiBaseInfo .aiItemIcon,
+  .mobile .aiBaseInfo .aiItemIcon {
+    height: 28px;
+    width: 28px;
+    margin: 0 auto 4px auto;
   }
-  .aiFIcon {
-    height: 5vh;
-    width: 5vh;
+  .aiMobile .aiFIcon,
+  .mobile .aiFIcon {
+    height: 48px;
+    width: 48px;
   }
-  /* AI 名片内容在小视口下限制宽度，避免溢出 */
-  .aiItemContent {
-    max-width: 60px !important;
+  .aiMobile .aiFTitle,
+  .mobile .aiFTitle {
+    font-size: 12px;
   }
-  /* 关键词数量图标在小视口下缩小 */
-  .ksIcon {
-    height: 3vh;
-    width: 3vh;
-    margin-right: 0.5vh;
+  .aiMobile .aiTitle,
+  .mobile .aiTitle {
+    font-size: 16px;
   }
-  /* 关键词数量项目宽度自适应 */
-  .ksItemWrapper {
+  .aiMobile .aiItemTitle2,
+  .mobile .aiItemTitle2 {
+    font-size: 12px;
+  }
+  .aiMobile .aiItemContent,
+  .mobile .aiItemContent {
+    font-size: 11px;
+    max-width: 80px !important;
+  }
+  /* 关键词数量图标和字体在移动端 */
+  .ksMobile .ksIcon,
+  .mobile .ksIcon {
+    height: 28px;
+    width: 28px;
+    margin-right: 6px;
+  }
+  .ksMobile .ksItemWrapper,
+  .mobile .ksItemWrapper {
     width: auto !important;
   }
-  .ksSplitLine {
+  .ksMobile .ksSplitLine,
+  .mobile .ksSplitLine {
     display: none;
   }
-  /* 关键词数量内容在小视口下缩小字体 */
-  .ksItemWrapper .ksContentWrapper2 .ksCount {
-    font-size: 2.2vh;
+  .ksMobile .ksItemWrapper .ksContentWrapper2 .ksCount,
+  .mobile .ksItemWrapper .ksContentWrapper2 .ksCount {
+    font-size: 20px;
   }
-  .ksItemWrapper .ksContentWrapper2 .ksTitle2 {
-    font-size: 1.2vh;
+  .ksMobile .ksItemWrapper .ksContentWrapper2 .ksTitle2,
+  .mobile .ksItemWrapper .ksContentWrapper2 .ksTitle2 {
+    font-size: 12px;
+  }
+  /* 各平台收录对比移动端图表高度 */
+  .prMobile,
+  .mobile .prWrapper {
+    min-height: 380px !important;
+  }
+  /* 蒸馏关键词排名移动端 */
+  .krMobile,
+  .mobile .krWrapper {
+    min-height: 320px !important;
+  }
+  /* 搜索排名移动端 */
+  .srMobile,
+  .mobile .srWrapper {
+    min-height: 500px !important;
   }
 }
 
@@ -941,6 +991,38 @@
   height: auto;
   min-height: 100vh;
   overflow-y: visible;
+}
+
+/* 移动端隐藏用户切换（参考7asi.com没有此功能外露） */
+.mobile .userSwitchWrapper {
+  display: none;
+}
+
+/* 移动端内容区直接子元素间距 */
+.mobile .contentWrapper > div {
+  width: 100%;
+}
+
+/* 移动端卡片通用间距 */
+.mobile .gCard {
+  margin-bottom: 0;
+}
+
+/* 移动端Card body padding调整 */
+.mobile .aiWrapper :global(.ant-card-body) {
+  padding: 12px;
+}
+.mobile .ksWrapper :global(.ant-card-body) {
+  padding: 12px;
+}
+.mobile .prWrapper :global(.ant-card-body) {
+  padding: 12px;
+}
+.mobile .krWrapper :global(.ant-card-body) {
+  padding: 12px;
+}
+.mobile .srWrapper :global(.ant-card-body) {
+  padding: 12px;
 }
 
 .pc .header {

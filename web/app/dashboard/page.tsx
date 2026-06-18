@@ -595,9 +595,16 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
 // 主页面
 export default function DashboardPage() {
   const router = useRouter();
-  // 响应式：参考 7asi.com，所有设备统一使用 PC 左右分栏布局（通过 vh/vw 单位等比缩放）
-  // 不再根据 UA 或视口宽度切换到移动端单列布局
-  const isMobile = false;
+  // 响应式：参考 7asi.com 的手机端效果，小视口下使用单列垂直布局
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768);
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<LoginUser>({ id: '-1', username: '', phone: '', url: '', email: '', password: '', address: '', level: '', cid: '', dateTime: '' });
   const [lastUpdate, setLastUpdate] = useState('');
@@ -789,13 +796,15 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* 退出登录 + 分享按钮 */}
-      <div className={styles.logoutWrapper}>
-        <Button onClick={onOpenShareModal} size="small" type="primary" style={{ marginRight: 8 }}>
-          分享报告
-        </Button>
-        <Button onClick={onLogout} size="small">退出登录</Button>
-      </div>
+      {/* 退出登录 + 分享按钮（仅PC端显示） */}
+      {!isMobile && (
+        <div className={styles.logoutWrapper}>
+          <Button onClick={onOpenShareModal} size="small" type="primary" style={{ marginRight: 8 }}>
+            分享报告
+          </Button>
+          <Button onClick={onLogout} size="small">退出登录</Button>
+        </div>
+      )}
 
       {/* Header */}
       {isMobile ? (
@@ -855,7 +864,7 @@ export default function DashboardPage() {
             </Row>
           </div>
         ) : (
-          <div className={styles.pc}>
+          <div className={styles.mobile}>
             <div className={styles.baseInfo}><AICard isMobile={true} userId={selectedUserId} /></div>
             <div className={styles.info3}><KeywordStats isMobile={true} userId={selectedUserId} /></div>
             <div className={styles.info1}><PlatformRatioChart isMobile={true} userId={selectedUserId} /></div>
