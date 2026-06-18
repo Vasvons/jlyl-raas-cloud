@@ -13,29 +13,47 @@ router.get('/resetAdmin', async (req, res) => {
     const password = process.env.ADMIN_PASSWORD || 'admin123';
     const hashedPassword = await hashPassword(password);
 
-    // 检查管理员是否存在
-    const existing = await findUserByUsername(username);
-    if (existing) {
-      // 更新密码
-      await (await import('../repository')).updateUser(existing.id, { password: hashedPassword });
-      return res.json({
-        code: 200,
-        message: `管理员密码已重置成功`,
-        data: { username, password, note: '请使用此密码登录，登录后请立即修改密码' }
-      });
-    } else {
+    // 先查询所有管理员用户
+    const { pool } = await import('../db');
+    const adminList = await pool.query("SELECT id, username, level, length(password) as pwd_len FROM users WHERE level = '1' OR username = $1", [username]);
+    console.log('[ResetAdmin] 现有管理员:', adminList.rows);
+
+    let result;
+    if (adminList.rows.length === 0) {
       // 创建管理员
-      const id = await (await import('../repository')).createUser({
-        username,
-        password: hashedPassword,
-        level: '1',
-      });
-      return res.json({
-        code: 200,
-        message: `管理员账号已创建`,
-        data: { id, username, password }
-      });
+      const insertResult = await pool.query(
+        'INSERT INTO users (username, password, level) VALUES ($1, $2, $3) RETURNING id, username',
+        [username, hashedPassword, '1']
+      );
+      result = insertResult.rows[0];
+      console.log('[ResetAdmin] 已创建管理员:', result);
+    } else {
+      // 直接用SQL更新所有管理员的密码（绕过updateUser函数）
+      const updateResult = await pool.query(
+        `UPDATE users SET password = $1, update_time = CURRENT_TIMESTAMP WHERE level = '1' OR username = $2 RETURNING id, username`,
+        [hashedPassword, username]
+      );
+      result = updateResult.rows[0];
+      console.log('[ResetAdmin] 已更新管理员密码:', updateResult.rows);
     }
+
+    // 验证更新后的密码
+    const verify = await pool.query('SELECT id, username, password FROM users WHERE username = $1', [username]);
+    const verifyMatch = verify.rows.length > 0 ? await comparePassword(password, verify.rows[0].password) : false;
+    console.log('[ResetAdmin] 密码验证:', { userFound: verify.rows.length > 0, match: verifyMatch });
+
+    return res.json({
+      code: 200,
+      message: `管理员密码已重置成功`,
+      data: {
+        username,
+        password,
+        adminCount: adminList.rows.length,
+        updated: result,
+        verify: { userFound: verify.rows.length > 0, passwordMatch: verifyMatch },
+        note: '请使用此密码登录'
+      }
+    });
   } catch (e) {
     console.error('[Auth] 重置管理员密码失败:', e);
     return res.json({ code: 500, message: '重置失败: ' + (e as Error).message });
@@ -46,16 +64,22 @@ router.get('/resetAdmin', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
+    console.log('[Login] 登录请求:', { username, passwordLength: password?.length });
+
     if (!username || !password) {
       return res.json({ code: 400, message: '用户名和密码不能为空' });
     }
 
     const user = await findUserByUsername(username);
+    console.log('[Login] 查询用户:', user ? { id: user.id, username: user.username, level: user.level, pwdLen: user.password?.length } : 'not found');
+
     if (!user) {
       return res.json({ code: 404, message: '用户不存在' });
     }
 
     const isMatch = await comparePassword(password, user.password);
+    console.log('[Login] 密码比对结果:', isMatch);
+
     if (!isMatch) {
       return res.json({ code: 400, message: '密码错误' });
     }
