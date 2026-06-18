@@ -909,6 +909,10 @@
     height: 5vh;
     width: 5vh;
   }
+  /* AI 名片内容在小视口下限制宽度，避免溢出 */
+  .aiItemContent {
+    max-width: 60px !important;
+  }
   /* 关键词数量图标在小视口下缩小 */
   .ksIcon {
     height: 3vh;
@@ -921,6 +925,13 @@
   }
   .ksSplitLine {
     display: none;
+  }
+  /* 关键词数量内容在小视口下缩小字体 */
+  .ksItemWrapper .ksContentWrapper2 .ksCount {
+    font-size: 2.2vh;
+  }
+  .ksItemWrapper .ksContentWrapper2 .ksTitle2 {
+    font-size: 1.2vh;
   }
 }
 
