@@ -873,28 +873,30 @@
   .leftWrapper > :global(.ant-col) {
     padding: 0 12px;
   }
-  /* AI 名片卡片内部：让 4 个 Col 表现为 flex，自动分配宽度 */
+  /* AI 名片卡片内部：小视口下改为 2x2 网格布局，避免 Col 太窄 */
   .aiBaseInfo {
-    display: flex !important;
-    flex-wrap: nowrap !important;
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
     margin: 0 !important;
+    width: 100% !important;
   }
   .aiBaseInfo :global(.ant-col) {
-    flex: 1 1 0 !important;
-    max-width: none !important;
     width: auto !important;
+    max-width: none !important;
     min-width: 0 !important;
   }
-  /* 关键词数量卡片内部：让 4 个 Col 表现为 flex，自动分配宽度 */
+  /* 关键词数量卡片内部：小视口下改为 2x2 网格布局 */
   .ksContentWrapper {
-    display: flex !important;
-    flex-wrap: nowrap !important;
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
     margin: 0 !important;
+    width: 100% !important;
   }
   .ksContentWrapper > :global(.ant-col) {
-    flex: 1 1 0 !important;
-    max-width: none !important;
     width: auto !important;
+    max-width: none !important;
     min-width: 0 !important;
   }
   /* AI 名片图标在小视口下缩小 */
