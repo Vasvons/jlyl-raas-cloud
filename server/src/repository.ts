@@ -1007,6 +1007,15 @@ export async function bulkImportData(data: {
 
     // 10. 导入关键词收录记录（核心数据，分批插入，使用新的id映射）
     if (data.keywordSearchRank && data.keywordSearchRank.length > 0) {
+      // 如果有用户映射，先删除旧 user_id 的记录（避免重复导入时数据重复）
+      if (userIdMap.size > 0) {
+        const oldUserIds = Array.from(userIdMap.keys());
+        console.log(`[Import] 清除旧 user_id 的 keyword_search_rank 记录: ${oldUserIds.join(', ')}`);
+        for (const oldId of oldUserIds) {
+          const delResult = await client.query('DELETE FROM keyword_search_rank WHERE user_id = $1', [oldId]);
+          console.log(`[Import] 删除 user_id=${oldId} 的记录: ${delResult.rowCount} 条`);
+        }
+      }
       const batchSize = 500;
       let cnt = 0;
       for (let i = 0; i < data.keywordSearchRank.length; i += batchSize) {
