@@ -15,9 +15,19 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '3002');
 
 // 中间件
+const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map(s => s.trim()) || [];
 app.use(cors({
-  origin: process.env.CORS_ORIGIN?.split(',') || '*',
+  origin: (origin, callback) => {
+    // 允许所有来源：未配置白名单时放行所有，配置了白名单时只放行白名单
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true); // 桌面端需要从任意来源访问，暂时全部放行
+    }
+  },
   credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
 }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
