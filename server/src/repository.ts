@@ -871,6 +871,14 @@ export async function bulkImportData(data: {
 
     // 2. 导入品牌关键词（使用新的user_id映射，不保留原始id）
     if (data.pp && data.pp.length > 0) {
+      // 先清除旧数据（旧user_id和新user_id），避免重复
+      const allUserIds = new Set<string>([
+        ...data.pp.map(p => String(p.user_id || '')),
+        ...Array.from(userIdMap.values()).map(String),
+      ]);
+      for (const uid of allUserIds) {
+        if (uid) await client.query('DELETE FROM pp WHERE user_id = $1', [uid]);
+      }
       let cnt = 0;
       for (const p of data.pp) {
         const newUserId = userIdMap.get(String(p.user_id)) || String(p.user_id || '');
@@ -886,6 +894,14 @@ export async function bulkImportData(data: {
 
     // 3. 导入核心关键词（使用新的user_id映射，不保留原始id）
     if (data.distillateKeywords && data.distillateKeywords.length > 0) {
+      // 先清除旧数据，避免重复
+      const allUserIds = new Set<string>([
+        ...data.distillateKeywords.map(dk => String(dk.user_id || '')),
+        ...Array.from(userIdMap.values()).map(String),
+      ]);
+      for (const uid of allUserIds) {
+        if (uid) await client.query('DELETE FROM distillate_keyword WHERE user_id = $1', [uid]);
+      }
       let cnt = 0;
       for (const dk of data.distillateKeywords) {
         const newUserId = userIdMap.get(String(dk.user_id)) || String(dk.user_id || '');
@@ -902,6 +918,18 @@ export async function bulkImportData(data: {
     // 4. 导入蒸馏关键词库（不保留原始id，但需要建立新旧id映射）
     const zlgjcIdMap = new Map<number, number>();
     if (data.zlgjc && data.zlgjc.length > 0) {
+      // 先清除旧数据（旧user_id和新user_id），避免重复
+      const allUserIds = new Set<string>([
+        ...data.zlgjc.map(z => String(z.userId || z.userid || '')),
+        ...Array.from(userIdMap.values()).map(String),
+      ]);
+      for (const uid of allUserIds) {
+        if (uid) {
+          // 先清除关联的 zlgjcurl
+          await client.query('DELETE FROM zlgjcurl WHERE zlgjcid IN (SELECT id FROM zlgjc WHERE userid = $1)', [uid]);
+          await client.query('DELETE FROM zlgjc WHERE userid = $1', [uid]);
+        }
+      }
       let cnt = 0;
       for (const z of data.zlgjc) {
         const newUserId = userIdMap.get(String(z.userId || z.userid || '')) || String(z.userId || z.userid || '');
@@ -921,6 +949,7 @@ export async function bulkImportData(data: {
 
     // 5. 导入关键词跳转链接（使用新的zlgjcid映射，不保留原始id）
     if (data.zlgjcurl && data.zlgjcurl.length > 0) {
+      // zlgjcurl 已在步骤4中清除（通过 zlgjcid IN (SELECT id FROM zlgjc WHERE userid = ...)）
       let cnt = 0;
       for (const zc of data.zlgjcurl) {
         const newZlgjcId = zlgjcIdMap.get(zc.zlgjcid) || zc.zlgjcid;
@@ -1007,13 +1036,16 @@ export async function bulkImportData(data: {
 
     // 10. 导入关键词收录记录（核心数据，分批插入，使用新的id映射）
     if (data.keywordSearchRank && data.keywordSearchRank.length > 0) {
-      // 如果有用户映射，先删除旧 user_id 的记录（避免重复导入时数据重复）
+      // 如果有用户映射，先清除旧 user_id 和新 user_id 的记录（避免重复导入时数据重复）
       if (userIdMap.size > 0) {
-        const oldUserIds = Array.from(userIdMap.keys());
-        console.log(`[Import] 清除旧 user_id 的 keyword_search_rank 记录: ${oldUserIds.join(', ')}`);
-        for (const oldId of oldUserIds) {
-          const delResult = await client.query('DELETE FROM keyword_search_rank WHERE user_id = $1', [oldId]);
-          console.log(`[Import] 删除 user_id=${oldId} 的记录: ${delResult.rowCount} 条`);
+        const allUserIds = new Set<string>([
+          ...Array.from(userIdMap.keys()),                    // 旧 user_id
+          ...Array.from(userIdMap.values()).map(String),      // 新 user_id
+        ]);
+        console.log(`[Import] 清除 keyword_search_rank 记录，user_ids: ${Array.from(allUserIds).join(', ')}`);
+        for (const uid of allUserIds) {
+          const delResult = await client.query('DELETE FROM keyword_search_rank WHERE user_id = $1', [uid]);
+          console.log(`[Import] 删除 user_id=${uid} 的记录: ${delResult.rowCount} 条`);
         }
       }
       const batchSize = 500;
