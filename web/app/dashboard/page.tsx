@@ -217,6 +217,8 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
             ...(isMobile
               ? {
                   top: 'bottom',
+                  type: 'plain',
+                  width: '100%',
                   itemWidth: 12,
                   itemHeight: 12,
                   itemGap: 8,
