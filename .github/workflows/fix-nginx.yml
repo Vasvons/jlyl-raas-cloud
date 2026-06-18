@@ -10,49 +10,65 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Base64 encode nginx config
-        id: encode
-        run: |
-          CONTENT=$(base64 -w 0 deploy/nginx-report.conf)
-          echo "content=$CONTENT" >> $GITHUB_OUTPUT
-
-      - name: Fix nginx HTTPS config via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        env:
-          NGINX_CONFIG_B64: ${{ steps.encode.outputs.content }}
+      - name: Upload nginx config via SCP
+        uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: NGINX_CONFIG_B64
+          source: "deploy/nginx-report.conf"
+          target: "/tmp/nginx-report.conf.new"
+          overwrite: true
+
+      - name: Apply nginx config and reload
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
             echo "===== 开始修复 nginx HTTPS 配置 ====="
 
-            # 1. 备份现有配置
-            echo ">>> 备份现有配置..."
+            # 1. 验证上传的文件
+            echo ">>> 1. 验证上传的配置文件:"
+            if [ -f /tmp/nginx-report.conf.new/deploy/nginx-report.conf ]; then
+              echo "  文件存在"
+              ls -la /tmp/nginx-report.conf.new/deploy/nginx-report.conf
+            else
+              echo "  错误：文件未上传成功"
+              find /tmp/nginx-report.conf.new -type f 2>/dev/null || echo "  目录不存在"
+              exit 1
+            fi
+
+            # 2. 备份现有配置
+            echo ">>> 2. 备份现有配置..."
             cp /etc/nginx/conf.d/jlyl-cloud.conf /etc/nginx/conf.d/jlyl-cloud.conf.bak.$(date +%Y%m%d%H%M%S)
+            echo "  备份完成"
 
-            # 2. 解码并写入新的 nginx 配置
-            echo ">>> 写入新的 nginx 配置..."
-            echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/conf.d/jlyl-cloud.conf
-            echo "  配置已写入"
+            # 3. 复制新配置
+            echo ">>> 3. 复制新配置..."
+            cp /tmp/nginx-report.conf.new/deploy/nginx-report.conf /etc/nginx/conf.d/jlyl-cloud.conf
+            echo "  复制完成"
 
-            # 3. 检查是否已有 report.jlyl.net.cn 的 SSL 证书
-            echo ">>> 检查 report.jlyl.net.cn SSL 证书..."
+            # 4. 检查是否已有 report.jlyl.net.cn 的 SSL 证书
+            echo ">>> 4. 检查 SSL 证书..."
             if [ -d /etc/letsencrypt/live/report.jlyl.net.cn ]; then
-              echo "  report.jlyl.net.cn 证书已存在"
-              HAS_CERT="yes"
+              echo "  report.jlyl.net.cn 证书已存在，使用专属证书"
+              sed -i 's|/etc/letsencrypt/live/REPORT_DOMAIN/fullchain.pem|/etc/letsencrypt/live/report.jlyl.net.cn/fullchain.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
+              sed -i 's|/etc/letsencrypt/live/REPORT_DOMAIN/privkey.pem|/etc/letsencrypt/live/report.jlyl.net.cn/privkey.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
             else
               echo "  report.jlyl.net.cn 证书不存在，临时使用 www.jlyl.net.cn 证书"
-              HAS_CERT="no"
-              # 临时替换为 www.jlyl.net.cn 证书
               sed -i 's|/etc/letsencrypt/live/REPORT_DOMAIN/fullchain.pem|/etc/letsencrypt/live/www.jlyl.net.cn/fullchain.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
               sed -i 's|/etc/letsencrypt/live/REPORT_DOMAIN/privkey.pem|/etc/letsencrypt/live/www.jlyl.net.cn/privkey.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
             fi
 
-            # 4. 测试 nginx 配置
-            echo ">>> 测试 nginx 配置..."
+            # 5. 显示最终配置
+            echo ">>> 5. 最终配置内容:"
+            cat /etc/nginx/conf.d/jlyl-cloud.conf
+
+            # 6. 测试 nginx 配置
+            echo ">>> 6. 测试 nginx 配置..."
             if nginx -t; then
               echo "  nginx 配置测试通过"
             else
@@ -61,22 +77,21 @@ jobs:
               exit 1
             fi
 
-            # 5. 重载 nginx
-            echo ">>> 重载 nginx..."
+            # 7. 重载 nginx
+            echo ">>> 7. 重载 nginx..."
             nginx -s reload
             echo "  nginx 重载成功"
 
-            # 6. 如果没有 report.jlyl.net.cn 证书，申请新证书
-            if [ "$HAS_CERT" = "no" ]; then
-              echo ">>> 申请 report.jlyl.net.cn SSL 证书..."
+            # 8. 申请 report.jlyl.net.cn 证书（如果还没有）
+            if [ ! -d /etc/letsencrypt/live/report.jlyl.net.cn ]; then
+              echo ">>> 8. 申请 report.jlyl.net.cn SSL 证书..."
               mkdir -p /var/www/certbot
               if command -v certbot > /dev/null 2>&1; then
                 echo "  使用 certbot webroot 模式申请证书..."
                 certbot certonly --webroot -w /var/www/certbot -d report.jlyl.net.cn --non-interactive --agree-tos -m admin@jlyl.net.cn || {
                   echo "  certbot 申请失败，保持临时证书配置"
-                  echo "  稍后可手动执行: certbot certonly --webroot -w /var/www/certbot -d report.jlyl.net.cn"
                 }
-                # 如果证书申请成功，恢复配置中的证书路径
+                # 如果证书申请成功，切换到专属证书
                 if [ -d /etc/letsencrypt/live/report.jlyl.net.cn ]; then
                   echo "  证书申请成功，切换到 report.jlyl.net.cn 证书..."
                   sed -i 's|/etc/letsencrypt/live/www.jlyl.net.cn/fullchain.pem|/etc/letsencrypt/live/report.jlyl.net.cn/fullchain.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
@@ -86,12 +101,11 @@ jobs:
                 fi
               else
                 echo "  certbot 未安装，保持临时证书配置"
-                echo "  稍后可手动安装: apt install certbot python3-certbot-nginx"
               fi
             fi
 
-            # 7. 验证 HTTPS 访问
-            echo ">>> 验证 HTTPS 访问..."
+            # 9. 验证 HTTPS 访问
+            echo ">>> 9. 验证 HTTPS 访问..."
             sleep 2
             echo "  HTTPS 根路径:"
             curl -sk -o /dev/null -w "    HTTP %{http_code}, %{size_download} bytes\n" https://report.jlyl.net.cn/ || echo "    访问失败"
@@ -100,6 +114,9 @@ jobs:
             echo "  HTTPS 分享链接:"
             curl -sk -o /dev/null -w "    HTTP %{http_code}, %{size_download} bytes\n" "https://report.jlyl.net.cn/share/eae9816dfd6ea9910bbaa0f16e96de4aa6edd5e0992acd78d4e9791181182a79" || echo "    访问失败"
 
+            # 10. 清理临时文件
+            echo ">>> 10. 清理临时文件..."
+            rm -rf /tmp/nginx-report.conf.new
+            echo "  清理完成"
+
             echo "===== 修复完成 ====="
-            echo ">>> 最终配置文件内容:"
-            cat /etc/nginx/conf.d/jlyl-cloud.conf
