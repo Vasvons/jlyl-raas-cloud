@@ -867,6 +867,22 @@ export async function bulkImportData(data: {
         cnt++;
       }
       counts.users = cnt;
+
+      // 导入用户后，立即清除该用户旧的 keyword_search_rank 记录（避免重复导入时数据重复）
+      // 这样第1步清除旧数据，第2步插入新数据（第2步不传 users，不会重复清除）
+      if (userIdMap.size > 0) {
+        const allUserIds = new Set<string>([
+          ...Array.from(userIdMap.keys()),                    // 旧 user_id
+          ...Array.from(userIdMap.values()).map(String),      // 新 user_id
+        ]);
+        console.log(`[Import] 导入用户后清除 keyword_search_rank 旧记录，user_ids: ${Array.from(allUserIds).join(', ')}`);
+        for (const uid of allUserIds) {
+          const delResult = await client.query('DELETE FROM keyword_search_rank WHERE user_id = $1', [uid]);
+          if (delResult.rowCount && delResult.rowCount > 0) {
+            console.log(`[Import] 删除 user_id=${uid} 的 keyword_search_rank 记录: ${delResult.rowCount} 条`);
+          }
+        }
+      }
     }
 
     // 2. 导入品牌关键词（使用新的user_id映射，不保留原始id）
@@ -1035,19 +1051,8 @@ export async function bulkImportData(data: {
     }
 
     // 10. 导入关键词收录记录（核心数据，分批插入，使用新的id映射）
+    // 注意：旧数据已在步骤1（导入用户后）清除，这里不需要再清除
     if (data.keywordSearchRank && data.keywordSearchRank.length > 0) {
-      // 如果有用户映射，先清除旧 user_id 和新 user_id 的记录（避免重复导入时数据重复）
-      if (userIdMap.size > 0) {
-        const allUserIds = new Set<string>([
-          ...Array.from(userIdMap.keys()),                    // 旧 user_id
-          ...Array.from(userIdMap.values()).map(String),      // 新 user_id
-        ]);
-        console.log(`[Import] 清除 keyword_search_rank 记录，user_ids: ${Array.from(allUserIds).join(', ')}`);
-        for (const uid of allUserIds) {
-          const delResult = await client.query('DELETE FROM keyword_search_rank WHERE user_id = $1', [uid]);
-          console.log(`[Import] 删除 user_id=${uid} 的记录: ${delResult.rowCount} 条`);
-        }
-      }
       const batchSize = 500;
       let cnt = 0;
       for (let i = 0; i < data.keywordSearchRank.length; i += batchSize) {
