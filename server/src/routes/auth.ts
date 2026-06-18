@@ -138,6 +138,20 @@ router.post('/update', authMiddleware, adminMiddleware, async (req, res) => {
       return res.json({ code: 400, message: '缺少用户ID' });
     }
 
+    // 检查用户是否存在
+    const existingUser = await findUserById(parseInt(id));
+    if (!existingUser) {
+      return res.json({ code: 404, message: '用户不存在' });
+    }
+
+    // 如果修改了用户名，检查新用户名是否与其他用户冲突
+    if (rest.username && rest.username !== existingUser.username) {
+      const conflict = await findUserByUsername(rest.username);
+      if (conflict && conflict.id !== parseInt(id)) {
+        return res.json({ code: 400, message: '用户名已存在' });
+      }
+    }
+
     if (password) {
       rest.password = await hashPassword(password);
     }
@@ -146,7 +160,12 @@ router.post('/update', authMiddleware, adminMiddleware, async (req, res) => {
     res.json({ code: 200, message: '更新成功' });
   } catch (e) {
     console.error('[Auth] 更新用户失败:', e);
-    res.json({ code: 500, message: '服务器错误' });
+    const errMsg = (e as Error).message || '';
+    // 处理唯一约束冲突
+    if (errMsg.includes('duplicate key') || errMsg.includes('unique')) {
+      return res.json({ code: 400, message: '用户名已存在' });
+    }
+    res.json({ code: 500, message: '服务器错误: ' + errMsg });
   }
 });
 

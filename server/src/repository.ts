@@ -55,11 +55,58 @@ export async function createUser(user: any): Promise<number> {
 }
 
 export async function updateUser(id: number, user: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  // 动态构建 SET 子句，只更新提供的字段，避免覆盖未发送的字段
+  if (user.username !== undefined) {
+    fields.push(`username = $${paramIndex++}`);
+    values.push(user.username);
+  }
+  if (user.password !== undefined) {
+    fields.push(`password = $${paramIndex++}`);
+    values.push(user.password);
+  }
+  if (user.phone !== undefined) {
+    fields.push(`phone = $${paramIndex++}`);
+    values.push(user.phone);
+  }
+  if (user.email !== undefined) {
+    fields.push(`email = $${paramIndex++}`);
+    values.push(user.email);
+  }
+  if (user.url !== undefined) {
+    fields.push(`url = $${paramIndex++}`);
+    values.push(user.url);
+  }
+  if (user.address !== undefined) {
+    fields.push(`address = $${paramIndex++}`);
+    values.push(user.address);
+  }
+  if (user.level !== undefined) {
+    fields.push(`level = $${paramIndex++}`);
+    values.push(user.level);
+  }
+  if (user.cid !== undefined) {
+    fields.push(`cid = $${paramIndex++}`);
+    values.push(user.cid);
+  }
+  if (user.dateTime !== undefined) {
+    fields.push(`date_time = $${paramIndex++}`);
+    values.push(user.dateTime);
+  }
+
+  if (fields.length === 0) {
+    return; // 没有字段需要更新
+  }
+
+  fields.push(`update_time = CURRENT_TIMESTAMP`);
+  values.push(id);
+
   await query(
-    `UPDATE users SET username = $1, phone = $2, email = $3, url = $4, address = $5,
-     level = $6, cid = $7, date_time = $8, update_time = CURRENT_TIMESTAMP WHERE id = $9`,
-    [user.username, user.phone || '', user.email || '', user.url || '',
-     user.address || '', user.level || '0', user.cid || '', user.dateTime || '', id]
+    `UPDATE users SET ${fields.join(', ')} WHERE id = $${paramIndex}`,
+    values
   );
 }
 
