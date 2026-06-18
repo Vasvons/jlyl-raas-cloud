@@ -861,14 +861,62 @@
   overflow-y: auto;
 }
 
-/* 小视口（手机/平板）去掉左右padding，让内容占满视口，参考7asi.com */
+/* 小视口（手机/平板）参考7asi.com：wrapper无padding，Col有padding抵消Row负margin */
 @media (max-width: 768px) {
   .wrapper {
     padding: 0;
   }
-  /* 抵消 antd Row gutter 的负 margin，防止内容超出视口 */
   .pc {
+    padding: 0;
+  }
+  /* 内容区 Row 的直接 Col 子元素添加 padding，抵消 Row gutter 负 margin */
+  .leftWrapper > :global(.ant-col) {
     padding: 0 12px;
+  }
+  /* AI 名片卡片内部：让 4 个 Col 表现为 flex，自动分配宽度 */
+  .aiBaseInfo {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    margin: 0 !important;
+  }
+  .aiBaseInfo :global(.ant-col) {
+    flex: 1 1 0 !important;
+    max-width: none !important;
+    width: auto !important;
+  }
+  /* 关键词数量卡片内部：让 4 个 Col 表现为 flex，自动分配宽度 */
+  .ksContentWrapper {
+    display: flex !important;
+    flex-wrap: nowrap !important;
+    margin: 0 !important;
+  }
+  .ksContentWrapper > :global(.ant-col) {
+    flex: 1 1 0 !important;
+    max-width: none !important;
+    width: auto !important;
+  }
+  /* AI 名片图标在小视口下缩小 */
+  .aiPc .aiBaseInfo .aiItemIcon {
+    height: 3vh;
+    width: 3vh;
+    margin: 0 auto 0.5vh auto;
+  }
+  .aiFIcon {
+    height: 5vh;
+    width: 5vh;
+  }
+  /* 关键词数量图标在小视口下缩小 */
+  .ksIcon {
+    height: 3vh;
+    width: 3vh;
+    margin-right: 0.5vh;
+  }
+  /* 关键词数量项目宽度自适应 */
+  .ksItemWrapper {
+    width: auto !important;
+  }
+  .ksSplitLine {
+    display: none;
   }
 }
 
