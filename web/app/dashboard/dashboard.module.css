@@ -861,6 +861,13 @@
   overflow-y: auto;
 }
 
+/* 小视口（手机/平板）去掉左右padding，让内容占满视口，参考7asi.com */
+@media (max-width: 768px) {
+  .wrapper {
+    padding: 0;
+  }
+}
+
 /* 移动端wrapper允许内容滚动 */
 .mobile.wrapper,
 .wrapper.mobile {
