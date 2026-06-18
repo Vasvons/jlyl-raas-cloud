@@ -860,125 +860,136 @@ export async function bulkImportData(data: {
       counts.users = cnt;
     }
 
-    // 2. 导入品牌关键词
+    // 2. 导入品牌关键词（不保留原始id，避免整数溢出）
     if (data.pp && data.pp.length > 0) {
       let cnt = 0;
       for (const p of data.pp) {
         await client.query(
-          `INSERT INTO pp (id, user_id, pp) VALUES ($1, $2, $3)
+          `INSERT INTO pp (user_id, pp) VALUES ($1, $2)
            ON CONFLICT DO NOTHING`,
-          [p.id, p.user_id || '', p.pp || '']
+          [p.user_id || '', p.pp || '']
         );
         cnt++;
       }
       counts.pp = cnt;
     }
 
-    // 3. 导入核心关键词
+    // 3. 导入核心关键词（不保留原始id）
     if (data.distillateKeywords && data.distillateKeywords.length > 0) {
       let cnt = 0;
       for (const dk of data.distillateKeywords) {
         await client.query(
-          `INSERT INTO distillate_keyword (id, distillate_keyword, user_id, zt)
-           VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-          [dk.id, dk.distillate_keyword || '', dk.user_id || '', dk.zt || 1]
+          `INSERT INTO distillate_keyword (distillate_keyword, user_id, zt)
+           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+          [dk.distillate_keyword || '', dk.user_id || '', dk.zt || 1]
         );
         cnt++;
       }
       counts.distillateKeywords = cnt;
     }
 
-    // 4. 导入蒸馏关键词库
+    // 4. 导入蒸馏关键词库（不保留原始id，但需要建立新旧id映射）
+    const zlgjcIdMap = new Map<number, number>();
     if (data.zlgjc && data.zlgjc.length > 0) {
       let cnt = 0;
       for (const z of data.zlgjc) {
-        await client.query(
-          `INSERT INTO zlgjc (id, value, userid, lxfs, hxgjc)
-           VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
-          [z.id, z.value || '', z.userId || z.userid || '', z.lxfs || '', z.hxgjc || '']
+        const insertResult = await client.query(
+          `INSERT INTO zlgjc (value, userid, lxfs, hxgjc)
+           VALUES ($1, $2, $3, $4) RETURNING id`,
+          [z.value || '', z.userId || z.userid || '', z.lxfs || '', z.hxgjc || '']
         );
+        const newId = insertResult.rows[0].id;
+        if (z.id) {
+          zlgjcIdMap.set(z.id, newId);
+        }
         cnt++;
       }
       counts.zlgjc = cnt;
     }
 
-    // 5. 导入关键词跳转链接
+    // 5. 导入关键词跳转链接（使用新的zlgjcid映射，不保留原始id）
     if (data.zlgjcurl && data.zlgjcurl.length > 0) {
       let cnt = 0;
       for (const zc of data.zlgjcurl) {
+        const newZlgjcId = zlgjcIdMap.get(zc.zlgjcid) || zc.zlgjcid;
         await client.query(
-          `INSERT INTO zlgjcurl (id, zlgjcid, pt, url, has_lxfs)
-           VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
-          [zc.id, zc.zlgjcid, zc.pt || '', zc.url || '', zc.has_lxfs || 0]
+          `INSERT INTO zlgjcurl (zlgjcid, pt, url, has_lxfs)
+           VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+          [newZlgjcId, zc.pt || '', zc.url || '', zc.has_lxfs || 0]
         );
         cnt++;
       }
       counts.zlgjcurl = cnt;
     }
 
-    // 6. 导入任务
+    // 6. 导入任务（建立新旧id映射）
+    const taskIdMap = new Map<number, number>();
     if (data.tasks && data.tasks.length > 0) {
       let cnt = 0;
       for (const t of data.tasks) {
-        await client.query(
-          `INSERT INTO task_info (id, user_id, start_date, end_date, total_num, status, name, create_time)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-           ON CONFLICT (id) DO UPDATE SET
-             user_id = EXCLUDED.user_id, start_date = EXCLUDED.start_date,
-             end_date = EXCLUDED.end_date, total_num = EXCLUDED.total_num,
-             status = EXCLUDED.status, name = EXCLUDED.name`,
-          [t.id, t.user_id || '', t.start_date, t.end_date, t.total_num || 0,
+        const insertResult = await client.query(
+          `INSERT INTO task_info (user_id, start_date, end_date, total_num, status, name, create_time)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING id`,
+          [t.user_id || '', t.start_date, t.end_date, t.total_num || 0,
            t.status || 'completed', t.name || '', t.create_time]
         );
+        const newTaskId = insertResult.rows[0].id;
+        if (t.id) {
+          taskIdMap.set(t.id, newTaskId);
+        }
         cnt++;
       }
       counts.tasks = cnt;
     }
 
-    // 7. 导入任务平台权重
+    // 7. 导入任务平台权重（使用新的task_id映射）
     if (data.taskWeights && data.taskWeights.length > 0) {
       let cnt = 0;
       for (const w of data.taskWeights) {
+        const newTaskId = taskIdMap.get(w.task_id) || w.task_id;
         await client.query(
           `INSERT INTO task_platform_weights (task_id, platform, weight)
            VALUES ($1, $2, $3) ON CONFLICT (task_id, platform) DO UPDATE SET weight = EXCLUDED.weight`,
-          [w.task_id, w.platform, w.weight || 1]
+          [newTaskId, w.platform, w.weight || 1]
         );
         cnt++;
       }
       counts.taskWeights = cnt;
     }
 
-    // 8. 导入任务进度
+    // 8. 导入任务进度（使用新的task_id映射）
     if (data.taskProgress && data.taskProgress.length > 0) {
       let cnt = 0;
       for (const tp of data.taskProgress) {
+        const newTaskId = taskIdMap.get(tp.task_id) || tp.task_id;
         await client.query(
           `INSERT INTO task_progress (task_id, generated_num, update_time)
            VALUES ($1, $2, $3) ON CONFLICT (task_id) DO UPDATE SET
              generated_num = EXCLUDED.generated_num, update_time = EXCLUDED.update_time`,
-          [tp.task_id, tp.generated_num || 0, tp.update_time]
+          [newTaskId, tp.generated_num || 0, tp.update_time]
         );
         cnt++;
       }
       counts.taskProgress = cnt;
     }
 
-    // 9. 导入每日随机数
+    // 9. 导入每日随机数（使用新的task_id映射）
     if (data.dailyRandom && data.dailyRandom.length > 0) {
       let cnt = 0;
       for (const dr of data.dailyRandom) {
+        const newTaskId = taskIdMap.get(dr.task_id) || dr.task_id;
         await client.query(
           `INSERT INTO daily_random (task_id, random_date, random_num, create_time)
            VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-          [dr.task_id, dr.random_date, dr.random_num || 0, dr.create_time]
+          [newTaskId, dr.random_date, dr.random_num || 0, dr.create_time]
         );
         cnt++;
       }
       counts.dailyRandom = cnt;
     }
 
-    // 10. 导入关键词收录记录（核心数据，分批插入）
+    // 10. 导入关键词收录记录（核心数据，分批插入，使用新的id映射）
     if (data.keywordSearchRank && data.keywordSearchRank.length > 0) {
       const batchSize = 500;
       let cnt = 0;
@@ -991,11 +1002,14 @@ export async function bulkImportData(data: {
           placeholders.push(
             `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13})`
           );
+          // 使用id映射，如果找不到映射则设为null（避免外键约束失败）
+          const newDistillateId = r.distillate_keyword_id ? (zlgjcIdMap.get(r.distillate_keyword_id) || null) : null;
+          const newTaskId = r.task_id ? (taskIdMap.get(r.task_id) || null) : null;
           values.push(
             r.expanded_keyword || '', r.distillate_keyword || '', r.platform || '',
             r.user_id || '', r.query_time, r.create_time,
-            r.distillate_keyword_id || null, r.update_time, r.w_id || 1,
-            r.url || '', r.is_url || 1, r.ly || '', r.task_id || null
+            newDistillateId, r.update_time, r.w_id || 1,
+            r.url || '', r.is_url || 1, r.ly || '', newTaskId
           );
         });
         await client.query(
