@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Tag, Spin, Pagination, Radio, Select, Tabs, Row, Col, Flex, Button, Modal, message } from 'antd';
+import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, Flex, Button, Modal, message } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import api from '@/lib/api';
 import { useRouter } from 'next/navigation';
@@ -212,30 +212,21 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
           legend: {
             formatter: (name: string) => {
               const item = chartData.find((s: { name: string }) => s.name === name);
-              return isMobile ? `{icon_${name}|} ${name}: ${item?.count}` : `${name}: ${item?.count}`;
+              return `${name}: ${item?.count}`;
             },
             ...(isMobile
               ? {
-                  top: 'bottom',
-                  type: 'plain',
-                  width: '100%',
-                  itemWidth: 12,
-                  itemHeight: 12,
-                  itemGap: 8,
-                  textStyle: {
-                    fontSize: 11,
-                    rich: Object.fromEntries(
-                      chartData.map((e: { name: string }) => [
-                        `icon_${e.name}`,
-                        {
-                          backgroundColor: { image: PLATFORM_ICONS[e.name] || '' },
-                          width: 14,
-                          height: 14,
-                          borderRadius: 7,
-                        },
-                      ])
-                    ),
-                  },
+                  orient: 'vertical',
+                  left: '54%',
+                  top: 'center',
+                  itemWidth: 16,
+                  itemHeight: 16,
+                  itemGap: 14,
+                  textStyle: { fontSize: 12 },
+                  data: chartData.map((e: { name: string }) => ({
+                    name: e.name,
+                    icon: PLATFORM_ICONS[e.name] ? `image://${PLATFORM_ICONS[e.name]}` : 'circle',
+                  })),
                 }
               : { orient: 'vertical', left: '50%', itemGap: 30, top: 'center' }),
           },
@@ -250,7 +241,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
                 name: e.name,
                 itemStyle: { color: e.color },
               })),
-              ...(isMobile ? { center: ['50%', '40%'] } : { center: ['25%', '50%'] }),
+              ...(isMobile ? { center: ['28%', '50%'] } : { center: ['25%', '50%'] }),
             },
             {
               type: 'pie',
@@ -259,7 +250,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
               label: { show: false },
               itemStyle: { color: 'transparent' },
               data: [{ value: 1 }],
-              ...(isMobile ? { center: ['50%', '40%'] } : { center: ['25%', '50%'] }),
+              ...(isMobile ? { center: ['28%', '50%'] } : { center: ['25%', '50%'] }),
             },
           ],
         });
@@ -567,33 +558,21 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
         </div>
       </div>
       <div className={styles.srTabsWrapper}>
-        {isMobile ? (
-          <Tabs
-            activeKey={activePlatform?.platform}
-            onChange={(key) => {
-              const p = platforms.find((x) => x.platform === key);
-              if (p) handlePlatformChange(p);
-            }}
-            items={platforms.map((e) => ({ key: e.platform, label: e.platform }))}
-            className={styles.srMobileTabs}
-          />
-        ) : (
-          <div className={styles.srTabs}>
-            {platforms.map((e) => (
-              <Tag.CheckableTag
-                key={e.platform}
-                checked={activePlatform?.platform === e.platform}
-                className={`${styles.srTab} ${activePlatform?.platform === e.platform ? styles.srChecked : ''}`}
-                onClick={() => handlePlatformChange(e)}
-              >
-                <div className={styles.srPlatformItem}>
-                  <span>{e.platform}</span>
-                  <span>({e.count})</span>
-                </div>
-              </Tag.CheckableTag>
-            ))}
-          </div>
-        )}
+        <div className={styles.srTabs}>
+          {platforms.map((e) => (
+            <Tag.CheckableTag
+              key={e.platform}
+              checked={activePlatform?.platform === e.platform}
+              className={`${styles.srTab} ${activePlatform?.platform === e.platform ? styles.srChecked : ''}`}
+              onClick={() => handlePlatformChange(e)}
+            >
+              <div className={styles.srPlatformItem}>
+                <span>{e.platform}</span>
+                <span>({e.count})</span>
+              </div>
+            </Tag.CheckableTag>
+          ))}
+        </div>
         {isMobile ? (
           <div className={styles.srSelectWrapper}>
             <Select

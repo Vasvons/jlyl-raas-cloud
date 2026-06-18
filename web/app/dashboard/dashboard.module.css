@@ -212,7 +212,7 @@
 }
 
 .aiMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(1).png") 100% 100%;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
   background-size: 100% 100%;
   height: auto;
 }
@@ -220,9 +220,9 @@
 .aiMobile.aiCardHeader,
 .aiMobile .aiCardHeader {
   min-width: unset !important;
-  width: calc(100% - 24px) !important;
+  width: calc(100% - 12px) !important;
   max-width: 100%;
-  padding-right: 40px;
+  padding-right: 20px;
   height: 4.5vh;
   min-height: 39px;
 }
@@ -251,8 +251,8 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 90%;
-  padding: 0 12px 0 8px;
+  max-width: 100%;
+  padding: 0 8px 0 8px;
 }
 
 .aiLeft {
@@ -344,7 +344,7 @@
 }
 
 .prMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(3).png") 100% 100%;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
   background-size: 100% 100%;
   min-height: 420px;
   height: auto;
@@ -451,7 +451,7 @@
 .krMobile {
   height: auto;
   max-height: 500px;
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(4).png") 100% 100%;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
   background-size: 100% 100%;
 }
 
@@ -559,7 +559,7 @@
 }
 
 .ksMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(2).png") 100% 100%;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
   background-size: 100% 100%;
   height: auto;
 }
@@ -585,8 +585,8 @@
   justify-content: center;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-  padding: 0 4px 12px;
+  gap: 8px;
+  padding: 0 8px 12px;
 }
 
 .ksMobile .ksItemWrapper {
@@ -597,7 +597,7 @@
   align-items: center;
   background: #fff;
   border-radius: 12px;
-  padding: 8px 6px;
+  padding: 10px 8px;
   box-shadow: 0 2px 8px rgba(255, 81, 81, 0.06);
 }
 
@@ -613,7 +613,7 @@
 
 .ksMobile .ksCount {
   font-family: DIN Alternate, PingFang SC, sans-serif;
-  font-size: 18px;
+  font-size: 22px;
   font-weight: 700;
   letter-spacing: -0.3px;
   white-space: nowrap;
@@ -659,6 +659,8 @@
 .srMobile {
   height: auto;
   max-height: 800px;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
+  background-size: 100% 100%;
 }
 
 /* 防止 srMobile 的 max-height 应用到 header 上，并修正 header 宽度 */
@@ -920,43 +922,21 @@
   padding: 0 4px;
 }
 
-.srMobileTabs :global(.ant-tabs-nav) {
-  margin-bottom: 8px;
-}
-
-.srMobileTabs :global(.ant-tabs-tab) {
-  font-size: 12px;
-  padding: 6px 10px;
-}
-
-.srMobileTabs :global(.ant-tabs-tab-active .ant-tabs-tab-btn) {
-  color: #ff5151 !important;
-  font-weight: 700;
-}
-
-.srMobileTabs :global(.ant-tabs-ink-bar) {
-  background: #ff5151;
-}
-
 .srMobile .srTabs {
-  overflow-x: auto;
-  margin-bottom: 8px;
-  flex-wrap: nowrap;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-
-.srMobile .srTabs::-webkit-scrollbar {
-  display: none;
+  overflow-x: visible;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+  row-gap: 5px;
+  column-gap: 4px;
 }
 
 .srMobile .srTab {
   min-width: auto;
   white-space: nowrap;
-  font-size: 12px;
-  height: 28px;
-  line-height: 28px;
-  padding: 0 10px;
+  font-size: 10px;
+  height: 22px;
+  line-height: 22px;
+  padding: 0 5px;
 }
 
 .srMobile .srSelectWrapper {
@@ -1005,13 +985,14 @@
   .mobile > div {
     width: 100%;
   }
-  /* 移动端卡片全宽且高度自适应 */
+  /* 移动端卡片宽度自适应并留出边距 */
   .mobile .aiWrapper,
   .mobile .ksWrapper,
   .mobile .prWrapper,
   .mobile .krWrapper,
   .mobile .srWrapper {
-    width: 100% !important;
+    width: calc(100% - 24px) !important;
+    margin: 0 auto;
     height: auto !important;
     min-height: auto !important;
     max-height: none !important;
@@ -1060,8 +1041,8 @@
   /* 关键词数量图标和字体在移动端 */
   .ksMobile .ksIcon,
 .mobile .ksIcon {
-  height: 28px;
-  width: 28px;
+  height: 36px;
+  width: 36px;
   margin-right: 6px;
   flex-shrink: 0;
 }
@@ -1105,6 +1086,10 @@
   height: auto;
   min-height: 100vh;
   overflow-y: visible;
+  background-image: url("https://static.7asi.com/assets/reportGeo/%E7%A7%BB%E5%8A%A8%E7%AB%AF%E8%83%8C%E6%99%AF%2012.28.png");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: top center;
 }
 
 /* 移动端隐藏用户切换（参考7asi.com没有此功能外露） */
@@ -1322,16 +1307,16 @@
 
 .mobile .headerBanner {
   width: 100%;
-  min-height: 52px;
-  background-image: url(https://static.7asi.com/assets/reportGeo/Group_20372357411.png);
-  background-size: 100% 100%;
+  min-height: 72px;
+  background-image: url(https://static.7asi.com/assets/reportGeo/Group_20372357421.png);
+  background-size: 100% auto;
   background-repeat: no-repeat;
-  background-position: center;
+  background-position: top center;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
-  padding: 0 20px;
+  padding: 0 40px;
   font-family: PingFang SC;
   font-weight: 600;
   font-size: 18px;
@@ -1367,11 +1352,11 @@
 
 .mobile .header .headerName {
   width: 100%;
-  min-height: 44px;
+  min-height: 72px;
   background-image: url(https://static.7asi.com/assets/reportGeo/Group_20372357421.png);
-  background-size: 100% 100%;
+  background-size: 100% auto;
   background-repeat: no-repeat;
-  background-position: center;
+  background-position: top center;
   display: flex;
   align-items: center;
   justify-content: center;
