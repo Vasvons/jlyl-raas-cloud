@@ -241,7 +241,8 @@
 }
 
 .aiMobile .aiItemTitle {
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .aiMobile .aiTitle {
@@ -254,21 +255,27 @@
 }
 
 .aiFWrapper {
-  width: 15vw;
+  width: 22vw;
+  min-width: 80px;
   height: 100%;
   display: flex;
   flex-direction: column;
   justify-content: center;
+  align-items: center;
 }
 
 .aiFWrapper .aiFIcon {
-  height: 15vw;
+  height: 18vw;
+  max-height: 70px;
+  width: auto;
 }
 
 .aiRight {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  justify-content: center;
+  gap: 8px;
+  padding-left: 8px;
 }
 
 .aiItem {
@@ -277,12 +284,12 @@
   align-items: center;
   justify-content: flex-start;
   width: 100%;
-  gap: 8px;
+  gap: 6px;
 }
 
 .aiItem .aiItemIcon {
-  height: 5.5vw;
-  width: 5.5vw;
+  height: 20px;
+  width: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -290,13 +297,14 @@
 }
 
 .aiItem .aiItemTitle {
-  font-size: 1.4vh;
+  font-size: 12px;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   text-align: left;
   font-family: PingFang SC;
   color: #161e54;
+  white-space: nowrap;
 }
 
 /* ===== 各平台收录对比 ===== */
@@ -327,6 +335,7 @@
   background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(3).png") 100% 100%;
   background-size: 100% 100%;
   min-height: 420px;
+  height: auto;
 }
 
 /* 防止 prMobile 的 min-height 应用到 header 上 */
@@ -337,6 +346,11 @@
   min-height: 39px;
   width: auto;
   padding-right: 40px;
+}
+
+/* 移动端各平台收录对比图例换行优化 */
+.prMobile :global(.ant-card-body) {
+  padding: 0 8px 16px;
 }
 
 /* ===== 蒸馏关键词排名 ===== */
@@ -555,7 +569,7 @@
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 10px;
-  padding: 0 20px 20px;
+  padding: 0 12px 16px;
 }
 
 .ksMobile .ksItemWrapper {
@@ -564,17 +578,26 @@
   align-items: center;
   background: #fff6f6;
   border-radius: 8px;
-  padding: 9px;
+  padding: 10px 8px;
 }
 
 /* 移动端关键词数量字体修正 */
 .ksMobile .ksTitle2 {
-  font-size: 13px;
+  font-size: 12px;
+  white-space: nowrap;
+  line-height: 1.3;
 }
 
 .ksMobile .ksCount {
-  font-size: 20px;
+  font-size: 18px;
   font-weight: 700;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.ksMobile .ksContentWrapper {
+  min-width: 0;
+  overflow: hidden;
 }
 
 /* ===== 搜索排名 ===== */
@@ -809,42 +832,70 @@
 }
 
 /* 移动端搜索排名按钮和标签适配 */
+.srMobile .srBtnsWrapper {
+  padding: 0 4px;
+}
+
 .srMobile .srBtns {
   justify-content: stretch;
 }
 
 .srMobile .srBtnWrapper {
   width: 100%;
+  display: flex;
 }
 
 .srMobile .srBtn {
-  width: 33%;
+  flex: 1;
   font-size: 13px;
   height: 32px;
+  padding: 0 4px;
+  min-width: 0;
 }
 
 .srMobile .srTabsWrapper {
   display: block;
+  padding: 0 4px;
 }
 
 .srMobile .srTabs {
   overflow-x: auto;
   margin-bottom: 8px;
   flex-wrap: nowrap;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.srMobile .srTabs::-webkit-scrollbar {
+  display: none;
 }
 
 .srMobile .srTab {
-  min-width: 80px;
+  min-width: auto;
   white-space: nowrap;
-  font-size: 13px;
-  height: 32px;
-  line-height: 32px;
+  font-size: 12px;
+  height: 28px;
+  line-height: 28px;
+  padding: 0 10px;
 }
 
 .srMobile .srSelectWrapper {
   width: 100%;
   text-align: right;
   margin-top: 8px;
+}
+
+.srMobile .srSelectWrapper :global(.ant-select) {
+  width: 100%;
+}
+
+.srMobile .srTableWrapperMobile {
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.srMobile .srMobileItem {
+  padding: 8px 12px;
 }
 
 /* ===== 主布局 ===== */
@@ -1190,27 +1241,38 @@
 }
 
 /* Mobile header */
+.mobile .header {
+  width: 100%;
+  padding-top: 8px;
+}
+
 .mobile .header .headerName {
   width: 100%;
-  height: 44px;
+  min-height: 44px;
   background-image: url(https://static.7asi.com/assets/reportGeo/Group_20372357421.png);
   background-size: 100% 100%;
   background-repeat: no-repeat;
+  background-position: center;
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
+  padding: 0 20px;
 }
 
 .mobile .header .headerName div {
   font-family: PingFang SC;
   font-weight: 600;
-  font-size: 2.5vh;
+  font-size: 18px;
   color: #fff;
   text-align: center;
   font-style: normal;
   text-transform: none;
   margin: 0 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .mobile .lastTime {
@@ -1228,6 +1290,9 @@
   height: 32px;
   line-height: 32px;
   margin: 8px auto 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ===== 移动端全局修正 ===== */

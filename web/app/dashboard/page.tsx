@@ -520,18 +520,32 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
             </Tag.CheckableTag>
           ))}
         </div>
-        <div className={styles.srSelectWrapper}>
-          <Select
-            value={keyword}
-            style={{ width: 120 }}
-            popupMatchSelectWidth={false}
-            onChange={handleKeywordChange}
-            options={keywordOptions.map((e) => ({
-              value: e.distillateKeyword,
-              label: e.distillateKeyword === '' ? '全部' : `${e.distillateKeyword}(${e.count})`,
-            }))}
-          />
-        </div>
+        {isMobile ? (
+          <div className={styles.srSelectWrapper}>
+            <Select
+              value={keyword}
+              popupMatchSelectWidth={false}
+              onChange={handleKeywordChange}
+              options={keywordOptions.map((e) => ({
+                value: e.distillateKeyword,
+                label: e.distillateKeyword === '' ? '全部' : `${e.distillateKeyword}(${e.count})`,
+              }))}
+            />
+          </div>
+        ) : (
+          <div className={styles.srSelectWrapper}>
+            <Select
+              value={keyword}
+              style={{ width: 120 }}
+              popupMatchSelectWidth={false}
+              onChange={handleKeywordChange}
+              options={keywordOptions.map((e) => ({
+                value: e.distillateKeyword,
+                label: e.distillateKeyword === '' ? '全部' : `${e.distillateKeyword}(${e.count})`,
+              }))}
+            />
+          </div>
+        )}
       </div>
       <div className={styles.srList}>
         {isMobile ? (
