@@ -232,7 +232,7 @@
 
 .aiMobile :global(.ant-card-body) {
   flex: 1;
-  padding: 10px;
+  padding: 12px;
 }
 
 /* 移动端AI名片字体大小修正 */
@@ -241,7 +241,7 @@
 }
 
 .aiMobile .aiItemTitle {
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -255,8 +255,8 @@
 }
 
 .aiFWrapper {
-  width: 22vw;
-  min-width: 80px;
+  width: 28vw;
+  min-width: 100px;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -265,8 +265,8 @@
 }
 
 .aiFWrapper .aiFIcon {
-  height: 18vw;
-  max-height: 70px;
+  height: 22vw;
+  max-height: 90px;
   width: auto;
 }
 
@@ -274,8 +274,10 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  gap: 8px;
+  gap: 10px;
   padding-left: 8px;
+  flex: 1;
+  min-width: 0;
 }
 
 .aiItem {
@@ -284,12 +286,12 @@
   align-items: center;
   justify-content: flex-start;
   width: 100%;
-  gap: 6px;
+  gap: 8px;
 }
 
 .aiItem .aiItemIcon {
-  height: 20px;
-  width: 20px;
+  height: 22px;
+  width: 22px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -297,7 +299,7 @@
 }
 
 .aiItem .aiItemTitle {
-  font-size: 12px;
+  font-size: 13px;
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -305,6 +307,10 @@
   font-family: PingFang SC;
   color: #161e54;
   white-space: nowrap;
+}
+
+.aiItem .aiItemTitle a {
+  color: #1677ff;
 }
 
 /* ===== 各平台收录对比 ===== */
@@ -351,6 +357,11 @@
 /* 移动端各平台收录对比图例换行优化 */
 .prMobile :global(.ant-card-body) {
   padding: 0 8px 16px;
+}
+
+/* 移动端图例容器强制两列 */
+.prMobile :global(.ant-card-body) > div {
+  width: 100% !important;
 }
 
 /* ===== 蒸馏关键词排名 ===== */
@@ -589,7 +600,7 @@
 }
 
 .ksMobile .ksCount {
-  font-size: 18px;
+  font-size: 28px;
   font-weight: 700;
   white-space: nowrap;
   line-height: 1.2;
@@ -786,12 +797,46 @@
 
 /* 移动端搜索排名卡片式布局 */
 .srTableWrapperMobile {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
   flex: 1;
   overflow: auto;
   position: relative;
+  width: 100%;
+}
+
+.srMobileTable {
+  min-width: 400px;
+  font-size: 11px;
+}
+
+.srMobileTable :global(.ant-table) {
+  background-color: transparent !important;
+  border-collapse: separate;
+  border-spacing: 0 8px;
+}
+
+.srMobileTable :global(.ant-table-thead > tr > th) {
+  background: rgb(255, 232, 232) !important;
+  color: rgb(18, 24, 67);
+  font-weight: 700;
+  text-align: center;
+  font-size: 10px;
+  padding: 6px 4px;
+  border: none;
+}
+
+.srMobileTable :global(.ant-table-tbody > tr) {
+  background-color: hsla(0, 0%, 100%, .7);
+  box-shadow: 0 0 0 1px #f5f5f5;
+  border-radius: 8px;
+}
+
+.srMobileTable :global(.ant-table-tbody > tr > td) {
+  border-bottom: 4px solid transparent;
+  padding: 8px 4px;
+}
+
+.srMobileTable :global(.ant-table-cell) {
+  white-space: nowrap;
 }
 
 .srMobileItem {
@@ -890,12 +935,7 @@
 }
 
 .srMobile .srTableWrapperMobile {
-  gap: 8px;
   padding: 0 4px;
-}
-
-.srMobile .srMobileItem {
-  padding: 8px 12px;
 }
 
 /* ===== 主布局 ===== */
@@ -941,17 +981,14 @@
     min-height: auto !important;
     max-height: none !important;
   }
-  /* AI 名片卡片内部：移动端 2x2 网格布局 */
+  /* AI 名片卡片内部：移动端保持左图右信息布局 */
   .aiBaseInfo {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr !important;
-    gap: 8px !important;
+    display: flex !important;
+    flex-wrap: nowrap !important;
     margin: 0 !important;
     width: 100% !important;
   }
   .aiBaseInfo :global(.ant-col) {
-    width: auto !important;
-    max-width: none !important;
     min-width: 0 !important;
   }
   /* 关键词数量卡片内部：移动端 2x2 网格布局 */
@@ -967,17 +1004,18 @@
     max-width: none !important;
     min-width: 0 !important;
   }
-  /* AI 名片图标在移动端缩小 */
+  /* AI 名片图标在移动端大小参考 7asi 使用 15vw */
   .aiMobile .aiBaseInfo .aiItemIcon,
   .mobile .aiBaseInfo .aiItemIcon {
-    height: 28px;
-    width: 28px;
+    height: 22px;
+    width: 22px;
     margin: 0 auto 4px auto;
   }
   .aiMobile .aiFIcon,
   .mobile .aiFIcon {
-    height: 48px;
-    width: 48px;
+    height: 15vw;
+    max-height: 90px;
+    width: auto;
   }
   .aiMobile .aiFTitle,
   .mobile .aiFTitle {
@@ -999,9 +1037,9 @@
   /* 关键词数量图标和字体在移动端 */
   .ksMobile .ksIcon,
   .mobile .ksIcon {
-    height: 28px;
-    width: 28px;
-    margin-right: 6px;
+    height: 36px;
+    width: 36px;
+    margin-right: 8px;
   }
   .ksMobile .ksItemWrapper,
   .mobile .ksItemWrapper {
@@ -1013,7 +1051,8 @@
   }
   .ksMobile .ksItemWrapper .ksContentWrapper2 .ksCount,
   .mobile .ksItemWrapper .ksContentWrapper2 .ksCount {
-    font-size: 20px;
+    font-size: 28px;
+    font-weight: 700;
   }
   .ksMobile .ksItemWrapper .ksContentWrapper2 .ksTitle2,
   .mobile .ksItemWrapper .ksContentWrapper2 .ksTitle2 {
@@ -1240,10 +1279,60 @@
   height: 0;
 }
 
+.disclaimer {
+  text-align: center;
+  font-size: 12px;
+  color: #999;
+  padding: 16px 12px;
+  line-height: 1.6;
+}
+
 /* Mobile header */
 .mobile .header {
   width: 100%;
   padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.mobile .headerBanner {
+  width: 100%;
+  min-height: 52px;
+  background-image: url(https://static.7asi.com/assets/reportGeo/Group_20372357411.png);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 0 20px;
+  font-family: PingFang SC;
+  font-weight: 600;
+  font-size: 18px;
+  color: #fff;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mobile .headerUpdate {
+  font-family: PingFang SC;
+  font-weight: 500;
+  font-size: 13px;
+  color: #ff5151;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+  margin-top: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 .mobile .header .headerName {

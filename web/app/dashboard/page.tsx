@@ -9,6 +9,18 @@ import styles from './dashboard.module.css';
 
 const IMG = 'https://static.7asi.com/assets/reportGeo';
 
+// 平台图标映射（与 7asi 参考页一致）
+const PLATFORM_ICONS: Record<string, string> = {
+  '豆包': 'https://static.7asi.com/assets/GeoYy/Frame%20(2).png',
+  '文心一言': 'https://static.7asi.com/assets/GeoYy/Frame%20(3).png',
+  'DeepSeek': 'https://static.7asi.com/assets/GeoYy/Vector.png',
+  'Kimi': 'https://static.7asi.com/assets/GeoYy/Frame.png',
+  '腾讯元宝': 'https://static.7asi.com/assets/GeoYy/Frame%20(4).png',
+  '通义千问': 'https://static.7asi.com/assets/GeoYy/Frame%20(1).png',
+  '百度AI': 'https://static.7asi.com/assets/GeoYy/baiduai.png',
+  '纳米': 'https://static.7asi.com/assets/GeoYy/nm.png',
+};
+
 interface StatsData {
   total: number;
   count: number;
@@ -104,7 +116,7 @@ function AICard({ isMobile, userId }: { isMobile: boolean; userId: string }) {
               <div className={styles.aiItemIcon}>
                 <img src={`${IMG}/Frame_2037235607.png`} alt="" />
               </div>
-              <div className={styles.aiItemTitle}>电话{user.phone}</div>
+              <div className={styles.aiItemTitle}>电话:{user.phone}</div>
             </div>
             <div className={styles.aiItem}>
               <div className={styles.aiItemIcon}>
@@ -200,9 +212,30 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
           legend: {
             formatter: (name: string) => {
               const item = chartData.find((s: { name: string }) => s.name === name);
-              return `${name}: ${item?.count}`;
+              return isMobile ? `{icon_${name}|} ${name}: ${item?.count}` : `${name}: ${item?.count}`;
             },
-            ...(isMobile ? { top: 'bottom' } : { orient: 'vertical', left: '50%', itemGap: 30, top: 'center' }),
+            ...(isMobile
+              ? {
+                  top: 'bottom',
+                  type: 'scroll',
+                  itemWidth: 12,
+                  itemHeight: 12,
+                  textStyle: {
+                    fontSize: 11,
+                    rich: Object.fromEntries(
+                      chartData.map((e: { name: string }) => [
+                        `icon_${e.name}`,
+                        {
+                          backgroundColor: { image: PLATFORM_ICONS[e.name] || '' },
+                          width: 14,
+                          height: 14,
+                          borderRadius: 7,
+                        },
+                      ])
+                    ),
+                  },
+                }
+              : { orient: 'vertical', left: '50%', itemGap: 30, top: 'center' }),
           },
           series: [
             {
@@ -239,7 +272,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
           <div className={styles.gIcon}>
             <img src={`${IMG}/Iconly_Glass_Graph.png`} alt="" />
           </div>
-          <div className={styles.prTitle}>各平台收录对比</div>
+          <div className={styles.prTitle}>各平台收录占比</div>
         </div>
       }
       className={`${styles.gCard} ${styles.prWrapper} ${isMobile ? styles.prMobile : styles.prPc}`}
@@ -478,6 +511,33 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
     },
   ];
 
+  const mobileColumns = [
+    { title: '核心关键词', dataIndex: 'expandedKeyword', key: 'expandedKeyword', width: 90 },
+    { title: '蒸馏关键词', dataIndex: 'distillateKeyword', key: 'distillateKeyword', width: 100 },
+    { title: '平台', align: 'center' as const, dataIndex: 'platform', key: 'platform', width: 70 },
+    {
+      title: '查询时间',
+      align: 'center' as const,
+      dataIndex: 'queryTime',
+      key: 'queryTime',
+      width: 70,
+      render: (e: string) => (e ? e.split(' ')[0] : e),
+    },
+    {
+      title: '查看详情',
+      align: 'center' as const,
+      key: 'zlgjcUrl',
+      dataIndex: 'zlgjcUrl',
+      width: 70,
+      render: (e: string) =>
+        e ? (
+          <a href={e} target="_blank" rel="noopener noreferrer" className={styles.srDetailLink}>
+            跳转
+          </a>
+        ) : null,
+    },
+  ];
+
   return (
     <Card
       title={
@@ -550,32 +610,16 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
       <div className={styles.srList}>
         {isMobile ? (
           <div className={styles.srTableWrapperMobile}>
-            {list.map((item) => (
-              <div key={item.id} className={styles.srMobileItem}>
-                <div className={styles.srMobileContentItem}>
-                  <div className={styles.srMobileTitle}>蒸馏关键词：</div>
-                  <div className={styles.srMobileContent}>{item.distillateKeyword || '-'}</div>
-                </div>
-                <div className={styles.srMobileContentItem}>
-                  <div className={styles.srMobileTitle}>核心关键词：</div>
-                  <div className={styles.srMobileContent}>{item.expandedKeyword || '-'}</div>
-                </div>
-                <div className={styles.srMobileContentItem}>
-                  <div className={styles.srMobileTitle}>平台：</div>
-                  <div className={styles.srMobileContent}>{item.platform || '-'}</div>
-                </div>
-                <div className={styles.srMobileContentItem}>
-                  <div className={styles.srMobileTitle}>查询时间：</div>
-                  <div className={styles.srMobileContent}>{item.queryTime ? item.queryTime.split(' ')[0] : '-'}</div>
-                </div>
-                <div className={styles.srMobileContentItem}>
-                  <div className={styles.srMobileTitle}>详情：</div>
-                  <div className={styles.srMobileContent}>
-                    {item.zlgjcUrl ? <a href={item.zlgjcUrl} target="_blank" rel="noopener noreferrer">跳转</a> : '-'}
-                  </div>
-                </div>
-              </div>
-            ))}
+            <Table
+              columns={mobileColumns}
+              className={`${styles.srTable} ${styles.srMobileTable}`}
+              dataSource={list}
+              pagination={false}
+              loading={loading}
+              rowKey="id"
+              size="small"
+              scroll={{ x: 400 }}
+            />
           </div>
         ) : (
           <div className={styles.srTableWrapper}>
@@ -823,10 +867,8 @@ export default function DashboardPage() {
       {/* Header */}
       {isMobile ? (
         <div className={styles.header}>
-          <div className={styles.headerName}>
-            <div>{displayUsername}</div>
-          </div>
-          <div className={styles.lastTime}>最后更新时间：{lastUpdate}</div>
+          <div className={styles.headerBanner}>{displayUsername}</div>
+          <div className={styles.headerUpdate}>最后更新:{lastUpdate}</div>
         </div>
       ) : (
         <div className={styles.header}>
@@ -888,6 +930,11 @@ export default function DashboardPage() {
         )}
       </div>
       <div className={styles.footerWrapper} />
+
+      {/* 底部特别声明 */}
+      <div className={styles.disclaimer}>
+        特别声明：由于各大模型的搜索结果因人而异，报表检测数据请以系统当前的实际检测结果为准。若出现轻微波动属于正常情况，建议可更换不同设备进行多次检索以获得更稳定的参考。
+      </div>
 
       {/* 分享报告弹窗 */}
       <Modal
