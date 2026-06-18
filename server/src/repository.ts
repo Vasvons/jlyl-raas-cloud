@@ -934,22 +934,25 @@ export async function bulkImportData(data: {
       counts.zlgjcurl = cnt;
     }
 
-    // 6. 导入任务（建立新旧id映射，使用新的user_id映射）
+    // 6. 导入任务（保留原始id，因为task_info.id是BIGINT类型，可容纳时间戳；建立新旧id映射）
     const taskIdMap = new Map<number, number>();
     if (data.tasks && data.tasks.length > 0) {
       let cnt = 0;
       for (const t of data.tasks) {
         const newUserId = userIdMap.get(String(t.user_id)) || String(t.user_id || '');
-        const insertResult = await client.query(
-          `INSERT INTO task_info (user_id, start_date, end_date, total_num, status, name, create_time)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           RETURNING id`,
-          [newUserId, t.start_date, t.end_date, t.total_num || 0,
+        // task_info.id 是 BIGINT，可容纳时间戳，保留原始id
+        await client.query(
+          `INSERT INTO task_info (id, user_id, start_date, end_date, total_num, status, name, create_time)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (id) DO UPDATE SET
+             user_id = EXCLUDED.user_id, start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date,
+             total_num = EXCLUDED.total_num, status = EXCLUDED.status, name = EXCLUDED.name,
+             create_time = EXCLUDED.create_time`,
+          [t.id, newUserId, t.start_date, t.end_date, t.total_num || 0,
            t.status || 'completed', t.name || '', t.create_time]
         );
-        const newTaskId = insertResult.rows[0].id;
         if (t.id) {
-          taskIdMap.set(t.id, newTaskId);
+          taskIdMap.set(t.id, t.id); // id不变，映射为自身
         }
         cnt++;
       }
