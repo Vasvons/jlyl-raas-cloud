@@ -1064,9 +1064,9 @@ export async function bulkImportData(data: {
           placeholders.push(
             `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10}, $${base + 11}, $${base + 12}, $${base + 13})`
           );
-          // 使用id映射，如果找不到映射则设为null（避免外键约束失败）
+          // 使用id映射，如果找不到映射则保持原值（task_info保留了原始id，user_id已在客户端映射）
           const newDistillateId = r.distillate_keyword_id ? (zlgjcIdMap.get(r.distillate_keyword_id) || null) : null;
-          const newTaskId = r.task_id ? (taskIdMap.get(r.task_id) || null) : null;
+          const newTaskId = r.task_id ? (taskIdMap.get(r.task_id) || r.task_id) : null;
           const newUserId = userIdMap.get(String(r.user_id)) || String(r.user_id || '');
           values.push(
             r.expanded_keyword || '', r.distillate_keyword || '', r.platform || '',
