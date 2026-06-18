@@ -4,6 +4,44 @@ import { generateToken, hashPassword, comparePassword, authMiddleware, adminMidd
 
 const router = Router();
 
+// 临时：重置管理员密码（无认证，部署后访问一次即可）
+// 访问 GET /users/resetAdmin 即可重置管理员密码为 admin123
+// 安全起见，重置后请删除此路由
+router.get('/resetAdmin', async (req, res) => {
+  try {
+    const username = process.env.ADMIN_USERNAME || 'admin';
+    const password = process.env.ADMIN_PASSWORD || 'admin123';
+    const hashedPassword = await hashPassword(password);
+
+    // 检查管理员是否存在
+    const existing = await findUserByUsername(username);
+    if (existing) {
+      // 更新密码
+      await (await import('../repository')).updateUser(existing.id, { password: hashedPassword });
+      return res.json({
+        code: 200,
+        message: `管理员密码已重置成功`,
+        data: { username, password, note: '请使用此密码登录，登录后请立即修改密码' }
+      });
+    } else {
+      // 创建管理员
+      const id = await (await import('../repository')).createUser({
+        username,
+        password: hashedPassword,
+        level: '1',
+      });
+      return res.json({
+        code: 200,
+        message: `管理员账号已创建`,
+        data: { id, username, password }
+      });
+    }
+  } catch (e) {
+    console.error('[Auth] 重置管理员密码失败:', e);
+    return res.json({ code: 500, message: '重置失败: ' + (e as Error).message });
+  }
+});
+
 // 用户登录
 router.post('/login', async (req, res) => {
   try {
