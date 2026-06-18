@@ -610,13 +610,22 @@ export default function DashboardPage() {
   const [shareUrl, setShareUrl] = useState('');
   const [shareTokens, setShareTokens] = useState<Array<{ token: string; createTime: string; lastUseTime: string | null }>>([]);
 
+  // 响应式：检测移动端（UA + 视口宽度）
   useEffect(() => {
     const checkMobile = () => {
       const ua = navigator.userAgent || navigator.vendor || (window as unknown as { opera?: string }).opera || '';
-      setIsMobile(/android|iphone|ipad|ipod|mobile/i.test(ua.toLowerCase()));
+      const uaMobile = /android|iphone|ipad|ipod|mobile/i.test(ua.toLowerCase());
+      // 同时检查视口宽度：小于 768px 视为移动端（响应式设计）
+      const viewportMobile = window.innerWidth < 768;
+      setIsMobile(uaMobile || viewportMobile);
     };
     checkMobile();
+    // 监听视口变化（桌面端缩放窗口时实时响应）
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
+  useEffect(() => {
     const fetchUser = async () => {
       try {
         const res = await api.get('/users/getLoginUser');
