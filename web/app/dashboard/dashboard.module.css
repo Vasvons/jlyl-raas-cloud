@@ -971,19 +971,20 @@
   text-overflow: ellipsis;
 }
 
-/* ===== 移动端全局修正 - 卡片标题头与桌面端样式一致 ===== */
-/* 继承桌面端背景图、文字阴影等样式，按 34px 高度等比缩放桌面端比例 */
+/* ===== 移动端全局修正 - 卡片标题头与磨砂玻璃卡片 ===== */
+/* 标题头文字容器：无背景，文字透过透明 card head 显示在绕后横幅上 */
 .mobile .gCardHeader {
   width: auto;
   min-width: 120px;
   padding-left: 0;
   padding-right: 0;
-  font-size: 15px;
+  font-size: 14px;
   height: 34px;
   line-height: 34px;
   min-height: 34px;
-  top: -10px;
-  left: -1px;
+  position: absolute;
+  top: -8px;
+  left: -8px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -994,12 +995,12 @@
 }
 
 .mobile .gCardHeader .gIcon {
-  height: 15px;
-  width: 15px;
-  min-height: 15px;
-  min-width: 15px;
+  height: 14px;
+  width: 14px;
+  min-height: 14px;
+  min-width: 14px;
   margin-left: 15px;
-  margin-right: 8px;
+  margin-right: 7px;
   flex-shrink: 0;
 }
 
@@ -1008,45 +1009,58 @@
 .mobile .gCardHeader .prTitle,
 .mobile .gCardHeader .krTitle,
 .mobile .gCardHeader .srTitle {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* 各卡片标题头宽度按桌面端宽高比精确计算（桌面端 4.5vh 高度对应 34px） */
+/* 各卡片标题头文字容器宽度（与绕后横幅同宽） */
 .aiMobile.aiCardHeader {
-  width: 272px !important;
-  max-width: 272px;
+  width: 280px !important;
+  max-width: 280px;
 }
 
 .ksMobile.ksCardHeader {
-  width: 173px !important;
+  width: 145px !important;
 }
 
 .prMobile.prCardHeader {
-  width: 228px !important;
+  width: 200px !important;
 }
 
 .krMobile.krCardHeader {
-  width: 228px !important;
+  width: 200px !important;
 }
 
 .srMobile.srCardHeader {
-  width: 173px !important;
+  width: 145px !important;
 }
 
-/* 移动端卡片 head 高度与标题头高度一致，避免留白过多 */
+/* 移动端卡片改为磨砂玻璃，标题头横幅绕到卡片背后 */
+.mobile .gCard {
+  overflow: visible !important;
+  border-radius: 16px;
+  background: transparent !important;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: 0 4px 16px rgba(255, 100, 100, 0.06);
+}
+
 .mobile .gCard :global(.ant-card-head) {
-  min-height: 34px;
+  background: transparent;
+  border: none;
+  min-height: 28px;
+  padding: 0 16px;
 }
 
-/* 修复搜索排名卡片 head 宽度在移动端裁剪标题 */
-.srMobile :global(.ant-card-head) {
-  width: auto !important;
-  min-width: 173px;
+.mobile .gCard :global(.ant-card-body) {
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-radius: 0 0 16px 16px;
 }
+
 
 /* 移动端header用户名字体 */
 .mobile .header .headerName div {
@@ -1057,8 +1071,6 @@
 
 /* AI名片 */
 .aiMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(1).png") 100% 100%;
-  background-size: 100% 100%;
   height: auto;
   min-height: 118px;
 }
@@ -1075,8 +1087,6 @@
 
 /* 关键词数量 */
 .ksMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(2).png") 100% 100%;
-  background-size: 100% 100%;
   height: auto;
   min-height: 164px;
 }
@@ -1129,15 +1139,8 @@
 
 /* 各平台收录占比 */
 .prMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(3).png") 100% 100%;
-  background-size: 100% 100%;
   height: auto;
   min-height: 363px;
-}
-
-.prMobile .prCardHeader {
-  width: auto;
-  padding-right: 40px;
 }
 
 .prMobile :global(.ant-card-body) {
@@ -1188,16 +1191,9 @@
 
 /* 核心关键词排名 */
 .krMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(4).png") 100% 100%;
-  background-size: 100% 100%;
   height: auto;
   min-height: 400px;
   max-height: none;
-}
-
-.krMobile .krCardHeader {
-  width: auto;
-  padding-right: 40px;
 }
 
 .krMobile :global(.ant-card-body) {
@@ -1232,8 +1228,6 @@
 
 /* 搜索排名 */
 .srMobile {
-  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(5).png") 100% 100%;
-  background-size: 100% 100%;
   height: auto;
   min-height: 678px;
   max-height: none;
