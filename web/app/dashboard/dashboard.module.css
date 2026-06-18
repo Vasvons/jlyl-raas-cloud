@@ -971,27 +971,80 @@
   text-overflow: ellipsis;
 }
 
-/* ===== 移动端全局修正 ===== */
-/* 修正所有卡片标题在移动端的宽度和字体大小 */
+/* ===== 移动端全局修正 - 卡片标题头与桌面端样式一致 ===== */
+/* 继承桌面端背景图、文字阴影等样式，按 30px 高度等比缩放桌面端比例 */
 .mobile .gCardHeader {
-  width: auto !important;
-  min-width: 120px;
-  padding-right: 40px;
-  font-size: 14px;
+  width: auto;
+  min-width: 110px;
+  padding-left: 0;
+  padding-right: 0;
+  font-size: 13px;
   height: 30px;
   line-height: 30px;
   min-height: 30px;
   top: -8px;
+  left: -1px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 0;
+}
+
+.mobile .gCardHeader .gIcon {
+  height: 14px;
+  width: 14px;
+  min-height: 14px;
+  min-width: 14px;
+  margin-left: 13px;
+  margin-right: 7px;
+  flex-shrink: 0;
+}
+
+.mobile .gCardHeader .aiTitle,
+.mobile .gCardHeader .ksTitle,
+.mobile .gCardHeader .prTitle,
+.mobile .gCardHeader .krTitle,
+.mobile .gCardHeader .srTitle {
+  font-size: 13px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.mobile .gCardHeader .gIcon {
-  height: 16px;
-  width: 16px;
-  margin-left: 12px;
-  margin-right: 8px;
+/* 各卡片标题头宽度按桌面端宽高比精确计算（桌面端 4.5vh 高度对应 30px） */
+.aiMobile.aiCardHeader {
+  width: 240px !important;
+  max-width: 240px;
+}
+
+.ksMobile.ksCardHeader {
+  width: 154px !important;
+}
+
+.prMobile.prCardHeader {
+  width: 202px !important;
+}
+
+.krMobile.krCardHeader {
+  width: 202px !important;
+}
+
+.srMobile.srCardHeader {
+  width: 154px !important;
+}
+
+/* 移动端卡片 head 高度与标题头高度一致，避免留白过多 */
+.mobile .gCard :global(.ant-card-head) {
+  min-height: 30px;
+}
+
+/* 修复搜索排名卡片 head 宽度在移动端裁剪标题 */
+.srMobile :global(.ant-card-head) {
+  width: auto !important;
+  min-width: 154px;
 }
 
 /* 移动端header用户名字体 */
@@ -1007,17 +1060,6 @@
   background-size: 100% 100%;
   height: auto;
   min-height: 118px;
-}
-
-.aiMobile .aiCardHeader {
-  min-width: unset !important;
-  width: auto !important;
-  max-width: 260px;
-  padding-right: 40px;
-}
-
-.aiMobile .aiCardHeader .aiTitle {
-  font-size: 12px;
 }
 
 .aiMobile .aiBaseInfo {
@@ -1036,11 +1078,6 @@
   background-size: 100% 100%;
   height: auto;
   min-height: 164px;
-}
-
-.ksMobile .ksCardHeader {
-  width: auto;
-  padding-right: 40px;
 }
 
 .ksMobile :global(.ant-card-body) {
@@ -1199,11 +1236,6 @@
   height: auto;
   min-height: 678px;
   max-height: none;
-}
-
-.srMobile .srCardHeader {
-  width: auto;
-  padding-right: 40px;
 }
 
 .srMobile :global(.ant-card-body) {
