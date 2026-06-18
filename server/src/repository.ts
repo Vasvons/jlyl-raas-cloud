@@ -390,8 +390,14 @@ export async function setTaskWeights(taskId: number, weights: any[]): Promise<vo
 
 // ============ 数据生成 ============
 
-// 获取任务已生成数量
+// 获取任务已生成数量（优先从 task_progress 表读取，兼容旧数据）
 export async function getTaskGeneratedNum(taskId: number): Promise<number> {
+  // 先从 task_progress 表读取（这是任务的实际进度）
+  const progressResult = await query('SELECT generated_num FROM task_progress WHERE task_id = $1', [taskId]);
+  if (progressResult.rows.length > 0) {
+    return parseInt(progressResult.rows[0].generated_num) || 0;
+  }
+  // 如果 task_progress 没有记录，回退到统计 keyword_search_rank
   const result = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1', [taskId]);
   return parseInt(result.rows[0].count);
 }
