@@ -1,0 +1,46 @@
+name: Fix Nginx HTTPS Config
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fix-nginx:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Fix nginx HTTPS config via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            echo "===== 开始修复 nginx HTTPS 配置 ====="
+
+            # 1. 查看当前 nginx 配置文件列表
+            echo ">>> 当前 nginx 配置文件:"
+            ls -la /etc/nginx/conf.d/ 2>/dev/null || echo "  /etc/nginx/conf.d/ 不存在"
+            ls -la /etc/nginx/sites-enabled/ 2>/dev/null || echo "  /etc/nginx/sites-enabled/ 不存在"
+
+            # 2. 查找包含 report.jlyl.net.cn 的配置文件
+            echo ">>> 查找 report.jlyl.net.cn 相关配置:"
+            grep -rl "report.jlyl.net.cn" /etc/nginx/ 2>/dev/null || echo "  未找到"
+
+            # 3. 显示所有配置文件内容
+            echo ">>> 显示所有 nginx 配置:"
+            for f in /etc/nginx/conf.d/*.conf /etc/nginx/sites-enabled/*; do
+              if [ -f "$f" ]; then
+                echo "===== $f ====="
+                cat "$f"
+                echo ""
+              fi
+            done
+
+            # 4. 查找 SSL 证书
+            echo ">>> 查找 SSL 证书:"
+            find /etc/nginx/ssl/ /etc/letsencrypt/ /etc/ssl/ /root/ -name "*.pem" -o -name "*.crt" -o -name "*.key" 2>/dev/null | head -20 || echo "  未找到证书"
+
+            echo "===== 检查完成 ====="
