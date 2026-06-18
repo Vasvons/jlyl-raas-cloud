@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { findUserByUsername, findUserById, getAllUsers, getUsersByPage, createUser, updateUser, deleteUser, getUserLatestDataTime } from '../repository';
-import { generateToken, hashPassword, comparePassword, authMiddleware, adminMiddleware } from '../auth';
+import { generateToken, hashPassword, comparePassword, authMiddleware, adminMiddleware, verifyToken } from '../auth';
 
 const router = Router();
 
@@ -114,19 +114,37 @@ router.post('/login', async (req, res) => {
 });
 
 // 获取当前登录用户信息
+// 支持两种方式：
+// 1. 不带 userId：通过 token 获取当前登录用户
+// 2. 带 userId：获取指定用户信息（管理员切换查看）
 router.get('/getLoginUser', async (req, res) => {
   try {
     const userId = req.query.userId as string;
-    if (!userId) {
-      return res.json({ code: 400, message: '缺少userId' });
+    let targetUserId: number;
+
+    if (userId) {
+      // 指定了 userId，使用该值
+      targetUserId = parseInt(userId);
+    } else {
+      // 未指定 userId，通过 token 获取当前登录用户
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.json({ code: 401, message: '未登录' });
+      }
+      const token = authHeader.substring(7);
+      const decoded = verifyToken(token);
+      if (!decoded) {
+        return res.json({ code: 401, message: '登录已过期' });
+      }
+      targetUserId = decoded.id;
     }
 
-    const user = await findUserById(parseInt(userId));
+    const user = await findUserById(targetUserId);
     if (!user) {
       return res.json({ code: 404, message: '用户不存在' });
     }
 
-    const latestDataTime = await getUserLatestDataTime(userId);
+    const latestDataTime = await getUserLatestDataTime(String(targetUserId));
 
     res.json({
       code: 200,

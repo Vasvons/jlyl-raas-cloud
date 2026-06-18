@@ -1,0 +1,1007 @@
+/* ===== 通用卡片样式 (g_card) ===== */
+.gCard {
+  margin-bottom: 20px;
+  border-radius: 6px;
+  position: relative;
+  box-shadow: 0 0 12px rgba(0, 0, 0, .12);
+  background: url(https://static.7asi.com/assets/reportGeo/Rectangle_346241798.png) 100% 100%;
+  background-size: 100% 100%;
+}
+
+.gCard :global(.ant-card-head) {
+  border: none;
+  min-width: 0;
+  min-height: 4.5vh;
+}
+
+.gCardHeader {
+  border-bottom: none;
+  font-family: PingFang SC;
+  font-weight: 500;
+  font-size: 2vh;
+  color: #fff;
+  line-height: 38px;
+  text-shadow: 1px 5px 8px rgba(130, 0, 0, .94);
+  text-align: left;
+  font-style: normal;
+  text-transform: none;
+  margin-bottom: 2vh;
+  background-image: url(https://static.7asi.com/assets/reportGeo/Group_2037235410.png);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  position: absolute;
+  top: -1vh;
+  left: -1px;
+  width: 33vw;
+  height: 4.5vh;
+  line-height: 4.5vh;
+  display: flex;
+  align-items: center;
+}
+
+.gIcon {
+  height: 2vh;
+  width: 2vh;
+  margin-left: 2vh;
+  margin-right: 1vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gIcon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  vertical-align: top;
+}
+
+.gLoading {
+  position: absolute;
+  z-index: 999;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background-color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gLoading :global(.ant-spin-text) {
+  font-size: 28px;
+  width: 100%;
+  color: #333;
+  margin-top: 10px;
+}
+
+/* ===== AI名片 ===== */
+.aiWrapper {
+  height: 18vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.aiWrapper :global(.ant-card-body) {
+  flex: 1;
+  padding: 20px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.aiCardHeader {
+  min-width: 36vh;
+}
+
+.aiFIcon {
+  height: 6vh;
+  width: 6vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aiFIcon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  vertical-align: top;
+}
+
+.aiFTitle {
+  font-weight: 600;
+  font-size: 1vh;
+  color: #fff;
+  background: red;
+  box-shadow: inset 4px 4px 9px 0 hsla(0, 0%, 100%, .35), inset -5px -3px 6px 0 hsla(0, 0%, 100%, .31);
+  border-radius: 25px 25px 25px 25px;
+  line-height: 2vh;
+  margin: 4px 0 0;
+  width: 100%;
+  display: block;
+  font-family: PingFang SC;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+}
+
+.aiTitle {
+  font-family: PingFang SC;
+  color: #fff;
+  font-size: 2vh;
+  font-weight: 700;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+  margin-top: 5px;
+}
+
+.aiItemIcon {
+  height: 3.5vh;
+  width: 3.5vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.aiItemIcon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  vertical-align: top;
+}
+
+.aiItemTitle2 {
+  font-family: PingFang SC;
+  color: #161e54;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+  margin-top: 5px;
+}
+
+.aiItemContent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100px;
+  text-align: center;
+}
+
+.aiPc .aiBaseInfo {
+  width: 90%;
+  margin: auto;
+}
+
+.aiPc .aiBaseInfo .aiItemTitle2 {
+  font-family: PingFang SC;
+  color: #161e54;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+  margin-top: 5px;
+}
+
+.aiPc .aiBaseInfo .aiItemContent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100px;
+  text-align: center;
+}
+
+.aiPc .aiBaseInfo .aiItemIcon {
+  height: 3.5vh;
+  width: 3.5vh;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  margin: 0 auto 0.8vh auto;
+}
+
+.aiPc .aiBaseInfo .aiItemIcon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+.aiMobile {
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(1).png") 100% 100%;
+  background-size: 100% 100%;
+  height: auto;
+}
+
+.aiMobile .aiCardHeader {
+  min-width: 36vh;
+}
+
+.aiMobile .aiBaseInfo {
+  width: 100%;
+}
+
+.aiMobile :global(.ant-card-body) {
+  flex: 1;
+  padding: 10px;
+}
+
+.aiLeft {
+  display: flex;
+  justify-content: center;
+}
+
+.aiFWrapper {
+  width: 15vw;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.aiFWrapper .aiFIcon {
+  height: 15vw;
+}
+
+.aiRight {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.aiItem {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  gap: 8px;
+}
+
+.aiItem .aiItemIcon {
+  height: 5.5vw;
+  width: 5.5vw;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.aiItem .aiItemTitle {
+  font-size: 1.4vh;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+  font-family: PingFang SC;
+  color: #161e54;
+}
+
+/* ===== 各平台收录对比 ===== */
+.prWrapper {
+  height: 38vh;
+  display: flex;
+  flex-direction: column;
+  background: url(https://static.7asi.com/assets/reportGeo/Rectangle_346241799.png) 100% 100%;
+  background-size: 100% 100%;
+}
+
+.prWrapper :global(.ant-card-body) {
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.prCardHeader {
+  width: 17vw;
+}
+
+.prMobile {
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(3).png") 100% 100%;
+  background-size: 100% 100%;
+  min-height: 420px;
+}
+
+.prMobile .prCardHeader {
+  width: auto;
+  padding-right: 40px;
+}
+
+/* ===== 蒸馏关键词排名 ===== */
+.krWrapper {
+  height: 30vh;
+  display: flex;
+  flex-direction: column;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241799%20(3).png") 100% 100%;
+  background-size: 100% 100%;
+}
+
+.krWrapper :global(.ant-card-body) {
+  flex: 1;
+  padding: 10px 20px 20px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.krCardHeader {
+  width: 17vw;
+}
+
+.krContentWrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  height: 100%;
+  width: 100%;
+  overflow: scroll;
+}
+
+.krItem {
+  display: grid;
+  grid-template-columns: 160px 1fr 60px;
+  align-items: center;
+  gap: 12px;
+}
+
+.krItem div {
+  overflow: hidden;
+}
+
+.krName {
+  font-size: 14px;
+  color: #333;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.krCount {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #666;
+  font-size: 14px;
+}
+
+.krBarWrapper {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  background: rgba(255, 77, 79, 0.08);
+  border-radius: 7px;
+  height: 14px;
+  overflow: hidden;
+}
+
+.krBar {
+  height: 100%;
+  background: linear-gradient(90deg, #ff4d4f 0%, #ff7875 100%);
+  border-radius: 7px;
+  transition: width 0.3s ease;
+  min-width: 4px;
+}
+
+.krMobile {
+  height: auto;
+  max-height: 500px;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(4).png") 100% 100%;
+  background-size: 100% 100%;
+}
+
+.krMobile .krContentWrapper .krItem {
+  grid-template-columns: 60px 1fr 60px;
+}
+
+.krMobile .krCardHeader {
+  width: auto;
+  padding-right: 40px;
+}
+
+/* ===== 关键词数量 ===== */
+.ksWrapper {
+  height: 14vh;
+  display: flex;
+  flex-direction: column;
+  background: url(https://static.7asi.com/assets/reportGeo/Rectangle_346241797.png) 100% 100%;
+  background-size: 100% 100%;
+}
+
+.ksWrapper :global(.ant-card-body) {
+  flex: 1;
+  padding: 10px 20px;
+  overflow: hidden;
+  position: relative;
+}
+
+.ksCardHeader {
+  width: 13vw;
+}
+
+.ksPc .ksContentWrapper {
+  row-gap: 3%;
+}
+
+.ksItemWrapper {
+  display: flex;
+  flex-direction: row;
+  width: 12vw;
+  height: 100%;
+}
+
+.ksItemWrapper .ksContentWrapper2 .ksTitle2 {
+  font-family: PingFang SC;
+  font-weight: 500;
+  font-size: 1.5vh;
+  color: #161e54;
+  text-align: left;
+  font-style: normal;
+  text-transform: none;
+  margin-bottom: .5vh;
+}
+
+.ksItemWrapper .ksContentWrapper2 .ksCount {
+  font-family: DIN Alternate;
+  font-weight: 700;
+  font-size: 3vh;
+  color: #161e54;
+  text-align: left;
+  font-style: normal;
+  text-transform: none;
+  margin: 0;
+}
+
+.ksIcon {
+  margin-right: 1vh;
+  height: 4vh;
+  width: 4vh;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.ksIcon img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  vertical-align: middle;
+}
+
+.ksSplitLine {
+  width: 1px;
+  height: 3vh;
+  border: 1px solid #ffdbdf;
+  margin-left: 4vw;
+  margin-top: 2vh;
+}
+
+.ksMobile {
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241798%20(2).png") 100% 100%;
+  background-size: 100% 100%;
+  height: auto;
+}
+
+.ksMobile :global(.ant-card-body) {
+  flex: 1;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.ksMobile .ksCardHeader {
+  width: auto;
+  padding-right: 40px;
+}
+
+.ksItemsWrapper {
+  align-items: center;
+  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  padding: 0 20px 20px;
+}
+
+.ksMobile .ksItemWrapper {
+  width: 37vw;
+  display: flex;
+  align-items: center;
+  background: #fff6f6;
+  border-radius: 8px;
+  padding: 9px;
+}
+
+/* ===== 搜索排名 ===== */
+.srWrapper {
+  height: 74vh;
+  display: flex;
+  flex-direction: column;
+  background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241799%20(1).png") 100% 100%;
+  background-size: 100% 100%;
+}
+
+.srWrapper :global(.ant-card-head) {
+  background-color: transparent;
+  width: 13vw;
+}
+
+.srWrapper :global(.ant-card-body) {
+  flex: 1;
+  padding: 0 20px 20px;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.srCardHeader {
+  width: 13vw;
+}
+
+.srMobile {
+  height: auto;
+  max-height: 800px;
+}
+
+.srBtnsWrapper {
+  text-align: right;
+}
+
+.srBtns {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.srBtnWrapper {
+  background: #fdecec;
+  border-radius: 8px;
+  padding: 4px;
+  display: flex;
+  width: fit-content;
+}
+
+.srBtn {
+  background-color: transparent;
+  box-shadow: none;
+  border-color: transparent;
+  font-weight: 700;
+  border-radius: 8px;
+  width: 5vw;
+  height: 3vh;
+  font-size: 1vh;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.srBtn:hover {
+  color: #333;
+}
+
+.srBtnWrapper :global(.ant-radio-button-wrapper-checked) {
+  background: #ff5a5a !important;
+  color: #fff !important;
+}
+
+.srBtnWrapper :global(.ant-radio-button-wrapper-checked::before) {
+  background-color: transparent !important;
+}
+
+.srTabsWrapper {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  column-gap: 1.2vw;
+}
+
+.srTabs {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  column-gap: 3px;
+}
+
+.srTab {
+  background-color: transparent;
+  background: #fff4f3;
+  text-align: center;
+  padding: 0 1vh;
+  font-size: 1.5vh;
+  cursor: pointer;
+  color: #485050;
+  border-radius: 131px 131px 131px 131px;
+  font-weight: 700;
+  height: 3vh;
+  line-height: 3vh;
+}
+
+.srChecked {
+  color: #fff;
+  background: #ff5151;
+}
+
+.srPlatformItem {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.srSelectWrapper {
+  width: 120px;
+}
+
+.srList {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.srTableWrapper {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+.srTable {
+  min-width: 300px;
+}
+
+.srTable :global(.ant-table) {
+  background-color: transparent !important;
+  border-collapse: separate;
+  border-spacing: 0 10px;
+}
+
+.srTable :global(th) {
+  text-align: center;
+}
+
+.srTable :global(.ant-table-row) {
+  background-color: hsla(0, 0%, 100%, .7);
+  box-shadow: 0 0 0 1px #f5f5f5;
+  border-radius: 8px;
+}
+
+.srTable :global(.ant-table-row td) {
+  border-bottom: 4px solid transparent;
+}
+
+.srTable :global(table) {
+  border-collapse: separate;
+  border-spacing: 0 10px;
+}
+
+.srPageWrapper {
+  text-align: center;
+}
+
+.srDetailLink {
+  color: #1677ff;
+}
+
+/* 移动端搜索排名卡片式布局 */
+.srTableWrapperMobile {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+.srMobileItem {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  background-color: #fff;
+  border-radius: 6px;
+  padding: 8px 16px;
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.12);
+}
+
+.srMobileContentItem {
+  display: flex;
+  flex-direction: row;
+  gap: 3px;
+}
+
+.srMobileTitle {
+  text-align: right;
+  width: 100px;
+  color: rgba(0, 0, 0, 0.45);
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.srMobileContent {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  color: rgba(0, 0, 0, 0.88);
+  font-size: 13px;
+}
+
+.srMobileContent a {
+  color: #1677ff;
+}
+
+/* 移动端搜索排名按钮和标签适配 */
+.srMobile .srBtns {
+  justify-content: stretch;
+}
+
+.srMobile .srBtnWrapper {
+  width: 100%;
+}
+
+.srMobile .srBtn {
+  width: 33%;
+}
+
+.srMobile .srTabsWrapper {
+  display: block;
+}
+
+.srMobile .srTabs {
+  overflow-x: auto;
+  margin-bottom: 8px;
+}
+
+.srMobile .srTab {
+  min-width: 80px;
+  white-space: nowrap;
+}
+
+.srMobile .srSelectWrapper {
+  width: 100%;
+  text-align: right;
+  margin-top: 8px;
+}
+
+/* ===== 主布局 ===== */
+.wrapper {
+  padding: 0 3vw;
+  height: 100vh;
+  background-image: url("https://static.7asi.com/assets/reportGeo/毛玻璃背景 12.28 (1).png");
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  background-position: 50%;
+  display: flex;
+  gap: 2vh;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* 移动端wrapper允许内容滚动 */
+.mobile.wrapper,
+.wrapper.mobile {
+  height: auto;
+  min-height: 100vh;
+  overflow-y: visible;
+}
+
+.pc .header {
+  width: 100%;
+  height: 5vh;
+  background-image: url(https://static.7asi.com/assets/reportGeo/Group_20372357411.png);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.pc .header .headerContent {
+  width: 80%;
+}
+
+.pc .header .headerContent :global(.ant-col) {
+  width: 100%;
+  text-align: center;
+  color: #fff;
+}
+
+.pc .header .headerName {
+  font-family: PingFang SC;
+  font-weight: 600;
+  font-size: 2.5vh;
+  color: #fff;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+  margin: 0 auto;
+}
+
+/* 用户切换区域 - PC端绝对定位到右上角，紧凑显示 */
+.userSwitchWrapper {
+  position: absolute;
+  top: 0.5vh;
+  right: 1vw;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  z-index: 100;
+  background: rgba(255, 255, 255, 0.25);
+  padding: 2px 8px;
+  border-radius: 12px;
+  backdrop-filter: blur(4px);
+}
+
+.userSwitchLabel {
+  color: #fff;
+  font-size: 1.2vh;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+.userSwitchWrapper :global(.ant-select) {
+  min-width: 100px;
+}
+
+.userSwitchWrapper :global(.ant-select .ant-select-selector) {
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 4px;
+  min-height: 24px !important;
+  height: 24px !important;
+}
+
+.userSwitchWrapper :global(.ant-select-selection-item) {
+  line-height: 22px !important;
+  font-size: 12px;
+}
+
+.userSwitchWrapper :global(.ant-select-arrow) {
+  font-size: 10px;
+}
+
+/* 退出登录按钮 */
+.logoutWrapper {
+  position: absolute;
+  top: 0.5vh;
+  left: 1vw;
+  z-index: 100;
+}
+
+.logoutWrapper :global(.ant-btn) {
+  background: rgba(255, 255, 255, 0.25);
+  border: none;
+  color: #fff;
+  border-radius: 12px;
+  backdrop-filter: blur(4px);
+  font-size: 12px;
+  height: 24px;
+  padding: 0 12px;
+}
+
+.logoutWrapper :global(.ant-btn:hover) {
+  background: rgba(255, 255, 255, 0.4);
+  color: #fff;
+}
+
+/* 移动端用户切换 - 相对定位，不遮挡内容 */
+.mobile .userSwitchWrapper {
+  position: relative;
+  top: auto;
+  right: auto;
+  justify-content: flex-end;
+  padding: 0.5vh 3vw;
+  background: transparent;
+  backdrop-filter: none;
+  border-radius: 0;
+}
+
+.mobile .userSwitchWrapper :global(.ant-select) {
+  min-width: 140px;
+}
+
+.mobile .userSwitchWrapper :global(.ant-select .ant-select-selector) {
+  min-height: 28px !important;
+  height: 28px !important;
+}
+
+.mobile .userSwitchWrapper :global(.ant-select-selection-item) {
+  line-height: 26px !important;
+  font-size: 13px;
+}
+
+.mobile .logoutWrapper {
+  position: relative;
+  top: auto;
+  left: auto;
+  padding: 0.5vh 3vw;
+}
+
+.pc .lastTime {
+  font-family: PingFang SC;
+  font-weight: 500;
+  font-size: 1.5vh;
+  color: #ff5151;
+  text-align: center;
+}
+
+.pc .currentTime {
+  font-family: PingFang SC;
+  font-weight: 500;
+  font-size: 1.5vh;
+  color: #fff;
+  text-align: center;
+}
+
+.contentWrapper {
+  flex: 1;
+}
+
+.leftWrapper {
+  height: 100%;
+}
+
+/* Col内部div自然堆叠，依靠g_card的margin-bottom: 20px */
+.rightCol {
+}
+
+.footerWrapper {
+  height: 0;
+}
+
+/* Mobile header */
+.mobile .header .headerName {
+  width: 100%;
+  height: 5vh;
+  background-image: url(https://static.7asi.com/assets/reportGeo/Group_20372357421.png);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+}
+
+.mobile .header .headerName div {
+  font-family: PingFang SC;
+  font-weight: 600;
+  font-size: 2.5vh;
+  color: #fff;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+  margin: 0 auto;
+}
+
+.mobile .lastTime {
+  font-family: PingFang SC;
+  font-weight: 500;
+  font-size: 1.5vh;
+  color: #ff5151;
+  text-align: center;
+  font-style: normal;
+  text-transform: none;
+  width: 80%;
+  background: hsla(0, 0%, 100%, .4);
+  box-shadow: 0 4px 16px 0 rgba(255, 81, 81, .06);
+  border-radius: 41px 41px 41px 41px;
+  height: 3vh;
+  line-height: 3vh;
+  margin: 1vh auto 0;
+}

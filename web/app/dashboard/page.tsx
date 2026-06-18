@@ -1,24 +1,28 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, message, Button, Input } from 'antd';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, Flex, Button } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import api from '@/lib/api';
 import { useRouter } from 'next/navigation';
+import styles from './dashboard.module.css';
 
 const IMG = 'https://static.7asi.com/assets/reportGeo';
 
-interface LoginUser {
-  id: string;
-  username: string;
-  phone: string;
-  email: string;
-  url: string;
-  dateTime: string;
+interface StatsData {
+  total: number;
+  count: number;
+  zlgjc: number;
+  ppgjc: number;
 }
 
 interface PlatformRatioItem {
-  pt: string;
+  platform: string;
+  count: number;
+}
+
+interface KeywordCountItem {
+  distillateKeyword: string;
   count: number;
 }
 
@@ -32,100 +36,649 @@ interface SearchRankItem {
   zlgjcUrl?: string;
 }
 
-export default function DashboardPage() {
-  const router = useRouter();
-  const [user, setUser] = useState<LoginUser | null>(null);
-  const [loading, setLoading] = useState(true);
+interface LoginUser {
+  id: string;
+  username: string;
+  phone: string;
+  email: string;
+  url: string;
+  dateTime: string;
+  password?: string;
+  address?: string;
+  level?: string;
+  cid?: string;
+}
 
-  // 统计数据
-  const [keywordCount, setKeywordCount] = useState({ coreCount: 0, distillateCount: 0, totalCount: 0 });
-  const [platformRatio, setPlatformRatio] = useState<PlatformRatioItem[]>([]);
+interface UserOption {
+  id: string;
+  username: string;
+  level: string;
+}
 
-  // 搜索排名
-  const [searchType, setSearchType] = useState<string>('keywords');
-  const [platform, setPlatform] = useState<string>('全部');
-  const [platforms, setPlatforms] = useState<any[]>([]);
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [rankList, setRankList] = useState<SearchRankItem[]>([]);
-  const [rankTotal, setRankTotal] = useState(0);
-  const [rankPage, setRankPage] = useState(1);
-  const [rankLoading, setRankLoading] = useState(false);
+// AI名片组件
+function AICard({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+  const [user, setUser] = useState<LoginUser>({ id: '-1', username: '', phone: '-', url: '', email: '-', password: '', address: '', level: '', cid: '', dateTime: '' });
 
-  // 初始化：检查登录
   useEffect(() => {
-    const userInfo = localStorage.getItem('userInfo');
-    const token = localStorage.getItem('token');
-    if (!token || !userInfo) {
-      router.push('/login');
+    if (!userId) {
+      setUser({ id: '-1', username: '', phone: '-', url: '', email: '-', password: '', address: '', level: '', cid: '', dateTime: '' });
       return;
     }
-    setUser(JSON.parse(userInfo));
-  }, [router]);
-
-  // 加载平台列表
-  useEffect(() => {
-    if (!user) return;
     (async () => {
-      try {
-        const res = await api.get('/dashboard/platforms');
-        if (res.data?.code === 200) {
-          setPlatforms([{ id: 0, pt: '全部' }, ...res.data.data]);
+      const res = await api.get('/users/getLoginUser', { params: { userId } });
+      if (res.data?.code === 200) {
+        const d = res.data.data;
+        let phone = d.phone ? String(d.phone) : '-';
+        if (Number(phone) === Number(d.phone)) {
+          phone = phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2');
         }
-      } catch {}
-    })();
-  }, [user]);
-
-  // 加载统计数据
-  useEffect(() => {
-    if (!user) return;
-    (async () => {
-      setLoading(true);
-      try {
-        const [countRes, ratioRes] = await Promise.all([
-          api.get('/dashboard/keywordCount', { params: { userId: user.id } }),
-          api.get('/dashboard/platformRatio', { params: { userId: user.id } }),
-        ]);
-        if (countRes.data?.code === 200) setKeywordCount(countRes.data.data);
-        if (ratioRes.data?.code === 200) setPlatformRatio(ratioRes.data.data);
-      } finally {
-        setLoading(false);
+        setUser({ ...d, phone: d.phone ? phone : '-', email: d.email ? d.email : '-' });
       }
     })();
-  }, [user]);
+  }, [userId]);
 
-  // 加载搜索排名
+  return (
+    <Card
+      title={
+        <div className={`${styles.gCardHeader} ${styles.aiCardHeader} ${isMobile ? styles.aiMobile : styles.aiPc}`}>
+          <div className={styles.gIcon}>
+            <img src={`${IMG}/Iconly_Glass_Profile.png`} alt="" />
+          </div>
+          <div className={styles.aiTitle}>{user.username}</div>
+        </div>
+      }
+      className={`${styles.gCard} ${styles.aiWrapper} ${isMobile ? styles.aiMobile : styles.aiPc}`}
+    >
+      {isMobile ? (
+        <Row className={styles.aiBaseInfo}>
+          <Col className={styles.aiLeft} span={8}>
+            <div className={styles.aiFWrapper}>
+              <div className={styles.aiFIcon}>
+                <img src={`${IMG}/256x256.png`} alt="" />
+              </div>
+              <div className={styles.aiFTitle}>AI名片</div>
+            </div>
+          </Col>
+          <Col className={styles.aiRight} span={16}>
+            <div className={styles.aiItem}>
+              <div className={styles.aiItemIcon}>
+                <img src={`${IMG}/Frame_2037235607.png`} alt="" />
+              </div>
+              <div className={styles.aiItemTitle}>电话{user.phone}</div>
+            </div>
+            <div className={styles.aiItem}>
+              <div className={styles.aiItemIcon}>
+                <img src={`${IMG}/Frame_2037235605.png`} alt="" />
+              </div>
+              <div className={styles.aiItemTitle}>邮箱:{user.email}</div>
+            </div>
+            <div className={styles.aiItem}>
+              <div className={styles.aiItemIcon}>
+                <img src={`${IMG}/Frame_2037235606.png`} alt="" />
+              </div>
+              <div className={styles.aiItemTitle}>网址:{user.url ? <a href={user.url} target="_blank">{user.url}</a> : '-'}</div>
+            </div>
+          </Col>
+        </Row>
+      ) : (
+        <Row className={styles.aiBaseInfo}>
+          <Col className={styles.aiCol} span={6}>
+            <Flex align="center" justify="center" vertical>
+              <div>
+                <div className={styles.aiFIcon}>
+                  <img src={`${IMG}/256x256.png`} alt="" />
+                </div>
+                <div className={styles.aiFTitle}>AI名片</div>
+              </div>
+            </Flex>
+          </Col>
+          <Col className={styles.aiCol} span={6}>
+            <Flex align="center" justify="center" vertical>
+              <div>
+                <div className={styles.aiItemIcon}>
+                  <img src={`${IMG}/Frame_2037235607.png`} alt="" />
+                </div>
+                <div className={styles.aiItemTitle2}>电话</div>
+                <div className={styles.aiItemContent}>{user.phone}</div>
+              </div>
+            </Flex>
+          </Col>
+          <Col className={styles.aiCol} span={6}>
+            <Flex align="center" justify="center" vertical>
+              <div>
+                <div className={styles.aiItemIcon}>
+                  <img src={`${IMG}/Frame_2037235605.png`} alt="" />
+                </div>
+                <div className={styles.aiItemTitle2}>邮箱</div>
+                <div className={styles.aiItemContent}>{user.email}</div>
+              </div>
+            </Flex>
+          </Col>
+          <Col className={styles.aiCol} span={6}>
+            <Flex align="center" justify="center" vertical>
+              <div>
+                <div className={styles.aiItemIcon}>
+                  <img src={`${IMG}/Frame_2037235606.png`} alt="" />
+                </div>
+                <div className={styles.aiItemTitle2}>网址</div>
+                <div className={styles.aiItemContent}>{user.url ? <a href={user.url} target="_blank">{user.url}</a> : '-'}</div>
+              </div>
+            </Flex>
+          </Col>
+        </Row>
+      )}
+    </Card>
+  );
+}
+
+// 各平台收录对比组件
+function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+  const [option, setOption] = useState({});
+
   useEffect(() => {
-    if (!user) return;
-    fetchRankList();
-  }, [user, searchType, platform, rankPage]);
-
-  const fetchRankList = async () => {
-    if (!user) return;
-    setRankLoading(true);
-    try {
-      const res = await api.get('/dashboard/keypage', {
-        params: {
-          userId: user.id,
-          platform: platform === '全部' ? undefined : platform,
-          keyword: searchKeyword || undefined,
-          type: searchType,
-          page: rankPage,
-          pageSize: 20,
-        },
-      });
+    if (!userId) {
+      setOption({});
+      return;
+    }
+    (async () => {
+      const res = await api.get('/keywordsearchrank/platformRatio', { params: { userId } });
       if (res.data?.code === 200) {
-        setRankList(res.data.data.list);
-        setRankTotal(res.data.data.total);
+        const data = res.data.data;
+        if (!data || data.length === 0) {
+          setOption({});
+          return;
+        }
+        const colors = ['#ffb3a7', '#ff9f91', '#ff8a7a', '#ff7563', '#ff6150', '#ff4c3c', '#ff3727', '#ff4c3c', '#ff7563'];
+        const chartData = data.map((e: PlatformRatioItem, i: number) => ({
+          id: i + 1,
+          name: e.platform,
+          count: e.count,
+          color: colors[i % colors.length],
+        }));
+        setOption({
+          tooltip: { trigger: 'item' },
+          legend: {
+            formatter: (name: string) => {
+              const item = chartData.find((s: { name: string }) => s.name === name);
+              return `${name}: ${item?.count}`;
+            },
+            ...(isMobile ? { top: 'bottom' } : { orient: 'vertical', left: '50%', itemGap: 30, top: 'center' }),
+          },
+          series: [
+            {
+              name: '占比',
+              type: 'pie',
+              radius: ['45%', '70%'],
+              label: { show: false },
+              data: chartData.map((e: { count: number; name: string; color: string }) => ({
+                value: e.count,
+                name: e.name,
+                itemStyle: { color: e.color },
+              })),
+              ...(isMobile ? { center: ['50%', '40%'] } : { center: ['25%', '50%'] }),
+            },
+            {
+              type: 'pie',
+              radius: ['0%', '35%'],
+              silent: true,
+              label: { show: false },
+              itemStyle: { color: 'transparent' },
+              data: [{ value: 1 }],
+              ...(isMobile ? { center: ['50%', '40%'] } : { center: ['25%', '50%'] }),
+            },
+          ],
+        });
+      }
+    })();
+  }, [isMobile, userId]);
+
+  return (
+    <Card
+      title={
+        <div className={`${styles.gCardHeader} ${styles.prCardHeader} ${isMobile ? styles.prMobile : styles.prPc}`}>
+          <div className={styles.gIcon}>
+            <img src={`${IMG}/Iconly_Glass_Graph.png`} alt="" />
+          </div>
+          <div className={styles.prTitle}>各平台收录对比</div>
+        </div>
+      }
+      className={`${styles.gCard} ${styles.prWrapper} ${isMobile ? styles.prMobile : styles.prPc}`}
+    >
+      <ReactECharts option={option} style={{ height: isMobile ? 320 : 400, width: '100%' }} opts={{ renderer: 'canvas' }} />
+    </Card>
+  );
+}
+
+// 蒸馏关键词排名组件
+function KeywordRankChart({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+  const [list, setList] = useState<KeywordCountItem[]>([]);
+
+  useEffect(() => {
+    if (!userId) {
+      setList([]);
+      return;
+    }
+    (async () => {
+      const res = await api.get('/keywordsearchrank/keywordcound', { params: { userId } });
+      if (res.data?.code === 200) {
+        setList(res.data.data || []);
+      }
+    })();
+  }, [userId]);
+
+  const maxCount = Math.max(...list.map((e) => e.count), 1);
+
+  return (
+    <Card
+      title={
+        <div className={`${styles.gCardHeader} ${styles.krCardHeader} ${isMobile ? styles.krMobile : styles.krPc}`}>
+          <div className={styles.gIcon}>
+            <img src={`${IMG}/Iconly_Glass_Activity.png`} alt="" />
+          </div>
+          <div className={styles.krTitle}>核心关键词排名</div>
+        </div>
+      }
+      className={`${styles.gCard} ${styles.krWrapper} ${isMobile ? styles.krMobile : styles.krPc}`}
+    >
+      <div className={styles.krContentWrapper}>
+        {list.map((e) => (
+          <div key={e.distillateKeyword} className={styles.krItem}>
+            <div className={styles.krName}>{e.distillateKeyword}</div>
+            <div className={styles.krBarWrapper}>
+              <div
+                className={styles.krBar}
+                style={{ width: `${Math.max((e.count / maxCount) * 100, 2)}%` }}
+              />
+            </div>
+            <div className={styles.krCount}>{e.count}</div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// 关键词数量组件
+function KeywordStats({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+  const [stats, setStats] = useState<StatsData>({ count: 0, zlgjc: 0, ppgjc: 0, total: 0 });
+
+  useEffect(() => {
+    if (!userId) {
+      setStats({ count: 0, zlgjc: 0, ppgjc: 0, total: 0 });
+      return;
+    }
+    (async () => {
+      const res = await api.get('/dstillateKeyword/countDstillateKeyword', { params: { userId } });
+      if (res.data?.code === 200) {
+        setStats(res.data.data);
+      }
+    })();
+  }, [userId]);
+
+  const items = [
+    { icon: 'Iconly_Glass_Clock.png', title: '核心关键词', count: stats.count },
+    { icon: 'Gallery.png', title: '蒸馏关键词', count: stats.zlgjc },
+    { icon: 'Gallery (1).png', title: '品牌关键词', count: stats.ppgjc },
+    { icon: 'Iconly_Glass_Document.png', title: '总收录条数', count: stats.total },
+  ];
+
+  return (
+    <Card
+      title={
+        <div className={`${styles.gCardHeader} ${styles.ksCardHeader} ${isMobile ? styles.ksMobile : styles.ksPc}`}>
+          <div className={styles.gIcon}>
+            <img src={`${IMG}/Iconly_Glass_Discovery.png`} alt="" />
+          </div>
+          <div className={styles.ksTitle}>关键词数量</div>
+        </div>
+      }
+      className={`${styles.gCard} ${styles.ksWrapper} ${isMobile ? styles.ksMobile : styles.ksPc}`}
+    >
+      {isMobile ? (
+        <div className={styles.ksItemsWrapper}>
+          {items.map((item) => (
+            <div key={item.title} className={styles.ksItemWrapper}>
+              <div className={styles.ksIcon}>
+                <img src={`${IMG}/${encodeURIComponent(item.icon)}`} alt="" />
+              </div>
+              <div className={styles.ksContentWrapper}>
+                <div className={styles.ksTitle2}>{item.title}</div>
+                <div className={styles.ksCount}>{item.count}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <Row className={styles.ksContentWrapper}>
+          {items.map((item, idx) => (
+            <Col key={item.title} span={6}>
+              <div className={styles.ksItemWrapper}>
+                <div className={styles.ksIcon}>
+                  <img src={`${IMG}/${encodeURIComponent(item.icon)}`} alt="" />
+                </div>
+                <div className={styles.ksContentWrapper2}>
+                  <div className={styles.ksTitle2}>{item.title}</div>
+                  <div className={styles.ksCount}>{item.count}</div>
+                </div>
+                {idx < items.length - 1 && <div className={styles.ksSplitLine} />}
+              </div>
+            </Col>
+          ))}
+        </Row>
+      )}
+    </Card>
+  );
+}
+
+// 搜索排名组件
+function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+  const [searchType, setSearchType] = useState('keywords');
+  const [platforms, setPlatforms] = useState<PlatformRatioItem[]>([]);
+  const [activePlatform, setActivePlatform] = useState<PlatformRatioItem | undefined>(undefined);
+  const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState({ current: 1, pageSize: 10 });
+  const [total, setTotal] = useState(0);
+  const [keywordOptions, setKeywordOptions] = useState<KeywordCountItem[]>([]);
+  const [list, setList] = useState<SearchRankItem[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchData = useCallback(async (type: string, pt?: string, kw?: string, pageNum = 1, pageSize = 10) => {
+    if (!userId) {
+      setList([]);
+      setTotal(0);
+      return;
+    }
+    setLoading(true);
+    try {
+      const params: Record<string, string> = { type, pageNum: String(pageNum), pageSize: String(pageSize), userId };
+      if (pt) params.pt = pt;
+      if (kw) params.keyword = kw;
+      const res = await api.get('/keywordsearchrank/keypage', { params });
+      if (res.data?.code === 200) {
+        setList(res.data.data?.list || []);
+        setTotal(res.data.data?.total || 0);
       }
     } finally {
-      setRankLoading(false);
+      setLoading(false);
     }
+  }, [userId]);
+
+  const init = useCallback(async () => {
+    if (!userId) {
+      setPlatforms([]);
+      setActivePlatform(undefined);
+      setKeywordOptions([]);
+      setList([]);
+      setTotal(0);
+      return;
+    }
+    const params: Record<string, string> = { userId };
+    const res = await api.get('/keywordsearchrank/platformRatio', { params });
+    if (res.data?.code === 200) {
+      setPlatforms(res.data.data || []);
+      setActivePlatform(res.data.data?.[0]);
+      fetchData(searchType, res.data.data?.[0]?.platform, keyword, 1, page.pageSize);
+    }
+    const res2 = await api.get('/keywordsearchrank/keywordcound', { params });
+    if (res2.data?.code === 200) {
+      setKeywordOptions([{ distillateKeyword: '', count: 0 }, ...(res2.data.data || [])]);
+    }
+  }, [userId, fetchData, searchType, keyword, page.pageSize]);
+
+  useEffect(() => {
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  const handleSearchTypeChange = (v: string) => {
+    setSearchType(v);
+    setPage({ current: 1, pageSize: page.pageSize });
+    fetchData(v, activePlatform?.platform, keyword, 1, page.pageSize);
   };
 
-  const onSearch = () => {
-    setRankPage(1);
-    fetchRankList();
+  const handlePlatformChange = (p: PlatformRatioItem) => {
+    setActivePlatform(p);
+    setPage({ current: 1, pageSize: page.pageSize });
+    fetchData(searchType, p.platform, keyword, 1, page.pageSize);
   };
+
+  const handleKeywordChange = (k: string) => {
+    setKeyword(k);
+    setPage({ current: 1, pageSize: page.pageSize });
+    fetchData(searchType, activePlatform?.platform, k, 1, page.pageSize);
+  };
+
+  const handlePageChange = (current: number, pageSize: number) => {
+    setPage({ current, pageSize });
+    fetchData(searchType, activePlatform?.platform, keyword, current, pageSize);
+  };
+
+  const columns = [
+    { title: '蒸馏关键词', dataIndex: 'distillateKeyword', key: 'distillateKeyword' },
+    { title: '核心关键词', dataIndex: 'expandedKeyword', key: 'expandedKeyword' },
+    { title: '平台', align: 'center' as const, dataIndex: 'platform', key: 'platform' },
+    {
+      title: '查询时间',
+      align: 'center' as const,
+      dataIndex: 'queryTime',
+      key: 'queryTime',
+      render: (e: string) => (e ? e.split(' ')[0] : e),
+    },
+    {
+      title: '查看详情',
+      align: 'center' as const,
+      key: 'zlgjcUrl',
+      dataIndex: 'zlgjcUrl',
+      render: (e: string) =>
+        e ? (
+          <a href={e} target="_blank" rel="noopener noreferrer" className={styles.srDetailLink}>
+            跳 转
+          </a>
+        ) : null,
+    },
+  ];
+
+  return (
+    <Card
+      title={
+        <div className={`${styles.gCardHeader} ${styles.srCardHeader} ${isMobile ? styles.srMobile : styles.srPc}`}>
+          <div className={styles.gIcon}>
+            <img src={`${IMG}/Iconly_Glass_Chart.png`} alt="" />
+          </div>
+          <div className={styles.srTitle}>搜索排名</div>
+        </div>
+      }
+      className={`${styles.gCard} ${styles.srWrapper} ${isMobile ? styles.srMobile : styles.srPc}`}
+    >
+      <div className={styles.srBtnsWrapper}>
+        <div className={styles.srBtns}>
+          <Radio.Group
+            value={searchType}
+            onChange={(e) => handleSearchTypeChange(e.target.value)}
+            buttonStyle="solid"
+            className={styles.srBtnWrapper}
+          >
+            <Radio.Button value="keywords" className={styles.srBtn}>关键词搜索</Radio.Button>
+            <Radio.Button value="brand" className={styles.srBtn}>品牌搜索</Radio.Button>
+            <Radio.Button value="scene" className={styles.srBtn}>联系方式</Radio.Button>
+          </Radio.Group>
+        </div>
+      </div>
+      <div className={styles.srTabsWrapper}>
+        <div className={styles.srTabs}>
+          {platforms.map((e) => (
+            <Tag.CheckableTag
+              key={e.platform}
+              checked={activePlatform?.platform === e.platform}
+              className={`${styles.srTab} ${activePlatform?.platform === e.platform ? styles.srChecked : ''}`}
+              onClick={() => handlePlatformChange(e)}
+            >
+              <div className={styles.srPlatformItem}>
+                <span>{e.platform}</span>
+                <span>({e.count})</span>
+              </div>
+            </Tag.CheckableTag>
+          ))}
+        </div>
+        <div className={styles.srSelectWrapper}>
+          <Select
+            value={keyword}
+            style={{ width: 120 }}
+            popupMatchSelectWidth={false}
+            onChange={handleKeywordChange}
+            options={keywordOptions.map((e) => ({
+              value: e.distillateKeyword,
+              label: e.distillateKeyword === '' ? '全部' : `${e.distillateKeyword}(${e.count})`,
+            }))}
+          />
+        </div>
+      </div>
+      <div className={styles.srList}>
+        {isMobile ? (
+          <div className={styles.srTableWrapperMobile}>
+            {list.map((item) => (
+              <div key={item.id} className={styles.srMobileItem}>
+                <div className={styles.srMobileContentItem}>
+                  <div className={styles.srMobileTitle}>蒸馏关键词：</div>
+                  <div className={styles.srMobileContent}>{item.distillateKeyword || '-'}</div>
+                </div>
+                <div className={styles.srMobileContentItem}>
+                  <div className={styles.srMobileTitle}>核心关键词：</div>
+                  <div className={styles.srMobileContent}>{item.expandedKeyword || '-'}</div>
+                </div>
+                <div className={styles.srMobileContentItem}>
+                  <div className={styles.srMobileTitle}>平台：</div>
+                  <div className={styles.srMobileContent}>{item.platform || '-'}</div>
+                </div>
+                <div className={styles.srMobileContentItem}>
+                  <div className={styles.srMobileTitle}>查询时间：</div>
+                  <div className={styles.srMobileContent}>{item.queryTime ? item.queryTime.split(' ')[0] : '-'}</div>
+                </div>
+                <div className={styles.srMobileContentItem}>
+                  <div className={styles.srMobileTitle}>详情：</div>
+                  <div className={styles.srMobileContent}>
+                    {item.zlgjcUrl ? <a href={item.zlgjcUrl} target="_blank" rel="noopener noreferrer">跳转</a> : '-'}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className={styles.srTableWrapper}>
+            <Table
+              columns={columns}
+              className={styles.srTable}
+              dataSource={list}
+              pagination={false}
+              loading={loading}
+              rowKey="id"
+              size="small"
+            />
+          </div>
+        )}
+        <div className={styles.srPageWrapper}>
+          <Pagination
+            current={page.current}
+            pageSize={page.pageSize}
+            total={total}
+            align="center"
+            showSizeChanger={false}
+            size={isMobile ? 'small' : undefined}
+            onChange={handlePageChange}
+          />
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// 主页面
+export default function DashboardPage() {
+  const router = useRouter();
+  const [isMobile, setIsMobile] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState<LoginUser>({ id: '-1', username: '', phone: '', url: '', email: '', password: '', address: '', level: '', cid: '', dateTime: '' });
+  const [lastUpdate, setLastUpdate] = useState('');
+  const [currentTime, setCurrentTime] = useState('');
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string>('');
+  // 是否为管理员（只有管理员才能切换用户）
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      const ua = navigator.userAgent || navigator.vendor || (window as unknown as { opera?: string }).opera || '';
+      setIsMobile(/android|iphone|ipad|ipod|mobile/i.test(ua.toLowerCase()));
+    };
+    checkMobile();
+
+    const fetchUser = async () => {
+      try {
+        const res = await api.get('/users/getLoginUser');
+        if (res.data?.code === 200) {
+          const userData = res.data.data;
+          setLastUpdate(userData.dateTime || '');
+          setUser(userData);
+          // 判断是否为管理员（level === '1'）
+          const admin = userData.level === '1';
+          setIsAdmin(admin);
+          if (admin) {
+            // 管理员：获取用户列表，默认选择第一个非 admin 用户
+            try {
+              const usersRes = await api.get('/users/queryUserList', { params: { pageNum: 1, pageSize: 999999 } });
+              if (usersRes.data?.code === 200) {
+                const allUsers = usersRes.data.data?.list || [];
+                const userList = allUsers.filter((u: UserOption) => u.username !== 'admin');
+                setUsers(userList);
+                if (userList.length > 0) {
+                  setSelectedUserId(String(userList[0].id));
+                }
+              }
+            } catch {
+              // 忽略错误
+            }
+          } else {
+            // 普通用户：只能看自己的数据
+            setSelectedUserId(String(userData.id));
+          }
+        } else if (res.data?.code === 401) {
+          // 未登录，跳转到登录页
+          router.push('/login');
+        }
+      } catch {
+        // 忽略错误
+      }
+    };
+    fetchUser();
+
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    setCurrentTime(`${y}年${m}月${d}日`);
+
+    setTimeout(() => setLoading(false), 1000);
+  }, [router]);
+
+  // 切换用户时更新最后更新时间
+  useEffect(() => {
+    if (!selectedUserId) return;
+    (async () => {
+      try {
+        const res = await api.get('/users/getLoginUser', { params: { userId: selectedUserId } });
+        if (res.data?.code === 200) {
+          setLastUpdate(res.data.data.dateTime || '');
+        }
+      } catch {
+        // 忽略错误
+      }
+    })();
+  }, [selectedUserId]);
+
+  // 切换用户时更新header显示的用户名
+  const displayUsername = selectedUserId
+    ? users.find((u) => u.id === selectedUserId)?.username || user.username
+    : user.username;
 
   const onLogout = () => {
     localStorage.removeItem('token');
@@ -133,154 +686,89 @@ export default function DashboardPage() {
     router.push('/login');
   };
 
-  if (!user) {
-    return <div style={{ textAlign: 'center', padding: 100 }}><Spin size="large" /></div>;
-  }
-
-  // 平台占比饼图
-  const pieOption = {
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { orient: 'vertical', left: 'left' },
-    series: [{
-      type: 'pie',
-      radius: ['40%', '70%'],
-      data: platformRatio.map(p => ({ name: p.pt, value: p.count })),
-      emphasis: { itemStyle: { shadowBlur: 10, shadowOffsetX: 0, shadowColor: 'rgba(0, 0, 0, 0.5)' } },
-    }],
-  };
-
-  const columns = [
-    { title: '蒸馏关键词', dataIndex: 'distillateKeyword', key: 'distillateKeyword', ellipsis: true },
-    { title: '核心关键词', dataIndex: 'expandedKeyword', key: 'expandedKeyword', ellipsis: true },
-    { title: '平台', dataIndex: 'platform', key: 'platform', width: 100 },
-    { title: '查询时间', dataIndex: 'queryTime', key: 'queryTime', width: 180 },
-    {
-      title: '操作',
-      key: 'action',
-      width: 100,
-      render: (_: any, record: SearchRankItem) => (
-        record.zlgjcUrl ? (
-          <a href={record.zlgjcUrl} target="_blank" rel="noopener noreferrer">查看详情</a>
-        ) : <span style={{ color: '#999' }}>未配置</span>
-      ),
-    },
-  ];
-
   return (
-    <div style={{ padding: 24, background: '#f0f2f5', minHeight: '100vh' }}>
-      {/* 顶部栏 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
-        <h2 style={{ margin: 0 }}>GEO 报告</h2>
-        <div>
-          <span style={{ marginRight: 16 }}>最后更新：{user.dateTime || '-'}</span>
-          <Button onClick={onLogout}>退出登录</Button>
+    <div className={`${styles.wrapper} ${isMobile ? styles.mobile : styles.pc}`}>
+      {loading && (
+        <div className={styles.gLoading}>
+          <Spin tip="巨量引力GEO" size="large">
+            <div style={{ width: '280px' }}>1</div>
+          </Spin>
         </div>
+      )}
+
+      {/* 退出登录按钮 */}
+      <div className={styles.logoutWrapper}>
+        <Button onClick={onLogout} size="small">退出登录</Button>
       </div>
 
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 100 }}><Spin size="large" /></div>
+      {/* Header */}
+      {isMobile ? (
+        <div className={styles.header}>
+          <div className={styles.headerName}>
+            <div>{displayUsername}</div>
+          </div>
+          <div className={styles.lastTime}>最后更新时间：{lastUpdate}</div>
+        </div>
       ) : (
-        <>
-          {/* AI 名片 */}
-          <Card style={{ marginBottom: 24, background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' }}>
-            <Row align="middle">
-              <Col span={6}>
-                <div style={{ textAlign: 'center' }}>
-                  <img src={`${IMG}/256x256.png`} alt="" style={{ width: 80, height: 80 }} />
-                  <div style={{ color: '#fff', marginTop: 8, fontWeight: 600, fontSize: 18 }}>{user.username}</div>
-                  <div style={{ color: 'rgba(255,255,255,0.8)' }}>AI 名片</div>
-                </div>
-              </Col>
-              <Col span={18}>
-                <Row gutter={[16, 16]}>
-                  <Col span={8}>
-                    <div style={{ color: 'rgba(255,255,255,0.7)' }}>电话</div>
-                    <div style={{ color: '#fff' }}>{user.phone || '-'}</div>
-                  </Col>
-                  <Col span={8}>
-                    <div style={{ color: 'rgba(255,255,255,0.7)' }}>邮箱</div>
-                    <div style={{ color: '#fff' }}>{user.email || '-'}</div>
-                  </Col>
-                  <Col span={8}>
-                    <div style={{ color: 'rgba(255,255,255,0.7)' }}>网址</div>
-                    <div style={{ color: '#fff' }}>{user.url || '-'}</div>
-                  </Col>
-                </Row>
-              </Col>
-            </Row>
-          </Card>
-
-          {/* 统计卡片 */}
-          <Row gutter={16} style={{ marginBottom: 24 }}>
+        <div className={styles.header}>
+          <Row gutter={16} className={styles.headerContent}>
             <Col span={8}>
-              <Card>
-                <div style={{ fontSize: 14, color: '#666' }}>核心关键词</div>
-                <div style={{ fontSize: 28, fontWeight: 600, color: '#1890ff' }}>{keywordCount.coreCount}</div>
-              </Card>
+              <div className={styles.lastTime}>最后更新时间：{lastUpdate}</div>
             </Col>
             <Col span={8}>
-              <Card>
-                <div style={{ fontSize: 14, color: '#666' }}>蒸馏关键词</div>
-                <div style={{ fontSize: 28, fontWeight: 600, color: '#52c41a' }}>{keywordCount.distillateCount}</div>
-              </Card>
+              <div className={styles.headerName}>{displayUsername}</div>
             </Col>
             <Col span={8}>
-              <Card>
-                <div style={{ fontSize: 14, color: '#666' }}>总收录</div>
-                <div style={{ fontSize: 28, fontWeight: 600, color: '#faad14' }}>{keywordCount.totalCount}</div>
-              </Card>
+              <div className={styles.currentTime}>{currentTime}</div>
             </Col>
           </Row>
-
-          {/* 平台占比 */}
-          <Card title="各平台收录对比" style={{ marginBottom: 24 }}>
-            <ReactECharts option={pieOption} style={{ height: 300 }} />
-          </Card>
-
-          {/* 搜索排名 */}
-          <Card title="搜索排名">
-            <div style={{ marginBottom: 16, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-              <Radio.Group value={searchType} onChange={(e) => { setSearchType(e.target.value); setRankPage(1); }}>
-                <Radio.Button value="keywords">关键词搜索</Radio.Button>
-                <Radio.Button value="brand">品牌搜索</Radio.Button>
-                <Radio.Button value="scene">联系方式</Radio.Button>
-              </Radio.Group>
-              <Select
-                value={platform}
-                onChange={(v) => { setPlatform(v); setRankPage(1); }}
-                style={{ width: 150 }}
-                options={platforms.map(p => ({ label: p.pt, value: p.pt }))}
-              />
-              <Input.Search
-                placeholder="搜索关键词"
-                value={searchKeyword}
-                onChange={(e) => setSearchKeyword(e.target.value)}
-                onSearch={onSearch}
-                style={{ width: 250 }}
-              />
-            </div>
-
-            <Table
-              columns={columns}
-              dataSource={rankList}
-              rowKey="id"
-              loading={rankLoading}
-              pagination={false}
-              size="middle"
-            />
-
-            <div style={{ textAlign: 'right', marginTop: 16 }}>
-              <Pagination
-                current={rankPage}
-                total={rankTotal}
-                pageSize={20}
-                onChange={(page) => setRankPage(page)}
-                showTotal={(total) => `共 ${total} 条`}
-              />
-            </div>
-          </Card>
-        </>
+        </div>
       )}
+
+      {/* 用户切换（仅管理员可见）*/}
+      {isAdmin && (
+        <div className={styles.userSwitchWrapper}>
+          <span className={styles.userSwitchLabel}>切换用户：</span>
+          <Select
+            value={selectedUserId || undefined}
+            placeholder="切换"
+            onChange={(val) => setSelectedUserId(val ? String(val) : '')}
+            allowClear
+            showSearch
+            optionFilterProp="label"
+            style={{ width: isMobile ? 140 : 100 }}
+            options={users.map((u) => ({ value: String(u.id), label: u.username }))}
+          />
+        </div>
+      )}
+
+      {/* Content */}
+      <div className={styles.contentWrapper}>
+        {!isMobile ? (
+          <div className={styles.pc}>
+            <Row className={styles.leftWrapper} gutter={24}>
+              <Col span={10} className={styles.leftCol}>
+                <div className={styles.baseInfo}><AICard isMobile={false} userId={selectedUserId} /></div>
+                <div className={styles.info1}><PlatformRatioChart isMobile={false} userId={selectedUserId} /></div>
+                <div className={styles.info2}><KeywordRankChart isMobile={false} userId={selectedUserId} /></div>
+              </Col>
+              <Col span={13} className={styles.rightCol}>
+                <div className={styles.info3}><KeywordStats isMobile={false} userId={selectedUserId} /></div>
+                <div className={styles.info4}><SearchRank isMobile={false} userId={selectedUserId} /></div>
+              </Col>
+            </Row>
+          </div>
+        ) : (
+          <div className={styles.pc}>
+            <div className={styles.baseInfo}><AICard isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info3}><KeywordStats isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info1}><PlatformRatioChart isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info2}><KeywordRankChart isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info4}><SearchRank isMobile={true} userId={selectedUserId} /></div>
+          </div>
+        )}
+      </div>
+      <div className={styles.footerWrapper} />
     </div>
   );
 }
