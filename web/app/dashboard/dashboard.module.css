@@ -217,8 +217,13 @@
   height: auto;
 }
 
+.aiMobile.aiCardHeader,
 .aiMobile .aiCardHeader {
-  min-width: 36vh;
+  min-width: unset;
+  width: auto;
+  padding-right: 40px;
+  height: 4.5vh;
+  min-height: 39px;
 }
 
 .aiMobile .aiBaseInfo {
@@ -228,6 +233,19 @@
 .aiMobile :global(.ant-card-body) {
   flex: 1;
   padding: 10px;
+}
+
+/* 移动端AI名片字体大小修正 */
+.aiMobile .aiFTitle {
+  font-size: 12px;
+}
+
+.aiMobile .aiItemTitle {
+  font-size: 13px;
+}
+
+.aiMobile .aiTitle {
+  font-size: 16px;
 }
 
 .aiLeft {
@@ -311,7 +329,12 @@
   min-height: 420px;
 }
 
+/* 防止 prMobile 的 min-height 应用到 header 上 */
+.prMobile.prCardHeader,
 .prMobile .prCardHeader {
+  min-height: unset;
+  height: 4.5vh;
+  min-height: 39px;
   width: auto;
   padding-right: 40px;
 }
@@ -401,13 +424,28 @@
   background-size: 100% 100%;
 }
 
-.krMobile .krContentWrapper .krItem {
-  grid-template-columns: 60px 1fr 60px;
-}
-
+/* 防止 krMobile 的 max-height 应用到 header 上 */
+.krMobile.krCardHeader,
 .krMobile .krCardHeader {
+  max-height: unset;
+  height: 4.5vh;
+  min-height: 39px;
   width: auto;
   padding-right: 40px;
+}
+
+.krMobile .krContentWrapper .krItem {
+  grid-template-columns: 100px 1fr 50px;
+  gap: 8px;
+}
+
+.krMobile .krName {
+  font-size: 13px;
+}
+
+.krMobile .krCount {
+  font-size: 13px;
+  text-align: right;
 }
 
 /* ===== 关键词数量 ===== */
@@ -495,6 +533,15 @@
   height: auto;
 }
 
+/* 防止 ksMobile 的 height 应用到 header 上 */
+.ksMobile.ksCardHeader,
+.ksMobile .ksCardHeader {
+  height: 4.5vh;
+  min-height: 39px;
+  width: auto;
+  padding-right: 40px;
+}
+
 .ksMobile :global(.ant-card-body) {
   flex: 1;
   padding: 0;
@@ -502,12 +549,7 @@
   position: relative;
 }
 
-.ksMobile .ksCardHeader {
-  width: auto;
-  padding-right: 40px;
-}
-
-.ksItemsWrapper {
+.ksMobile .ksItemsWrapper {
   align-items: center;
   justify-content: center;
   display: grid;
@@ -517,12 +559,22 @@
 }
 
 .ksMobile .ksItemWrapper {
-  width: 37vw;
+  width: auto;
   display: flex;
   align-items: center;
   background: #fff6f6;
   border-radius: 8px;
   padding: 9px;
+}
+
+/* 移动端关键词数量字体修正 */
+.ksMobile .ksTitle2 {
+  font-size: 13px;
+}
+
+.ksMobile .ksCount {
+  font-size: 20px;
+  font-weight: 700;
 }
 
 /* ===== 搜索排名 ===== */
@@ -556,6 +608,16 @@
 .srMobile {
   height: auto;
   max-height: 800px;
+}
+
+/* 防止 srMobile 的 max-height 应用到 header 上，并修正 header 宽度 */
+.srMobile.srCardHeader,
+.srMobile .srCardHeader {
+  max-height: unset;
+  height: 4.5vh;
+  min-height: 39px;
+  width: auto;
+  padding-right: 40px;
 }
 
 .srBtnsWrapper {
@@ -757,6 +819,8 @@
 
 .srMobile .srBtn {
   width: 33%;
+  font-size: 13px;
+  height: 32px;
 }
 
 .srMobile .srTabsWrapper {
@@ -766,11 +830,15 @@
 .srMobile .srTabs {
   overflow-x: auto;
   margin-bottom: 8px;
+  flex-wrap: nowrap;
 }
 
 .srMobile .srTab {
   min-width: 80px;
   white-space: nowrap;
+  font-size: 13px;
+  height: 32px;
+  line-height: 32px;
 }
 
 .srMobile .srSelectWrapper {
@@ -968,7 +1036,7 @@
 /* Mobile header */
 .mobile .header .headerName {
   width: 100%;
-  height: 5vh;
+  height: 44px;
   background-image: url(https://static.7asi.com/assets/reportGeo/Group_20372357421.png);
   background-size: 100% 100%;
   background-repeat: no-repeat;
@@ -992,7 +1060,7 @@
 .mobile .lastTime {
   font-family: PingFang SC;
   font-weight: 500;
-  font-size: 1.5vh;
+  font-size: 13px;
   color: #ff5151;
   text-align: center;
   font-style: normal;
@@ -1001,7 +1069,29 @@
   background: hsla(0, 0%, 100%, .4);
   box-shadow: 0 4px 16px 0 rgba(255, 81, 81, .06);
   border-radius: 41px 41px 41px 41px;
-  height: 3vh;
-  line-height: 3vh;
-  margin: 1vh auto 0;
+  height: 32px;
+  line-height: 32px;
+  margin: 8px auto 0;
+}
+
+/* ===== 移动端全局修正 ===== */
+/* 修正所有卡片标题在移动端的宽度和字体大小 */
+.mobile .gCardHeader {
+  width: auto !important;
+  font-size: 16px;
+  height: 39px;
+  line-height: 39px;
+  min-height: 39px;
+}
+
+.mobile .gCardHeader .gIcon {
+  height: 20px;
+  width: 20px;
+  margin-left: 12px;
+  margin-right: 8px;
+}
+
+/* 移动端header用户名字体 */
+.mobile .header .headerName div {
+  font-size: 18px;
 }
