@@ -236,12 +236,16 @@ export async function getPlatformRatio(userId: string) {
   return result.rows;
 }
 
-// 获取核心关键词排名
+// 获取核心关键词排名（排除品牌关键词）
 export async function getCoreKeywordRank(userId: string, limit: number = 20) {
   const result = await query(
     `SELECT expanded_keyword as keyword, COUNT(*) as count
-     FROM keyword_search_rank
-     WHERE user_id = $1 AND expanded_keyword != ''
+     FROM keyword_search_rank k
+     WHERE k.user_id = $1 AND k.expanded_keyword != ''
+       AND NOT EXISTS (
+         SELECT 1 FROM pp p
+         WHERE p.pp = k.expanded_keyword AND p.user_id = k.user_id
+       )
      GROUP BY expanded_keyword
      ORDER BY count DESC
      LIMIT $2`,
@@ -786,7 +790,8 @@ export async function getRecentRecords(limit: number = 20) {
   const result = await query(
     `SELECT id, expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time
      FROM keyword_search_rank
-     ORDER BY create_time DESC
+     WHERE create_time IS NOT NULL
+     ORDER BY create_time DESC NULLS LAST
      LIMIT $1`,
     [limit]
   );
@@ -801,31 +806,38 @@ export async function getRecentRecords(limit: number = 20) {
   }));
 }
 
-// 各用户数据量统计
+// 各用户数据量统计（拆分为独立查询，避免多表 LEFT JOIN 笛卡尔积爆炸）
 export async function getUserDataStats() {
-  const result = await query(
-    `SELECT u.id, u.username,
-       COUNT(DISTINCT t.id) as task_count,
-       COUNT(DISTINCT dk.id) as core_keyword_count,
-       COUNT(DISTINCT z.id) as zlgjc_count,
-       COUNT(k.id) as record_count
-     FROM users u
-     LEFT JOIN task_info t ON t.user_id = CAST(u.id AS TEXT)
-     LEFT JOIN distillate_keyword dk ON dk.user_id = CAST(u.id AS TEXT)
-     LEFT JOIN zlgjc z ON z.userid = CAST(u.id AS TEXT)
-     LEFT JOIN keyword_search_rank k ON k.user_id = CAST(u.id AS TEXT)
-     WHERE u.level = '0'
-     GROUP BY u.id, u.username
-     ORDER BY record_count DESC`
+  // 先获取所有普通用户
+  const usersResult = await query(
+    `SELECT id, username FROM users WHERE level = '0' ORDER BY id`
   );
-  return result.rows.map((row: any) => ({
-    userId: row.id,
-    username: row.username,
-    taskCount: parseInt(row.task_count) || 0,
-    coreKeywordCount: parseInt(row.core_keyword_count) || 0,
-    zlgjcCount: parseInt(row.zlgjc_count) || 0,
-    recordCount: parseInt(row.record_count) || 0,
-  }));
+  const users = usersResult.rows;
+  if (users.length === 0) return [];
+
+  // 为每个用户独立查询各表数据量（避免笛卡尔积）
+  const result = [];
+  for (const user of users) {
+    const userId = String(user.id);
+    const [taskRes, dkRes, zlgjcRes, recordRes] = await Promise.all([
+      query('SELECT COUNT(*) as count FROM task_info WHERE user_id = $1', [userId]),
+      query('SELECT COUNT(*) as count FROM distillate_keyword WHERE user_id = $1', [userId]),
+      query('SELECT COUNT(*) as count FROM zlgjc WHERE userid = $1', [userId]),
+      query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1', [userId]),
+    ]);
+    result.push({
+      userId: user.id,
+      username: user.username,
+      taskCount: parseInt(taskRes.rows[0].count) || 0,
+      coreKeywordCount: parseInt(dkRes.rows[0].count) || 0,
+      zlgjcCount: parseInt(zlgjcRes.rows[0].count) || 0,
+      recordCount: parseInt(recordRes.rows[0].count) || 0,
+    });
+  }
+
+  // 按 record_count 降序
+  result.sort((a, b) => b.recordCount - a.recordCount);
+  return result;
 }
 
 // ============ 批量数据导入（本地迁移） ============

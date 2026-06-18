@@ -166,6 +166,19 @@ export async function migrate() {
       )
     `);
 
+    // 分享token表（用于GEO报告页面分享功能）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS share_tokens (
+        id SERIAL PRIMARY KEY,
+        token VARCHAR(100) UNIQUE NOT NULL,
+        user_id INTEGER NOT NULL,
+        username VARCHAR(100) DEFAULT '',
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expire_time TIMESTAMP,
+        last_use_time TIMESTAMP
+      )
+    `);
+
     // 创建索引
     console.log('[Migrate] 创建索引...');
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ksr_user ON keyword_search_rank(user_id)`);
@@ -184,6 +197,8 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_user ON pp(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dr_task_date ON daily_random(task_id, random_date)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dk_user ON distillate_keyword(user_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_share_token ON share_tokens(token)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)`);
 
     // 初始化平台数据
     const ptCount = await client.query('SELECT COUNT(*) as count FROM pt');

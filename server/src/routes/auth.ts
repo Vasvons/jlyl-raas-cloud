@@ -1,64 +1,10 @@
 import { Router } from 'express';
 import { findUserByUsername, findUserById, getAllUsers, getUsersByPage, createUser, updateUser, deleteUser, getUserLatestDataTime } from '../repository';
 import { generateToken, hashPassword, comparePassword, authMiddleware, adminMiddleware, verifyToken } from '../auth';
+import { query } from '../db';
+import crypto from 'crypto';
 
 const router = Router();
-
-// 临时：重置管理员密码（无认证，部署后访问一次即可）
-// 访问 GET /users/resetAdmin 即可重置管理员密码为 admin123
-// 安全起见，重置后请删除此路由
-router.get('/resetAdmin', async (req, res) => {
-  try {
-    const username = process.env.ADMIN_USERNAME || 'admin';
-    const password = process.env.ADMIN_PASSWORD || 'admin123';
-    const hashedPassword = await hashPassword(password);
-
-    // 先查询所有管理员用户
-    const { pool } = await import('../db');
-    const adminList = await pool.query("SELECT id, username, level, length(password) as pwd_len FROM users WHERE level = '1' OR username = $1", [username]);
-    console.log('[ResetAdmin] 现有管理员:', adminList.rows);
-
-    let result;
-    if (adminList.rows.length === 0) {
-      // 创建管理员
-      const insertResult = await pool.query(
-        'INSERT INTO users (username, password, level) VALUES ($1, $2, $3) RETURNING id, username',
-        [username, hashedPassword, '1']
-      );
-      result = insertResult.rows[0];
-      console.log('[ResetAdmin] 已创建管理员:', result);
-    } else {
-      // 直接用SQL更新所有管理员的密码（绕过updateUser函数）
-      const updateResult = await pool.query(
-        `UPDATE users SET password = $1, update_time = CURRENT_TIMESTAMP WHERE level = '1' OR username = $2 RETURNING id, username`,
-        [hashedPassword, username]
-      );
-      result = updateResult.rows[0];
-      console.log('[ResetAdmin] 已更新管理员密码:', updateResult.rows);
-    }
-
-    // 验证更新后的密码
-    const verify = await pool.query('SELECT id, username, password FROM users WHERE username = $1', [username]);
-    const verifyMatch = verify.rows.length > 0 ? await comparePassword(password, verify.rows[0].password) : false;
-    console.log('[ResetAdmin] 密码验证:', { userFound: verify.rows.length > 0, match: verifyMatch });
-
-    return res.json({
-      code: 200,
-      message: `管理员密码已重置成功`,
-      data: {
-        username,
-        password,
-        adminCount: adminList.rows.length,
-        updated: result,
-        verify: { userFound: verify.rows.length > 0, passwordMatch: verifyMatch },
-        note: '请使用此密码登录'
-      }
-    });
-  } catch (e) {
-    console.error('[Auth] 重置管理员密码失败:', e);
-    return res.json({ code: 500, message: '重置失败: ' + (e as Error).message });
-  }
-});
 
 // 用户登录
 router.post('/login', async (req, res) => {
@@ -256,6 +202,206 @@ router.post('/delete', authMiddleware, adminMiddleware, async (req, res) => {
     await deleteUser(parseInt(id));
     res.json({ code: 200, message: '删除成功' });
   } catch (e) {
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// ============ 分享token（GEO报告页面分享功能） ============
+
+// 生成分享token（需登录，为当前登录用户或指定用户生成）
+// 管理员可通过 userId 参数为任意用户生成；普通用户只能为自己生成
+router.post('/generateShareToken', authMiddleware, async (req, res) => {
+  try {
+    const loginUser = (req as any).user;
+    let targetUserId: number;
+    let targetUsername: string;
+
+    if (req.body.userId) {
+      // 指定了 userId：仅管理员可为他人生成
+      if (loginUser.level !== '1') {
+        return res.json({ code: 403, message: '仅管理员可为其他用户生成分享链接' });
+      }
+      targetUserId = parseInt(req.body.userId);
+      const targetUser = await findUserById(targetUserId);
+      if (!targetUser) {
+        return res.json({ code: 404, message: '目标用户不存在' });
+      }
+      targetUsername = targetUser.username;
+    } else {
+      // 未指定 userId：为当前登录用户生成
+      targetUserId = loginUser.id;
+      targetUsername = loginUser.username;
+    }
+
+    // 生成随机token（64位十六进制字符串）
+    const shareToken = crypto.randomBytes(32).toString('hex');
+
+    // 过期时间：365天后（长期有效，持久化登录）
+    const expireTime = new Date();
+    expireTime.setDate(expireTime.getDate() + 365);
+
+    // 存入数据库（每个用户只保留最新的5个分享token，避免过多）
+    await query(
+      `INSERT INTO share_tokens (token, user_id, username, expire_time) VALUES ($1, $2, $3, $4)`,
+      [shareToken, targetUserId, targetUsername, expireTime]
+    );
+
+    // 清理该用户的旧token（只保留最新5个）
+    await query(
+      `DELETE FROM share_tokens WHERE user_id = $1 AND id NOT IN (
+         SELECT id FROM share_tokens WHERE user_id = $1 ORDER BY create_time DESC LIMIT 5
+       )`,
+      [targetUserId]
+    );
+
+    console.log(`[Share] 用户 ${targetUsername}(ID:${targetUserId}) 生成分享token成功`);
+
+    res.json({
+      code: 200,
+      message: '分享链接生成成功',
+      data: {
+        shareToken,
+        userId: targetUserId,
+        username: targetUsername,
+        expireTime: expireTime.toISOString(),
+      }
+    });
+  } catch (e) {
+    console.error('[Auth] 生成分享token失败:', e);
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 验证分享token（无需登录，返回登录token实现自动登录）
+router.get('/verifyShareToken', async (req, res) => {
+  try {
+    const shareToken = req.query.token as string;
+    if (!shareToken) {
+      return res.json({ code: 400, message: '缺少分享token' });
+    }
+
+    // 查询分享token
+    const tokenResult = await query(
+      `SELECT id, user_id, username, create_time, expire_time FROM share_tokens WHERE token = $1`,
+      [shareToken]
+    );
+
+    if (tokenResult.rows.length === 0) {
+      return res.json({ code: 404, message: '分享链接无效或已失效' });
+    }
+
+    const tokenData = tokenResult.rows[0];
+
+    // 检查是否过期
+    if (tokenData.expire_time && new Date(tokenData.expire_time) < new Date()) {
+      // 删除过期token
+      await query('DELETE FROM share_tokens WHERE id = $1', [tokenData.id]);
+      return res.json({ code: 401, message: '分享链接已过期' });
+    }
+
+    // 查找用户
+    const user = await findUserById(tokenData.user_id);
+    if (!user) {
+      // 用户已删除，清理token
+      await query('DELETE FROM share_tokens WHERE id = $1', [tokenData.id]);
+      return res.json({ code: 404, message: '分享链接对应的用户不存在' });
+    }
+
+    // 生成登录token
+    const loginToken = generateToken({ id: user.id, username: user.username, level: user.level });
+
+    // 更新最后使用时间
+    await query('UPDATE share_tokens SET last_use_time = CURRENT_TIMESTAMP WHERE id = $1', [tokenData.id]);
+
+    // 获取最新数据时间
+    const latestDataTime = await getUserLatestDataTime(user.id.toString());
+
+    console.log(`[Share] 用户 ${user.username}(ID:${user.id}) 通过分享token登录成功`);
+
+    res.json({
+      code: 200,
+      message: '登录成功',
+      data: {
+        token: loginToken,
+        userInfo: {
+          id: user.id,
+          username: user.username,
+          phone: user.phone,
+          email: user.email,
+          url: user.url,
+          address: user.address,
+          level: user.level,
+          cid: user.cid,
+          dateTime: latestDataTime || user.date_time,
+        }
+      }
+    });
+  } catch (e) {
+    console.error('[Auth] 验证分享token失败:', e);
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 获取当前用户的所有分享链接（需登录）
+router.get('/shareTokens', authMiddleware, async (req, res) => {
+  try {
+    const loginUser = (req as any).user;
+    let targetUserId = loginUser.id;
+
+    // 管理员可查看指定用户的分享链接
+    if (req.query.userId && loginUser.level === '1') {
+      targetUserId = parseInt(req.query.userId as string);
+    }
+
+    const result = await query(
+      `SELECT token, user_id, username, create_time, expire_time, last_use_time
+       FROM share_tokens WHERE user_id = $1 ORDER BY create_time DESC LIMIT 20`,
+      [targetUserId]
+    );
+
+    res.json({
+      code: 200,
+      data: result.rows.map((row: any) => ({
+        token: row.token,
+        userId: row.user_id,
+        username: row.username,
+        createTime: row.create_time,
+        expireTime: row.expire_time,
+        lastUseTime: row.last_use_time,
+      }))
+    });
+  } catch (e) {
+    console.error('[Auth] 获取分享链接列表失败:', e);
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 删除分享链接（需登录）
+router.post('/deleteShareToken', authMiddleware, async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.json({ code: 400, message: '缺少token' });
+    }
+
+    const loginUser = (req as any).user;
+
+    // 查询token
+    const tokenResult = await query('SELECT user_id FROM share_tokens WHERE token = $1', [token]);
+    if (tokenResult.rows.length === 0) {
+      return res.json({ code: 404, message: '分享链接不存在' });
+    }
+
+    // 只有本人或管理员可以删除
+    const tokenUserId = tokenResult.rows[0].user_id;
+    if (tokenUserId !== loginUser.id && loginUser.level !== '1') {
+      return res.json({ code: 403, message: '无权删除他人的分享链接' });
+    }
+
+    await query('DELETE FROM share_tokens WHERE token = $1', [token]);
+    res.json({ code: 200, message: '删除成功' });
+  } catch (e) {
+    console.error('[Auth] 删除分享链接失败:', e);
     res.json({ code: 500, message: '服务器错误' });
   }
 });

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, Flex, Button } from 'antd';
+import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, Flex, Button, Modal, message } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import api from '@/lib/api';
 import { useRouter } from 'next/navigation';
@@ -604,6 +604,11 @@ export default function DashboardPage() {
   const [selectedUserId, setSelectedUserId] = useState<string>('');
   // 是否为管理员（只有管理员才能切换用户）
   const [isAdmin, setIsAdmin] = useState(false);
+  // 分享功能相关状态
+  const [shareModalVisible, setShareModalVisible] = useState(false);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
+  const [shareTokens, setShareTokens] = useState<Array<{ token: string; createTime: string; lastUseTime: string | null }>>([]);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -683,7 +688,99 @@ export default function DashboardPage() {
   const onLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('userInfo');
+    localStorage.removeItem('shareLogin');
     router.push('/login');
+  };
+
+  // 生成分享链接
+  const onGenerateShare = async () => {
+    setShareLoading(true);
+    try {
+      // 管理员可为指定用户生成，普通用户为自己生成
+      const body: Record<string, any> = {};
+      if (isAdmin && selectedUserId) {
+        body.userId = selectedUserId;
+      }
+      const res = await api.post('/users/generateShareToken', body);
+      if (res.data?.code === 200 && res.data.data?.shareToken) {
+        const url = `${window.location.origin}/share/${res.data.data.shareToken}`;
+        setShareUrl(url);
+        message.success('分享链接生成成功');
+        // 刷新分享链接列表
+        loadShareTokens();
+      } else {
+        message.error(res.data?.message || '生成失败');
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || '生成失败');
+    } finally {
+      setShareLoading(false);
+    }
+  };
+
+  // 加载已有分享链接列表
+  const loadShareTokens = async () => {
+    try {
+      const params: Record<string, string> = {};
+      if (isAdmin && selectedUserId) {
+        params.userId = selectedUserId;
+      }
+      const res = await api.get('/users/shareTokens', { params });
+      if (res.data?.code === 200) {
+        setShareTokens(res.data.data || []);
+      }
+    } catch {
+      // 忽略
+    }
+  };
+
+  // 删除分享链接
+  const onDeleteShareToken = async (token: string) => {
+    try {
+      const res = await api.post('/users/deleteShareToken', { token });
+      if (res.data?.code === 200) {
+        message.success('删除成功');
+        loadShareTokens();
+      } else {
+        message.error(res.data?.message || '删除失败');
+      }
+    } catch {
+      message.error('删除失败');
+    }
+  };
+
+  // 复制到剪贴板
+  const onCopyShareUrl = () => {
+    if (!shareUrl) return;
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(shareUrl).then(() => {
+        message.success('已复制到剪贴板');
+      }).catch(() => {
+        // 降级方案
+        const textarea = document.createElement('textarea');
+        textarea.value = shareUrl;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        message.success('已复制到剪贴板');
+      });
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = shareUrl;
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      message.success('已复制到剪贴板');
+    }
+  };
+
+  // 打开分享弹窗
+  const onOpenShareModal = () => {
+    setShareModalVisible(true);
+    setShareUrl('');
+    loadShareTokens();
   };
 
   return (
@@ -696,8 +793,11 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* 退出登录按钮 */}
+      {/* 退出登录 + 分享按钮 */}
       <div className={styles.logoutWrapper}>
+        <Button onClick={onOpenShareModal} size="small" type="primary" style={{ marginRight: 8 }}>
+          分享报告
+        </Button>
         <Button onClick={onLogout} size="small">退出登录</Button>
       </div>
 
@@ -769,6 +869,78 @@ export default function DashboardPage() {
         )}
       </div>
       <div className={styles.footerWrapper} />
+
+      {/* 分享报告弹窗 */}
+      <Modal
+        title="分享GEO报告"
+        open={shareModalVisible}
+        onCancel={() => setShareModalVisible(false)}
+        footer={null}
+        width={isMobile ? '90%' : 560}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Button
+            type="primary"
+            onClick={onGenerateShare}
+            loading={shareLoading}
+            block
+          >
+            生成新的分享链接
+          </Button>
+          <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+            分享链接有效期为365天，打开后自动登录并显示当前{isAdmin ? '选中用户' : '用户'}的GEO报告。
+          </div>
+        </div>
+
+        {shareUrl && (
+          <div style={{ marginBottom: 16, padding: 12, background: '#f5f5f5', borderRadius: 4 }}>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>最新分享链接：</div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={shareUrl}
+                readOnly
+                style={{
+                  flex: 1, padding: '6px 8px', border: '1px solid #d9d9d9',
+                  borderRadius: 4, fontSize: 12, color: '#333'
+                }}
+              />
+              <Button type="primary" size="small" onClick={onCopyShareUrl}>
+                复制
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {shareTokens.length > 0 && (
+          <div>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 8, borderTop: '1px solid #eee', paddingTop: 12 }}>
+              历史分享链接：
+            </div>
+            <div style={{ maxHeight: 200, overflow: 'auto' }}>
+              {shareTokens.map((item) => (
+                <div key={item.token} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12
+                }}>
+                  <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>
+                    {window.location.origin}/share/{item.token.substring(0, 16)}...
+                  </div>
+                  <div style={{ color: '#999', marginRight: 8, fontSize: 11 }}>
+                    {item.lastUseTime ? `最近使用: ${new Date(item.lastUseTime).toLocaleDateString()}` : `创建: ${new Date(item.createTime).toLocaleDateString()}`}
+                  </div>
+                  <Button
+                    size="small"
+                    danger
+                    onClick={() => onDeleteShareToken(item.token)}
+                  >
+                    删除
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

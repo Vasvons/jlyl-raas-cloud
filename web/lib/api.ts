@@ -22,6 +22,11 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401 && typeof window !== 'undefined') {
+      // 分享页面不跳转（由页面自行处理错误）
+      const path = window.location.pathname;
+      if (path.startsWith('/share/')) {
+        return Promise.reject(error);
+      }
       localStorage.removeItem('token');
       localStorage.removeItem('userInfo');
       window.location.href = '/login';
