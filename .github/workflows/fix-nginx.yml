@@ -10,12 +10,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Base64 encode nginx config
+        id: encode
+        run: |
+          CONTENT=$(base64 -w 0 deploy/nginx-report.conf)
+          echo "content=$CONTENT" >> $GITHUB_OUTPUT
+
       - name: Fix nginx HTTPS config via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          NGINX_CONFIG_B64: ${{ steps.encode.outputs.content }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: NGINX_CONFIG_B64
           script: |
             set -e
             echo "===== 开始修复 nginx HTTPS 配置 ====="
@@ -24,91 +33,25 @@ jobs:
             echo ">>> 备份现有配置..."
             cp /etc/nginx/conf.d/jlyl-cloud.conf /etc/nginx/conf.d/jlyl-cloud.conf.bak.$(date +%Y%m%d%H%M%S)
 
-            # 2. 检查是否已有 report.jlyl.net.cn 的 SSL 证书
+            # 2. 解码并写入新的 nginx 配置
+            echo ">>> 写入新的 nginx 配置..."
+            echo "$NGINX_CONFIG_B64" | base64 -d > /etc/nginx/conf.d/jlyl-cloud.conf
+            echo "  配置已写入"
+
+            # 3. 检查是否已有 report.jlyl.net.cn 的 SSL 证书
             echo ">>> 检查 report.jlyl.net.cn SSL 证书..."
             if [ -d /etc/letsencrypt/live/report.jlyl.net.cn ]; then
               echo "  report.jlyl.net.cn 证书已存在"
               HAS_CERT="yes"
             else
-              echo "  report.jlyl.net.cn 证书不存在，需要申请"
+              echo "  report.jlyl.net.cn 证书不存在，临时使用 www.jlyl.net.cn 证书"
               HAS_CERT="no"
+              # 临时替换为 www.jlyl.net.cn 证书
+              sed -i 's|/etc/letsencrypt/live/REPORT_DOMAIN/fullchain.pem|/etc/letsencrypt/live/www.jlyl.net.cn/fullchain.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
+              sed -i 's|/etc/letsencrypt/live/REPORT_DOMAIN/privkey.pem|/etc/letsencrypt/live/www.jlyl.net.cn/privkey.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
             fi
 
-            # 3. 写入新的 jlyl-cloud.conf（包含 HTTP 跳转 HTTPS 和 HTTPS 反向代理）
-            echo ">>> 写入新的 nginx 配置..."
-            cat > /etc/nginx/conf.d/jlyl-cloud.conf << 'NGINX_EOF'
-# jlyl-cloud Nginx 配置
-# report.jlyl.net.cn -> jlyl-cloud (Next.js 3011 + API 3002)
-
-# HTTP: 跳转到 HTTPS
-server {
-    listen 80;
-    server_name report.jlyl.net.cn;
-
-    # 用于 certbot 验证
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-
-    # 跳转到 HTTPS
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-# HTTPS: 反向代理到 jlyl-cloud
-server {
-    listen 443 ssl;
-    server_name report.jlyl.net.cn;
-
-    # SSL 证书（如果已申请则使用，否则使用 www.jlyl.net.cn 的证书作为临时方案）
-    ssl_certificate /etc/letsencrypt/live/report.jlyl.net.cn/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/report.jlyl.net.cn/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-
-    client_max_body_size 10m;
-
-    # 前端 Next.js
-    location / {
-        proxy_pass http://127.0.0.1:3011;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    # API 请求代理到后端
-    location /api/ {
-        proxy_pass http://127.0.0.1:3002/;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    # 静态资源缓存
-    location /_next/static/ {
-        proxy_pass http://127.0.0.1:3011;
-        proxy_cache_valid 200 1y;
-        add_header Cache-Control "public, immutable";
-    }
-}
-NGINX_EOF
-
-            # 4. 如果没有 report.jlyl.net.cn 证书，先临时使用 www.jlyl.net.cn 证书
-            if [ "$HAS_CERT" = "no" ]; then
-              echo ">>> 临时使用 www.jlyl.net.cn 证书（域名不匹配会有警告，但能正常访问）..."
-              sed -i 's|/etc/letsencrypt/live/report.jlyl.net.cn/fullchain.pem|/etc/letsencrypt/live/www.jlyl.net.cn/fullchain.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
-              sed -i 's|/etc/letsencrypt/live/report.jlyl.net.cn/privkey.pem|/etc/letsencrypt/live/www.jlyl.net.cn/privkey.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
-            fi
-
-            # 5. 测试 nginx 配置
+            # 4. 测试 nginx 配置
             echo ">>> 测试 nginx 配置..."
             if nginx -t; then
               echo "  nginx 配置测试通过"
@@ -118,17 +61,15 @@ NGINX_EOF
               exit 1
             fi
 
-            # 6. 重载 nginx
+            # 5. 重载 nginx
             echo ">>> 重载 nginx..."
             nginx -s reload
             echo "  nginx 重载成功"
 
-            # 7. 如果没有 report.jlyl.net.cn 证书，申请新证书
+            # 6. 如果没有 report.jlyl.net.cn 证书，申请新证书
             if [ "$HAS_CERT" = "no" ]; then
               echo ">>> 申请 report.jlyl.net.cn SSL 证书..."
-              # 创建 certbot 目录
               mkdir -p /var/www/certbot
-              # 使用 webroot 模式，不需要停止 nginx
               if command -v certbot > /dev/null 2>&1; then
                 echo "  使用 certbot webroot 模式申请证书..."
                 certbot certonly --webroot -w /var/www/certbot -d report.jlyl.net.cn --non-interactive --agree-tos -m admin@jlyl.net.cn || {
@@ -137,7 +78,7 @@ NGINX_EOF
                 }
                 # 如果证书申请成功，恢复配置中的证书路径
                 if [ -d /etc/letsencrypt/live/report.jlyl.net.cn ]; then
-                  echo "  证书申请成功，恢复配置中的证书路径..."
+                  echo "  证书申请成功，切换到 report.jlyl.net.cn 证书..."
                   sed -i 's|/etc/letsencrypt/live/www.jlyl.net.cn/fullchain.pem|/etc/letsencrypt/live/report.jlyl.net.cn/fullchain.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
                   sed -i 's|/etc/letsencrypt/live/www.jlyl.net.cn/privkey.pem|/etc/letsencrypt/live/report.jlyl.net.cn/privkey.pem|g' /etc/nginx/conf.d/jlyl-cloud.conf
                   nginx -t && nginx -s reload
@@ -149,7 +90,7 @@ NGINX_EOF
               fi
             fi
 
-            # 8. 验证 HTTPS 访问
+            # 7. 验证 HTTPS 访问
             echo ">>> 验证 HTTPS 访问..."
             sleep 2
             echo "  HTTPS 根路径:"
