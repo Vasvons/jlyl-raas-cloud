@@ -883,6 +883,7 @@
     flex: 1 1 0 !important;
     max-width: none !important;
     width: auto !important;
+    min-width: 0 !important;
   }
   /* 关键词数量卡片内部：让 4 个 Col 表现为 flex，自动分配宽度 */
   .ksContentWrapper {
@@ -894,6 +895,7 @@
     flex: 1 1 0 !important;
     max-width: none !important;
     width: auto !important;
+    min-width: 0 !important;
   }
   /* AI 名片图标在小视口下缩小 */
   .aiPc .aiBaseInfo .aiItemIcon {
