@@ -839,49 +839,60 @@ export async function bulkImportData(data: {
   const counts: { [key: string]: number } = {};
 
   await withTransaction(async (client) => {
-    // 1. 导入用户（保留原始ID）
+    // 1. 导入用户（不保留原始ID，建立新旧ID映射，避免整数溢出）
+    // 本地SQLite的user.id可能是时间戳(如1781561709129)，超过PostgreSQL INTEGER范围
+    const userIdMap = new Map<string, number>(); // 旧id(字符串) -> 新id(数字)
     if (data.users && data.users.length > 0) {
       let cnt = 0;
       for (const u of data.users) {
-        await client.query(
-          `INSERT INTO users (id, username, password, phone, email, url, address, level, cid, date_time)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT (id) DO UPDATE SET
-             username = EXCLUDED.username, phone = EXCLUDED.phone, email = EXCLUDED.email,
-             url = EXCLUDED.url, address = EXCLUDED.address, level = EXCLUDED.level,
-             cid = EXCLUDED.cid, date_time = EXCLUDED.date_time`,
-          [u.id, u.username, u.password, u.phone || '', u.email || '', u.url || '',
-           u.address || '', u.level || '0', u.cid || '', u.dateTime || '']
-        );
+        // 先检查用户名是否已存在（幂等性）
+        const existing = await client.query('SELECT id FROM users WHERE username = $1', [u.username]);
+        let newId: number;
+        if (existing.rows.length > 0) {
+          newId = existing.rows[0].id;
+        } else {
+          const insertResult = await client.query(
+            `INSERT INTO users (username, password, phone, email, url, address, level, cid, date_time)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING id`,
+            [u.username, u.password, u.phone || '', u.email || '', u.url || '',
+             u.address || '', u.level || '0', u.cid || '', u.dateTime || '']
+          );
+          newId = insertResult.rows[0].id;
+        }
+        // 建立旧id到新id的映射（key用字符串，因为其他表的user_id是TEXT类型）
+        if (u.id !== undefined && u.id !== null) {
+          userIdMap.set(String(u.id), newId);
+        }
         cnt++;
       }
-      // 重置序列到最大ID+1
-      await client.query("SELECT setval('users_id_seq', GREATEST((SELECT MAX(id) FROM users), 1))");
       counts.users = cnt;
     }
 
-    // 2. 导入品牌关键词（不保留原始id，避免整数溢出）
+    // 2. 导入品牌关键词（使用新的user_id映射，不保留原始id）
     if (data.pp && data.pp.length > 0) {
       let cnt = 0;
       for (const p of data.pp) {
+        const newUserId = userIdMap.get(String(p.user_id)) || String(p.user_id || '');
         await client.query(
           `INSERT INTO pp (user_id, pp) VALUES ($1, $2)
            ON CONFLICT DO NOTHING`,
-          [p.user_id || '', p.pp || '']
+          [newUserId, p.pp || '']
         );
         cnt++;
       }
       counts.pp = cnt;
     }
 
-    // 3. 导入核心关键词（不保留原始id）
+    // 3. 导入核心关键词（使用新的user_id映射，不保留原始id）
     if (data.distillateKeywords && data.distillateKeywords.length > 0) {
       let cnt = 0;
       for (const dk of data.distillateKeywords) {
+        const newUserId = userIdMap.get(String(dk.user_id)) || String(dk.user_id || '');
         await client.query(
           `INSERT INTO distillate_keyword (distillate_keyword, user_id, zt)
            VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-          [dk.distillate_keyword || '', dk.user_id || '', dk.zt || 1]
+          [dk.distillate_keyword || '', newUserId, dk.zt || 1]
         );
         cnt++;
       }
@@ -893,10 +904,11 @@ export async function bulkImportData(data: {
     if (data.zlgjc && data.zlgjc.length > 0) {
       let cnt = 0;
       for (const z of data.zlgjc) {
+        const newUserId = userIdMap.get(String(z.userId || z.userid || '')) || String(z.userId || z.userid || '');
         const insertResult = await client.query(
           `INSERT INTO zlgjc (value, userid, lxfs, hxgjc)
            VALUES ($1, $2, $3, $4) RETURNING id`,
-          [z.value || '', z.userId || z.userid || '', z.lxfs || '', z.hxgjc || '']
+          [z.value || '', newUserId, z.lxfs || '', z.hxgjc || '']
         );
         const newId = insertResult.rows[0].id;
         if (z.id) {
@@ -922,16 +934,17 @@ export async function bulkImportData(data: {
       counts.zlgjcurl = cnt;
     }
 
-    // 6. 导入任务（建立新旧id映射）
+    // 6. 导入任务（建立新旧id映射，使用新的user_id映射）
     const taskIdMap = new Map<number, number>();
     if (data.tasks && data.tasks.length > 0) {
       let cnt = 0;
       for (const t of data.tasks) {
+        const newUserId = userIdMap.get(String(t.user_id)) || String(t.user_id || '');
         const insertResult = await client.query(
           `INSERT INTO task_info (user_id, start_date, end_date, total_num, status, name, create_time)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING id`,
-          [t.user_id || '', t.start_date, t.end_date, t.total_num || 0,
+          [newUserId, t.start_date, t.end_date, t.total_num || 0,
            t.status || 'completed', t.name || '', t.create_time]
         );
         const newTaskId = insertResult.rows[0].id;
@@ -1005,9 +1018,10 @@ export async function bulkImportData(data: {
           // 使用id映射，如果找不到映射则设为null（避免外键约束失败）
           const newDistillateId = r.distillate_keyword_id ? (zlgjcIdMap.get(r.distillate_keyword_id) || null) : null;
           const newTaskId = r.task_id ? (taskIdMap.get(r.task_id) || null) : null;
+          const newUserId = userIdMap.get(String(r.user_id)) || String(r.user_id || '');
           values.push(
             r.expanded_keyword || '', r.distillate_keyword || '', r.platform || '',
-            r.user_id || '', r.query_time, r.create_time,
+            newUserId, r.query_time, r.create_time,
             newDistillateId, r.update_time, r.w_id || 1,
             r.url || '', r.is_url || 1, r.ly || '', newTaskId
           );
