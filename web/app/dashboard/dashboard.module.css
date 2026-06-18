@@ -657,7 +657,7 @@
   .mobile > div {
     width: 100%;
   }
-  /* 移动端卡片宽度自适应并留出边距 */
+  /* 移动端卡片宽度自适应并留出边距，保持 PC 版高度比例不变 */
   .mobile .aiWrapper,
   .mobile .ksWrapper,
   .mobile .prWrapper,
@@ -665,19 +665,6 @@
   .mobile .srWrapper {
     width: calc(100% - 24px) !important;
     margin: 0 auto;
-    height: auto !important;
-    min-height: auto !important;
-    max-height: none !important;
-  }
-  /* 移动端卡片最小高度，避免 PC 设计在窄屏下过度压缩 */
-  .mobile .prWrapper {
-    min-height: 380px !important;
-  }
-  .mobile .krWrapper {
-    min-height: 320px !important;
-  }
-  .mobile .srWrapper {
-    min-height: 500px !important;
   }
 }
 
