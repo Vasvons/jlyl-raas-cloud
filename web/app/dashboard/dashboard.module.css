@@ -903,6 +903,24 @@
   padding: 0 4px;
 }
 
+.srMobileTabs :global(.ant-tabs-nav) {
+  margin-bottom: 8px;
+}
+
+.srMobileTabs :global(.ant-tabs-tab) {
+  font-size: 12px;
+  padding: 6px 10px;
+}
+
+.srMobileTabs :global(.ant-tabs-tab-active .ant-tabs-tab-btn) {
+  color: #ff5151 !important;
+  font-weight: 700;
+}
+
+.srMobileTabs :global(.ant-tabs-ink-bar) {
+  background: #ff5151;
+}
+
 .srMobile .srTabs {
   overflow-x: auto;
   margin-bottom: 8px;

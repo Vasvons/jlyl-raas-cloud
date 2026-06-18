@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, Flex, Button, Modal, message } from 'antd';
+import { Card, Table, Tag, Spin, Pagination, Radio, Select, Tabs, Row, Col, Flex, Button, Modal, message } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import api from '@/lib/api';
 import { useRouter } from 'next/navigation';
@@ -567,21 +567,33 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
         </div>
       </div>
       <div className={styles.srTabsWrapper}>
-        <div className={styles.srTabs}>
-          {platforms.map((e) => (
-            <Tag.CheckableTag
-              key={e.platform}
-              checked={activePlatform?.platform === e.platform}
-              className={`${styles.srTab} ${activePlatform?.platform === e.platform ? styles.srChecked : ''}`}
-              onClick={() => handlePlatformChange(e)}
-            >
-              <div className={styles.srPlatformItem}>
-                <span>{e.platform}</span>
-                <span>({e.count})</span>
-              </div>
-            </Tag.CheckableTag>
-          ))}
-        </div>
+        {isMobile ? (
+          <Tabs
+            activeKey={activePlatform?.platform}
+            onChange={(key) => {
+              const p = platforms.find((x) => x.platform === key);
+              if (p) handlePlatformChange(p);
+            }}
+            items={platforms.map((e) => ({ key: e.platform, label: e.platform }))}
+            className={styles.srMobileTabs}
+          />
+        ) : (
+          <div className={styles.srTabs}>
+            {platforms.map((e) => (
+              <Tag.CheckableTag
+                key={e.platform}
+                checked={activePlatform?.platform === e.platform}
+                className={`${styles.srTab} ${activePlatform?.platform === e.platform ? styles.srChecked : ''}`}
+                onClick={() => handlePlatformChange(e)}
+              >
+                <div className={styles.srPlatformItem}>
+                  <span>{e.platform}</span>
+                  <span>({e.count})</span>
+                </div>
+              </Tag.CheckableTag>
+            ))}
+          </div>
+        )}
         {isMobile ? (
           <div className={styles.srSelectWrapper}>
             <Select
