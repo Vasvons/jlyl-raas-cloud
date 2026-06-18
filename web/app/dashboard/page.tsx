@@ -217,9 +217,9 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
             ...(isMobile
               ? {
                   top: 'bottom',
-                  type: 'scroll',
                   itemWidth: 12,
                   itemHeight: 12,
+                  itemGap: 8,
                   textStyle: {
                     fontSize: 11,
                     rich: Object.fromEntries(
