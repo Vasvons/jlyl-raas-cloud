@@ -866,6 +866,10 @@
   .wrapper {
     padding: 0;
   }
+  /* 抵消 antd Row gutter 的负 margin，防止内容超出视口 */
+  .pc {
+    padding: 0 12px;
+  }
 }
 
 /* 移动端wrapper允许内容滚动 */
