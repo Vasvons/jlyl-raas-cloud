@@ -595,7 +595,9 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
 // 主页面
 export default function DashboardPage() {
   const router = useRouter();
-  const [isMobile, setIsMobile] = useState(false);
+  // 响应式：参考 7asi.com，所有设备统一使用 PC 左右分栏布局（通过 vh/vw 单位等比缩放）
+  // 不再根据 UA 或视口宽度切换到移动端单列布局
+  const isMobile = false;
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<LoginUser>({ id: '-1', username: '', phone: '', url: '', email: '', password: '', address: '', level: '', cid: '', dateTime: '' });
   const [lastUpdate, setLastUpdate] = useState('');
@@ -609,21 +611,6 @@ export default function DashboardPage() {
   const [shareLoading, setShareLoading] = useState(false);
   const [shareUrl, setShareUrl] = useState('');
   const [shareTokens, setShareTokens] = useState<Array<{ token: string; createTime: string; lastUseTime: string | null }>>([]);
-
-  // 响应式：检测移动端（UA + 视口宽度）
-  useEffect(() => {
-    const checkMobile = () => {
-      const ua = navigator.userAgent || navigator.vendor || (window as unknown as { opera?: string }).opera || '';
-      const uaMobile = /android|iphone|ipad|ipod|mobile/i.test(ua.toLowerCase());
-      // 同时检查视口宽度：小于 768px 视为移动端（响应式设计）
-      const viewportMobile = window.innerWidth < 768;
-      setIsMobile(uaMobile || viewportMobile);
-    };
-    checkMobile();
-    // 监听视口变化（桌面端缩放窗口时实时响应）
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
 
   useEffect(() => {
     const fetchUser = async () => {
