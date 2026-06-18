@@ -914,11 +914,11 @@ export default function DashboardPage() {
           </div>
         ) : (
           <div className={styles.mobile}>
-            <div className={styles.baseInfo}><AICard isMobile={true} userId={selectedUserId} /></div>
-            <div className={styles.info3}><KeywordStats isMobile={true} userId={selectedUserId} /></div>
-            <div className={styles.info1}><PlatformRatioChart isMobile={true} userId={selectedUserId} /></div>
-            <div className={styles.info2}><KeywordRankChart isMobile={true} userId={selectedUserId} /></div>
-            <div className={styles.info4}><SearchRank isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.baseInfo}><AICard isMobile={false} userId={selectedUserId} /></div>
+            <div className={styles.info3}><KeywordStats isMobile={false} userId={selectedUserId} /></div>
+            <div className={styles.info1}><PlatformRatioChart isMobile={false} userId={selectedUserId} /></div>
+            <div className={styles.info2}><KeywordRankChart isMobile={false} userId={selectedUserId} /></div>
+            <div className={styles.info4}><SearchRank isMobile={false} userId={selectedUserId} /></div>
           </div>
         )}
       </div>
