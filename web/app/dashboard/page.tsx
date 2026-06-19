@@ -227,7 +227,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
                 name: e.name,
                 itemStyle: { color: e.color },
               })),
-              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['30%', '50%'] }),
+              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['50%', '50%'] }),
             },
             {
               type: 'pie',
@@ -236,7 +236,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
               label: { show: false },
               itemStyle: { color: 'transparent' },
               data: [{ value: 1 }],
-              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['30%', '50%'] }),
+              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['50%', '50%'] }),
             },
           ],
         });
@@ -262,6 +262,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
           <div className={isMobile ? styles.prMobileLegend : styles.prPcLegend}>
             {chartData.map((e) => (
               <div key={e.name} className={styles.prLegendItem}>
+                <span className={styles.prLegendColor} style={{ background: e.color }} />
                 <img src={PLATFORM_ICONS[e.name] || ''} alt="" className={styles.prLegendIcon} />
                 <span className={styles.prLegendName}>{e.name}</span>
                 <span className={styles.prLegendCount}>{e.count}</span>

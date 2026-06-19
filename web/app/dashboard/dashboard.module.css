@@ -458,7 +458,7 @@
 
 /* ===== 搜索排名 ===== */
 .srWrapper {
-  height: 68vh;
+  height: calc(68vh + 20px);
   display: flex;
   flex-direction: column;
   background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241799%20(1).png") 100% 100%;
@@ -1201,7 +1201,7 @@
 }
 
 .prPcChartWrapper > :global(div):first-child {
-  flex: 0 0 55%;
+  flex: 0 0 50%;
   height: 100% !important;
 }
 
@@ -1209,16 +1209,32 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 0 10px;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 16px;
 }
 
 .prLegendItem {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   font-size: 13px;
   color: #333;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.prLegendItem:hover {
+  background: rgba(255, 76, 60, 0.06);
+}
+
+.prLegendColor {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
 }
 
 .prLegendIcon {
@@ -1233,11 +1249,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 500;
 }
 
 .prLegendCount {
   color: #666;
-  font-weight: 500;
+  font-weight: 600;
+  min-width: 36px;
+  text-align: right;
 }
 
 /* 核心关键词排名 */
