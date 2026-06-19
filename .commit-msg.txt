@@ -1,10 +1,9 @@
-fix: 修复Dockerfile.web使用standalone模式但项目是export模式的问题
+feat: 优化关键词配置/任务/监测/用户管理页面并修复任务bug
 
-项目使用 Next.js output: 'export' 静态导出，产物在 out/ 目录，
-但 Dockerfile.web 期望 output: 'standalone'（产物在 .next/standalone）。
-
-修改为使用 nginx:alpine 托管 out/ 目录的静态文件：
-- 新增 docker/nginx-web.conf 容器内 nginx 配置
-- 监听 3011 端口
-- /api/ 代理到 server:3002（docker-compose 网络）
-- SPA 路由回退支持 Next.js 静态导出
+- 关键词配置：生成器改一排布局，Tabs分蒸馏/品牌，词库Tabs分页
+- 品牌关键词生成器：A品牌词自动readOnly，B核心词自动获取
+- 任务页面：修复编辑按钮崩溃(dayjs转换)，权重列改并排
+- 任务页面：修复暂停按钮失败(updateTask动态字段)，新增复制按钮
+- 监测页面：去任务数卡片，改名收录记录/收录趋势，隐藏按钮，下载图片
+- 用户管理：Tab分页管理员/客户，不同表单字段
+- 后端：zlgjc表新增keyword_type列，新增任务复制接口

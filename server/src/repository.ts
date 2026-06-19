@@ -592,7 +592,7 @@ export async function generateBatch(params: {
 
 // 获取/创建每日随机数
 export async function getOrCreateDailyRandom(taskId: number, date: Date): Promise<number> {
-  const dateStr = date.toISOString().split('T')[0];
+  const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   const existing = await query(
     'SELECT random_num FROM daily_random WHERE task_id = $1 AND random_date = $2',
     [taskId, dateStr]
@@ -607,7 +607,7 @@ export async function getOrCreateDailyRandom(taskId: number, date: Date): Promis
 }
 
 export async function setDailyRandom(taskId: number, date: Date, num: number): Promise<void> {
-  const dateStr = date.toISOString().split('T')[0];
+  const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   await query(
     `INSERT INTO daily_random (task_id, random_date, random_num)
      VALUES ($1, $2, $3)
