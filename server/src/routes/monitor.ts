@@ -4,6 +4,7 @@ import {
   getTaskStatusSummary,
   getRecentRecords,
   getUserDataStats,
+  getUserDetailStats,
   bulkImportData,
 } from '../repository';
 import { authMiddleware, adminMiddleware } from '../auth';
@@ -51,6 +52,20 @@ router.get('/userStats', authMiddleware, adminMiddleware, async (req, res) => {
     res.json({ code: 200, data });
   } catch (e) {
     console.error('[Monitor] 获取用户数据统计失败:', e);
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 用户详细数据（用于数据监测页面的用户详情面板）
+router.get('/userDetail', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const userId = req.query.userId as string;
+    if (!userId) return res.json({ code: 400, message: '缺少 userId' });
+    const data = await getUserDetailStats(userId);
+    if (!data) return res.json({ code: 404, message: '用户不存在' });
+    res.json({ code: 200, data });
+  } catch (e) {
+    console.error('[Monitor] 获取用户详细数据失败:', e);
     res.json({ code: 500, message: '服务器错误' });
   }
 });

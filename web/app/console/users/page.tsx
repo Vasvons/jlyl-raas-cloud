@@ -114,6 +114,10 @@ export default function UsersPage() {
       render: (v: string) => v || '-',
     },
     {
+      title: '网址', dataIndex: 'url', width: 220,
+      render: (v: string) => v ? <a href={v} target="_blank" rel="noreferrer">{v}</a> : '-',
+    },
+    {
       title: '类型', dataIndex: 'level', width: 100,
       render: (v: string) => {
         const isAdmin = v === '1' || v === 'admin';
@@ -174,6 +178,9 @@ export default function UsersPage() {
           </Form.Item>
           <Form.Item label="邮箱" name="email">
             <Input placeholder="请输入邮箱" />
+          </Form.Item>
+          <Form.Item label="网址" name="url">
+            <Input placeholder="请输入网址，例如 https://example.com" />
           </Form.Item>
           <Form.Item label="类型" name="level" rules={[{ required: true, message: '请选择类型' }]} initialValue="0">
             <select style={{ width: '100%', padding: '6px 12px', border: '1px solid #d9d9d9', borderRadius: 4 }}>

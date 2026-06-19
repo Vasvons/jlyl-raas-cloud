@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Space, Tag, Popconfirm, message, Modal, Form, Input, InputNumber, Select, DatePicker, Tooltip, Divider, Card, Statistic } from 'antd';
-import { PlusOutlined, DeleteOutlined, ReloadOutlined, PauseCircleOutlined, PlayCircleOutlined, EditOutlined, ClearOutlined } from '@ant-design/icons';
+import { Table, Button, Space, Tag, Popconfirm, message, Modal, Form, Input, InputNumber, Select, DatePicker, Tooltip, Divider, Row, Col, Progress } from 'antd';
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, PauseCircleOutlined, PlayCircleOutlined, EditOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 
 interface TaskItem {
@@ -52,19 +52,20 @@ export default function TaskPage() {
   const [platforms, setPlatforms] = useState<PlatformOption[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
-  const [weightsModalVisible, setWeightsModalVisible] = useState(false);
-  const [clearModalVisible, setClearModalVisible] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
-  const [clearForm] = Form.useForm();
   const [filterUserId, setFilterUserId] = useState<string>('all');
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
-  const [weightsTask, setWeightsTask] = useState<TaskItem | null>(null);
-  const [weights, setWeights] = useState<{ platform: string; weight: number }[]>([]);
-  const [hourWeightsModalVisible, setHourWeightsModalVisible] = useState(false);
-  const [hourWeightsTask, setHourWeightsTask] = useState<TaskItem | null>(null);
-  const [hourWeights, setHourWeights] = useState<{ hourSlot: number; weight: number }[]>([]);
+
+  // 新建任务的平台权重（平铺展示）
+  const [newPlatformWeights, setNewPlatformWeights] = useState<{ platform: string; weight: number }[]>([]);
+  // 新建任务的时区权重（平铺展示）
+  const [newHourWeights, setNewHourWeights] = useState<{ hourSlot: number; weight: number }[]>([]);
+
+  // 编辑任务的平台权重和时区权重
+  const [editPlatformWeights, setEditPlatformWeights] = useState<{ platform: string; weight: number }[]>([]);
+  const [editHourWeights, setEditHourWeights] = useState<{ hourSlot: number; weight: number }[]>([]);
 
   const fetchTasks = async (userId: string = 'all') => {
     setLoading(true);
@@ -115,30 +116,32 @@ export default function TaskPage() {
     fetchPlatforms();
   }, []);
 
+  // 打开新建任务弹窗时，初始化平台权重和时区权重（默认值1）
+  const openCreate = () => {
+    form.resetFields();
+    // 平台权重：所有平台默认权重1
+    setNewPlatformWeights(platforms.map((p) => ({ platform: p.name, weight: 1 })));
+    // 时区权重：所有时段默认权重1
+    setNewHourWeights(HOUR_SLOTS.map((s) => ({ hourSlot: s.slot, weight: 1 })));
+    setModalVisible(true);
+  };
+
   const handleCreate = async (values: any) => {
     setSubmitting(true);
     try {
       const [startAt, endAt] = values.dateRange || [];
-      const platformWeights = values.platformWeights || [];
-      // 时区权重：表单结构为 { [slot]: { weight: number } }，转换为数组
-      const hourWeightsRaw = values.hourWeights || {};
-      const hourWeights = HOUR_SLOTS.map((s) => {
-        const w = hourWeightsRaw[s.slot];
-        return { hourSlot: s.slot, weight: w?.weight || 0 };
-      }).filter((w) => w.weight > 0);
       const res = await api.post('/task/rw', {
         userId: values.userId,
         count: values.count,
         startAt: startAt?.format('YYYY-MM-DD'),
         endAt: endAt?.format('YYYY-MM-DD'),
         name: values.name || '',
-        platformWeights,
-        hourWeights,
+        platformWeights: newPlatformWeights.filter((w) => w.weight > 0),
+        hourWeights: newHourWeights.filter((w) => w.weight > 0),
       });
       if (res.data?.code === 200) {
         message.success('创建成功');
         setModalVisible(false);
-        form.resetFields();
         fetchTasks(filterUserId);
       } else {
         message.error(res.data?.message || '创建失败');
@@ -178,7 +181,7 @@ export default function TaskPage() {
     }
   };
 
-  // 编辑任务
+  // 打开编辑弹窗
   const openEdit = (task: TaskItem) => {
     setEditingTask(task);
     editForm.setFieldsValue({
@@ -186,6 +189,18 @@ export default function TaskPage() {
       count: task.totalNum || 0,
       dateRange: task.startDate && task.endDate ? [task.startDate, task.endDate] : undefined,
     });
+    // 初始化编辑的平台权重（默认所有平台权重1）
+    const existingPw = task.platformWeights || [];
+    setEditPlatformWeights(platforms.map((p) => {
+      const found = existingPw.find((w) => w.platform === p.name);
+      return { platform: p.name, weight: found?.weight ?? 1 };
+    }));
+    // 初始化编辑的时区权重（默认所有时段权重1）
+    const existingHw = task.hourWeights || [];
+    setEditHourWeights(HOUR_SLOTS.map((s) => {
+      const found = existingHw.find((w) => w.hour_slot === s.slot);
+      return { hourSlot: s.slot, weight: found?.weight ?? 1 };
+    }));
     setEditModalVisible(true);
   };
 
@@ -200,9 +215,11 @@ export default function TaskPage() {
         startAt: startAt?.format('YYYY-MM-DD'),
         endAt: endAt?.format('YYYY-MM-DD'),
         name: values.name || '',
+        platformWeights: editPlatformWeights.filter((w) => w.weight > 0),
+        hourWeights: editHourWeights.filter((w) => w.weight > 0),
       });
       if (res.data?.code === 200) {
-        message.success('编辑成功');
+        message.success('编辑成功，新配置将应用于未生成的数据');
         setEditModalVisible(false);
         fetchTasks(filterUserId);
       } else {
@@ -210,97 +227,6 @@ export default function TaskPage() {
       }
     } catch (e) {
       message.error('编辑失败');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // 平台权重
-  const openWeights = (task: TaskItem) => {
-    setWeightsTask(task);
-    const existingWeights = task.platformWeights || [];
-    // 确保所有平台都有权重项
-    const allWeights = platforms.map((p) => {
-      const existing = existingWeights.find((w) => w.platform === p.name);
-      return { platform: p.name, weight: existing?.weight || 0 };
-    });
-    setWeights(allWeights);
-    setWeightsModalVisible(true);
-  };
-
-  const handleSaveWeights = async () => {
-    if (!weightsTask) return;
-    setSubmitting(true);
-    try {
-      const res = await api.post('/task/weights', {
-        taskId: weightsTask.id,
-        weights: weights.filter((w) => w.weight > 0),
-      });
-      if (res.data?.code === 200) {
-        message.success('权重保存成功');
-        setWeightsModalVisible(false);
-        fetchTasks(filterUserId);
-      } else {
-        message.error(res.data?.message || '保存失败');
-      }
-    } catch (e) {
-      message.error('保存失败');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // 时区权重
-  const openHourWeights = (task: TaskItem) => {
-    setHourWeightsTask(task);
-    const existing = task.hourWeights || [];
-    const allHourWeights = HOUR_SLOTS.map((s) => {
-      const found = existing.find((w) => w.hour_slot === s.slot);
-      return { hourSlot: s.slot, weight: found?.weight || 0 };
-    });
-    setHourWeights(allHourWeights);
-    setHourWeightsModalVisible(true);
-  };
-
-  const handleSaveHourWeights = async () => {
-    if (!hourWeightsTask) return;
-    setSubmitting(true);
-    try {
-      const res = await api.post('/task/hourWeights', {
-        taskId: hourWeightsTask.id,
-        weights: hourWeights,
-      });
-      if (res.data?.code === 200) {
-        message.success('时区权重保存成功');
-        setHourWeightsModalVisible(false);
-        fetchTasks(filterUserId);
-      } else {
-        message.error(res.data?.message || '保存失败');
-      }
-    } catch (e) {
-      message.error('保存失败');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  // 数据清零
-  const handleClearData = async (values: any) => {
-    setSubmitting(true);
-    try {
-      const res = await api.post('/data/clear', {
-        userId: values.userId || undefined,
-        type: values.type,
-      });
-      if (res.data?.code === 200) {
-        message.success(`已清零 ${res.data.data?.cleared || 0} 条数据`);
-        setClearModalVisible(false);
-        clearForm.resetFields();
-      } else {
-        message.error(res.data?.message || '清零失败');
-      }
-    } catch (e) {
-      message.error('清零失败');
     } finally {
       setSubmitting(false);
     }
@@ -329,48 +255,29 @@ export default function TaskPage() {
     { title: '开始日期', dataIndex: 'startDate', width: 120, render: (v: string) => v || '-' },
     { title: '结束日期', dataIndex: 'endDate', width: 120, render: (v: string) => v || '-' },
     {
-      title: '进度', width: 150,
+      title: '进度', width: 180,
       render: (_: any, record: TaskItem) => {
         const generated = record.generatedNum || 0;
         const total = record.totalNum || 0;
         const pct = total > 0 ? Math.min(100, Math.round((generated / total) * 100)) : 0;
         return (
-          <Tooltip title={`${generated} / ${total}`}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ flex: 1, height: 8, background: '#f0f0f0', borderRadius: 4, overflow: 'hidden' }}>
-                <div style={{ width: `${pct}%`, height: '100%', background: '#1890ff', transition: 'width 0.3s' }} />
-              </div>
-              <span style={{ fontSize: 12, color: '#666' }}>{generated}/{total}</span>
-            </div>
-          </Tooltip>
+          <div>
+            <Progress percent={pct} size="small" status={record.status === 'completed' ? 'success' : 'active'} />
+            <span style={{ fontSize: 12, color: '#666' }}>{generated} / {total}</span>
+          </div>
         );
       },
     },
     {
-      title: '平台权重', width: 120,
+      title: '权重配置', width: 140,
       render: (_: any, record: TaskItem) => {
-        const ws = record.platformWeights || [];
-        if (ws.length === 0) return <Tag>默认均匀</Tag>;
+        const pw = (record.platformWeights || []).filter((w) => w.weight > 0).length;
+        const hw = (record.hourWeights || []).filter((w) => w.weight > 0).length;
         return (
-          <Tooltip title={ws.map((w) => `${w.platform}: ${w.weight}`).join(', ')}>
-            <Button size="small" onClick={() => openWeights(record)}>{ws.length}个平台</Button>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: '时区权重', width: 120,
-      render: (_: any, record: TaskItem) => {
-        const hws = record.hourWeights || [];
-        const configured = hws.filter((w) => w.weight > 0);
-        if (configured.length === 0) return <Tag>默认均匀</Tag>;
-        const total = configured.reduce((s, w) => s + w.weight, 0);
-        const peak = configured.reduce((m, w) => (w.weight > m.weight ? w : m), configured[0]);
-        return (
-          <Tooltip title={configured.map((w) => `${HOUR_SLOTS[w.hour_slot]?.label}: ${w.weight}（${Math.round(w.weight / total * 100)}%）`).join('\n')}>
-            <Button size="small" onClick={() => openHourWeights(record)}>已配置</Button>
-            <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>峰值: {HOUR_SLOTS[peak.hour_slot]?.label}</div>
-          </Tooltip>
+          <Space direction="vertical" size={0}>
+            <Tag color={pw > 0 ? 'blue' : 'default'}>平台: {pw > 0 ? `${pw}个` : '均匀'}</Tag>
+            <Tag color={hw > 0 ? 'cyan' : 'default'}>时区: {hw > 0 ? `${hw}段` : '均匀'}</Tag>
+          </Space>
         );
       },
     },
@@ -380,7 +287,7 @@ export default function TaskPage() {
     },
     { title: '创建时间', dataIndex: 'createTime', width: 180, render: (v: string) => v || '-' },
     {
-      title: '操作', width: 360, fixed: 'right' as const,
+      title: '操作', width: 200, fixed: 'right' as const,
       render: (_: any, record: TaskItem) => (
         <Space wrap>
           {record.status === 'running' && (
@@ -389,16 +296,88 @@ export default function TaskPage() {
           {record.status === 'paused' && (
             <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => handleStatusChange(record.id, 'running')}>恢复</Button>
           )}
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
-          <Button size="small" onClick={() => openWeights(record)}>平台权重</Button>
-          <Button size="small" onClick={() => openHourWeights(record)}>时区权重</Button>
-          <Popconfirm title="确定删除该任务？" onConfirm={() => handleDelete(record.id)}>
+          <Button size="small" type="primary" ghost icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+          <Popconfirm title="确定删除该任务？删除后不可恢复。" okText="确定删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => handleDelete(record.id)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
         </Space>
       ),
     },
   ];
+
+  // 渲染平台权重平铺配置
+  const renderPlatformWeights = (
+    weights: { platform: string; weight: number }[],
+    setWeights: (w: { platform: string; weight: number }[]) => void
+  ) => (
+    <div>
+      <div style={{ marginBottom: 8, fontSize: 13, color: '#666' }}>
+        权重为相对比例。例如平台A权重2、平台B权重3，则数据按 2:3 分配。权重为0表示该平台不生成数据。
+      </div>
+      <Row gutter={[8, 8]}>
+        {weights.map((w, idx) => (
+          <Col span={6} key={w.platform}>
+            <div style={{ padding: 8, border: '1px solid #f0f0f0', borderRadius: 4 }}>
+              <div style={{ marginBottom: 4, fontSize: 13, fontWeight: 500 }}>{w.platform}</div>
+              <InputNumber
+                min={0}
+                max={100}
+                value={w.weight}
+                onChange={(v) => {
+                  const nw = [...weights];
+                  nw[idx] = { ...nw[idx], weight: v ?? 0 };
+                  setWeights(nw);
+                }}
+                style={{ width: '100%' }}
+              />
+            </div>
+          </Col>
+        ))}
+      </Row>
+    </div>
+  );
+
+  // 渲染时区权重平铺配置
+  const renderHourWeights = (
+    weights: { hourSlot: number; weight: number }[],
+    setWeights: (w: { hourSlot: number; weight: number }[]) => void
+  ) => {
+    const total = weights.reduce((s, w) => s + (w.weight || 0), 0);
+    return (
+      <div>
+        <div style={{ marginBottom: 8, fontSize: 13, color: '#666' }}>
+          按24小时每3小时一个时段设置权重。权重为相对比例，权重为0表示该时段不生成数据。
+        </div>
+        <Row gutter={[8, 8]}>
+          {weights.map((hw, idx) => {
+            const slot = HOUR_SLOTS.find((s) => s.slot === hw.hourSlot);
+            const pct = total > 0 && hw.weight > 0 ? Math.round(hw.weight / total * 100) : 0;
+            return (
+              <Col span={6} key={hw.hourSlot}>
+                <div style={{ padding: 8, border: '1px solid #f0f0f0', borderRadius: 4 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                    <span style={{ fontSize: 13, fontWeight: 500 }}>{slot?.label}</span>
+                    {pct > 0 && <Tag color="blue">{pct}%</Tag>}
+                  </div>
+                  <InputNumber
+                    min={0}
+                    max={100}
+                    value={hw.weight}
+                    onChange={(v) => {
+                      const nw = [...weights];
+                      nw[idx] = { ...nw[idx], weight: v ?? 0 };
+                      setWeights(nw);
+                    }}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+              </Col>
+            );
+          })}
+        </Row>
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -412,8 +391,7 @@ export default function TaskPage() {
             options={[{ value: 'all', label: '全部用户' }, ...users.map((u) => ({ value: String(u.id), label: u.username }))]}
           />
           <Button icon={<ReloadOutlined />} onClick={() => fetchTasks(filterUserId)}>刷新</Button>
-          <Button icon={<ClearOutlined />} onClick={() => { clearForm.resetFields(); setClearModalVisible(true); }}>数据清零</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { form.resetFields(); setModalVisible(true); }}>新建任务</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建任务</Button>
         </Space>
       </div>
 
@@ -422,7 +400,7 @@ export default function TaskPage() {
         dataSource={tasks}
         columns={columns}
         rowKey="id"
-        scroll={{ x: 1620 }}
+        scroll={{ x: 1500 }}
         pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
       />
 
@@ -434,193 +412,91 @@ export default function TaskPage() {
         onOk={() => form.submit()}
         confirmLoading={submitting}
         destroyOnClose
-        width={700}
+        width={800}
       >
         <Form form={form} layout="vertical" onFinish={handleCreate}>
-          <Form.Item label="任务名称" name="name">
-            <Input placeholder="请输入任务名称（可选）" />
-          </Form.Item>
-          <Form.Item label="选择用户" name="userId" rules={[{ required: true, message: '请选择用户' }]}>
-            <Select
-              placeholder="请选择用户"
-              options={users.map((u) => ({ value: String(u.id), label: u.username }))}
-            />
-          </Form.Item>
-          <Form.Item label="生成数量" name="count" rules={[{ required: true, message: '请输入生成数量' }]}>
-            <InputNumber min={1} max={100000} style={{ width: '100%' }} placeholder="请输入生成数量" />
-          </Form.Item>
-          <Form.Item
-            label="日期范围"
-            name="dateRange"
-            rules={[{ required: true, message: '请选择日期范围' }]}
-            extra="开始时间可设为早于当前日期，系统将自动补齐从开始时间到当前的数据"
-          >
-            <RangePicker style={{ width: '100%' }} />
-          </Form.Item>
-          <Divider>平台权重（可选，不填则均匀分配）</Divider>
-          <Form.List name="platformWeights">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map(({ key, name, ...restField }) => (
-                  <Space key={key} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
-                    <Form.Item {...restField} name={[name, 'platform']} rules={[{ required: true, message: '选择平台' }]}>
-                      <Select style={{ width: 150 }} placeholder="选择平台" options={platforms.map((p) => ({ value: p.name, label: p.name }))} />
-                    </Form.Item>
-                    <Form.Item {...restField} name={[name, 'weight']} rules={[{ required: true, message: '输入权重' }]}>
-                      <InputNumber min={1} max={100} placeholder="权重" style={{ width: 100 }} />
-                    </Form.Item>
-                    <Button danger size="small" icon={<DeleteOutlined />} onClick={() => remove(name)} />
-                  </Space>
-                ))}
-                <Button type="dashed" block icon={<PlusOutlined />} onClick={() => add()}>添加平台权重</Button>
-              </>
-            )}
-          </Form.List>
-          <Divider>时区权重（可选，控制数据主要在哪个时段生成）</Divider>
-          <div style={{ marginBottom: 12, padding: 12, background: '#f6f8fa', borderRadius: 4, fontSize: 13, color: '#666' }}>
-            按24小时每3小时一个时段设置权重。权重为相对比例，权重为0表示该时段不生成数据。不填则全天均匀生成。
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 8 }}>
-            {HOUR_SLOTS.map((s) => (
-              <Form.Item key={s.slot} label={s.label} name={['hourWeights', s.slot, 'weight']} initialValue={0} style={{ marginBottom: 8 }}>
-                <InputNumber min={0} max={100} placeholder="0" style={{ width: '100%' }} />
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item label="任务名称" name="name">
+                <Input placeholder="请输入任务名称（可选）" />
               </Form.Item>
-            ))}
-          </div>
+            </Col>
+            <Col span={12}>
+              <Form.Item label="选择用户" name="userId" rules={[{ required: true, message: '请选择用户' }]}>
+                <Select
+                  placeholder="请选择用户"
+                  options={users.map((u) => ({ value: String(u.id), label: u.username }))}
+                />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item label="生成数量" name="count" rules={[{ required: true, message: '请输入生成数量' }]}>
+                <InputNumber min={1} max={100000} style={{ width: '100%' }} placeholder="请输入生成数量" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="日期范围"
+                name="dateRange"
+                rules={[{ required: true, message: '请选择日期范围' }]}
+                extra="开始时间可设为早于当前日期，系统将按权重自动补齐"
+              >
+                <RangePicker style={{ width: '100%' }} />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          <Divider>平台权重</Divider>
+          {renderPlatformWeights(newPlatformWeights, setNewPlatformWeights)}
+
+          <Divider>时区权重</Divider>
+          {renderHourWeights(newHourWeights, setNewHourWeights)}
         </Form>
       </Modal>
 
       {/* 编辑任务弹窗 */}
       <Modal
-        title="编辑任务"
+        title={`编辑任务 - ${editingTask?.name || editingTask?.id || ''}`}
         open={editModalVisible}
         onCancel={() => setEditModalVisible(false)}
         onOk={() => editForm.submit()}
         confirmLoading={submitting}
         destroyOnClose
-        width={500}
+        width={800}
       >
         <div style={{ marginBottom: 16, padding: 12, background: '#fff7e6', borderRadius: 4, fontSize: 13, color: '#fa8c16' }}>
-          编辑任务会影响后续未生成的数据。已生成的数据不会受影响。
+          调整后的设置不会影响已生成的数据，但会影响还未生成的数据。系统会根据新的权重配置生成后续数据。
+          若开始时间早于当前，系统会按权重自动补齐从开始时间到当前的数据。
         </div>
         <Form form={editForm} layout="vertical" onFinish={handleEdit}>
-          <Form.Item label="任务名称" name="name">
-            <Input placeholder="请输入任务名称（可选）" />
-          </Form.Item>
-          <Form.Item label="生成总数" name="count" rules={[{ required: true, message: '请输入生成数量' }]}>
-            <InputNumber min={1} max={100000} style={{ width: '100%' }} placeholder="请输入生成总数" />
-          </Form.Item>
-          <Form.Item label="日期范围" name="dateRange" rules={[{ required: true, message: '请选择日期范围' }]}>
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item label="任务名称" name="name">
+                <Input placeholder="请输入任务名称（可选）" />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item label="生成总数" name="count" rules={[{ required: true, message: '请输入生成数量' }]}>
+                <InputNumber min={1} max={100000} style={{ width: '100%' }} placeholder="请输入生成总数" />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item
+            label="日期范围"
+            name="dateRange"
+            rules={[{ required: true, message: '请选择日期范围' }]}
+            extra="可往更早的日期设置，系统会按权重配置自动补充数据"
+          >
             <RangePicker style={{ width: '100%' }} />
           </Form.Item>
-        </Form>
-      </Modal>
 
-      {/* 平台权重弹窗 */}
-      <Modal
-        title={`平台权重配置 - 任务 ${weightsTask?.id || ''}`}
-        open={weightsModalVisible}
-        onCancel={() => setWeightsModalVisible(false)}
-        onOk={handleSaveWeights}
-        confirmLoading={submitting}
-        destroyOnClose
-        width={500}
-      >
-        <div style={{ marginBottom: 16, padding: 12, background: '#f6f8fa', borderRadius: 4, fontSize: 13, color: '#666' }}>
-          权重为相对比例。例如平台A权重2、平台B权重3，则数据按 2:3 分配。权重为0表示该平台不生成数据。
-        </div>
-        {weights.map((w, idx) => (
-          <Space key={w.platform} style={{ display: 'flex', marginBottom: 8 }} align="baseline">
-            <span style={{ width: 120, display: 'inline-block' }}>{w.platform}：</span>
-            <InputNumber
-              min={0}
-              max={100}
-              value={w.weight}
-              onChange={(v) => {
-                const newWeights = [...weights];
-                newWeights[idx] = { ...newWeights[idx], weight: v || 0 };
-                setWeights(newWeights);
-              }}
-              style={{ width: 120 }}
-            />
-          </Space>
-        ))}
-      </Modal>
+          <Divider>平台权重</Divider>
+          {renderPlatformWeights(editPlatformWeights, setEditPlatformWeights)}
 
-      {/* 时区权重弹窗 */}
-      <Modal
-        title={`时区权重配置 - 任务 ${hourWeightsTask?.id || ''}`}
-        open={hourWeightsModalVisible}
-        onCancel={() => setHourWeightsModalVisible(false)}
-        onOk={handleSaveHourWeights}
-        confirmLoading={submitting}
-        destroyOnClose
-        width={600}
-      >
-        <div style={{ marginBottom: 16, padding: 12, background: '#f6f8fa', borderRadius: 4, fontSize: 13, color: '#666' }}>
-          按24小时每3小时一个时段设置权重。权重为相对比例，例如时段A权重2、时段B权重3，则数据按 2:3 分配到对应时段。权重为0表示该时段不生成数据。全部为0或不填则全天均匀生成。
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
-          {hourWeights.map((hw, idx) => {
-            const slot = HOUR_SLOTS.find((s) => s.slot === hw.hourSlot);
-            const total = hourWeights.reduce((s, w) => s + (w.weight || 0), 0);
-            const pct = total > 0 && hw.weight > 0 ? Math.round(hw.weight / total * 100) : 0;
-            return (
-              <div key={hw.hourSlot} style={{ padding: 8, border: '1px solid #f0f0f0', borderRadius: 4 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                  <span style={{ fontSize: 13, fontWeight: 500 }}>{slot?.label}</span>
-                  {pct > 0 && <Tag color="blue">{pct}%</Tag>}
-                </div>
-                <InputNumber
-                  min={0}
-                  max={100}
-                  value={hw.weight}
-                  onChange={(v) => {
-                    const newHw = [...hourWeights];
-                    newHw[idx] = { ...newHw[idx], weight: v || 0 };
-                    setHourWeights(newHw);
-                  }}
-                  style={{ width: '100%' }}
-                  placeholder="0"
-                />
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ marginTop: 12, padding: 8, background: '#e6f7ff', borderRadius: 4, fontSize: 12, color: '#1890ff' }}>
-          提示：建议根据目标用户活跃时段设置较高权重，例如工作时间段（09:00-18:00）可设置较高权重。
-        </div>
-      </Modal>
-
-      {/* 数据清零弹窗 */}
-      <Modal
-        title="数据清零"
-        open={clearModalVisible}
-        onCancel={() => setClearModalVisible(false)}
-        onOk={() => clearForm.submit()}
-        confirmLoading={submitting}
-        destroyOnClose
-        width={500}
-      >
-        <div style={{ marginBottom: 16, padding: 12, background: '#fff1f0', borderRadius: 4, fontSize: 13, color: '#cf1322' }}>
-          <b>警告：</b>此操作不可恢复！请谨慎操作。
-        </div>
-        <Form form={clearForm} layout="vertical" onFinish={handleClearData}>
-          <Form.Item label="清零类型" name="type" rules={[{ required: true, message: '请选择清零类型' }]} initialValue="report">
-            <Select
-              options={[
-                { value: 'report', label: 'GEO报告数据（收录记录）' },
-                { value: 'keyword', label: '关键词配置数据（品牌词、核心词、蒸馏关键词）' },
-              ]}
-            />
-          </Form.Item>
-          <Form.Item label="清零范围" name="userId">
-            <Select
-              allowClear
-              placeholder="全部用户（不选则清零所有用户数据）"
-              options={users.map((u) => ({ value: String(u.id), label: u.username }))}
-            />
-          </Form.Item>
+          <Divider>时区权重</Divider>
+          {renderHourWeights(editHourWeights, setEditHourWeights)}
         </Form>
       </Modal>
     </div>

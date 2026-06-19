@@ -888,6 +888,98 @@ export async function getUserDataStats() {
   return result;
 }
 
+// 获取用户详细数据（用于数据监测页面的用户详情面板）
+export async function getUserDetailStats(userId: string) {
+  // 1. 用户基本信息
+  const userRes = await query('SELECT id, username, phone, email, url, date_time FROM users WHERE id = $1', [userId]);
+  if (userRes.rows.length === 0) return null;
+  const user = userRes.rows[0];
+
+  // 2. 任务列表（含进度）
+  const tasksRes = await query(
+    `SELECT t.id, t.name, t.start_date, t.end_date, t.total_num, t.status, t.create_time,
+            COALESCE(p.generated_num, 0) as generated_num
+     FROM task_info t
+     LEFT JOIN task_progress p ON p.task_id = t.id
+     WHERE t.user_id = $1
+     ORDER BY t.create_time DESC`,
+    [userId]
+  );
+
+  // 3. 各平台数据分布
+  const platformRes = await query(
+    `SELECT platform, COUNT(*) as count
+     FROM keyword_search_rank
+     WHERE user_id = $1 AND platform != ''
+     GROUP BY platform
+     ORDER BY count DESC`,
+    [userId]
+  );
+
+  // 4. 关键词统计
+  const [dkCountRes, zlgjcCountRes, ppCountRes, recordCountRes, todayCountRes] = await Promise.all([
+    query('SELECT COUNT(*) as count FROM distillate_keyword WHERE user_id = $1', [userId]),
+    query('SELECT COUNT(*) as count FROM zlgjc WHERE userid = $1', [userId]),
+    query('SELECT COUNT(*) as count FROM pp WHERE user_id = $1', [userId]),
+    query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1', [userId]),
+    query("SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND query_time::date = CURRENT_DATE", [userId]),
+  ]);
+
+  // 5. 最近7天每日生成趋势
+  const trendRes = await query(
+    `SELECT query_time::date as date, COUNT(*) as count
+     FROM keyword_search_rank
+     WHERE user_id = $1 AND query_time >= CURRENT_DATE - INTERVAL '6 days'
+     GROUP BY query_time::date
+     ORDER BY date`,
+    [userId]
+  );
+
+  // 6. 联系方式标记数
+  const lxfsRes = await query(
+    `SELECT COUNT(*) as count FROM zlgjcurl WHERE zlgjcid IN (SELECT id FROM zlgjc WHERE userid = $1) AND has_lxfs = 1`,
+    [userId]
+  );
+
+  return {
+    user: {
+      id: user.id,
+      username: user.username,
+      phone: user.phone,
+      email: user.email,
+      url: user.url,
+      dateTime: user.date_time,
+    },
+    summary: {
+      taskCount: tasksRes.rows.length,
+      coreKeywordCount: parseInt(dkCountRes.rows[0].count) || 0,
+      zlgjcCount: parseInt(zlgjcCountRes.rows[0].count) || 0,
+      ppCount: parseInt(ppCountRes.rows[0].count) || 0,
+      recordCount: parseInt(recordCountRes.rows[0].count) || 0,
+      todayRecords: parseInt(todayCountRes.rows[0].count) || 0,
+      lxfsCount: parseInt(lxfsRes.rows[0].count) || 0,
+    },
+    tasks: tasksRes.rows.map((t: any) => ({
+      id: t.id,
+      name: t.name,
+      startDate: t.start_date,
+      endDate: t.end_date,
+      totalNum: t.total_num,
+      status: t.status,
+      createTime: t.create_time,
+      generatedNum: parseInt(t.generated_num) || 0,
+    })),
+    platformDistribution: platformRes.rows.map((p: any) => ({
+      platform: p.platform,
+      count: parseInt(p.count) || 0,
+    })),
+    dailyTrend: trendRes.rows.map((d: any) => ({
+      date: d.date,
+      count: parseInt(d.count) || 0,
+    })),
+  };
+}
+
 // ============ 批量数据导入（本地迁移） ============
 
 export async function bulkImportData(data: {
