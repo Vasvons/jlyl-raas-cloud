@@ -160,6 +160,45 @@ router.delete('/delete/:id', authMiddleware, adminMiddleware, async (req, res) =
   }
 });
 
+// 复制任务
+router.post('/copy', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { taskId } = req.body;
+    if (!taskId) return res.json({ code: 400, message: '缺少 taskId' });
+
+    const tasks = await getAllTasks('all');
+    const original = tasks.find((t: any) => t.id === parseInt(taskId));
+    if (!original) return res.json({ code: 404, message: '原任务不存在' });
+
+    const newId = Date.now();
+    await createTask({
+      id: newId,
+      userId: original.user_id,
+      startDate: original.start_date,
+      endDate: original.end_date,
+      totalNum: original.total_num,
+      status: 'paused',
+      name: (original.name || '') + ' (副本)',
+    });
+
+    // 复制平台权重
+    const weights = await getTaskWeights(parseInt(taskId));
+    if (weights.length > 0) {
+      await setTaskWeights(newId, weights);
+    }
+    // 复制时区权重
+    const hourWeights = await getTaskHourWeights(parseInt(taskId));
+    if (hourWeights.length > 0) {
+      await setTaskHourWeights(newId, hourWeights);
+    }
+
+    res.json({ code: 200, data: { id: newId }, message: '复制成功' });
+  } catch (e) {
+    console.error('[Task] 复制任务失败:', e);
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
 // 删除任务（POST 方式，保留兼容）
 router.post('/delete', authMiddleware, adminMiddleware, async (req, res) => {
   try {

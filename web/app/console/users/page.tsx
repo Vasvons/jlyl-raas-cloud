@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Table, Modal, Form, Input, Button, Space, Tag, Popconfirm, message } from 'antd';
+import { Table, Modal, Form, Input, Button, Space, Tag, Popconfirm, message, Tabs } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 
@@ -23,6 +23,7 @@ export default function UsersPage() {
   const [modalVisible, setModalVisible] = useState(false);
   const [editingUser, setEditingUser] = useState<UserItem | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [activeTab, setActiveTab] = useState('customer');
   const [form] = Form.useForm();
 
   const fetchUsers = async () => {
@@ -102,7 +103,10 @@ export default function UsersPage() {
     setModalVisible(true);
   };
 
-  const columns = [
+  const adminUsers = users.filter((u) => u.level === '1' || u.level === 'admin');
+  const customerUsers = users.filter((u) => u.level !== '1' && u.level !== 'admin');
+
+  const baseColumns = [
     { title: 'ID', dataIndex: 'id', width: 80 },
     { title: '用户名', dataIndex: 'username', width: 150 },
     {
@@ -113,16 +117,13 @@ export default function UsersPage() {
       title: '邮箱', dataIndex: 'email', width: 200,
       render: (v: string) => v || '-',
     },
-    {
-      title: '网址', dataIndex: 'url', width: 220,
-      render: (v: string) => v ? <a href={v} target="_blank" rel="noreferrer">{v}</a> : '-',
-    },
+  ];
+
+  const adminColumns = [
+    ...baseColumns,
     {
       title: '类型', dataIndex: 'level', width: 100,
-      render: (v: string) => {
-        const isAdmin = v === '1' || v === 'admin';
-        return <Tag color={isAdmin ? 'magenta' : 'blue'}>{isAdmin ? '管理员' : '客户'}</Tag>;
-      },
+      render: () => <Tag color="magenta">管理员</Tag>,
     },
     {
       title: '注册时间', dataIndex: 'dateTime', width: 180,
@@ -133,7 +134,7 @@ export default function UsersPage() {
       render: (_: any, record: UserItem) => (
         <Space>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
-          <Popconfirm title="确定要删除该用户吗？" onConfirm={() => handleDelete(record)}>
+          <Popconfirm title="确定要删除该管理员吗？" onConfirm={() => handleDelete(record)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
         </Space>
@@ -141,25 +142,92 @@ export default function UsersPage() {
     },
   ];
 
+  const customerColumns = [
+    ...baseColumns,
+    {
+      title: '网址', dataIndex: 'url', width: 220,
+      render: (v: string) => v ? <a href={v} target="_blank" rel="noreferrer">{v}</a> : '-',
+    },
+    {
+      title: '地址', dataIndex: 'address', width: 200,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '类型', dataIndex: 'level', width: 100,
+      render: () => <Tag color="blue">客户</Tag>,
+    },
+    {
+      title: '注册时间', dataIndex: 'dateTime', width: 180,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '操作', width: 150, fixed: 'right' as const,
+      render: (_: any, record: UserItem) => (
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+          <Popconfirm title="确定要删除该客户吗？" onConfirm={() => handleDelete(record)}>
+            <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
+  const isEditingAdmin = editingUser?.level === '1' || editingUser?.level === 'admin';
+
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
         <h2 style={{ margin: 0 }}>用户管理</h2>
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('1')}>新增管理员</Button>
-          <Button icon={<PlusOutlined />} onClick={() => openCreate('0')}>新增客户</Button>
-        </Space>
       </div>
-      <Table
-        loading={loading}
-        dataSource={users}
-        columns={columns}
-        rowKey="id"
-        scroll={{ x: 1000 }}
-        pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={[
+          {
+            key: 'customer',
+            label: <span>客户 <Tag color="blue" style={{ marginLeft: 4 }}>{customerUsers.length}</Tag></span>,
+            children: (
+              <div>
+                <div style={{ marginBottom: 16 }}>
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('0')}>新增客户</Button>
+                </div>
+                <Table
+                  loading={loading}
+                  dataSource={customerUsers}
+                  columns={customerColumns}
+                  rowKey="id"
+                  scroll={{ x: 1200 }}
+                  pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+                />
+              </div>
+            ),
+          },
+          {
+            key: 'admin',
+            label: <span>管理员 <Tag color="magenta" style={{ marginLeft: 4 }}>{adminUsers.length}</Tag></span>,
+            children: (
+              <div>
+                <div style={{ marginBottom: 16 }}>
+                  <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('1')}>新增管理员</Button>
+                </div>
+                <Table
+                  loading={loading}
+                  dataSource={adminUsers}
+                  columns={adminColumns}
+                  rowKey="id"
+                  scroll={{ x: 1000 }}
+                  pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+                />
+              </div>
+            ),
+          },
+        ]}
       />
+
       <Modal
-        title={editingUser ? '编辑用户' : '新增用户'}
+        title={editingUser ? `编辑${isEditingAdmin ? '管理员' : '客户'}` : (activeTab === 'admin' ? '新增管理员' : '新增客户')}
         open={modalVisible}
         onCancel={() => setModalVisible(false)}
         onOk={() => form.submit()}
@@ -179,9 +247,17 @@ export default function UsersPage() {
           <Form.Item label="邮箱" name="email">
             <Input placeholder="请输入邮箱" />
           </Form.Item>
-          <Form.Item label="网址" name="url">
-            <Input placeholder="请输入网址，例如 https://example.com" />
-          </Form.Item>
+          {/* 客户独有字段 */}
+          {(!isEditingAdmin) && (
+            <>
+              <Form.Item label="网址" name="url">
+                <Input placeholder="请输入网址，例如 https://example.com" />
+              </Form.Item>
+              <Form.Item label="地址" name="address">
+                <Input placeholder="请输入地址" />
+              </Form.Item>
+            </>
+          )}
           <Form.Item label="类型" name="level" rules={[{ required: true, message: '请选择类型' }]} initialValue="0">
             <select style={{ width: '100%', padding: '6px 12px', border: '1px solid #d9d9d9', borderRadius: 4 }}>
               <option value="1">管理员</option>

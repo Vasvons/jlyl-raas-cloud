@@ -202,6 +202,7 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_value ON zlgjc(value)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_userid ON zlgjc(userid)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_userid_value ON zlgjc(userid, value)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_userid_type ON zlgjc(userid, keyword_type)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_zlgjcid_pt ON zlgjcurl(zlgjcid, pt)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_has_lxfs ON zlgjcurl(has_lxfs)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_user ON pp(user_id)`);
@@ -209,6 +210,13 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dk_user ON distillate_keyword(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_token ON share_tokens(token)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)`);
+
+    // 增量迁移：为 zlgjc 表添加 keyword_type 列（0=蒸馏关键词, 1=品牌关键词）
+    try {
+      await client.query(`ALTER TABLE zlgjc ADD COLUMN IF NOT EXISTS keyword_type SMALLINT DEFAULT 0`);
+    } catch (e) {
+      // 列已存在则忽略
+    }
 
     // 初始化平台数据
     const ptCount = await client.query('SELECT COUNT(*) as count FROM pt');

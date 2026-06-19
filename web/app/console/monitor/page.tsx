@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Card, Row, Col, Statistic, Table, Tag, Progress, message, Button, Space, InputNumber, Tabs, Modal, Descriptions, Empty, Spin } from 'antd';
-import { ReloadOutlined, UserOutlined, DatabaseOutlined, RiseOutlined, FileTextOutlined, ThunderboltOutlined, EyeOutlined, FileSearchOutlined, ContactsOutlined, CalendarOutlined } from '@ant-design/icons';
+import { ReloadOutlined, UserOutlined, DatabaseOutlined, RiseOutlined, FileTextOutlined, ThunderboltOutlined, EyeOutlined, FileSearchOutlined, ContactsOutlined, DownloadOutlined, EyeInvisibleOutlined } from '@ant-design/icons';
+import html2canvas from 'html2canvas';
 import api from '@/lib/api';
 
 interface SystemOverview {
@@ -78,7 +79,6 @@ const STATUS_MAP: Record<string, { color: string; text: string }> = {
   pending: { color: 'default', text: '等待中' },
 };
 
-// 颜色调色板（用于平台分布）
 const PLATFORM_COLORS = ['#1890ff', '#52c41a', '#faad14', '#f5222d', '#722ed1', '#13c2c2', '#eb2f96', '#fa8c16', '#a0d911', '#2f54eb'];
 
 export default function MonitorPage() {
@@ -90,10 +90,11 @@ export default function MonitorPage() {
   const [recentLimit, setRecentLimit] = useState(50);
   const [activeTab, setActiveTab] = useState('overview');
 
-  // 用户详情
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [userDetail, setUserDetail] = useState<UserDetail | null>(null);
+  const [taskListHidden, setTaskListHidden] = useState(false);
+  const detailRef = useRef<HTMLDivElement>(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -122,11 +123,11 @@ export default function MonitorPage() {
     return () => clearInterval(timer);
   }, [recentLimit]);
 
-  // 查看用户详情
   const fetchUserDetail = async (userId: number) => {
     setDetailModalVisible(true);
     setDetailLoading(true);
     setUserDetail(null);
+    setTaskListHidden(false);
     try {
       const res = await api.get('/monitor/userDetail', { params: { userId } });
       if (res.data?.code === 200) {
@@ -138,6 +139,27 @@ export default function MonitorPage() {
       message.error('获取用户详情失败');
     } finally {
       setDetailLoading(false);
+    }
+  };
+
+  // 下载弹窗内容为图片
+  const handleDownload = async () => {
+    if (!detailRef.current) return;
+    try {
+      message.loading({ content: '正在生成图片...', key: 'download', duration: 0 });
+      const canvas = await html2canvas(detailRef.current, {
+        backgroundColor: '#ffffff',
+        scale: 2,
+        useCORS: true,
+      });
+      const link = document.createElement('a');
+      const username = userDetail?.user?.username || '用户';
+      link.download = `用户详情_${username}_${new Date().toISOString().slice(0, 10)}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+      message.success({ content: '图片已下载', key: 'download' });
+    } catch (e) {
+      message.error({ content: '下载失败', key: 'download' });
     }
   };
 
@@ -171,7 +193,7 @@ export default function MonitorPage() {
       sorter: (a: UserStat, b: UserStat) => a.zlgjcCount - b.zlgjcCount,
     },
     {
-      title: '数据记录数', dataIndex: 'recordCount', width: 110,
+      title: '收录记录数', dataIndex: 'recordCount', width: 110,
       sorter: (a: UserStat, b: UserStat) => a.recordCount - b.recordCount,
       render: (v: number) => <Tag color={v > 0 ? 'green' : 'default'}>{v}</Tag>,
     },
@@ -185,7 +207,6 @@ export default function MonitorPage() {
     },
   ];
 
-  // 渲染用户详情弹窗
   const renderUserDetail = () => {
     const maxPlatformCount = userDetail ? Math.max(...userDetail.platformDistribution.map((p) => p.count), 1) : 1;
     const maxTrendCount = userDetail ? Math.max(...userDetail.dailyTrend.map((d) => d.count), 1) : 1;
@@ -195,7 +216,12 @@ export default function MonitorPage() {
         title={userDetail ? `用户详情 - ${userDetail.user.username}` : '用户详情'}
         open={detailModalVisible}
         onCancel={() => setDetailModalVisible(false)}
-        footer={<Button onClick={() => setDetailModalVisible(false)}>关闭</Button>}
+        footer={
+          <Space>
+            <Button icon={<DownloadOutlined />} onClick={handleDownload}>下载图片</Button>
+            <Button onClick={() => setDetailModalVisible(false)}>关闭</Button>
+          </Space>
+        }
         width={900}
       >
         {detailLoading ? (
@@ -203,7 +229,7 @@ export default function MonitorPage() {
         ) : !userDetail ? (
           <Empty description="暂无数据" />
         ) : (
-          <div>
+          <div ref={detailRef}>
             {/* 用户基本信息 */}
             <Descriptions title="基本信息" bordered size="small" column={2} style={{ marginBottom: 16 }}>
               <Descriptions.Item label="用户名">{userDetail.user.username}</Descriptions.Item>
@@ -214,16 +240,11 @@ export default function MonitorPage() {
               <Descriptions.Item label="注册时间" span={2}>{userDetail.user.dateTime || '-'}</Descriptions.Item>
             </Descriptions>
 
-            {/* 数据概览 */}
+            {/* 数据概览（去掉任务数卡片） */}
             <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
               <Col span={6}>
                 <Card size="small">
-                  <Statistic title="任务数" value={userDetail.summary.taskCount} prefix={<ThunderboltOutlined />} />
-                </Card>
-              </Col>
-              <Col span={6}>
-                <Card size="small">
-                  <Statistic title="数据记录" value={userDetail.summary.recordCount} prefix={<DatabaseOutlined />} />
+                  <Statistic title="收录记录" value={userDetail.summary.recordCount} prefix={<DatabaseOutlined />} />
                 </Card>
               </Col>
               <Col span={6}>
@@ -236,17 +257,17 @@ export default function MonitorPage() {
                   <Statistic title="联系方式标记" value={userDetail.summary.lxfsCount} prefix={<ContactsOutlined />} valueStyle={{ color: '#52c41a' }} />
                 </Card>
               </Col>
-              <Col span={8}>
+              <Col span={6}>
                 <Card size="small">
                   <Statistic title="核心关键词" value={userDetail.summary.coreKeywordCount} prefix={<FileTextOutlined />} />
                 </Card>
               </Col>
-              <Col span={8}>
+              <Col span={12}>
                 <Card size="small">
                   <Statistic title="蒸馏关键词" value={userDetail.summary.zlgjcCount} prefix={<FileSearchOutlined />} />
                 </Card>
               </Col>
-              <Col span={8}>
+              <Col span={12}>
                 <Card size="small">
                   <Statistic title="品牌词" value={userDetail.summary.ppCount} prefix={<FileTextOutlined />} />
                 </Card>
@@ -276,8 +297,8 @@ export default function MonitorPage() {
               )}
             </Card>
 
-            {/* 最近7天趋势 */}
-            <Card title="最近7天生成趋势" size="small" style={{ marginBottom: 16 }}>
+            {/* 最近7天收录趋势 */}
+            <Card title="最近7天收录趋势" size="small" style={{ marginBottom: 16 }}>
               {userDetail.dailyTrend.length === 0 ? (
                 <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
               ) : (
@@ -300,44 +321,52 @@ export default function MonitorPage() {
               )}
             </Card>
 
-            {/* 任务列表 */}
-            <Card title="任务列表" size="small">
-              {userDetail.tasks.length === 0 ? (
-                <Empty description="暂无任务" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-              ) : (
-                <Table
-                  dataSource={userDetail.tasks}
-                  rowKey="id"
-                  size="small"
-                  pagination={{ pageSize: 5 }}
-                  columns={[
-                    { title: 'ID', dataIndex: 'id', width: 80 },
-                    { title: '任务名', dataIndex: 'name', width: 120, render: (v: string) => v || '-' },
-                    { title: '开始', dataIndex: 'startDate', width: 110 },
-                    { title: '结束', dataIndex: 'endDate', width: 110 },
-                    {
-                      title: '进度', width: 150,
-                      render: (_: any, record: any) => {
-                        const pct = record.totalNum > 0 ? Math.min(100, Math.round((record.generatedNum / record.totalNum) * 100)) : 0;
-                        return (
-                          <div>
-                            <Progress percent={pct} size="small" status={record.status === 'completed' ? 'success' : 'active'} />
-                            <span style={{ fontSize: 11, color: '#999' }}>{record.generatedNum}/{record.totalNum}</span>
-                          </div>
-                        );
+            {/* 任务列表（可隐藏） */}
+            {!taskListHidden && (
+              <Card
+                title="任务列表"
+                size="small"
+                extra={
+                  <Button size="small" type="text" icon={<EyeInvisibleOutlined />} onClick={() => setTaskListHidden(true)}>隐藏</Button>
+                }
+              >
+                {userDetail.tasks.length === 0 ? (
+                  <Empty description="暂无任务" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ) : (
+                  <Table
+                    dataSource={userDetail.tasks}
+                    rowKey="id"
+                    size="small"
+                    pagination={{ pageSize: 5 }}
+                    columns={[
+                      { title: 'ID', dataIndex: 'id', width: 80 },
+                      { title: '任务名', dataIndex: 'name', width: 120, render: (v: string) => v || '-' },
+                      { title: '开始', dataIndex: 'startDate', width: 110 },
+                      { title: '结束', dataIndex: 'endDate', width: 110 },
+                      {
+                        title: '进度', width: 150,
+                        render: (_: any, record: any) => {
+                          const pct = record.totalNum > 0 ? Math.min(100, Math.round((record.generatedNum / record.totalNum) * 100)) : 0;
+                          return (
+                            <div>
+                              <Progress percent={pct} size="small" status={record.status === 'completed' ? 'success' : 'active'} />
+                              <span style={{ fontSize: 11, color: '#999' }}>{record.generatedNum}/{record.totalNum}</span>
+                            </div>
+                          );
+                        },
                       },
-                    },
-                    {
-                      title: '状态', dataIndex: 'status', width: 90,
-                      render: (v: string) => {
-                        const cfg = STATUS_MAP[v] || { color: 'default', text: v };
-                        return <Tag color={cfg.color}>{cfg.text}</Tag>;
+                      {
+                        title: '状态', dataIndex: 'status', width: 90,
+                        render: (v: string) => {
+                          const cfg = STATUS_MAP[v] || { color: 'default', text: v };
+                          return <Tag color={cfg.color}>{cfg.text}</Tag>;
+                        },
                       },
-                    },
-                  ]}
-                />
-              )}
-            </Card>
+                    ]}
+                  />
+                )}
+              </Card>
+            )}
           </div>
         )}
       </Modal>
@@ -400,7 +429,7 @@ export default function MonitorPage() {
                   <Col span={6}>
                     <Card hoverable>
                       <Statistic
-                        title="数据记录总数"
+                        title="收录记录总数"
                         value={overview?.totalRecords || 0}
                         prefix={<DatabaseOutlined />}
                         loading={loading}

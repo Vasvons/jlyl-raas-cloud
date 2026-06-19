@@ -78,8 +78,8 @@ router.get('/dstillateKeyword/deleteDstillateKeyword', authMiddleware, adminMidd
 // ============ 蒸馏关键词生成 ============
 router.post('/keywordsearchrank/generate', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { A, B, C, D, E, F, G, userId } = req.body;
-    const result = await generateZlgjcKeywords(String(userId), { A, B, C, D, E, F, G });
+    const { A, B, C, D, E, F, G, userId, keywordType } = req.body;
+    const result = await generateZlgjcKeywords(String(userId), { A, B, C, D, E, F, G }, keywordType || 0);
     res.json({ code: 200, data: result });
   } catch (e) {
     res.json({ code: 500, message: '服务器错误' });
@@ -92,7 +92,8 @@ router.get('/zlgjc/select', authMiddleware, adminMiddleware, async (req, res) =>
     const userId = req.query.userId as string;
     const pageNum = parseInt(req.query.pageNum as string) || 1;
     const pageSize = parseInt(req.query.pageSize as string) || 10;
-    const result = await getZlgjcByPage(userId, pageNum, pageSize);
+    const keywordType = parseInt(req.query.keywordType as string) || 0;
+    const result = await getZlgjcByPage(userId, pageNum, pageSize, keywordType);
     res.json({ code: 200, data: result });
   } catch (e) {
     res.json({ code: 500, message: '服务器错误' });
@@ -103,6 +104,21 @@ router.delete('/zlgjc/delete/:id', authMiddleware, adminMiddleware, async (req, 
   try {
     await deleteZlgjc(parseInt(req.params.id));
     res.json({ code: 200 });
+  } catch (e) {
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 手动添加关键词
+router.post('/zlgjc/add', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { userId, value, hxgjc, lxfs, keywordType } = req.body;
+    if (!userId || !value) return res.json({ code: 400, message: '缺少参数' });
+    await query(
+      'INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type) VALUES ($1, $2, $3, $4, $5)',
+      [value, hxgjc || value, userId, lxfs || '', keywordType || 0]
+    );
+    res.json({ code: 200, message: '添加成功' });
   } catch (e) {
     res.json({ code: 500, message: '服务器错误' });
   }

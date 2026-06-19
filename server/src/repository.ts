@@ -353,10 +353,41 @@ export async function createTask(task: any): Promise<number> {
 }
 
 export async function updateTask(id: number, task: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+
+  if (task.userId !== undefined) {
+    fields.push(`user_id = $${paramIndex++}`);
+    values.push(task.userId);
+  }
+  if (task.startDate !== undefined) {
+    fields.push(`start_date = $${paramIndex++}`);
+    values.push(task.startDate);
+  }
+  if (task.endDate !== undefined) {
+    fields.push(`end_date = $${paramIndex++}`);
+    values.push(task.endDate);
+  }
+  if (task.totalNum !== undefined) {
+    fields.push(`total_num = $${paramIndex++}`);
+    values.push(task.totalNum);
+  }
+  if (task.status !== undefined) {
+    fields.push(`status = $${paramIndex++}`);
+    values.push(task.status);
+  }
+  if (task.name !== undefined) {
+    fields.push(`name = $${paramIndex++}`);
+    values.push(task.name);
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(id);
   await query(
-    `UPDATE task_info SET user_id = $1, start_date = $2, end_date = $3, total_num = $4,
-     status = $5, name = $6 WHERE id = $7`,
-    [task.userId, task.startDate, task.endDate, task.totalNum, task.status, task.name || '', id]
+    `UPDATE task_info SET ${fields.join(', ')} WHERE id = $${paramIndex}`,
+    values
   );
 }
 
@@ -611,13 +642,13 @@ export async function deleteDistillateKeyword(id: number): Promise<void> {
 // ============ 蒸馏关键词库（zlgjc）分页查询和删除 ============
 
 // 分页查询蒸馏关键词库
-export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: number) {
+export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: number, keywordType: number = 0) {
   const offset = (pageNum - 1) * pageSize;
-  const countResult = await query('SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1', [userId]);
+  const countResult = await query('SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1 AND keyword_type = $2', [userId, keywordType]);
   const total = parseInt(countResult.rows[0].total);
   const result = await query(
-    'SELECT id, value, hxgjc, userid, lxfs, create_time FROM zlgjc WHERE userid = $1 ORDER BY id LIMIT $2 OFFSET $3',
-    [userId, pageSize, offset]
+    'SELECT id, value, hxgjc, userid, lxfs, create_time FROM zlgjc WHERE userid = $1 AND keyword_type = $2 ORDER BY id LIMIT $3 OFFSET $4',
+    [userId, keywordType, pageSize, offset]
   );
   const list = result.rows.map((r: any) => ({
     id: r.id,
@@ -641,7 +672,7 @@ export async function deleteZlgjc(id: number): Promise<void> {
 // ============ 蒸馏关键词生成（笛卡尔积）============
 
 // 生成蒸馏关键词（笛卡尔积组合）
-export async function generateZlgjcKeywords(userId: string, wordGroups: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[] }) {
+export async function generateZlgjcKeywords(userId: string, wordGroups: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[] }, keywordType: number = 0) {
   const { A, B, C, D, E, F, G } = wordGroups;
 
   // 根据组合规则生成所有组合
@@ -678,8 +709,8 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
     }
   }
 
-  // 查询已存在的关键词
-  const existingResult = await query('SELECT value FROM zlgjc WHERE userid = $1', [userId]);
+  // 查询已存在的关键词（同类型内去重）
+  const existingResult = await query('SELECT value FROM zlgjc WHERE userid = $1 AND keyword_type = $2', [userId, keywordType]);
   const existing = new Set(existingResult.rows.map((r: any) => r.value));
 
   let inserted = 0;
@@ -690,8 +721,8 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
       duplicated++;
     } else {
       await query(
-        'INSERT INTO zlgjc (value, hxgjc, userid, lxfs) VALUES ($1, $2, $3, $4)',
-        [keyword, hxgjc, userId, '']
+        'INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type) VALUES ($1, $2, $3, $4, $5)',
+        [keyword, hxgjc, userId, '', keywordType]
       );
       existing.add(keyword);
       inserted++;

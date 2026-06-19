@@ -1,8 +1,9 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Space, Tag, Popconfirm, message, Modal, Form, Input, InputNumber, Select, DatePicker, Tooltip, Divider, Row, Col, Progress } from 'antd';
-import { PlusOutlined, DeleteOutlined, ReloadOutlined, PauseCircleOutlined, PlayCircleOutlined, EditOutlined } from '@ant-design/icons';
+import { Table, Button, Space, Tag, Popconfirm, message, Modal, Form, Input, InputNumber, Select, DatePicker, Divider, Row, Col, Progress } from 'antd';
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, PauseCircleOutlined, PlayCircleOutlined, EditOutlined, CopyOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import api from '@/lib/api';
 
 interface TaskItem {
@@ -20,7 +21,6 @@ interface TaskItem {
   hourWeights?: { hour_slot: number; weight: number }[];
 }
 
-// 8个时区：0-3, 3-6, 6-9, 9-12, 12-15, 15-18, 18-21, 21-24
 const HOUR_SLOTS = [
   { slot: 0, label: '00:00 - 03:00' },
   { slot: 1, label: '03:00 - 06:00' },
@@ -58,12 +58,8 @@ export default function TaskPage() {
   const [filterUserId, setFilterUserId] = useState<string>('all');
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
 
-  // 新建任务的平台权重（平铺展示）
   const [newPlatformWeights, setNewPlatformWeights] = useState<{ platform: string; weight: number }[]>([]);
-  // 新建任务的时区权重（平铺展示）
   const [newHourWeights, setNewHourWeights] = useState<{ hourSlot: number; weight: number }[]>([]);
-
-  // 编辑任务的平台权重和时区权重
   const [editPlatformWeights, setEditPlatformWeights] = useState<{ platform: string; weight: number }[]>([]);
   const [editHourWeights, setEditHourWeights] = useState<{ hourSlot: number; weight: number }[]>([]);
 
@@ -93,9 +89,7 @@ export default function TaskPage() {
         const userList = allUsers.filter((u: UserOption) => u.username !== 'admin');
         setUsers(userList);
       }
-    } catch (e) {
-      // 忽略
-    }
+    } catch (e) {}
   };
 
   const fetchPlatforms = async () => {
@@ -105,9 +99,7 @@ export default function TaskPage() {
         const data = res.data.data || [];
         setPlatforms(data.map((p: any) => ({ name: p.pt || p.name, pt: p.pt })));
       }
-    } catch (e) {
-      // 忽略
-    }
+    } catch (e) {}
   };
 
   useEffect(() => {
@@ -116,12 +108,9 @@ export default function TaskPage() {
     fetchPlatforms();
   }, []);
 
-  // 打开新建任务弹窗时，初始化平台权重和时区权重（默认值1）
   const openCreate = () => {
     form.resetFields();
-    // 平台权重：所有平台默认权重1
     setNewPlatformWeights(platforms.map((p) => ({ platform: p.name, weight: 1 })));
-    // 时区权重：所有时段默认权重1
     setNewHourWeights(HOUR_SLOTS.map((s) => ({ hourSlot: s.slot, weight: 1 })));
     setModalVisible(true);
   };
@@ -177,25 +166,37 @@ export default function TaskPage() {
         message.error(res.data?.message || '状态更新失败');
       }
     } catch (e) {
-      message.error('状态更新失败');
+      message.error('状态更新失败，请检查云端连接');
     }
   };
 
-  // 打开编辑弹窗
+  const handleCopy = async (id: number) => {
+    try {
+      const res = await api.post('/task/copy', { taskId: id });
+      if (res.data?.code === 200) {
+        message.success('复制成功');
+        fetchTasks(filterUserId);
+      } else {
+        message.error(res.data?.message || '复制失败');
+      }
+    } catch (e) {
+      message.error('复制失败');
+    }
+  };
+
+  // 打开编辑弹窗 - 使用 dayjs 转换日期字符串
   const openEdit = (task: TaskItem) => {
     setEditingTask(task);
     editForm.setFieldsValue({
       name: task.name || '',
       count: task.totalNum || 0,
-      dateRange: task.startDate && task.endDate ? [task.startDate, task.endDate] : undefined,
+      dateRange: task.startDate && task.endDate ? [dayjs(task.startDate), dayjs(task.endDate)] : undefined,
     });
-    // 初始化编辑的平台权重（默认所有平台权重1）
     const existingPw = task.platformWeights || [];
     setEditPlatformWeights(platforms.map((p) => {
       const found = existingPw.find((w) => w.platform === p.name);
       return { platform: p.name, weight: found?.weight ?? 1 };
     }));
-    // 初始化编辑的时区权重（默认所有时段权重1）
     const existingHw = task.hourWeights || [];
     setEditHourWeights(HOUR_SLOTS.map((s) => {
       const found = existingHw.find((w) => w.hour_slot === s.slot);
@@ -269,12 +270,12 @@ export default function TaskPage() {
       },
     },
     {
-      title: '权重配置', width: 140,
+      title: '权重配置', width: 180,
       render: (_: any, record: TaskItem) => {
         const pw = (record.platformWeights || []).filter((w) => w.weight > 0).length;
         const hw = (record.hourWeights || []).filter((w) => w.weight > 0).length;
         return (
-          <Space direction="vertical" size={0}>
+          <Space size={4}>
             <Tag color={pw > 0 ? 'blue' : 'default'}>平台: {pw > 0 ? `${pw}个` : '均匀'}</Tag>
             <Tag color={hw > 0 ? 'cyan' : 'default'}>时区: {hw > 0 ? `${hw}段` : '均匀'}</Tag>
           </Space>
@@ -287,7 +288,7 @@ export default function TaskPage() {
     },
     { title: '创建时间', dataIndex: 'createTime', width: 180, render: (v: string) => v || '-' },
     {
-      title: '操作', width: 200, fixed: 'right' as const,
+      title: '操作', width: 280, fixed: 'right' as const,
       render: (_: any, record: TaskItem) => (
         <Space wrap>
           {record.status === 'running' && (
@@ -297,6 +298,7 @@ export default function TaskPage() {
             <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => handleStatusChange(record.id, 'running')}>恢复</Button>
           )}
           <Button size="small" type="primary" ghost icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+          <Button size="small" icon={<CopyOutlined />} onClick={() => handleCopy(record.id)}>复制</Button>
           <Popconfirm title="确定删除该任务？删除后不可恢复。" okText="确定删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => handleDelete(record.id)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
           </Popconfirm>
@@ -305,7 +307,6 @@ export default function TaskPage() {
     },
   ];
 
-  // 渲染平台权重平铺配置
   const renderPlatformWeights = (
     weights: { platform: string; weight: number }[],
     setWeights: (w: { platform: string; weight: number }[]) => void
@@ -337,7 +338,6 @@ export default function TaskPage() {
     </div>
   );
 
-  // 渲染时区权重平铺配置
   const renderHourWeights = (
     weights: { hourSlot: number; weight: number }[],
     setWeights: (w: { hourSlot: number; weight: number }[]) => void
@@ -400,7 +400,7 @@ export default function TaskPage() {
         dataSource={tasks}
         columns={columns}
         rowKey="id"
-        scroll={{ x: 1500 }}
+        scroll={{ x: 1600 }}
         pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
       />
 
