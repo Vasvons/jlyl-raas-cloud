@@ -1,6 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  output: 'standalone',
+  output: 'export',
   reactStrictMode: true,
   // API 代理到后端服务
   async rewrites() {

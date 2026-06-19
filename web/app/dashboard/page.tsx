@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, Flex, Button, Modal, message } from 'antd';
+import { Card, Table, Tag, Spin, Pagination, Radio, Select, Row, Col, Flex, Button, Modal, message, Form, Input } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import api from '@/lib/api';
 import { useRouter } from 'next/navigation';
@@ -677,7 +677,39 @@ export default function DashboardPage() {
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [shareLoading, setShareLoading] = useState(false);
   const [shareUrl, setShareUrl] = useState('');
-  const [shareTokens, setShareTokens] = useState<Array<{ token: string; username?: string; createTime: string; lastUseTime: string | null }>>([]);
+  const [shareTokens, setShareTokens] = useState<Array<{ token: string; createTime: string; lastUseTime: string | null }>>([]);
+  // 云端配置状态
+  const [cloudConfigError, setCloudConfigError] = useState<string>('');
+  const [cloudConfigVisible, setCloudConfigVisible] = useState(false);
+  const [cloudConfigForm, setCloudConfigForm] = useState({ cloudUrl: '', adminUsername: '', adminPassword: '' });
+  const [cloudConfigLoading, setCloudConfigLoading] = useState(false);
+
+  // 保存云端配置
+  const handleSaveCloudConfig = async () => {
+    if (!cloudConfigForm.cloudUrl || !cloudConfigForm.adminUsername || !cloudConfigForm.adminPassword) {
+      return;
+    }
+    setCloudConfigLoading(true);
+    try {
+      const res = await api.post('/users/login', {
+        username: cloudConfigForm.adminUsername,
+        password: cloudConfigForm.adminPassword,
+        cloudUrl: cloudConfigForm.cloudUrl,
+      });
+      if (res.data?.code === 200) {
+        setCloudConfigError('');
+        setCloudConfigVisible(false);
+        // 重新加载页面
+        window.location.reload();
+      } else {
+        setCloudConfigError(res.data?.message || '配置失败，请检查云端地址和凭据');
+      }
+    } catch {
+      setCloudConfigError('配置失败，请检查网络连接');
+    } finally {
+      setCloudConfigLoading(false);
+    }
+  };
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -712,6 +744,9 @@ export default function DashboardPage() {
         } else if (res.data?.code === 401) {
           // 未登录，跳转到登录页
           router.push('/login');
+        } else if (res.data?.code === 403) {
+          // 云端未配置
+          setCloudConfigError(res.data?.message || '未配置云端服务，请先配置云端连接');
         }
       } catch {
         // 忽略错误
@@ -856,6 +891,58 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {/* 云端配置错误提示 */}
+      {cloudConfigError && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
+          background: '#fff2f0', border: '1px solid #ffccc7',
+          padding: '12px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+        }}>
+          <span style={{ color: '#cf1322', fontSize: 14 }}>{cloudConfigError}</span>
+          <Button type="primary" size="small" onClick={() => setCloudConfigVisible(true)}>
+            配置云端连接
+          </Button>
+        </div>
+      )}
+
+      {/* 云端配置弹窗 */}
+      <Modal
+        title="配置云端服务连接"
+        open={cloudConfigVisible}
+        onOk={handleSaveCloudConfig}
+        onCancel={() => setCloudConfigVisible(false)}
+        confirmLoading={cloudConfigLoading}
+        okText="保存并连接"
+        cancelText="取消"
+      >
+        <div style={{ marginBottom: 16, color: '#666', fontSize: 13 }}>
+          请输入云端服务地址和管理员账号密码，用于连接云端数据库获取报告数据。
+        </div>
+        <Form layout="vertical">
+          <Form.Item label="云端服务地址" required>
+            <Input
+              placeholder="例如: https://report.jlyl.net.cn 或 http://192.168.1.100:3002"
+              value={cloudConfigForm.cloudUrl}
+              onChange={(e) => setCloudConfigForm({ ...cloudConfigForm, cloudUrl: e.target.value })}
+            />
+          </Form.Item>
+          <Form.Item label="管理员用户名" required>
+            <Input
+              placeholder="管理员用户名"
+              value={cloudConfigForm.adminUsername}
+              onChange={(e) => setCloudConfigForm({ ...cloudConfigForm, adminUsername: e.target.value })}
+            />
+          </Form.Item>
+          <Form.Item label="管理员密码" required>
+            <Input.Password
+              placeholder="管理员密码"
+              value={cloudConfigForm.adminPassword}
+              onChange={(e) => setCloudConfigForm({ ...cloudConfigForm, adminPassword: e.target.value })}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
       {/* 退出登录 + 分享按钮（仅PC端显示） */}
       {!isMobile && (
         <div className={styles.logoutWrapper}>
@@ -991,7 +1078,6 @@ export default function DashboardPage() {
                   padding: '6px 0', borderBottom: '1px solid #f0f0f0', fontSize: 12
                 }}>
                   <div style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>
-                    {item.username && <span style={{ color: '#1677ff', fontWeight: 500, marginRight: 6 }}>[{item.username}]</span>}
                     {window.location.origin}/share/{item.token.substring(0, 16)}...
                   </div>
                   <div style={{ color: '#999', marginRight: 8, fontSize: 11 }}>
