@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Card, Input, Button, Form, message, Modal, Tabs } from 'antd';
-import { UserOutlined, LockOutlined, CloudOutlined, SettingOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, CloudOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 import { useRouter } from 'next/navigation';
 
@@ -83,23 +83,36 @@ export default function LoginPage() {
       alignItems: 'center',
       justifyContent: 'center',
       background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+      position: 'relative',
     }}>
+      {/* 右上角云端配置按钮 - 固定位置，更显眼 */}
+      <Button
+        type={hasCloudConfig === false ? 'primary' : 'default'}
+        icon={<CloudOutlined />}
+        onClick={() => setCloudModalVisible(true)}
+        style={{
+          position: 'absolute',
+          top: 24,
+          right: 24,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+        }}
+      >
+        云端配置{hasCloudConfig === false ? '（未配置）' : hasCloudConfig === true ? '（已连接）' : ''}
+      </Button>
+
       <Card
         style={{ width: 400, boxShadow: '0 8px 24px rgba(0,0,0,0.15)' }}
         headStyle={{ textAlign: 'center', fontSize: 20, fontWeight: 600 }}
         title="聚量引力 RaaS"
-        extra={
-          <Button
-            type="text"
-            icon={<SettingOutlined />}
-            onClick={() => setCloudModalVisible(true)}
-            title="云端配置"
-          />
-        }
       >
         {hasCloudConfig === false && (
           <div style={{ marginBottom: 16, padding: 12, background: '#fff7e6', border: '1px solid #ffd591', borderRadius: 4, fontSize: 13, color: '#ad6800' }}>
-            <CloudOutlined /> 未配置云端服务，请先点击右上角设置图标配置云端连接
+            <CloudOutlined /> 未配置云端服务，请点击右上角「云端配置」按钮配置云端连接
+          </div>
+        )}
+        {hasCloudConfig === true && (
+          <div style={{ marginBottom: 16, padding: 12, background: '#f6ffed', border: '1px solid #b7eb8f', borderRadius: 4, fontSize: 13, color: '#389e0d' }}>
+            <CloudOutlined /> 云端已连接
           </div>
         )}
         <Form onFinish={onFinish} size="large">
