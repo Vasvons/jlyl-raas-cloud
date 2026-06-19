@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Table, Modal, Form, Input, Button, Space, Tag, Popconfirm, message, Tabs } from 'antd';
+import { Table, Modal, Form, Input, Button, Space, Tag, Popconfirm, message, Tabs, Select, Card } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 
@@ -177,8 +177,8 @@ export default function UsersPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>用户管理</h2>
+      <div className="console-page-title">
+        <span className="console-page-title-text">用户管理</span>
       </div>
 
       <Tabs
@@ -193,14 +193,16 @@ export default function UsersPage() {
                 <div style={{ marginBottom: 16 }}>
                   <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('0')}>新增客户</Button>
                 </div>
-                <Table
-                  loading={loading}
-                  dataSource={customerUsers}
-                  columns={customerColumns}
-                  rowKey="id"
-                  scroll={{ x: 1200 }}
-                  pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-                />
+                <Card size="small">
+                  <Table
+                    loading={loading}
+                    dataSource={customerUsers}
+                    columns={customerColumns}
+                    rowKey="id"
+                    scroll={{ x: 1200 }}
+                    pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+                  />
+                </Card>
               </div>
             ),
           },
@@ -212,14 +214,16 @@ export default function UsersPage() {
                 <div style={{ marginBottom: 16 }}>
                   <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate('1')}>新增管理员</Button>
                 </div>
-                <Table
-                  loading={loading}
-                  dataSource={adminUsers}
-                  columns={adminColumns}
-                  rowKey="id"
-                  scroll={{ x: 1000 }}
-                  pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
-                />
+                <Card size="small">
+                  <Table
+                    loading={loading}
+                    dataSource={adminUsers}
+                    columns={adminColumns}
+                    rowKey="id"
+                    scroll={{ x: 1000 }}
+                    pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
+                  />
+                </Card>
               </div>
             ),
           },
@@ -233,6 +237,7 @@ export default function UsersPage() {
         onOk={() => form.submit()}
         confirmLoading={submitting}
         destroyOnClose
+        width={600}
       >
         <Form form={form} layout="vertical" onFinish={handleSubmit}>
           <Form.Item label="用户名" name="username" rules={[{ required: true, message: '请输入用户名' }]}>
@@ -259,10 +264,13 @@ export default function UsersPage() {
             </>
           )}
           <Form.Item label="类型" name="level" rules={[{ required: true, message: '请选择类型' }]} initialValue="0">
-            <select style={{ width: '100%', padding: '6px 12px', border: '1px solid #d9d9d9', borderRadius: 4 }}>
-              <option value="1">管理员</option>
-              <option value="0">客户</option>
-            </select>
+            <Select
+              style={{ width: '100%' }}
+              options={[
+                { value: '1', label: '管理员' },
+                { value: '0', label: '客户' },
+              ]}
+            />
           </Form.Item>
         </Form>
       </Modal>

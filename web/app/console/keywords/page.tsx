@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Input, Popconfirm, message, Select, Card, Tag, Checkbox, Tabs, Row, Col } from 'antd';
-import { PlusOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, ExperimentOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, ExperimentOutlined, TagsOutlined, KeyOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 
 interface PPItem {
@@ -504,10 +504,10 @@ export default function KeywordsPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>关键词配置</h2>
+      <div className="console-page-title">
+        <span className="console-page-title-text">关键词配置</span>
         <Space>
-          <span>选择用户：</span>
+          <span style={{ fontSize: 13, color: '#666' }}>选择用户：</span>
           <Select
             style={{ width: 200 }}
             value={selectedUserId}
@@ -522,7 +522,12 @@ export default function KeywordsPage() {
       {/* 上方：品牌词 + 核心关键词 并列卡片 */}
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={12}>
-          <Card title="品牌词" size="small" extra={<Tag color="blue">{ppList.length} 条</Tag>}>
+          <Card
+            title={<span><TagsOutlined style={{ marginRight: 8 }} />品牌词</span>}
+            size="small"
+            extra={<Tag color="purple">{ppList.length} 条</Tag>}
+            headStyle={{ borderLeft: '3px solid #722ed1', background: '#f9f0ff' }}
+          >
             <Space style={{ marginBottom: 12, width: '100%' }}>
               <Input
                 placeholder="输入品牌词，回车添加"
@@ -537,7 +542,12 @@ export default function KeywordsPage() {
           </Card>
         </Col>
         <Col span={12}>
-          <Card title="核心关键词" size="small" extra={<Tag color="blue">{dkList.length} 条</Tag>}>
+          <Card
+            title={<span><KeyOutlined style={{ marginRight: 8 }} />核心关键词</span>}
+            size="small"
+            extra={<Tag color="blue">{dkList.length} 条</Tag>}
+            headStyle={{ borderLeft: '3px solid #1677ff', background: '#e6f4ff' }}
+          >
             <Space style={{ marginBottom: 12, width: '100%' }}>
               <Input
                 placeholder="输入核心关键词（主词），回车添加"
@@ -558,6 +568,7 @@ export default function KeywordsPage() {
         title={<span><ExperimentOutlined style={{ marginRight: 8 }} />关键词生成器</span>}
         size="small"
         style={{ marginBottom: 16 }}
+        headStyle={{ borderLeft: '3px solid #fa8c16', background: '#fff7e6' }}
       >
         <Tabs
           defaultActiveKey="distillate"
@@ -567,20 +578,20 @@ export default function KeywordsPage() {
               label: '蒸馏关键词生成器',
               children: (
                 <div>
-                  <div style={{ marginBottom: 12, padding: 10, background: '#f6f8fa', borderRadius: 4, fontSize: 12, color: '#666' }}>
+                  <div className="console-tip console-tip-info" style={{ marginBottom: 12 }}>
                     <b>使用说明：</b>在下方各字段输入词组（每行一个），选择组合规则后点击"生成"。
                     <b>C主词</b>自动从核心关键词填入。组合规则如 <code>C+D</code> 表示将C和D的词两两拼接。
                   </div>
                   <Row gutter={[8, 8]}>
                     {distillateFields.map((f) => (
                       <Col span={4} key={f.key}>
-                        <div style={{ marginBottom: 4, fontWeight: 500, fontSize: 12, color: f.required ? '#cf1322' : undefined }}>{f.label}</div>
+                        <div style={{ marginBottom: 4, fontWeight: 500, fontSize: 13, color: f.required ? '#cf1322' : undefined }}>{f.label}</div>
                         <Input.TextArea
-                          rows={10}
+                          rows={8}
                           value={f.value}
                           onChange={(e) => f.setter(e.target.value)}
                           placeholder={f.placeholder}
-                          style={{ fontSize: 12 }}
+                          style={{ fontSize: 13 }}
                         />
                       </Col>
                     ))}
@@ -599,7 +610,7 @@ export default function KeywordsPage() {
                     <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={genSubmitting}>生成蒸馏关键词</Button>
                   </div>
                   {genResult && (
-                    <div style={{ marginTop: 12, padding: 10, background: '#f0f9ff', borderRadius: 4 }}>
+                    <div className="console-tip console-tip-success" style={{ marginTop: 12, marginBottom: 0 }}>
                       <Space>
                         <Tag color="green">新增 {genResult.inserted} 条</Tag>
                         <Tag color="orange">重复 {genResult.duplicated} 条</Tag>
@@ -615,20 +626,20 @@ export default function KeywordsPage() {
               label: '品牌关键词生成器',
               children: (
                 <div>
-                  <div style={{ marginBottom: 12, padding: 10, background: '#f6f8fa', borderRadius: 4, fontSize: 12, color: '#666' }}>
+                  <div className="console-tip console-tip-info" style={{ marginBottom: 12 }}>
                     <b>使用说明：</b>A品牌词自动从品牌词列表填入（始终参与组合），B核心词自动从核心关键词填入。
                     C疑问词和D信息词可手动编辑。选择组合规则后点击"生成"。
                   </div>
                   <Row gutter={[8, 8]}>
                     {brandFields.map((f) => (
                       <Col span={6} key={f.key}>
-                        <div style={{ marginBottom: 4, fontWeight: 500, fontSize: 12, color: f.key === 'A' ? '#722ed1' : (f.key === 'B' ? '#cf1322' : undefined) }}>{f.label}</div>
+                        <div style={{ marginBottom: 4, fontWeight: 500, fontSize: 13, color: f.key === 'A' ? '#722ed1' : (f.key === 'B' ? '#cf1322' : undefined) }}>{f.label}</div>
                         <Input.TextArea
-                          rows={10}
+                          rows={8}
                           value={f.value}
                           onChange={f.readOnly ? undefined : (e) => f.setter(e.target.value)}
                           placeholder={f.placeholder}
-                          style={{ fontSize: 12 }}
+                          style={{ fontSize: 13 }}
                           disabled={f.readOnly}
                         />
                       </Col>
@@ -648,7 +659,7 @@ export default function KeywordsPage() {
                     <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleBrandGenerate} loading={brandGenSubmitting}>生成品牌关键词</Button>
                   </div>
                   {brandGenResult && (
-                    <div style={{ marginTop: 12, padding: 10, background: '#f0f9ff', borderRadius: 4 }}>
+                    <div className="console-tip console-tip-success" style={{ marginTop: 12, marginBottom: 0 }}>
                       <Space>
                         <Tag color="green">新增 {brandGenResult.inserted} 条</Tag>
                         <Tag color="orange">重复 {brandGenResult.duplicated} 条</Tag>
@@ -664,7 +675,10 @@ export default function KeywordsPage() {
       </Card>
 
       {/* 下方：关键词库（Tab：蒸馏 + 品牌） */}
-      <Card size="small">
+      <Card
+        size="small"
+        headStyle={{ borderLeft: '3px solid #13c2c2', background: '#e6fffb' }}
+      >
         <Tabs
           defaultActiveKey="distillate"
           items={[

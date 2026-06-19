@@ -1,0 +1,170 @@
+/* ===== 管理后台全局样式 ===== */
+
+/* 设计 Token */
+:root {
+  /* 主色系 */
+  --console-primary: #1677ff;
+  --console-primary-bg: #e6f4ff;
+  --console-primary-hover: #f0f5ff;
+  --console-success: #52c41a;
+  --console-success-bg: #f6ffed;
+  --console-warning: #fa8c16;
+  --console-warning-bg: #fff7e6;
+  --console-danger: #ff4d4f;
+  --console-danger-bg: #fff2f0;
+  --console-purple: #722ed1;
+  --console-purple-bg: #f9f0ff;
+  --console-cyan: #13c2c2;
+  --console-cyan-bg: #e6fffb;
+
+  /* 中性色 */
+  --console-bg-page: #f0f2f5;
+  --console-bg-card: #ffffff;
+  --console-border: #e8e8e8;
+  --console-border-light: #f0f0f0;
+  --console-text-primary: #1f1f1f;
+  --console-text-secondary: #666666;
+  --console-text-tertiary: #999999;
+
+  /* 间距 */
+  --console-space-sm: 8px;
+  --console-space-md: 16px;
+  --console-space-lg: 24px;
+
+  /* 圆角 */
+  --console-radius-sm: 6px;
+  --console-radius-md: 8px;
+
+  /* 阴影 */
+  --console-shadow-card: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --console-shadow-hover: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+/* 页面标题 */
+.console-page-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--console-text-primary);
+  margin: 0 0 20px 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--console-border-light);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.console-page-title-text {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--console-text-primary);
+}
+
+/* 统一提示框 */
+.console-tip {
+  padding: 10px 14px;
+  border-radius: var(--console-radius-sm);
+  font-size: 13px;
+  color: var(--console-text-secondary);
+  line-height: 1.6;
+  margin-bottom: var(--console-space-md);
+}
+
+.console-tip-info {
+  background: var(--console-primary-bg);
+  border-left: 3px solid var(--console-primary);
+}
+
+.console-tip-warning {
+  background: var(--console-warning-bg);
+  border-left: 3px solid var(--console-warning);
+}
+
+.console-tip-success {
+  background: var(--console-success-bg);
+  border-left: 3px solid var(--console-success);
+}
+
+/* 卡片头部色条样式 */
+.console-card-head-blue {
+  border-left: 3px solid var(--console-primary) !important;
+  background: var(--console-primary-bg) !important;
+}
+
+.console-card-head-purple {
+  border-left: 3px solid var(--console-purple) !important;
+  background: var(--console-purple-bg) !important;
+}
+
+.console-card-head-orange {
+  border-left: 3px solid var(--console-warning) !important;
+  background: var(--console-warning-bg) !important;
+}
+
+.console-card-head-cyan {
+  border-left: 3px solid var(--console-cyan) !important;
+  background: var(--console-cyan-bg) !important;
+}
+
+.console-card-head-green {
+  border-left: 3px solid var(--console-success) !important;
+  background: var(--console-success-bg) !important;
+}
+
+/* 统计卡片 hover 效果 */
+.console-stat-card {
+  transition: all 0.3s ease;
+  border-radius: var(--console-radius-md) !important;
+  box-shadow: var(--console-shadow-card);
+}
+
+.console-stat-card:hover {
+  box-shadow: var(--console-shadow-hover);
+  transform: translateY(-2px);
+}
+
+/* Modal 内信息分组 */
+.console-modal-section {
+  background: #fafafa;
+  border-radius: var(--console-radius-sm);
+  padding: var(--console-space-md);
+  margin-bottom: var(--console-space-md);
+}
+
+.console-modal-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--console-text-primary);
+  margin-bottom: var(--console-space-sm);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--console-border-light);
+}
+
+/* 权重配置小卡片 */
+.console-weight-item {
+  padding: var(--console-space-sm) !important;
+  border: 1px solid var(--console-border) !important;
+  border-radius: var(--console-radius-sm) !important;
+  background: #fafafa !important;
+  transition: all 0.2s;
+}
+
+.console-weight-item:hover {
+  border-color: var(--console-primary) !important;
+  background: var(--console-primary-hover) !important;
+}
+
+.console-weight-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--console-text-primary);
+  margin-bottom: 4px;
+}
+
+/* 统一表格容器 */
+.console-table-wrapper {
+  background: var(--console-bg-card);
+  border-radius: var(--console-radius-md);
+  box-shadow: var(--console-shadow-card);
+  padding: var(--console-space-md);
+  margin-bottom: var(--console-space-md);
+}

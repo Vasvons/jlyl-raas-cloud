@@ -318,8 +318,8 @@ export default function TaskPage() {
       <Row gutter={[8, 8]}>
         {weights.map((w, idx) => (
           <Col span={6} key={w.platform}>
-            <div style={{ padding: 8, border: '1px solid #f0f0f0', borderRadius: 4 }}>
-              <div style={{ marginBottom: 4, fontSize: 13, fontWeight: 500 }}>{w.platform}</div>
+            <div className="console-weight-item">
+              <div className="console-weight-label">{w.platform}</div>
               <InputNumber
                 min={0}
                 max={100}
@@ -354,9 +354,9 @@ export default function TaskPage() {
             const pct = total > 0 && hw.weight > 0 ? Math.round(hw.weight / total * 100) : 0;
             return (
               <Col span={6} key={hw.hourSlot}>
-                <div style={{ padding: 8, border: '1px solid #f0f0f0', borderRadius: 4 }}>
+                <div className="console-weight-item">
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontSize: 13, fontWeight: 500 }}>{slot?.label}</span>
+                    <span className="console-weight-label" style={{ marginBottom: 0 }}>{slot?.label}</span>
                     {pct > 0 && <Tag color="blue">{pct}%</Tag>}
                   </div>
                   <InputNumber
@@ -381,8 +381,8 @@ export default function TaskPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>数据生成任务</h2>
+      <div className="console-page-title">
+        <span className="console-page-title-text">数据生成任务</span>
         <Space>
           <Select
             style={{ width: 180 }}
@@ -448,10 +448,10 @@ export default function TaskPage() {
             </Col>
           </Row>
 
-          <Divider>平台权重</Divider>
+          <Divider style={{ borderColor: '#1677ff', color: '#1677ff', fontWeight: 600 }}>平台权重</Divider>
           {renderPlatformWeights(newPlatformWeights, setNewPlatformWeights)}
 
-          <Divider>时区权重</Divider>
+          <Divider style={{ borderColor: '#1677ff', color: '#1677ff', fontWeight: 600 }}>时区权重</Divider>
           {renderHourWeights(newHourWeights, setNewHourWeights)}
         </Form>
       </Modal>
@@ -466,7 +466,7 @@ export default function TaskPage() {
         destroyOnClose
         width={800}
       >
-        <div style={{ marginBottom: 16, padding: 12, background: '#fff7e6', borderRadius: 4, fontSize: 13, color: '#fa8c16' }}>
+        <div className="console-tip console-tip-warning">
           调整后的设置不会影响已生成的数据，但会影响还未生成的数据。系统会根据新的权重配置生成后续数据。
           若开始时间早于当前，系统会按权重自动补齐从开始时间到当前的数据。
         </div>
@@ -492,10 +492,10 @@ export default function TaskPage() {
             <RangePicker style={{ width: '100%' }} />
           </Form.Item>
 
-          <Divider>平台权重</Divider>
+          <Divider style={{ borderColor: '#1677ff', color: '#1677ff', fontWeight: 600 }}>平台权重</Divider>
           {renderPlatformWeights(editPlatformWeights, setEditPlatformWeights)}
 
-          <Divider>时区权重</Divider>
+          <Divider style={{ borderColor: '#1677ff', color: '#1677ff', fontWeight: 600 }}>时区权重</Divider>
           {renderHourWeights(editHourWeights, setEditHourWeights)}
         </Form>
       </Modal>

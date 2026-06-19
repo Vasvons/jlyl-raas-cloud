@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Space, Input, Select, message, Tag, Checkbox, Tooltip } from 'antd';
+import { Table, Button, Space, Input, Select, message, Tag, Checkbox, Tooltip, Card } from 'antd';
 import { ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 
@@ -228,12 +228,12 @@ export default function MaintainPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>收录跳转维护</h2>
+      <div className="console-page-title">
+        <span className="console-page-title-text">收录跳转维护</span>
         <Button icon={<ReloadOutlined />} onClick={fetchList}>刷新</Button>
       </div>
 
-      <div style={{ marginBottom: 16, padding: 12, background: '#f6f8fa', borderRadius: 4, fontSize: 13, color: '#666' }}>
+      <div className="console-tip console-tip-info">
         <b>说明：</b>本页面维护数据生成任务生成的关键词收录记录。在每条记录后填写跳转链接，并勾选"有联系方式"标记该收录是否出现了联系方式。
         勾选了"有联系方式"的记录将出现在 GEO 报告页面的搜索排名的"联系方式"分类下。
       </div>
@@ -268,25 +268,27 @@ export default function MaintainPage() {
         <Button type="primary" onClick={onSearch}>查询</Button>
       </Space>
 
-      <Table
-        loading={loading}
-        dataSource={list}
-        columns={columns}
-        rowKey={(record) => `${record.distillateKeyword}-${record.platform}-${record.expandedKeyword}`}
-        scroll={{ x: 1000 }}
-        pagination={{
-          current: pageNum,
-          pageSize,
-          total,
-          showSizeChanger: true,
-          showTotal: (t) => `共 ${t} 条`,
-          onChange: (page, size) => {
-            setPageNum(page);
-            setPageSize(size || 20);
-          },
-        }}
-        size="small"
-      />
+      <Card size="small">
+        <Table
+          loading={loading}
+          dataSource={list}
+          columns={columns}
+          rowKey={(record) => `${record.distillateKeyword}-${record.platform}-${record.expandedKeyword}`}
+          scroll={{ x: 1000 }}
+          pagination={{
+            current: pageNum,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            showTotal: (t) => `共 ${t} 条`,
+            onChange: (page, size) => {
+              setPageNum(page);
+              setPageSize(size || 20);
+            },
+          }}
+          size="small"
+        />
+      </Card>
     </div>
   );
 }

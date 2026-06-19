@@ -231,141 +231,156 @@ export default function MonitorPage() {
         ) : (
           <div ref={detailRef}>
             {/* 用户基本信息 */}
-            <Descriptions title="基本信息" bordered size="small" column={2} style={{ marginBottom: 16 }}>
-              <Descriptions.Item label="用户名">{userDetail.user.username}</Descriptions.Item>
-              <Descriptions.Item label="用户ID">{userDetail.user.id}</Descriptions.Item>
-              <Descriptions.Item label="电话">{userDetail.user.phone || '-'}</Descriptions.Item>
-              <Descriptions.Item label="邮箱">{userDetail.user.email || '-'}</Descriptions.Item>
-              <Descriptions.Item label="网址" span={2}>{userDetail.user.url || '-'}</Descriptions.Item>
-              <Descriptions.Item label="注册时间" span={2}>{userDetail.user.dateTime || '-'}</Descriptions.Item>
-            </Descriptions>
+            <div className="console-modal-section">
+              <div className="console-modal-section-title">基本信息</div>
+              <Descriptions bordered size="small" column={2}>
+                <Descriptions.Item label="用户名">{userDetail.user.username}</Descriptions.Item>
+                <Descriptions.Item label="用户ID">{userDetail.user.id}</Descriptions.Item>
+                <Descriptions.Item label="电话">{userDetail.user.phone || '-'}</Descriptions.Item>
+                <Descriptions.Item label="邮箱">{userDetail.user.email || '-'}</Descriptions.Item>
+                <Descriptions.Item label="网址" span={2}>{userDetail.user.url || '-'}</Descriptions.Item>
+                <Descriptions.Item label="注册时间" span={2}>{userDetail.user.dateTime || '-'}</Descriptions.Item>
+              </Descriptions>
+            </div>
 
             {/* 数据概览（去掉任务数卡片） */}
-            <Row gutter={[12, 12]} style={{ marginBottom: 16 }}>
-              <Col span={6}>
-                <Card size="small">
-                  <Statistic title="收录记录" value={userDetail.summary.recordCount} prefix={<DatabaseOutlined />} />
-                </Card>
-              </Col>
-              <Col span={6}>
-                <Card size="small">
-                  <Statistic title="今日新增" value={userDetail.summary.todayRecords} prefix={<RiseOutlined />} valueStyle={{ color: '#cf1322' }} />
-                </Card>
-              </Col>
-              <Col span={6}>
-                <Card size="small">
-                  <Statistic title="联系方式标记" value={userDetail.summary.lxfsCount} prefix={<ContactsOutlined />} valueStyle={{ color: '#52c41a' }} />
-                </Card>
-              </Col>
-              <Col span={6}>
-                <Card size="small">
-                  <Statistic title="核心关键词" value={userDetail.summary.coreKeywordCount} prefix={<FileTextOutlined />} />
-                </Card>
-              </Col>
-              <Col span={12}>
-                <Card size="small">
-                  <Statistic title="蒸馏关键词" value={userDetail.summary.zlgjcCount} prefix={<FileSearchOutlined />} />
-                </Card>
-              </Col>
-              <Col span={12}>
-                <Card size="small">
-                  <Statistic title="品牌词" value={userDetail.summary.ppCount} prefix={<FileTextOutlined />} />
-                </Card>
-              </Col>
-            </Row>
+            <div className="console-modal-section">
+              <div className="console-modal-section-title">数据统计</div>
+              <Row gutter={[12, 12]}>
+                <Col span={6}>
+                  <Card size="small">
+                    <Statistic title="收录记录" value={userDetail.summary.recordCount} prefix={<DatabaseOutlined />} />
+                  </Card>
+                </Col>
+                <Col span={6}>
+                  <Card size="small">
+                    <Statistic title="今日新增" value={userDetail.summary.todayRecords} prefix={<RiseOutlined />} valueStyle={{ color: '#cf1322' }} />
+                  </Card>
+                </Col>
+                <Col span={6}>
+                  <Card size="small">
+                    <Statistic title="联系方式标记" value={userDetail.summary.lxfsCount} prefix={<ContactsOutlined />} valueStyle={{ color: '#52c41a' }} />
+                  </Card>
+                </Col>
+                <Col span={6}>
+                  <Card size="small">
+                    <Statistic title="核心关键词" value={userDetail.summary.coreKeywordCount} prefix={<FileTextOutlined />} />
+                  </Card>
+                </Col>
+                <Col span={12}>
+                  <Card size="small">
+                    <Statistic title="蒸馏关键词" value={userDetail.summary.zlgjcCount} prefix={<FileSearchOutlined />} />
+                  </Card>
+                </Col>
+                <Col span={12}>
+                  <Card size="small">
+                    <Statistic title="品牌词" value={userDetail.summary.ppCount} prefix={<FileTextOutlined />} />
+                  </Card>
+                </Col>
+              </Row>
+            </div>
 
             {/* 平台数据分布 */}
-            <Card title="平台数据分布" size="small" style={{ marginBottom: 16 }}>
-              {userDetail.platformDistribution.length === 0 ? (
-                <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-              ) : (
-                userDetail.platformDistribution.map((p, idx) => {
-                  const pct = Math.round((p.count / maxPlatformCount) * 100);
-                  const color = PLATFORM_COLORS[idx % PLATFORM_COLORS.length];
-                  return (
-                    <div key={p.platform} style={{ marginBottom: 8 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                        <span style={{ fontSize: 13 }}>
-                          <Tag color={color}>{p.platform}</Tag>
-                        </span>
-                        <span style={{ fontSize: 13, fontWeight: 600 }}>{p.count} 条</span>
+            <div className="console-modal-section">
+              <div className="console-modal-section-title">平台数据分布</div>
+              <Card size="small" bordered={false}>
+                {userDetail.platformDistribution.length === 0 ? (
+                  <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ) : (
+                  userDetail.platformDistribution.map((p, idx) => {
+                    const pct = Math.round((p.count / maxPlatformCount) * 100);
+                    const color = PLATFORM_COLORS[idx % PLATFORM_COLORS.length];
+                    return (
+                      <div key={p.platform} style={{ marginBottom: 8 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <span style={{ fontSize: 13 }}>
+                            <Tag color={color}>{p.platform}</Tag>
+                          </span>
+                          <span style={{ fontSize: 13, fontWeight: 600 }}>{p.count} 条</span>
+                        </div>
+                        <Progress percent={pct} size="small" strokeColor={color} showInfo={false} />
                       </div>
-                      <Progress percent={pct} size="small" strokeColor={color} showInfo={false} />
-                    </div>
-                  );
-                })
-              )}
-            </Card>
+                    );
+                  })
+                )}
+              </Card>
+            </div>
 
             {/* 最近7天收录趋势 */}
-            <Card title="最近7天收录趋势" size="small" style={{ marginBottom: 16 }}>
-              {userDetail.dailyTrend.length === 0 ? (
-                <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-              ) : (
-                <Row gutter={[8, 8]}>
-                  {userDetail.dailyTrend.map((d) => {
-                    const pct = Math.round((d.count / maxTrendCount) * 100);
-                    return (
-                      <Col span={Math.floor(24 / Math.max(userDetail.dailyTrend.length, 1))} key={d.date}>
-                        <div style={{ textAlign: 'center' }}>
-                          <div style={{ fontSize: 12, color: '#999', marginBottom: 4 }}>
-                            {String(d.date).slice(5)}
+            <div className="console-modal-section">
+              <div className="console-modal-section-title">最近7天收录趋势</div>
+              <Card size="small" bordered={false}>
+                {userDetail.dailyTrend.length === 0 ? (
+                  <Empty description="暂无数据" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                ) : (
+                  <Row gutter={[8, 8]}>
+                    {userDetail.dailyTrend.map((d) => {
+                      const pct = Math.round((d.count / maxTrendCount) * 100);
+                      return (
+                        <Col span={Math.floor(24 / Math.max(userDetail.dailyTrend.length, 1))} key={d.date}>
+                          <div style={{ textAlign: 'center' }}>
+                            <div style={{ fontSize: 13, color: '#999', marginBottom: 4 }}>
+                              {String(d.date).slice(5)}
+                            </div>
+                            <div style={{ fontSize: 18, fontWeight: 600, color: '#1890ff' }}>{d.count}</div>
+                            <Progress percent={pct} size="small" showInfo={false} />
                           </div>
-                          <div style={{ fontSize: 18, fontWeight: 600, color: '#1890ff' }}>{d.count}</div>
-                          <Progress percent={pct} size="small" showInfo={false} />
-                        </div>
-                      </Col>
-                    );
-                  })}
-                </Row>
-              )}
-            </Card>
+                        </Col>
+                      );
+                    })}
+                  </Row>
+                )}
+              </Card>
+            </div>
 
             {/* 任务列表（可隐藏） */}
             {!taskListHidden && (
-              <Card
-                title="任务列表"
-                size="small"
-                extra={
-                  <Button size="small" type="text" icon={<EyeInvisibleOutlined />} onClick={() => setTaskListHidden(true)}>隐藏</Button>
-                }
-              >
-                {userDetail.tasks.length === 0 ? (
-                  <Empty description="暂无任务" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-                ) : (
-                  <Table
-                    dataSource={userDetail.tasks}
-                    rowKey="id"
-                    size="small"
-                    pagination={{ pageSize: 5 }}
-                    columns={[
-                      { title: 'ID', dataIndex: 'id', width: 80 },
-                      { title: '任务名', dataIndex: 'name', width: 120, render: (v: string) => v || '-' },
-                      { title: '开始', dataIndex: 'startDate', width: 110 },
-                      { title: '结束', dataIndex: 'endDate', width: 110 },
-                      {
-                        title: '进度', width: 150,
-                        render: (_: any, record: any) => {
-                          const pct = record.totalNum > 0 ? Math.min(100, Math.round((record.generatedNum / record.totalNum) * 100)) : 0;
-                          return (
-                            <div>
-                              <Progress percent={pct} size="small" status={record.status === 'completed' ? 'success' : 'active'} />
-                              <span style={{ fontSize: 11, color: '#999' }}>{record.generatedNum}/{record.totalNum}</span>
-                            </div>
-                          );
+              <div className="console-modal-section">
+                <div className="console-modal-section-title">任务列表</div>
+                <Card
+                  size="small"
+                  bordered={false}
+                  extra={
+                    <Button size="small" type="text" icon={<EyeInvisibleOutlined />} onClick={() => setTaskListHidden(true)}>隐藏</Button>
+                  }
+                >
+                  {userDetail.tasks.length === 0 ? (
+                    <Empty description="暂无任务" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  ) : (
+                    <Table
+                      dataSource={userDetail.tasks}
+                      rowKey="id"
+                      size="small"
+                      pagination={{ pageSize: 5 }}
+                      columns={[
+                        { title: 'ID', dataIndex: 'id', width: 80 },
+                        { title: '任务名', dataIndex: 'name', width: 120, render: (v: string) => v || '-' },
+                        { title: '开始', dataIndex: 'startDate', width: 110 },
+                        { title: '结束', dataIndex: 'endDate', width: 110 },
+                        {
+                          title: '进度', width: 150,
+                          render: (_: any, record: any) => {
+                            const pct = record.totalNum > 0 ? Math.min(100, Math.round((record.generatedNum / record.totalNum) * 100)) : 0;
+                            return (
+                              <div>
+                                <Progress percent={pct} size="small" status={record.status === 'completed' ? 'success' : 'active'} />
+                                <span style={{ fontSize: 13, color: '#999' }}>{record.generatedNum}/{record.totalNum}</span>
+                              </div>
+                            );
+                          },
                         },
-                      },
-                      {
-                        title: '状态', dataIndex: 'status', width: 90,
-                        render: (v: string) => {
-                          const cfg = STATUS_MAP[v] || { color: 'default', text: v };
-                          return <Tag color={cfg.color}>{cfg.text}</Tag>;
+                        {
+                          title: '状态', dataIndex: 'status', width: 90,
+                          render: (v: string) => {
+                            const cfg = STATUS_MAP[v] || { color: 'default', text: v };
+                            return <Tag color={cfg.color}>{cfg.text}</Tag>;
+                          },
                         },
-                      },
-                    ]}
-                  />
-                )}
-              </Card>
+                      ]}
+                    />
+                  )}
+                </Card>
+              </div>
             )}
           </div>
         )}
@@ -375,8 +390,8 @@ export default function MonitorPage() {
 
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>数据监测</h2>
+      <div className="console-page-title">
+        <span className="console-page-title-text">数据监测</span>
         <Space>
           <span>显示最近</span>
           <InputNumber
@@ -404,7 +419,7 @@ export default function MonitorPage() {
               <div>
                 <Row gutter={[16, 16]}>
                   <Col span={6}>
-                    <Card hoverable>
+                    <Card hoverable className="console-stat-card">
                       <Statistic
                         title="客户总数"
                         value={overview?.totalUsers || 0}
@@ -415,7 +430,7 @@ export default function MonitorPage() {
                     </Card>
                   </Col>
                   <Col span={6}>
-                    <Card hoverable>
+                    <Card hoverable className="console-stat-card">
                       <Statistic
                         title="任务总数"
                         value={overview?.totalTasks || 0}
@@ -427,7 +442,7 @@ export default function MonitorPage() {
                     </Card>
                   </Col>
                   <Col span={6}>
-                    <Card hoverable>
+                    <Card hoverable className="console-stat-card">
                       <Statistic
                         title="收录记录总数"
                         value={overview?.totalRecords || 0}
@@ -438,7 +453,7 @@ export default function MonitorPage() {
                     </Card>
                   </Col>
                   <Col span={6}>
-                    <Card hoverable>
+                    <Card hoverable className="console-stat-card">
                       <Statistic
                         title="今日新增记录"
                         value={overview?.todayRecords || 0}
@@ -452,7 +467,7 @@ export default function MonitorPage() {
 
                 <Row gutter={[16, 16]} style={{ marginTop: 16 }}>
                   <Col span={8}>
-                    <Card hoverable>
+                    <Card hoverable className="console-stat-card">
                       <Statistic
                         title="关键词总数"
                         value={overview?.totalKeywords || 0}
