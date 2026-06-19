@@ -876,7 +876,7 @@ export default function DashboardPage() {
     <div className={`${styles.wrapper} ${isMobile ? styles.mobile : styles.pc}`}>
       {loading && (
         <div className={styles.gLoading}>
-          <Spin tip="巨量引力GEO" size="large">
+          <Spin tip="聚量引力GEO" size="large">
             <div style={{ width: '280px' }}>1</div>
           </Spin>
         </div>

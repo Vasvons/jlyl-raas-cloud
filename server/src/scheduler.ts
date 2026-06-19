@@ -4,16 +4,16 @@ import * as repo from './repository';
 
 // 定时任务：每天凌晨 2:00 执行数据生成
 export function startScheduler() {
-  console.log('[Scheduler] 启动定时任务调度器...');
+  console.log('[Scheduler] 启动定时任务调度器... 当前时区:', Intl.DateTimeFormat().resolvedOptions().timeZone);
 
-  // 每天 02:00 执行
+  // 每天 02:00 执行（北京时间）
   cron.schedule('0 2 * * *', async () => {
     console.log('[Scheduler] 开始执行每日数据生成任务...');
     await runDailyGeneration();
   });
 
-  // 每小时检查一次是否有遗漏的任务（容错）
-  cron.schedule('0 * * * *', async () => {
+  // 每10分钟检查一次是否有遗漏的任务（容错，提高生成及时性）
+  cron.schedule('*/10 * * * *', async () => {
     await runDailyGeneration();
   });
 }
@@ -24,6 +24,15 @@ async function runDailyGeneration() {
     const tasks = await query(
       `SELECT * FROM task_info WHERE status = 'running'`
     );
+    console.log(`[Scheduler] 查询到 ${tasks.rows.length} 个运行中的任务`);
+
+    if (tasks.rows.length === 0) {
+      // 没有运行中的任务，检查是否有 paused 状态但仍在日期范围内的任务（容错）
+      const pausedTasks = await query(
+        `SELECT * FROM task_info WHERE status = 'paused'`
+      );
+      console.log(`[Scheduler] 另有 ${pausedTasks.rows.length} 个已暂停的任务`);
+    }
 
     for (const task of tasks.rows) {
       try {
@@ -96,7 +105,8 @@ async function generateForTask(task: any) {
     for (let d = 0; d < daysElapsed; d++) {
       const date = new Date(startDate);
       date.setDate(date.getDate() + d);
-      const dateStr = date.toISOString().split('T')[0];
+      // 使用本地时间格式化日期，避免 toISOString() 的 UTC 偏移问题
+      const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
       // 检查该天是否已生成
       const existing = await query(
@@ -125,7 +135,7 @@ async function generateForTask(task: any) {
   }
 
   // 生成今天的数据
-  const todayStr = today.toISOString().split('T')[0];
+  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const todayExisting = await query(
     'SELECT id FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
     [task.id, todayStr]

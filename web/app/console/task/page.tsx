@@ -478,7 +478,7 @@ export default function TaskPage() {
               </Form.Item>
             </Col>
             <Col span={12}>
-              <Form.Item label="生成总数" name="count" rules={[{ required: true, message: '请输入生成数量' }]}>
+              <Form.Item label="生成总数" name="count" rules={[{ required: true, message: '请输入生成数量' }]} extra="可修改生成总数，调整后影响未生成的数据">
                 <InputNumber min={1} max={100000} style={{ width: '100%' }} placeholder="请输入生成总数" />
               </Form.Item>
             </Col>
