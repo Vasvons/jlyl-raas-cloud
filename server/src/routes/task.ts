@@ -6,6 +6,8 @@ import {
   deleteTask,
   getTaskWeights,
   setTaskWeights,
+  getTaskHourWeights,
+  setTaskHourWeights,
   getTaskGeneratedNum,
   updateTaskStatus,
 } from '../repository';
@@ -23,6 +25,7 @@ router.get('/list', authMiddleware, adminMiddleware, async (req, res) => {
     const result = [];
     for (const task of tasks) {
       const weights = await getTaskWeights(task.id);
+      const hourWeights = await getTaskHourWeights(task.id);
       const generatedNum = await getTaskGeneratedNum(task.id);
       result.push({
         id: task.id,
@@ -36,6 +39,7 @@ router.get('/list', authMiddleware, adminMiddleware, async (req, res) => {
         createTime: task.create_time,
         generatedNum,
         platformWeights: weights,
+        hourWeights,
       });
     }
 
@@ -49,7 +53,7 @@ router.get('/list', authMiddleware, adminMiddleware, async (req, res) => {
 // 创建任务（兼容桌面端 POST /task/rw）
 router.post('/rw', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { userId, count, startAt, endAt, name, platformWeights } = req.body;
+    const { userId, count, startAt, endAt, name, platformWeights, hourWeights } = req.body;
     const id = Date.now(); // 使用时间戳作为任务ID
     await createTask({
       id,
@@ -62,6 +66,9 @@ router.post('/rw', authMiddleware, adminMiddleware, async (req, res) => {
     });
     if (platformWeights && Array.isArray(platformWeights)) {
       await setTaskWeights(id, platformWeights);
+    }
+    if (hourWeights && Array.isArray(hourWeights)) {
+      await setTaskHourWeights(id, hourWeights);
     }
     res.json({ code: 200, data: { id }, message: '创建成功' });
   } catch (e) {
@@ -89,7 +96,7 @@ router.post('/create', authMiddleware, adminMiddleware, async (req, res) => {
 // 更新任务（兼容桌面端参数格式）
 router.post('/update', authMiddleware, adminMiddleware, async (req, res) => {
   try {
-    const { taskId, userId, count, startAt, endAt, name, platformWeights, id, weights } = req.body;
+    const { taskId, userId, count, startAt, endAt, name, platformWeights, hourWeights, id, weights } = req.body;
     const taskIdNum = parseInt(taskId || id);
     if (!taskIdNum) return res.json({ code: 400, message: '缺少任务ID' });
 
@@ -109,6 +116,9 @@ router.post('/update', authMiddleware, adminMiddleware, async (req, res) => {
     const w = platformWeights || weights;
     if (w && Array.isArray(w)) {
       await setTaskWeights(taskIdNum, w);
+    }
+    if (hourWeights && Array.isArray(hourWeights)) {
+      await setTaskHourWeights(taskIdNum, hourWeights);
     }
 
     // 返回已生成数量和剩余数量
@@ -160,6 +170,36 @@ router.post('/delete', authMiddleware, adminMiddleware, async (req, res) => {
     res.json({ code: 200, message: '删除成功' });
   } catch (e) {
     console.error('[Task] 删除任务失败:', e);
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 保存平台权重（独立接口）
+router.post('/weights', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { taskId, weights } = req.body;
+    if (!taskId) return res.json({ code: 400, message: '缺少 taskId' });
+    if (weights && Array.isArray(weights)) {
+      await setTaskWeights(parseInt(taskId), weights);
+    }
+    res.json({ code: 200, message: '保存成功' });
+  } catch (e) {
+    console.error('[Task] 保存平台权重失败:', e);
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// 保存时区权重
+router.post('/hourWeights', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { taskId, weights } = req.body;
+    if (!taskId) return res.json({ code: 400, message: '缺少 taskId' });
+    if (weights && Array.isArray(weights)) {
+      await setTaskHourWeights(parseInt(taskId), weights);
+    }
+    res.json({ code: 200, message: '保存成功' });
+  } catch (e) {
+    console.error('[Task] 保存时区权重失败:', e);
     res.json({ code: 500, message: '服务器错误' });
   }
 });

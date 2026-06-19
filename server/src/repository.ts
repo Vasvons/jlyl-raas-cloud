@@ -392,6 +392,25 @@ export async function setTaskWeights(taskId: number, weights: any[]): Promise<vo
   });
 }
 
+// ============ 时区权重 ============
+
+export async function getTaskHourWeights(taskId: number): Promise<any[]> {
+  const result = await query('SELECT hour_slot, weight FROM task_hour_weights WHERE task_id = $1 ORDER BY hour_slot', [taskId]);
+  return result.rows;
+}
+
+export async function setTaskHourWeights(taskId: number, weights: { hourSlot: number; weight: number }[]): Promise<void> {
+  await withTransaction(async (client) => {
+    await client.query('DELETE FROM task_hour_weights WHERE task_id = $1', [taskId]);
+    for (const w of weights) {
+      await client.query(
+        'INSERT INTO task_hour_weights (task_id, hour_slot, weight) VALUES ($1, $2, $3)',
+        [taskId, w.hourSlot, w.weight]
+      );
+    }
+  });
+}
+
 // ============ 数据生成 ============
 
 // 获取任务已生成数量（优先从 task_progress 表读取，兼容旧数据）
@@ -414,8 +433,9 @@ export async function generateOneRecord(client: PoolClient, params: {
   platform: string;
   taskId: number;
   targetDate: Date;
+  hourWeights?: { hour_slot: number; weight: number }[];
 }) {
-  const queryTime = randomTimeInDate(params.targetDate);
+  const queryTime = randomTimeInDate(params.targetDate, params.hourWeights);
   await client.query(
     `INSERT INTO keyword_search_rank
      (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time, update_time, task_id)
@@ -424,21 +444,47 @@ export async function generateOneRecord(client: PoolClient, params: {
   );
 }
 
-// 在指定日期范围内生成随机时间（80% 集中在 8:00-24:00）
-function randomTimeInDate(date: Date): Date {
+// 在指定日期范围内生成随机时间
+// 支持时区权重：hourWeights 为 [{hour_slot, weight}]，slot 0=0-3, 1=3-6, ..., 7=21-24
+// 若 hourWeights 为空或全为0，则使用默认分布（80% 集中在 8:00-24:00）
+function randomTimeInDate(date: Date, hourWeights?: { hour_slot: number; weight: number }[]): Date {
   const result = new Date(date);
-  const isPeak = Math.random() < 0.8;
-  if (isPeak) {
-    // 8:00 - 23:59:59
-    result.setHours(8 + Math.floor(Math.random() * 16));
+
+  // 检查是否有有效的时区权重
+  const validWeights = (hourWeights || []).filter((w) => w.weight > 0);
+
+  if (validWeights.length > 0) {
+    // 使用时区权重：构建加权时段列表
+    const weightedSlots: number[] = [];
+    for (const w of validWeights) {
+      for (let i = 0; i < w.weight; i++) {
+        weightedSlots.push(w.hour_slot);
+      }
+    }
+
+    // 随机选择一个时段
+    const selectedSlot = weightedSlots[Math.floor(Math.random() * weightedSlots.length)];
+    const startHour = selectedSlot * 3; // slot 0 -> 0:00, slot 1 -> 3:00, ...
+    // 在该时段的3小时内随机生成时间
+    result.setHours(startHour + Math.floor(Math.random() * 3));
     result.setMinutes(Math.floor(Math.random() * 60));
     result.setSeconds(Math.floor(Math.random() * 60));
   } else {
-    // 0:00 - 7:59:59
-    result.setHours(Math.floor(Math.random() * 8));
-    result.setMinutes(Math.floor(Math.random() * 60));
-    result.setSeconds(Math.floor(Math.random() * 60));
+    // 默认分布：80% 集中在 8:00-24:00
+    const isPeak = Math.random() < 0.8;
+    if (isPeak) {
+      // 8:00 - 23:59:59
+      result.setHours(8 + Math.floor(Math.random() * 16));
+      result.setMinutes(Math.floor(Math.random() * 60));
+      result.setSeconds(Math.floor(Math.random() * 60));
+    } else {
+      // 0:00 - 7:59:59
+      result.setHours(Math.floor(Math.random() * 8));
+      result.setMinutes(Math.floor(Math.random() * 60));
+      result.setSeconds(Math.floor(Math.random() * 60));
+    }
   }
+
   return result;
 }
 
@@ -451,6 +497,7 @@ export async function generateBatch(params: {
   zlgjcList: { value: string; hxgjc: string }[];
   ppList: string[];
   targetDate: Date;
+  hourWeights?: { hour_slot: number; weight: number }[];
 }): Promise<void> {
   await withTransaction(async (client) => {
     // 构建加权平台列表
@@ -487,6 +534,7 @@ export async function generateBatch(params: {
         platform,
         taskId: params.taskId,
         targetDate: params.targetDate,
+        hourWeights: params.hourWeights,
       });
     }
 

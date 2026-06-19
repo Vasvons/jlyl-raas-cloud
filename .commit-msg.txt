@@ -1,0 +1,11 @@
+feat: 完善后台管理 - 时区权重+历史补齐+收录跳转维护
+
+- 数据生成任务页：新增时区权重配置（8个时段），支持表格列展示、独立Modal、新建任务表单内联配置
+- 后端scheduler.ts：支持任务开始时间早于当前时自动补齐历史数据，逐天检查daily_random跳过已生成天数
+- 后端repository.ts：randomTimeInDate支持时区权重分布，generateBatch/generateOneRecord新增hourWeights参数
+- 后端task.ts：新增/task/weights和/task/hourWeights独立接口，创建/更新任务支持hourWeights
+- 后端migrate.ts：新增task_hour_weights表
+- 收录跳转维护页：行内编辑跳转链接+联系方式勾选
+- 关键词配置页：默认显示蒸馏关键词Tab，生成后自动切换
+- 侧边栏：去掉用户品牌管理，关键词维护改名为收录跳转维护
+- api.ts：桌面端/云端环境自动切换baseURL

@@ -1,19 +1,22 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Space, Input, Select, message, Tag, Modal, Form, Tooltip } from 'antd';
-import { ReloadOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { Table, Button, Space, Input, Select, message, Tag, Checkbox, Tooltip } from 'antd';
+import { ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 
 interface MaintainItem {
-  id: number;
+  distillateKeyword: string;
+  expandedKeyword: string;
+  platform: string;
   zlgjcid?: number;
-  distillateKeyword?: string;
-  expandedKeyword?: string;
-  platform?: string;
+  urlId?: number;
   url?: string;
   hasLxfs?: number;
-  userId?: string;
+  // 前端编辑状态
+  _editingUrl?: string;
+  _editingHasLxfs?: boolean;
+  _saving?: boolean;
 }
 
 interface UserOption {
@@ -37,9 +40,6 @@ export default function MaintainPage() {
   const [keyword, setKeyword] = useState('');
   const [pageNum, setPageNum] = useState(1);
   const [pageSize, setPageSize] = useState(20);
-  const [editModalVisible, setEditModalVisible] = useState(false);
-  const [editingItem, setEditingItem] = useState<MaintainItem | null>(null);
-  const [form] = Form.useForm();
 
   const fetchUsers = async () => {
     try {
@@ -72,18 +72,20 @@ export default function MaintainPage() {
     if (!selectedUserId) return;
     setLoading(true);
     try {
-      const params: any = {
-        userId: selectedUserId,
-        pageNum,
-        pageSize,
-      };
+      const params: any = { userId: selectedUserId, pageNum, pageSize };
       if (selectedPlatform) params.pt = selectedPlatform;
       if (keyword) params.keyword = keyword;
 
       const res = await api.get('/zlgjc/maintenanceList', { params });
       if (res.data?.code === 200) {
         const data = res.data.data;
-        setList(data?.list || []);
+        const items = (data?.list || []).map((item: MaintainItem) => ({
+          ...item,
+          _editingUrl: item.url || '',
+          _editingHasLxfs: item.hasLxfs === 1,
+          _saving: false,
+        }));
+        setList(items);
         setTotal(data?.total || 0);
       } else {
         message.error(res.data?.message || '获取列表失败');
@@ -101,9 +103,7 @@ export default function MaintainPage() {
   }, []);
 
   useEffect(() => {
-    if (selectedUserId) {
-      fetchList();
-    }
+    if (selectedUserId) fetchList();
   }, [selectedUserId, pageNum, pageSize]);
 
   const onSearch = () => {
@@ -111,68 +111,131 @@ export default function MaintainPage() {
     fetchList();
   };
 
-  const openEdit = (item: MaintainItem) => {
-    setEditingItem(item);
-    form.setFieldsValue({
-      url: item.url || '',
-      hasLxfs: item.hasLxfs === 1 ? '1' : '0',
-    });
-    setEditModalVisible(true);
-  };
+  // 行内保存
+  const handleSave = async (record: MaintainItem, index: number) => {
+    const newList = [...list];
+    newList[index] = { ...record, _saving: true };
+    setList(newList);
 
-  const handleUpdateUrl = async (values: any) => {
-    if (!editingItem) return;
     try {
-      const res = await api.post('/zlgjc/updateUrl', {
-        id: editingItem.id,
-        url: values.url,
-        hasLxfs: values.hasLxfs,
-      });
-      if (res.data?.code === 200) {
-        message.success('更新成功');
-        setEditModalVisible(false);
-        fetchList();
+      const { _editingUrl, _editingHasLxfs, urlId, zlgjcid, platform } = record;
+      if (urlId) {
+        // 更新现有记录
+        const res = await api.post('/zlgjc/updateUrl', {
+          id: urlId,
+          url: _editingUrl || '',
+          hasLxfs: _editingHasLxfs,
+        });
+        if (res.data?.code !== 200) {
+          message.error(res.data?.message || '保存失败');
+          return;
+        }
+      } else if (zlgjcid) {
+        // 新增跳转链接记录
+        const res = await api.post('/zlgjc/insertUrl', {
+          zlgjcid,
+          pt: platform,
+          url: _editingUrl || '',
+          hasLxfs: _editingHasLxfs,
+        });
+        if (res.data?.code !== 200) {
+          message.error(res.data?.message || '保存失败');
+          return;
+        }
       } else {
-        message.error(res.data?.message || '更新失败');
+        message.warning('该记录无法保存（缺少关键词关联）');
+        return;
       }
+      message.success('保存成功');
+      // 更新本地数据
+      newList[index] = {
+        ...record,
+        url: _editingUrl,
+        hasLxfs: _editingHasLxfs ? 1 : 0,
+        _saving: false,
+      };
+      setList(newList);
     } catch (e) {
-      message.error('更新失败');
+      message.error('保存失败');
+      newList[index] = { ...record, _saving: false };
+      setList(newList);
     }
   };
 
+  // 行内编辑
+  const handleFieldChange = (index: number, field: '_editingUrl' | '_editingHasLxfs', value: string | boolean) => {
+    const newList = [...list];
+    newList[index] = { ...newList[index], [field]: value };
+    setList(newList);
+  };
+
   const columns = [
-    { title: 'ID', dataIndex: 'id', width: 80 },
-    { title: '蒸馏关键词', dataIndex: 'distillateKeyword', width: 150 },
-    { title: '扩展关键词', dataIndex: 'expandedKeyword', width: 200 },
     {
-      title: '平台', dataIndex: 'platform', width: 120,
+      title: '蒸馏关键词', dataIndex: 'distillateKeyword', width: 200,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '核心词', dataIndex: 'expandedKeyword', width: 150,
+      render: (v: string) => v || '-',
+    },
+    {
+      title: '平台', dataIndex: 'platform', width: 100,
       render: (v: string) => v ? <Tag color="blue">{v}</Tag> : '-',
     },
     {
-      title: 'URL', dataIndex: 'url', width: 250,
-      render: (v: string) => {
-        if (!v) return '-';
-        const display = v.length > 40 ? v.substring(0, 40) + '...' : v;
-        return <Tooltip title={v}><a href={v} target="_blank" rel="noopener noreferrer">{display}</a></Tooltip>;
-      },
-    },
-    {
-      title: '联系方式', dataIndex: 'hasLxfs', width: 100,
-      render: (v: number) => v === 1 ? <Tag color="green">有</Tag> : <Tag>无</Tag>,
-    },
-    {
-      title: '操作', width: 100, fixed: 'right' as const,
+      title: '跳转链接', width: 300,
       render: (_: any, record: MaintainItem) => (
-        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+        <Input
+          size="small"
+          value={record._editingUrl}
+          onChange={(e) => handleFieldChange(list.indexOf(record), '_editingUrl', e.target.value)}
+          placeholder="填写跳转链接"
+          style={{ width: '100%' }}
+        />
       ),
+    },
+    {
+      title: '有联系方式', width: 100, align: 'center' as const,
+      render: (_: any, record: MaintainItem) => (
+        <Checkbox
+          checked={record._editingHasLxfs}
+          onChange={(e) => handleFieldChange(list.indexOf(record), '_editingHasLxfs', e.target.checked)}
+        >
+          {record._editingHasLxfs ? <Tag color="green">是</Tag> : <Tag>否</Tag>}
+        </Checkbox>
+      ),
+    },
+    {
+      title: '操作', width: 80, fixed: 'right' as const,
+      render: (_: any, record: MaintainItem) => {
+        const index = list.indexOf(record);
+        const changed = record._editingUrl !== (record.url || '') || record._editingHasLxfs !== (record.hasLxfs === 1);
+        return (
+          <Button
+            size="small"
+            type="primary"
+            icon={<SaveOutlined />}
+            loading={record._saving}
+            disabled={!changed}
+            onClick={() => handleSave(record, index)}
+          >
+            保存
+          </Button>
+        );
+      },
     },
   ];
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>核心关键词维护</h2>
+        <h2 style={{ margin: 0 }}>收录跳转维护</h2>
         <Button icon={<ReloadOutlined />} onClick={fetchList}>刷新</Button>
+      </div>
+
+      <div style={{ marginBottom: 16, padding: 12, background: '#f6f8fa', borderRadius: 4, fontSize: 13, color: '#666' }}>
+        <b>说明：</b>本页面维护数据生成任务生成的关键词收录记录。在每条记录后填写跳转链接，并勾选"有联系方式"标记该收录是否出现了联系方式。
+        勾选了"有联系方式"的记录将出现在 GEO 报告页面的搜索排名的"联系方式"分类下。
       </div>
 
       <Space style={{ marginBottom: 16 }} wrap>
@@ -209,7 +272,7 @@ export default function MaintainPage() {
         loading={loading}
         dataSource={list}
         columns={columns}
-        rowKey="id"
+        rowKey={(record) => `${record.distillateKeyword}-${record.platform}-${record.expandedKeyword}`}
         scroll={{ x: 1000 }}
         pagination={{
           current: pageNum,
@@ -224,26 +287,6 @@ export default function MaintainPage() {
         }}
         size="small"
       />
-
-      <Modal
-        title="编辑URL"
-        open={editModalVisible}
-        onCancel={() => setEditModalVisible(false)}
-        onOk={() => form.submit()}
-        destroyOnClose
-      >
-        <Form form={form} layout="vertical" onFinish={handleUpdateUrl}>
-          <Form.Item label="URL" name="url">
-            <Input.TextArea rows={3} placeholder="请输入URL" />
-          </Form.Item>
-          <Form.Item label="是否有联系方式" name="hasLxfs" initialValue="0">
-            <select style={{ width: '100%', padding: '6px 12px', border: '1px solid #d9d9d9', borderRadius: 4 }}>
-              <option value="0">无</option>
-              <option value="1">有</option>
-            </select>
-          </Form.Item>
-        </Form>
-      </Modal>
     </div>
   );
 }

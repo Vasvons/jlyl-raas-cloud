@@ -6,7 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 const MENU_ITEMS = [
   { key: '/console/users', label: '用户管理' },
   { key: '/console/keywords', label: '关键词配置' },
-  { key: '/console/keywordsmaintain', label: '关键词维护' },
+  { key: '/console/keywordsmaintain', label: '收录跳转维护' },
   { key: '/console/task', label: '数据生成任务' },
   { key: '/console/monitor', label: '数据监测' },
 ];
@@ -23,7 +23,9 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
           JLYL
         </div>
         {MENU_ITEMS.map((item) => {
-          const active = pathname.startsWith(item.key);
+          // 精确匹配：pathname === item.key 或 pathname 以 item.key + '/' 开头
+          // 避免 /console/keywordsmaintain 误匹配 /console/keywords
+          const active = pathname === item.key || pathname.startsWith(item.key + '/');
           return (
             <div
               key={item.key}

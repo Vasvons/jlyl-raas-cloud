@@ -113,6 +113,16 @@ export async function migrate() {
       )
     `);
 
+    // 任务时区权重（每3小时一个时区，共8个时区：0-3, 3-6, 6-9, ... 21-24）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS task_hour_weights (
+        task_id BIGINT NOT NULL,
+        hour_slot INTEGER NOT NULL,
+        weight INTEGER DEFAULT 1,
+        PRIMARY KEY (task_id, hour_slot)
+      )
+    `);
+
     // 任务进度
     await client.query(`
       CREATE TABLE IF NOT EXISTS task_progress (

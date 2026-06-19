@@ -51,23 +51,16 @@ async function generateForTask(task: any) {
     return;
   }
 
-  // 检查今天是否已生成
-  const todayStr = today.toISOString().split('T')[0];
-  const existing = await query(
-    'SELECT id FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
-    [task.id, todayStr]
-  );
-  if (existing.rows.length > 0) {
-    console.log(`[Scheduler] 任务 ${task.id} 今天已生成，跳过`);
-    return;
-  }
-
   // 获取任务权重
   const weights = await repo.getTaskWeights(task.id);
   if (weights.length === 0) {
     console.log(`[Scheduler] 任务 ${task.id} 没有配置权重，跳过`);
     return;
   }
+
+  // 获取时区权重
+  const hourWeights = await repo.getTaskHourWeights(task.id);
+  console.log(`[Scheduler] 任务 ${task.id} 时区权重配置: ${hourWeights.length > 0 ? '已配置' : '默认均匀'}`);
 
   // 获取关键词库
   const zlgjcList = await repo.getZlgjcByUserId(task.user_id);
@@ -87,20 +80,30 @@ async function generateForTask(task: any) {
   const totalDays = Math.floor((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1;
   const dailyNum = Math.ceil(task.total_num / totalDays);
 
-  // 检查是否需要补齐历史数据
+  // 检查已生成数量，决定是否需要补齐历史数据
   const generatedNum = await repo.getTaskGeneratedNum(task.id);
-  const expectedNum = Math.floor((today.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)) * dailyNum;
+  const daysElapsed = Math.floor((today.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000));
+  const expectedNum = daysElapsed * dailyNum;
 
-  if (generatedNum < expectedNum) {
-    // 补齐历史数据
-    const backlogDays = Math.floor((expectedNum - generatedNum) / dailyNum);
-    console.log(`[Scheduler] 任务 ${task.id} 需要补齐 ${backlogDays} 天的历史数据`);
+  if (generatedNum < expectedNum && daysElapsed > 0) {
+    // 需要补齐历史数据：从开始日期到昨天，逐天检查并补齐缺失的天
+    console.log(`[Scheduler] 任务 ${task.id} 需要补齐历史数据，已生成 ${generatedNum}，预期 ${expectedNum}`);
 
-    for (let d = 0; d < backlogDays; d++) {
+    for (let d = 0; d < daysElapsed; d++) {
       const date = new Date(startDate);
       date.setDate(date.getDate() + d);
-      if (date >= today) break;
+      const dateStr = date.toISOString().split('T')[0];
 
+      // 检查该天是否已生成
+      const existing = await query(
+        'SELECT id FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
+        [task.id, dateStr]
+      );
+      if (existing.rows.length > 0) {
+        continue; // 该天已生成，跳过
+      }
+
+      console.log(`[Scheduler] 任务 ${task.id} 补齐 ${dateStr} 的数据，数量 ${dailyNum}`);
       await repo.generateBatch({
         userId: task.user_id,
         taskId: task.id,
@@ -109,6 +112,7 @@ async function generateForTask(task: any) {
         zlgjcList,
         ppList: ppNames,
         targetDate: date,
+        hourWeights,
       });
 
       await repo.setDailyRandom(task.id, date, dailyNum);
@@ -116,17 +120,28 @@ async function generateForTask(task: any) {
   }
 
   // 生成今天的数据
-  await repo.generateBatch({
-    userId: task.user_id,
-    taskId: task.id,
-    count: dailyNum,
-    weights,
-    zlgjcList,
-    ppList: ppNames,
-    targetDate: today,
-  });
+  const todayStr = today.toISOString().split('T')[0];
+  const todayExisting = await query(
+    'SELECT id FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
+    [task.id, todayStr]
+  );
+  if (todayExisting.rows.length === 0) {
+    await repo.generateBatch({
+      userId: task.user_id,
+      taskId: task.id,
+      count: dailyNum,
+      weights,
+      zlgjcList,
+      ppList: ppNames,
+      targetDate: today,
+      hourWeights,
+    });
 
-  await repo.setDailyRandom(task.id, today, dailyNum);
+    await repo.setDailyRandom(task.id, today, dailyNum);
+    console.log(`[Scheduler] 任务 ${task.id} 今日生成 ${dailyNum} 条`);
+  } else {
+    console.log(`[Scheduler] 任务 ${task.id} 今天已生成，跳过`);
+  }
 
   // 检查是否完成
   const newGeneratedNum = await repo.getTaskGeneratedNum(task.id);
@@ -134,6 +149,6 @@ async function generateForTask(task: any) {
     await query('UPDATE task_info SET status = $1 WHERE id = $2', ['completed', task.id]);
     console.log(`[Scheduler] 任务 ${task.id} 已完成，共生成 ${newGeneratedNum} 条`);
   } else {
-    console.log(`[Scheduler] 任务 ${task.id} 今日生成 ${dailyNum} 条，总计 ${newGeneratedNum}/${task.total_num}`);
+    console.log(`[Scheduler] 任务 ${task.id} 总计 ${newGeneratedNum}/${task.total_num}`);
   }
 }

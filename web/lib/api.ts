@@ -1,8 +1,15 @@
 import axios from 'axios';
 
-// API 基础地址：通过 Next.js rewrites 代理到后端
+// API 基础地址：
+// - 云端环境：通过 Next.js rewrites 代理到后端，baseURL = /api
+// - 桌面端环境：通过本地 HTTP 服务器代理到云端，baseURL = /jlyl
+//   （server.ts 的 proxyToCloud 将 /jlyl/* 代理到云端 /api/*）
+const isDesktop =
+  typeof window !== 'undefined' &&
+  (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost');
+
 const api = axios.create({
-  baseURL: '/api',
+  baseURL: isDesktop ? '/jlyl' : '/api',
   timeout: 30000,
 });
 
