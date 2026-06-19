@@ -174,8 +174,8 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
 
   // 类型过滤
   if (params.type === 'brand') {
-    // 品牌搜索：关键词在品牌关键词表中
-    where.push(`EXISTS (SELECT 1 FROM pp p WHERE p.pp = k.expanded_keyword AND p.user_id = k.user_id)`);
+    // 品牌搜索：distillate_keyword 在品牌关键词库中（keyword_type=1）
+    where.push(`EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 1)`);
   } else if (params.type === 'scene') {
     // 联系方式：has_lxfs = 1
     where.push(`EXISTS (SELECT 1 FROM zlgjc z2 INNER JOIN zlgjcurl u2 ON z2.id = u2.zlgjcid WHERE z2.value = k.distillate_keyword AND z2.userid = k.user_id AND u2.has_lxfs = 1 AND u2.pt = k.platform)`);
@@ -256,9 +256,16 @@ export async function getCoreKeywordRank(userId: string, limit: number = 20) {
 
 // ============ 蒸馏关键词库 ============
 
-export async function getZlgjcByUserId(userId: string) {
+export async function getZlgjcByUserId(userId: string, keywordType?: number) {
+  if (keywordType !== undefined) {
+    const result = await query(
+      'SELECT id, value, hxgjc, userid, lxfs, create_time, keyword_type FROM zlgjc WHERE userid = $1 AND keyword_type = $2 ORDER BY id',
+      [userId, keywordType]
+    );
+    return result.rows;
+  }
   const result = await query(
-    'SELECT id, value, hxgjc, userid, lxfs, create_time FROM zlgjc WHERE userid = $1 ORDER BY id',
+    'SELECT id, value, hxgjc, userid, lxfs, create_time, keyword_type FROM zlgjc WHERE userid = $1 ORDER BY id',
     [userId]
   );
   return result.rows;
@@ -526,6 +533,7 @@ export async function generateBatch(params: {
   count: number;
   weights: { platform: string; weight: number }[];
   zlgjcList: { value: string; hxgjc: string }[];
+  brandZlgjcList?: { value: string; hxgjc: string }[];
   ppList: string[];
   targetDate: Date;
   hourWeights?: { hour_slot: number; weight: number }[];
@@ -539,17 +547,22 @@ export async function generateBatch(params: {
       }
     }
 
+    // 品牌关键词池：优先使用 brandZlgjcList（keyword_type=1），为空则不生成品牌记录
+    const brandPool = params.brandZlgjcList && params.brandZlgjcList.length > 0 ? params.brandZlgjcList : [];
+
     for (let i = 0; i < params.count; i++) {
-      // 随机选择关键词（80% 蒸馏关键词，20% 品牌关键词）
-      const isBrand = Math.random() < 0.2 && params.ppList.length > 0;
+      // 有品牌关键词池时，20% 概率生成品牌搜索记录；否则全部生成蒸馏关键词记录
+      const isBrand = brandPool.length > 0 && params.ppList.length > 0 && Math.random() < 0.2;
       let expandedKeyword: string;
       let distillateKeyword: string;
 
       if (isBrand) {
+        // 品牌搜索记录：expanded_keyword 来自品牌词表 pp，distillate_keyword 来自品牌关键词池（keyword_type=1）
         expandedKeyword = params.ppList[Math.floor(Math.random() * params.ppList.length)];
-        const zlgjc = params.zlgjcList[Math.floor(Math.random() * params.zlgjcList.length)];
-        distillateKeyword = zlgjc.value;
+        const brandKw = brandPool[Math.floor(Math.random() * brandPool.length)];
+        distillateKeyword = brandKw.value;
       } else {
+        // 蒸馏关键词记录：expanded_keyword 和 distillate_keyword 都来自蒸馏关键词池（keyword_type=0）
         const zlgjc = params.zlgjcList[Math.floor(Math.random() * params.zlgjcList.length)];
         expandedKeyword = zlgjc.hxgjc || zlgjc.value;
         distillateKeyword = zlgjc.value;

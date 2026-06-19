@@ -379,7 +379,7 @@
 
 /* ===== 关键词数量 ===== */
 .ksWrapper {
-  height: 14vh;
+  height: 18vh;
   display: flex;
   flex-direction: column;
   background: url(https://static.7asi.com/assets/reportGeo/Rectangle_346241797.png) 100% 100%;
@@ -458,7 +458,7 @@
 
 /* ===== 搜索排名 ===== */
 .srWrapper {
-  height: 74vh;
+  height: 68vh;
   display: flex;
   flex-direction: column;
   background: url("https://static.7asi.com/assets/reportGeo/Rectangle_346241799%20(1).png") 100% 100%;
@@ -1189,6 +1189,55 @@
 
 .prMobileLegendCount {
   color: #666;
+}
+
+/* PC端各平台收录占比 - 左右布局 */
+.prPcChartWrapper {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 100%;
+  padding: 10px;
+}
+
+.prPcChartWrapper > :global(div):first-child {
+  flex: 0 0 55%;
+  height: 100% !important;
+}
+
+.prPcLegend {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 10px;
+}
+
+.prLegendItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #333;
+}
+
+.prLegendIcon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.prLegendName {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prLegendCount {
+  color: #666;
+  font-weight: 500;
 }
 
 /* 核心关键词排名 */

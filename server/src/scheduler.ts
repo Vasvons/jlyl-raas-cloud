@@ -62,14 +62,18 @@ async function generateForTask(task: any) {
   const hourWeights = await repo.getTaskHourWeights(task.id);
   console.log(`[Scheduler] 任务 ${task.id} 时区权重配置: ${hourWeights.length > 0 ? '已配置' : '默认均匀'}`);
 
-  // 获取关键词库
-  const zlgjcList = await repo.getZlgjcByUserId(task.user_id);
+  // 获取关键词库（蒸馏关键词 keyword_type=0）
+  const zlgjcList = await repo.getZlgjcByUserId(task.user_id, 0);
   if (zlgjcList.length === 0) {
-    console.log(`[Scheduler] 任务 ${task.id} 没有关键词库，跳过`);
+    console.log(`[Scheduler] 任务 ${task.id} 没有蒸馏关键词库，跳过`);
     return;
   }
 
-  // 获取品牌关键词
+  // 获取品牌关键词库（keyword_type=1）
+  const brandZlgjcList = await repo.getZlgjcByUserId(task.user_id, 1);
+  console.log(`[Scheduler] 任务 ${task.id} 蒸馏关键词 ${zlgjcList.length} 条，品牌关键词 ${brandZlgjcList.length} 条`);
+
+  // 获取品牌词
   const ppList = await repo.getPPByUserId(task.user_id);
   const ppNames = ppList.map((p: any) => p.pp);
 
@@ -110,6 +114,7 @@ async function generateForTask(task: any) {
         count: dailyNum,
         weights,
         zlgjcList,
+        brandZlgjcList,
         ppList: ppNames,
         targetDate: date,
         hourWeights,
@@ -132,6 +137,7 @@ async function generateForTask(task: any) {
       count: dailyNum,
       weights,
       zlgjcList,
+      brandZlgjcList,
       ppList: ppNames,
       targetDate: today,
       hourWeights,

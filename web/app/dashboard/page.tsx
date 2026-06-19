@@ -212,20 +212,10 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
           color: colors[i % colors.length],
         }));
         setChartData(formatted);
+        // PC端和移动端都不使用ECharts内置图例，改用自定义HTML图例（带平台图标）
         setOption({
           tooltip: { trigger: 'item' },
-          legend: isMobile
-            ? { show: false }
-            : {
-                formatter: (name: string) => {
-                  const item = formatted.find((s: { name: string }) => s.name === name);
-                  return `${name}: ${item?.count}`;
-                },
-                orient: 'vertical',
-                left: '50%',
-                itemGap: 30,
-                top: 'center',
-              },
+          legend: { show: false },
           series: [
             {
               name: '占比',
@@ -237,7 +227,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
                 name: e.name,
                 itemStyle: { color: e.color },
               })),
-              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['25%', '50%'] }),
+              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['30%', '50%'] }),
             },
             {
               type: 'pie',
@@ -246,7 +236,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
               label: { show: false },
               itemStyle: { color: 'transparent' },
               data: [{ value: 1 }],
-              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['25%', '50%'] }),
+              ...(isMobile ? { center: ['50%', '45%'] } : { center: ['30%', '50%'] }),
             },
           ],
         });
@@ -266,15 +256,15 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
       }
       className={`${styles.gCard} ${styles.prWrapper} ${isMobile ? styles.prMobile : styles.prPc}`}
     >
-      <div className={isMobile ? styles.prMobileChartWrapper : undefined}>
+      <div className={isMobile ? styles.prMobileChartWrapper : styles.prPcChartWrapper}>
         <ReactECharts option={option} style={{ height: isMobile ? 240 : 400, width: '100%' }} opts={{ renderer: 'canvas' }} />
-        {isMobile && chartData.length > 0 && (
-          <div className={styles.prMobileLegend}>
+        {chartData.length > 0 && (
+          <div className={isMobile ? styles.prMobileLegend : styles.prPcLegend}>
             {chartData.map((e) => (
-              <div key={e.name} className={styles.prMobileLegendItem}>
-                <img src={PLATFORM_ICONS[e.name] || ''} alt="" className={styles.prMobileLegendIcon} />
-                <span className={styles.prMobileLegendName}>{e.name}</span>
-                <span className={styles.prMobileLegendCount}>{e.count}</span>
+              <div key={e.name} className={styles.prLegendItem}>
+                <img src={PLATFORM_ICONS[e.name] || ''} alt="" className={styles.prLegendIcon} />
+                <span className={styles.prLegendName}>{e.name}</span>
+                <span className={styles.prLegendCount}>{e.count}</span>
               </div>
             ))}
           </div>
@@ -780,7 +770,7 @@ export default function DashboardPage() {
 
   // 切换用户时更新header显示的用户名
   const displayUsername = selectedUserId
-    ? users.find((u) => u.id === selectedUserId)?.username || user.username
+    ? users.find((u) => String(u.id) === String(selectedUserId))?.username || user.username
     : user.username;
 
   const onLogout = () => {
@@ -942,16 +932,6 @@ export default function DashboardPage() {
           </Form.Item>
         </Form>
       </Modal>
-
-      {/* 退出登录 + 分享按钮（仅PC端显示） */}
-      {!isMobile && (
-        <div className={styles.logoutWrapper}>
-          <Button onClick={onOpenShareModal} size="small" type="primary" style={{ marginRight: 8 }}>
-            分享报告
-          </Button>
-          <Button onClick={onLogout} size="small">退出登录</Button>
-        </div>
-      )}
 
       {/* Header */}
       {isMobile ? (
