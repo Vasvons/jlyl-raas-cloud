@@ -192,41 +192,59 @@ export async function generateForTask(task: any): Promise<string> {
   }
 
   // 生成今天的数据（实时生成：query_time = create_time = NOW()）
-  const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  const todayDailyRandom = await query(
-    'SELECT id, random_num FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
-    [task.id, todayStr]
-  );
-  // 今日数据用 create_time 统计（因为实时生成时 query_time = create_time）
+  // 权重决定数据生成的密集度：高权重时段更密集地生成，而不是一次性生成全天的量
+  // 每次调度只生成一小批，让数据在一天中持续产生
+  const now = new Date();
+  const currentHour = now.getHours();
+  const currentSlot = Math.floor(currentHour / 3); // 0-7，每3小时一个时段
+
+  // 计算当前时段的权重和所有时段权重总和
+  const validHourWeights = hourWeights.filter((w: any) => w.weight > 0);
+  const totalWeight = validHourWeights.reduce((sum: number, w: any) => sum + w.weight, 0);
+  const currentSlotWeight = validHourWeights.find((w: any) => w.hour_slot === currentSlot)?.weight || 0;
+
+  // 今日已生成数量（用 create_time 统计，因为实时生成时 query_time = create_time）
   const todayActualCountResult = await query(
     'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND create_time::date = CURRENT_DATE',
     [task.id]
   );
   const todayActualCount = parseInt(todayActualCountResult.rows[0].count) || 0;
 
-  if (todayDailyRandom.rows.length === 0 || todayActualCount < dailyNum) {
-    const needGenerate = Math.max(0, dailyNum - todayActualCount);
-    if (needGenerate > 0) {
-      console.log(`[Scheduler] 任务 ${task.id} 生成今日(${todayStr})数据，已有 ${todayActualCount}，需生成 ${needGenerate}`);
-      await repo.generateBatch({
-        userId: task.user_id,
-        taskId: task.id,
-        count: needGenerate,
-        weights,
-        zlgjcList,
-        brandZlgjcList,
-        ppList: ppNames,
-        targetDate: today,
-        hourWeights,
-        realtime: true, // 当下实时生成，query_time=create_time=NOW()
-      });
-
-      await repo.setDailyRandom(task.id, today, dailyNum);
-      generatedToday += needGenerate;
-      console.log(`[Scheduler] 任务 ${task.id} 今日生成 ${needGenerate} 条`);
+  // 今日预期生成数量 = dailyNum * (已过时段权重 / 总权重)
+  // 已过时段包括当前时段（因为当前时段正在生成中）
+  let elapsedWeight = 0;
+  for (const w of validHourWeights) {
+    if (w.hour_slot <= currentSlot) {
+      elapsedWeight += w.weight;
     }
+  }
+  const expectedTodayByNow = totalWeight > 0 ? Math.ceil(dailyNum * elapsedWeight / totalWeight) : dailyNum;
+
+  console.log(`[Scheduler] 任务 ${task.id} 今日进度: 已生成=${todayActualCount}, 当前时段预期=${expectedTodayByNow}, 当前时段权重=${currentSlotWeight}/${totalWeight}, 当前时段=${currentSlot}(${currentHour}时)`);
+
+  // 只有当前时段权重 > 0 时才生成
+  if (currentSlotWeight > 0 && todayActualCount < expectedTodayByNow) {
+    // 本次需要生成的数量 = 预期数量 - 已生成数量
+    const needGenerate = Math.max(1, expectedTodayByNow - todayActualCount);
+    console.log(`[Scheduler] 任务 ${task.id} 实时生成 ${needGenerate} 条（当前时段权重=${currentSlotWeight}）`);
+    await repo.generateBatch({
+      userId: task.user_id,
+      taskId: task.id,
+      count: needGenerate,
+      weights,
+      zlgjcList,
+      brandZlgjcList,
+      ppList: ppNames,
+      targetDate: today,
+      hourWeights,
+      realtime: true, // 当下实时生成，query_time=create_time=NOW()
+    });
+    generatedToday += needGenerate;
+    console.log(`[Scheduler] 任务 ${task.id} 本次实时生成 ${needGenerate} 条`);
+  } else if (currentSlotWeight === 0) {
+    console.log(`[Scheduler] 任务 ${task.id} 当前时段权重为0，跳过生成`);
   } else {
-    console.log(`[Scheduler] 任务 ${task.id} 今天(${todayStr})已生成 ${todayActualCount} 条，跳过`);
+    console.log(`[Scheduler] 任务 ${task.id} 今日已生成 ${todayActualCount} 条，达到当前时段预期 ${expectedTodayByNow}，等待下一个时段`);
   }
 
   // 检查是否完成，并更新 task_progress 表
