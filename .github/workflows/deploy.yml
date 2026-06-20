@@ -25,6 +25,8 @@ jobs:
 
             # 拉取最新代码
             echo ">>> 拉取最新代码..."
+            # 确保 remote 使用 HTTPS（避免服务器 SSH 22 端口被墙导致拉取失败）
+            git remote set-url origin https://github.com/Vasvons/jlyl-raas-cloud.git
             git fetch --all
             git reset --hard origin/${{ github.ref_name }}
 

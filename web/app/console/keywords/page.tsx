@@ -53,9 +53,9 @@ const DEFAULT_BRAND_WORDS = {
   D: ['价格', '报价', '厂家', '多少钱', '费用', '成本'],
 };
 
-// 品牌关键词组合规则（A品牌词始终包含）
+// 品牌关键词组合规则（A品牌词始终包含，B核心词可选）
 const BRAND_COMBO_OPTIONS = [
-  'A+B', 'A+B+C', 'A+B+D', 'A+B+C+D',
+  'A', 'A+B', 'A+C', 'A+D', 'A+B+C', 'A+B+D', 'A+B+C+D',
 ];
 
 export default function KeywordsPage() {
@@ -383,9 +383,11 @@ export default function KeywordsPage() {
       message.warning('A品牌词为空，请先添加品牌词');
       return;
     }
-    const bWords = brandGenB.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean);
-    if (bWords.length === 0) {
-      message.warning('B核心词为空，请先添加核心关键词');
+    const bWords = brandGenB ? brandGenB.split(/[,，\n]/).map((s) => s.trim()).filter(Boolean) : [];
+    // B核心词不再强制，但若所选组合包含B而B为空，需提示
+    const combosNeedB = brandGenCombos.some((c) => c.includes('B'));
+    if (combosNeedB && bWords.length === 0) {
+      message.warning('所选组合包含B核心词，但B核心词为空');
       return;
     }
     if (brandGenCombos.length === 0) {
@@ -494,12 +496,12 @@ export default function KeywordsPage() {
     { key: 'F', label: 'F 疑问词', value: genF, setter: setGenF, placeholder: '哪家好\n哪家强' },
   ];
 
-  // 品牌关键词生成器的字段配置
+  // 品牌关键词生成器的字段配置（C疑问词和D信息词位置已对调：D在前，C在后）
   const brandFields = [
     { key: 'A', label: 'A 品牌词（自动）', value: ppList.map((p) => p.pp).join('\n'), setter: () => {}, placeholder: '自动填入品牌词', readOnly: true },
     { key: 'B', label: 'B 核心词（自动）', value: brandGenB, setter: setBrandGenB, placeholder: '自动填入核心关键词', readOnly: true },
-    { key: 'C', label: 'C 疑问词', value: brandGenC, setter: setBrandGenC, placeholder: '怎么样\n好不好' },
     { key: 'D', label: 'D 信息词', value: brandGenD, setter: setBrandGenD, placeholder: '价格\n报价' },
+    { key: 'C', label: 'C 疑问词', value: brandGenC, setter: setBrandGenC, placeholder: '怎么样\n好不好' },
   ];
 
   return (
@@ -627,8 +629,8 @@ export default function KeywordsPage() {
               children: (
                 <div>
                   <div className="console-tip console-tip-info" style={{ marginBottom: 12 }}>
-                    <b>使用说明：</b>A品牌词自动从品牌词列表填入（始终参与组合），B核心词自动从核心关键词填入。
-                    C疑问词和D信息词可手动编辑。选择组合规则后点击"生成"。
+                    <b>使用说明：</b>A品牌词自动从品牌词列表填入（始终参与组合），B核心词自动从核心关键词填入（可选，若组合含B则需有值）。
+                    D信息词和C疑问词可手动编辑。选择组合规则后点击"生成"。
                   </div>
                   <Row gutter={[8, 8]}>
                     {brandFields.map((f) => (
@@ -645,7 +647,7 @@ export default function KeywordsPage() {
                       </Col>
                     ))}
                   </Row>
-                  <div style={{ marginTop: 12, marginBottom: 4, fontWeight: 500, fontSize: 13 }}>组合规则（A品牌词始终包含）</div>
+                  <div style={{ marginTop: 12, marginBottom: 4, fontWeight: 500, fontSize: 13 }}>组合规则（A品牌词始终包含，B核心词可选）</div>
                   <Checkbox.Group value={brandGenCombos} onChange={(values) => setBrandGenCombos(values as string[])} style={{ width: '100%' }}>
                     <Row gutter={[8, 8]}>
                       {BRAND_COMBO_OPTIONS.map((combo) => (
