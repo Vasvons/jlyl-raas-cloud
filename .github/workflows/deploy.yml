@@ -67,16 +67,26 @@ jobs:
             echo ">>> 启动数据库容器..."
             $DC up -d db
 
-            echo ">>> 等待数据库健康（最多等待120秒）..."
-            for i in $(seq 1 24); do
+            echo ">>> 等待数据库健康（最多等待180秒）..."
+            db_healthy=false
+            for i in $(seq 1 36); do
               status=$($DC ps --format json db 2>/dev/null | grep -o '"Health":"healthy"' || echo "")
               if [ -n "$status" ]; then
                 echo ">>> 数据库已健康"
+                db_healthy=true
                 break
               fi
-              echo "等待数据库启动... ($i/24)"
+              echo "等待数据库启动... ($i/36)"
               sleep 5
             done
+
+            if [ "$db_healthy" = false ]; then
+              echo ">>> 数据库健康检查失败，输出数据库日志："
+              $DC logs --tail 100 db
+              echo ">>> 数据库容器状态："
+              $DC ps -a db
+              exit 1
+            fi
 
             echo ">>> 数据库状态:"
             $DC ps db
@@ -102,6 +112,12 @@ jobs:
             echo ">>> 诊断检查..."
             curl -s http://localhost:3002/diagnose || echo "诊断检查失败"
             echo ""
+
+            # 如果健康检查失败，输出server日志
+            if ! curl -s http://localhost:3002/health | grep -q '"status":"ok"'; then
+              echo ">>> 健康检查失败，输出server日志："
+              $DC logs --tail 50 server
+            fi
 
             # 清理旧镜像
             echo ">>> 清理旧镜像..."
