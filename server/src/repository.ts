@@ -740,7 +740,23 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
 
     for (const c of cartesian) {
       const keyword = c.join('');
-      combinations.push({ keyword, hxgjc: C[0] || '' });
+      // 确定核心词（hxgjc）：
+      // - 蒸馏关键词（keywordType=0）：用C主词
+      // - 品牌关键词（keywordType=1）：优先用B核心词，组合不含B时用A品牌词
+      let hxgjc = '';
+      if (keywordType === 1) {
+        const bIdx = parts.indexOf('B');
+        if (bIdx >= 0) {
+          hxgjc = c[bIdx] || '';
+        } else {
+          const aIdx = parts.indexOf('A');
+          hxgjc = aIdx >= 0 ? (c[aIdx] || '') : '';
+        }
+      } else {
+        const cIdx = parts.indexOf('C');
+        hxgjc = cIdx >= 0 ? (c[cIdx] || '') : '';
+      }
+      combinations.push({ keyword, hxgjc });
     }
   }
 

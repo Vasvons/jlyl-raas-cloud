@@ -47,10 +47,10 @@ const COMBO_OPTIONS = [
   'A+B+C+D+E', 'A+B+C+D+F',
 ];
 
-// 品牌关键词默认词组
+// 品牌关键词默认词组（C=信息词，D=疑问词，保持ABCD顺序只对调名称）
 const DEFAULT_BRAND_WORDS = {
-  C: ['怎么样', '好不好', '哪个好', '靠谱吗', '值得买吗', '好不好用'],
-  D: ['价格', '报价', '厂家', '多少钱', '费用', '成本'],
+  C: ['价格', '报价', '厂家', '多少钱', '费用', '成本'],
+  D: ['怎么样', '好不好', '哪个好', '靠谱吗', '值得买吗', '好不好用'],
 };
 
 // 品牌关键词组合规则（A品牌词始终包含，B核心词可选）
@@ -100,8 +100,8 @@ export default function KeywordsPage() {
 
   // 品牌关键词生成器
   const [brandGenB, setBrandGenB] = useState(''); // B核心词，自动从核心关键词填入
-  const [brandGenC, setBrandGenC] = useState(DEFAULT_BRAND_WORDS.C.join('\n')); // C疑问词
-  const [brandGenD, setBrandGenD] = useState(DEFAULT_BRAND_WORDS.D.join('\n')); // D信息词
+  const [brandGenC, setBrandGenC] = useState(DEFAULT_BRAND_WORDS.C.join('\n')); // C信息词
+  const [brandGenD, setBrandGenD] = useState(DEFAULT_BRAND_WORDS.D.join('\n')); // D疑问词
   const [brandGenCombos, setBrandGenCombos] = useState<string[]>(['A+B', 'A+B+C']);
   const [brandGenSubmitting, setBrandGenSubmitting] = useState(false);
   const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; total: number } | null>(null);
@@ -496,12 +496,12 @@ export default function KeywordsPage() {
     { key: 'F', label: 'F 疑问词', value: genF, setter: setGenF, placeholder: '哪家好\n哪家强' },
   ];
 
-  // 品牌关键词生成器的字段配置（C疑问词和D信息词位置已对调：D在前，C在后）
+  // 品牌关键词生成器的字段配置（保持ABCD顺序，C=信息词，D=疑问词）
   const brandFields = [
     { key: 'A', label: 'A 品牌词（自动）', value: ppList.map((p) => p.pp).join('\n'), setter: () => {}, placeholder: '自动填入品牌词', readOnly: true },
     { key: 'B', label: 'B 核心词（自动）', value: brandGenB, setter: setBrandGenB, placeholder: '自动填入核心关键词', readOnly: true },
-    { key: 'D', label: 'D 信息词', value: brandGenD, setter: setBrandGenD, placeholder: '价格\n报价' },
-    { key: 'C', label: 'C 疑问词', value: brandGenC, setter: setBrandGenC, placeholder: '怎么样\n好不好' },
+    { key: 'C', label: 'C 信息词', value: brandGenC, setter: setBrandGenC, placeholder: '价格\n报价' },
+    { key: 'D', label: 'D 疑问词', value: brandGenD, setter: setBrandGenD, placeholder: '怎么样\n好不好' },
   ];
 
   return (
@@ -630,7 +630,7 @@ export default function KeywordsPage() {
                 <div>
                   <div className="console-tip console-tip-info" style={{ marginBottom: 12 }}>
                     <b>使用说明：</b>A品牌词自动从品牌词列表填入（始终参与组合），B核心词自动从核心关键词填入（可选，若组合含B则需有值）。
-                    D信息词和C疑问词可手动编辑。选择组合规则后点击"生成"。
+                    C信息词和D疑问词可手动编辑。选择组合规则后点击"生成"。
                   </div>
                   <Row gutter={[8, 8]}>
                     {brandFields.map((f) => (
