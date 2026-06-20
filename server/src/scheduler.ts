@@ -84,15 +84,23 @@ export async function runQueryDisplay() {
   schedulerStatus.totalDisplayRuns++;
   schedulerStatus.lastDisplayTime = new Date();
   try {
-    // 将所有待展示数据设置为已展示
+    // 将所有待展示数据设置为已展示，同时返回受影响的用户ID
     // 使用 clock_timestamp() 而非 CURRENT_TIMESTAMP，确保返回实时时间而非事务开始时间
     const result = await query(
       `UPDATE keyword_search_rank SET query_time = clock_timestamp(), update_time = clock_timestamp()
-       WHERE query_time IS NULL`
+       WHERE query_time IS NULL
+       RETURNING user_id`
     );
-    if (result.rowCount && result.rowCount > 0) {
-      console.log(`[Scheduler][查询] 展示 ${result.rowCount} 条数据到GEO报告`);
-      schedulerStatus.lastDisplayResult = `展示 ${result.rowCount} 条`;
+    if (result.rows.length > 0) {
+      console.log(`[Scheduler][查询] 展示 ${result.rows.length} 条数据到GEO报告`);
+      schedulerStatus.lastDisplayResult = `展示 ${result.rows.length} 条`;
+      // 更新受影响用户的date_time为北京时间
+      const userIds = [...new Set(result.rows.map((r: any) => r.user_id))];
+      await query(
+        `UPDATE users SET date_time = to_char(clock_timestamp() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')
+         WHERE id = ANY($1::int[])`,
+        [userIds]
+      );
     } else {
       schedulerStatus.lastDisplayResult = `无待展示数据`;
     }

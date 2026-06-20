@@ -96,6 +96,17 @@ app.get('/diagnose', async (req, res) => {
               MAX(total_num) as max_total
        FROM task_info GROUP BY status ORDER BY status`
     );
+    // 运行中任务的详细信息（含对应用户的date_time）
+    const runningTasksDetail = await query(
+      `SELECT t.id, t.user_id, t.status, t.total_num, t.start_date, t.end_date,
+              u.username, u.date_time,
+              (SELECT COUNT(*) FROM keyword_search_rank WHERE task_id = t.id) as generated_num,
+              (SELECT COUNT(*) FROM keyword_search_rank WHERE task_id = t.id AND query_time IS NULL) as pending_num
+       FROM task_info t
+       LEFT JOIN users u ON u.id = t.user_id
+       WHERE t.status = 'running'
+       ORDER BY t.id`
+    );
     result.checks.dataTimeLogic = {
       status: parseInt(futureCount.rows[0].count) === 0 ? 'ok' : 'future_data',
       totalRecords: parseInt(totalCount.rows[0].count),
@@ -110,6 +121,18 @@ app.get('/diagnose', async (req, res) => {
       },
       sample: sample.rows.map((r: any) => ({ queryTime: r.query_time, createTime: r.create_time })),
       tasks: taskStats.rows.map((t: any) => ({ status: t.status, count: parseInt(t.count), taskIds: t.task_ids, maxTotal: t.max_total })),
+      runningTasksDetail: runningTasksDetail.rows.map((r: any) => ({
+        taskId: r.id,
+        userId: r.user_id,
+        username: r.username,
+        status: r.status,
+        totalNum: r.total_num,
+        generatedNum: parseInt(r.generated_num),
+        pendingNum: parseInt(r.pending_num),
+        startDate: r.start_date,
+        endDate: r.end_date,
+        dateTime: r.date_time,
+      })),
     };
   } catch (e: any) {
     result.checks.dataTimeLogic = { status: 'error', message: e.message };
@@ -131,13 +154,23 @@ app.post('/fix-data', async (req, res) => {
     // 使用 clock_timestamp() 确保返回实时时间
     const result = await query(
       `UPDATE keyword_search_rank SET query_time = clock_timestamp(), update_time = clock_timestamp()
-       WHERE query_time IS NULL`
+       WHERE query_time IS NULL
+       RETURNING user_id`
     );
+    // 更新受影响用户的date_time为北京时间
+    if (result.rows.length > 0) {
+      const userIds = [...new Set(result.rows.map((r: any) => r.user_id))];
+      await query(
+        `UPDATE users SET date_time = to_char(clock_timestamp() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')
+         WHERE id = ANY($1::int[])`,
+        [userIds]
+      );
+    }
     res.json({
       code: 200,
       message: '查询展示完成',
       data: {
-        displayed: result.rowCount || 0,
+        displayed: result.rows.length,
       },
     });
   } catch (e: any) {
