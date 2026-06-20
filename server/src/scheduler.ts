@@ -95,10 +95,10 @@ export async function runQueryDisplay() {
       console.log(`[Scheduler][查询] 展示 ${result.rows.length} 条数据到GEO报告`);
       schedulerStatus.lastDisplayResult = `展示 ${result.rows.length} 条`;
       // 更新受影响用户的date_time为北京时间
-      const userIds = [...new Set(result.rows.map((r: any) => r.user_id))];
+      const userIds = [...new Set(result.rows.map((r: any) => String(r.user_id)))];
       await query(
         `UPDATE users SET date_time = to_char(clock_timestamp() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')
-         WHERE id = ANY($1::int[])`,
+         WHERE id::text = ANY($1::text[])`,
         [userIds]
       );
     } else {

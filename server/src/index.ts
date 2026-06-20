@@ -103,7 +103,7 @@ app.get('/diagnose', async (req, res) => {
               (SELECT COUNT(*) FROM keyword_search_rank WHERE task_id = t.id) as generated_num,
               (SELECT COUNT(*) FROM keyword_search_rank WHERE task_id = t.id AND query_time IS NULL) as pending_num
        FROM task_info t
-       LEFT JOIN users u ON u.id = t.user_id
+       LEFT JOIN users u ON u.id::text = t.user_id::text
        WHERE t.status = 'running'
        ORDER BY t.id`
     );
@@ -159,10 +159,10 @@ app.post('/fix-data', async (req, res) => {
     );
     // 更新受影响用户的date_time为北京时间
     if (result.rows.length > 0) {
-      const userIds = [...new Set(result.rows.map((r: any) => r.user_id))];
+      const userIds = [...new Set(result.rows.map((r: any) => String(r.user_id)))];
       await query(
         `UPDATE users SET date_time = to_char(clock_timestamp() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')
-         WHERE id = ANY($1::int[])`,
+         WHERE id::text = ANY($1::text[])`,
         [userIds]
       );
     }
