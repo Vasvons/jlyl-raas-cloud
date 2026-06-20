@@ -25,8 +25,15 @@ jobs:
 
             # 拉取最新代码
             echo ">>> 拉取最新代码..."
-            # 确保 remote 使用 HTTPS（避免服务器 SSH 22 端口被墙导致拉取失败）
-            git remote set-url origin https://github.com/Vasvons/jlyl-raas-cloud.git
+            # 使用 SSH 协议但走 443 端口（避免服务器 22 端口被墙）
+            # 配置 ssh.github.com:443 作为 github.com 的别名
+            mkdir -p ~/.ssh
+            echo "Host github.com" > ~/.ssh/config
+            echo "  Hostname ssh.github.com" >> ~/.ssh/config
+            echo "  Port 443" >> ~/.ssh/config
+            echo "  User git" >> ~/.ssh/config
+            echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+            git remote set-url origin git@github.com:Vasvons/jlyl-raas-cloud.git
             git fetch --all
             git reset --hard origin/${{ github.ref_name }}
 
