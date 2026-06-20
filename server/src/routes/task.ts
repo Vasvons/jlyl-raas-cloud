@@ -12,7 +12,7 @@ import {
   updateTaskStatus,
 } from '../repository';
 import { authMiddleware, adminMiddleware } from '../auth';
-import { runDailyGeneration, generateForTask, getSchedulerStatus } from '../scheduler';
+import { runGeneration, generateForTask, getSchedulerStatus } from '../scheduler';
 import { query } from '../db';
 
 const router = Router();
@@ -388,7 +388,7 @@ router.post('/trigger/:id', authMiddleware, adminMiddleware, async (req, res) =>
 router.post('/trigger-all', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     console.log('[Task] 手动触发所有任务生成');
-    await runDailyGeneration();
+    await runGeneration();
     res.json({ code: 200, message: '触发完成' });
   } catch (e: any) {
     console.error('[Task] 手动触发所有任务失败:', e);

@@ -115,28 +115,20 @@ app.get('/diagnose', async (req, res) => {
   res.json(result);
 });
 
-// 手动修正数据时间逻辑（无需重启服务即可执行）
+// 手动触发查询展示（无需重启服务即可执行）
 app.post('/fix-data', async (req, res) => {
   try {
     const { query } = require('./db');
-    // 1. 历史数据（今天之前）：create_time = query_time（模拟的收录时间）
-    const fixHistory = await query(
-      `UPDATE keyword_search_rank SET create_time = query_time, update_time = query_time
-       WHERE create_time::date < CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
+    // 将所有待展示数据（query_time IS NULL）设置为已展示
+    const result = await query(
+      `UPDATE keyword_search_rank SET query_time = CURRENT_TIMESTAMP, update_time = CURRENT_TIMESTAMP
+       WHERE query_time IS NULL`
     );
-    // 2. 今日数据：query_time = create_time（实际生成时间）
-    const fixToday = await query(
-      `UPDATE keyword_search_rank SET query_time = create_time
-       WHERE create_time::date = CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
-    );
-    // 注意：不再自动收录待收录数据（query_time IS NULL）
-    // 新设计要求数据由调度器按时区权重定时收录
     res.json({
       code: 200,
-      message: '数据修正完成',
+      message: '查询展示完成',
       data: {
-        historyFixed: fixHistory.rowCount || 0,
-        todayFixed: fixToday.rowCount || 0,
+        displayed: result.rowCount || 0,
       },
     });
   } catch (e: any) {

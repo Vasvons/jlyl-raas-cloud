@@ -230,28 +230,11 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_token ON share_tokens(token)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)`);
 
-    // 修正已有数据的时间逻辑（新设计：生成与收录分离）
-    // 1. 历史数据（create_time 在今天之前）：保持 query_time = create_time（模拟过去的查询收录）
-    //    旧逻辑中 create_time 是实际插入时间，新逻辑要求 query_time = create_time = 目标日期+时区权重随机时间
-    const fixHistoryResult = await client.query(
-      `UPDATE keyword_search_rank SET create_time = query_time, update_time = query_time
-       WHERE create_time::date < CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
-    );
-    if (fixHistoryResult.rowCount && fixHistoryResult.rowCount > 0) {
-      console.log(`[Migrate] 修正 ${fixHistoryResult.rowCount} 条历史数据的 create_time 为 query_time`);
-    }
-    // 2. 今日数据：query_time 应同步为 create_time（实际生成时间）
-    //    旧逻辑中 query_time 可能是未来时间，新逻辑要求 query_time = create_time = NOW()
-    const fixTodayResult = await client.query(
-      `UPDATE keyword_search_rank SET query_time = create_time
-       WHERE create_time::date = CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
-    );
-    if (fixTodayResult.rowCount && fixTodayResult.rowCount > 0) {
-      console.log(`[Migrate] 修正 ${fixTodayResult.rowCount} 条今日数据的 query_time 为 create_time`);
-    }
-    // 注意：不再自动收录今日待收录数据（query_time IS NULL）
-    // 新设计要求数据提前生成（query_time=NULL），由调度器按时区权重定时收录（query_time=NOW()）
-    // 自动收录会破坏"生成与收录分离"的设计
+    // 修正已有数据的时间逻辑
+    // 新设计：生成（=收录）create_time=NOW(), query_time=NULL；查询展示 query_time=NOW()
+    // 历史数据（create_time 在今天之前）：query_time 应已设置（历史已展示），无需修正
+    // 今日数据：query_time IS NULL 表示尚未被查询展示，由查询展示cron处理（每10分钟）
+    // 不再自动设置query_time，保持生成与展示分离
 
     // 初始化平台数据
     const ptCount = await client.query('SELECT COUNT(*) as count FROM pt');
