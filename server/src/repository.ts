@@ -199,7 +199,7 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
      LEFT JOIN zlgjc z ON z.value = k.distillate_keyword AND z.userid = k.user_id
      LEFT JOIN zlgjcurl u ON u.zlgjcid = z.id AND u.pt = k.platform
      WHERE ${whereClause}
-     ORDER BY k.create_time DESC
+     ORDER BY k.query_time DESC, k.create_time DESC
      LIMIT $${argIdx++} OFFSET $${argIdx++}`,
     [...args, pageSize, offset]
   );
