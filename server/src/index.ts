@@ -87,6 +87,8 @@ app.get('/diagnose', async (req, res) => {
     const pendingCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time IS NULL');
     const futureCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time > CURRENT_TIMESTAMP');
     const sample = await query('SELECT query_time, create_time FROM keyword_search_rank WHERE query_time IS NOT NULL ORDER BY query_time DESC LIMIT 5');
+    // 数据库时间和时区
+    const dbTimeResult = await query("SELECT NOW() as now, CURRENT_TIMESTAMP as ct, current_setting('timezone') as tz, clock_timestamp() as clock");
     // 任务状态概览
     const taskStats = await query(
       `SELECT status, COUNT(*) as count, 
@@ -100,6 +102,12 @@ app.get('/diagnose', async (req, res) => {
       collectedRecords: parseInt(collectedCount.rows[0].count),
       pendingRecords: parseInt(pendingCount.rows[0].count),
       futureRecords: parseInt(futureCount.rows[0].count),
+      dbTime: {
+        now: dbTimeResult.rows[0].now,
+        currentTimestamp: dbTimeResult.rows[0].ct,
+        clockTimestamp: dbTimeResult.rows[0].clock,
+        timezone: dbTimeResult.rows[0].tz,
+      },
       sample: sample.rows.map((r: any) => ({ queryTime: r.query_time, createTime: r.create_time })),
       tasks: taskStats.rows.map((t: any) => ({ status: t.status, count: parseInt(t.count), taskIds: t.task_ids, maxTotal: t.max_total })),
     };
