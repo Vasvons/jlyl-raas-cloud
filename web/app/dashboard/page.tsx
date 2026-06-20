@@ -488,7 +488,7 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
       align: 'center' as const,
       dataIndex: 'queryTime',
       key: 'queryTime',
-      render: (e: string) => (e ? e.split(' ')[0] : e),
+      render: (e: string) => (e ? new Date(e).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : e),
     },
     {
       title: '查看详情',
@@ -514,7 +514,7 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
       dataIndex: 'queryTime',
       key: 'queryTime',
       width: 70,
-      render: (e: string) => (e ? e.split(' ')[0] : e),
+      render: (e: string) => (e ? new Date(e).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : e),
     },
     {
       title: '查看详情',
