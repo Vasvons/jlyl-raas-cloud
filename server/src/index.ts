@@ -79,7 +79,51 @@ app.get('/diagnose', async (req, res) => {
   } catch (e: any) {
     result.checks.ptTable = { status: 'error', message: e.message, code: e.code };
   }
+  // 检查数据时间逻辑状态
+  try {
+    const { query } = require('./db');
+    const totalCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank');
+    const mismatchCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time IS NOT NULL AND query_time != create_time');
+    const futureCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time > CURRENT_TIMESTAMP');
+    const sample = await query('SELECT query_time, create_time FROM keyword_search_rank ORDER BY create_time DESC LIMIT 5');
+    result.checks.dataTimeLogic = {
+      status: parseInt(mismatchCount.rows[0].count) === 0 ? 'ok' : 'mismatch',
+      totalRecords: parseInt(totalCount.rows[0].count),
+      mismatchedRecords: parseInt(mismatchCount.rows[0].count),
+      futureRecords: parseInt(futureCount.rows[0].count),
+      sample: sample.rows.map((r: any) => ({ queryTime: r.query_time, createTime: r.create_time, matched: r.query_time?.getTime() === r.create_time?.getTime() })),
+    };
+  } catch (e: any) {
+    result.checks.dataTimeLogic = { status: 'error', message: e.message };
+  }
   res.json(result);
+});
+
+// 手动修正数据时间逻辑（无需重启服务即可执行）
+app.post('/fix-data', async (req, res) => {
+  try {
+    const { query } = require('./db');
+    // 1. 历史数据（今天之前）：create_time = query_time（模拟的收录时间）
+    const fixHistory = await query(
+      `UPDATE keyword_search_rank SET create_time = query_time, update_time = query_time
+       WHERE create_time::date < CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
+    );
+    // 2. 今日数据：query_time = create_time（实际生成时间）
+    const fixToday = await query(
+      `UPDATE keyword_search_rank SET query_time = create_time
+       WHERE create_time::date = CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
+    );
+    res.json({
+      code: 200,
+      message: '数据修正完成',
+      data: {
+        historyFixed: fixHistory.rowCount || 0,
+        todayFixed: fixToday.rowCount || 0,
+      },
+    });
+  } catch (e: any) {
+    res.json({ code: 500, message: '修正失败: ' + e.message });
+  }
 });
 
 // API 路由
