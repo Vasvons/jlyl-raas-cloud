@@ -61,6 +61,23 @@ jobs:
             fi
             echo ">>> 使用命令: $DC"
 
+            echo ">>> 清理Docker无用资源释放磁盘空间..."
+            docker system prune -af 2>/dev/null || true
+            docker image prune -af 2>/dev/null || true
+            docker container prune -f 2>/dev/null || true
+            # 清理系统日志（保留最近1天）
+            journalctl --vacuum-time=1d 2>/dev/null || true
+            # 清理apt缓存
+            apt-get clean 2>/dev/null || true
+            rm -rf /var/cache/apt/archives/* 2>/dev/null || true
+            # 清理临时文件
+            rm -rf /tmp/* 2>/dev/null || true
+            # 清理Docker构建缓存
+            docker builder prune -af 2>/dev/null || true
+
+            echo ">>> 查看磁盘空间："
+            df -h /
+
             echo ">>> 停止所有服务..."
             $DC down
 
@@ -118,10 +135,6 @@ jobs:
               echo ">>> 健康检查失败，输出server日志："
               $DC logs --tail 50 server
             fi
-
-            # 清理旧镜像
-            echo ">>> 清理旧镜像..."
-            docker image prune -f
 
             echo "===== 部署完成 ====="
             echo ">>> 服务访问地址:"
