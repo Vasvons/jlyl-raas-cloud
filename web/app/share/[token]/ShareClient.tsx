@@ -5,16 +5,26 @@ import { Spin, message } from 'antd';
 import { useRouter } from 'next/navigation';
 import api from '@/lib/api';
 
-export default function ShareClient({ token }: { token: string }) {
+export default function ShareClient({ token: propToken }: { token: string }) {
   const router = useRouter();
   const [status, setStatus] = useState<'loading' | 'error'>('loading');
   const [errorMsg, setErrorMsg] = useState('正在验证分享链接...');
+
+  // 静态导出模式下，params.token 可能是预渲染的 placeholder，
+  // 需要从 URL 中解析实际 token
+  const actualToken = (() => {
+    if (typeof window === 'undefined') return propToken;
+    const pathParts = window.location.pathname.split('/');
+    // /share/xxx → [' ', 'share', 'xxx']
+    const urlToken = pathParts[2];
+    return urlToken && urlToken !== 'placeholder' ? urlToken : propToken;
+  })();
 
   useEffect(() => {
     const verifyToken = async () => {
       try {
         const res = await api.get('/users/verifyShareToken', {
-          params: { token },
+          params: { token: actualToken },
         });
 
         if (res.data?.code === 200 && res.data.data?.token) {
@@ -36,13 +46,13 @@ export default function ShareClient({ token }: { token: string }) {
       }
     };
 
-    if (token) {
+    if (actualToken && actualToken !== 'placeholder') {
       verifyToken();
     } else {
       setStatus('error');
       setErrorMsg('缺少分享token');
     }
-  }, [token, router]);
+  }, [actualToken, router]);
 
   return (
     <div style={{
