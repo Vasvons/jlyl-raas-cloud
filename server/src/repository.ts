@@ -780,7 +780,17 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
     }
   }
 
-  return { inserted, duplicated, total: combinations.length };
+  return {
+    inserted,
+    duplicated,
+    total: combinations.length,
+    debug: {
+      combos: G,
+      wordCounts: { A: A.length, B: B.length, C: C.length, D: D.length, E: E.length, F: F.length },
+      keywordType,
+      sample: combinations.slice(0, 20).map(c => ({ keyword: c.keyword, hxgjc: c.hxgjc })),
+    },
+  };
 }
 
 // ============ 关键词维护列表 ============

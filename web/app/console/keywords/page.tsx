@@ -104,7 +104,7 @@ export default function KeywordsPage() {
   const [brandGenD, setBrandGenD] = useState(DEFAULT_BRAND_WORDS.D.join('\n')); // D疑问词
   const [brandGenCombos, setBrandGenCombos] = useState<string[]>(['A+B', 'A+B+C']);
   const [brandGenSubmitting, setBrandGenSubmitting] = useState(false);
-  const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; total: number } | null>(null);
+  const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; total: number; debug?: any } | null>(null);
 
   // 词汇配置的保存/加载（按用户ID存储到localStorage，防止预设词汇覆盖用户输入）
   const DISTILLATE_KEY = 'kw_gen_distillate';
@@ -771,11 +771,23 @@ export default function KeywordsPage() {
                   </div>
                   {brandGenResult && (
                     <div className="console-tip console-tip-success" style={{ marginTop: 12, marginBottom: 0 }}>
-                      <Space>
+                      <Space wrap>
                         <Tag color="green">新增 {brandGenResult.inserted} 条</Tag>
                         <Tag color="orange">重复 {brandGenResult.duplicated} 条</Tag>
                         <Tag color="blue">总计组合 {brandGenResult.total} 条</Tag>
                       </Space>
+                      {brandGenResult.debug && (
+                        <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>
+                          <div>后端收到的组合规则: <b>{brandGenResult.debug.combos?.join(', ')}</b></div>
+                          <div>各字段词数: A={brandGenResult.debug.wordCounts?.A} B={brandGenResult.debug.wordCounts?.B} C={brandGenResult.debug.wordCounts?.C} D={brandGenResult.debug.wordCounts?.D}</div>
+                          <div>生成样本（前20条）:</div>
+                          <div style={{ marginTop: 4, maxHeight: 120, overflow: 'auto', background: '#f5f5f5', padding: 4, borderRadius: 4 }}>
+                            {brandGenResult.debug.sample?.map((s: any, i: number) => (
+                              <div key={i}>{s.keyword} <span style={{ color: '#999' }}>(核心词: {s.hxgjc})</span></div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
