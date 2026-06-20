@@ -20,6 +20,13 @@ export default function ShareClient({ token: propToken }: { token: string }) {
     return urlToken && urlToken !== 'placeholder' ? urlToken : propToken;
   })();
 
+  // 从 URL query 读取用户名（仅用于加载提示展示，不影响鉴权）
+  const urlUsername = (() => {
+    if (typeof window === 'undefined') return '';
+    const params = new URLSearchParams(window.location.search);
+    return params.get('u') || '';
+  })();
+
   useEffect(() => {
     const verifyToken = async () => {
       try {
@@ -33,7 +40,8 @@ export default function ShareClient({ token: propToken }: { token: string }) {
           localStorage.setItem('userInfo', JSON.stringify(res.data.data.userInfo));
           // 标记为通过分享链接登录（可选，用于UI提示）
           localStorage.setItem('shareLogin', '1');
-          message.success('登录成功，正在跳转...');
+          const displayName = res.data.data.userInfo?.username || urlUsername;
+          message.success(displayName ? `${displayName} 的GEO报告加载成功，正在跳转...` : '登录成功，正在跳转...');
           // 跳转到 dashboard
           setTimeout(() => router.push('/dashboard'), 500);
         } else {
@@ -52,7 +60,7 @@ export default function ShareClient({ token: propToken }: { token: string }) {
       setStatus('error');
       setErrorMsg('缺少分享token');
     }
-  }, [actualToken, router]);
+  }, [actualToken, urlUsername, router]);
 
   return (
     <div style={{
@@ -67,7 +75,9 @@ export default function ShareClient({ token: propToken }: { token: string }) {
       {status === 'loading' ? (
         <>
           <Spin size="large" />
-          <div style={{ marginTop: 24, fontSize: 16 }}>{errorMsg}</div>
+          <div style={{ marginTop: 24, fontSize: 16 }}>
+            {urlUsername ? `正在加载 ${urlUsername} 的GEO报告...` : errorMsg}
+          </div>
         </>
       ) : (
         <>
