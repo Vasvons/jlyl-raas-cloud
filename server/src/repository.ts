@@ -120,8 +120,10 @@ export async function updateUserDateTime(userId: string, dateTime: string): Prom
 
 // 获取用户最新数据时间
 export async function getUserLatestDataTime(userId: string): Promise<string> {
+  // create_time存储的是UTC时间，需要转换为北京时间显示
+  // 先 AT TIME ZONE 'UTC' 标记为UTC，再 AT TIME ZONE 'Asia/Shanghai' 转为北京时间
   const result = await query(
-    'SELECT to_char(MAX(create_time), \'YYYY-MM-DD HH24:MI:SS\') as latest FROM keyword_search_rank WHERE user_id = $1',
+    "SELECT to_char((MAX(create_time) AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') as latest FROM keyword_search_rank WHERE user_id = $1",
     [userId]
   );
   return result.rows[0]?.latest || '';
