@@ -90,9 +90,16 @@ export async function generateForTask(task: any): Promise<string> {
 
   // 检查任务是否已结束
   if (today > endDate) {
+    // 任务到期，将所有待收录数据一次性收录
+    const pendingResult = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time IS NULL', [task.id]);
+    const pendingCount = parseInt(pendingResult.rows[0].count) || 0;
+    if (pendingCount > 0) {
+      const collected = await repo.collectRecords(task.id, pendingCount);
+      console.log(`[Scheduler] 任务 ${task.id} 到期，将 ${collected} 条待收录数据全部收录`);
+    }
     await query('UPDATE task_info SET status = $1 WHERE id = $2', ['completed', task.id]);
-    console.log(`[Scheduler] 任务 ${task.id} 已结束（end_date ${task.end_date} 早于今天），标记为 completed`);
-    return `任务已结束（end_date=${task.end_date}），已标记为completed`;
+    console.log(`[Scheduler] 任务 ${task.id} 已结束（end_date ${task.end_date}），标记为 completed`);
+    return `任务已结束（end_date=${task.end_date}），${pendingCount > 0 ? `${pendingCount}条已收录` : '无待收录数据'}`;
   }
 
   // 获取任务权重
@@ -267,12 +274,21 @@ export async function generateForTask(task: any): Promise<string> {
   // 检查是否完成，并更新 task_progress 表
   const newGeneratedNum = await repo.getTaskGeneratedNum(task.id);
   await repo.updateTaskProgress(task.id, newGeneratedNum);
-  if (newGeneratedNum >= task.total_num) {
+
+  // 检查是否还有待收录数据
+  const remainingPendingResult = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time IS NULL', [task.id]);
+  const remainingPending = parseInt(remainingPendingResult.rows[0].count) || 0;
+
+  if (newGeneratedNum >= task.total_num && remainingPending === 0) {
+    // 所有数据已生成且已收录，标记为completed
     await query('UPDATE task_info SET status = $1 WHERE id = $2', ['completed', task.id]);
-    console.log(`[Scheduler] 任务 ${task.id} 已完成，共生成 ${newGeneratedNum} 条`);
+    console.log(`[Scheduler] 任务 ${task.id} 已完成，共生成 ${newGeneratedNum} 条，全部已收录`);
+  } else if (newGeneratedNum >= task.total_num) {
+    // 数据已全部生成，但还有待收录数据，保持running继续收录
+    console.log(`[Scheduler] 任务 ${task.id} 数据已全部生成（${newGeneratedNum}/${task.total_num}），待收录 ${remainingPending} 条，继续收录中`);
   } else {
-    console.log(`[Scheduler] 任务 ${task.id} 总计 ${newGeneratedNum}/${task.total_num}`);
+    console.log(`[Scheduler] 任务 ${task.id} 总计 ${newGeneratedNum}/${task.total_num}，待收录 ${remainingPending} 条`);
   }
 
-  return `本次生成${generatedToday}条，总进度${newGeneratedNum}/${task.total_num}`;
+  return `本次生成${generatedToday}条，总进度${newGeneratedNum}/${task.total_num}，待收录${remainingPending}条`;
 }
