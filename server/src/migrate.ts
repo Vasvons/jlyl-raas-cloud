@@ -249,15 +249,9 @@ export async function migrate() {
     if (fixTodayResult.rowCount && fixTodayResult.rowCount > 0) {
       console.log(`[Migrate] 修正 ${fixTodayResult.rowCount} 条今日数据的 query_time 为 create_time`);
     }
-    // 3. 今日未收录数据（query_time IS NULL 且 create_time 在今天）：设为已收录
-    //    这些是旧逻辑生成的数据，需要立即展示
-    const fixPendingResult = await client.query(
-      `UPDATE keyword_search_rank SET query_time = create_time
-       WHERE query_time IS NULL AND create_time::date = CURRENT_DATE`
-    );
-    if (fixPendingResult.rowCount && fixPendingResult.rowCount > 0) {
-      console.log(`[Migrate] 将 ${fixPendingResult.rowCount} 条今日待收录数据设为已收录`);
-    }
+    // 注意：不再自动收录今日待收录数据（query_time IS NULL）
+    // 新设计要求数据提前生成（query_time=NULL），由调度器按时区权重定时收录（query_time=NOW()）
+    // 自动收录会破坏"生成与收录分离"的设计
 
     // 初始化平台数据
     const ptCount = await client.query('SELECT COUNT(*) as count FROM pt');

@@ -129,18 +129,14 @@ app.post('/fix-data', async (req, res) => {
       `UPDATE keyword_search_rank SET query_time = create_time
        WHERE create_time::date = CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
     );
-    // 3. 今日待收录数据：设为已收录
-    const fixPending = await query(
-      `UPDATE keyword_search_rank SET query_time = create_time
-       WHERE query_time IS NULL AND create_time::date = CURRENT_DATE`
-    );
+    // 注意：不再自动收录待收录数据（query_time IS NULL）
+    // 新设计要求数据由调度器按时区权重定时收录
     res.json({
       code: 200,
       message: '数据修正完成',
       data: {
         historyFixed: fixHistory.rowCount || 0,
         todayFixed: fixToday.rowCount || 0,
-        pendingFixed: fixPending.rowCount || 0,
       },
     });
   } catch (e: any) {
