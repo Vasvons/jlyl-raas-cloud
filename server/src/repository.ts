@@ -452,15 +452,30 @@ export async function setTaskHourWeights(taskId: number, weights: { hourSlot: nu
 // ============ 数据生成 ============
 
 // 获取任务已生成数量（优先从 task_progress 表读取，兼容旧数据）
+// 注意：如果 task_progress 与 keyword_search_rank 实际记录数差异过大（如历史导入导致），
+// 以实际记录数为准，避免进度显示与实际不符
 export async function getTaskGeneratedNum(taskId: number): Promise<number> {
   // 先从 task_progress 表读取（这是任务的实际进度）
   const progressResult = await query('SELECT generated_num FROM task_progress WHERE task_id = $1', [taskId]);
-  if (progressResult.rows.length > 0) {
-    return parseInt(progressResult.rows[0].generated_num) || 0;
-  }
-  // 如果 task_progress 没有记录，回退到统计 keyword_search_rank
+  const progressNum = progressResult.rows.length > 0 ? (parseInt(progressResult.rows[0].generated_num) || 0) : 0;
+
+  // 统计 keyword_search_rank 实际记录数
   const result = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1', [taskId]);
-  return parseInt(result.rows[0].count);
+  const actualNum = parseInt(result.rows[0].count);
+
+  // 如果实际记录数远大于 progress 记录数（差异>100），说明是历史导入导致的不一致
+  // 自动同步 progress 表，避免进度显示与实际不符
+  if (actualNum > progressNum + 100) {
+    console.log(`[Repository] 任务 ${taskId} 进度不一致: progress=${progressNum}, actual=${actualNum}，自动同步`);
+    if (progressResult.rows.length > 0) {
+      await query('UPDATE task_progress SET generated_num = $1, update_time = CURRENT_TIMESTAMP WHERE task_id = $2', [actualNum, taskId]);
+    } else {
+      await query('INSERT INTO task_progress (task_id, generated_num, update_time) VALUES ($1, $2, CURRENT_TIMESTAMP)', [taskId, actualNum]);
+    }
+    return actualNum;
+  }
+
+  return Math.max(progressNum, actualNum);
 }
 
 // 生成单条数据
