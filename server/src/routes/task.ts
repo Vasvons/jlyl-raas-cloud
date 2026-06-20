@@ -198,9 +198,13 @@ router.post('/copy', authMiddleware, adminMiddleware, async (req, res) => {
     if (weights.length > 0) {
       await setTaskWeights(newId, weights);
     }
-    // 复制时区权重
-    const hourWeights = await getTaskHourWeights(parseInt(taskId));
-    if (hourWeights.length > 0) {
+    // 复制时区权重（getTaskHourWeights 返回 hour_slot 下划线字段，需转为 hourSlot 驼峰）
+    const hourWeightsRaw = await getTaskHourWeights(parseInt(taskId));
+    if (hourWeightsRaw.length > 0) {
+      const hourWeights = hourWeightsRaw.map((w: any) => ({
+        hourSlot: w.hour_slot !== undefined ? w.hour_slot : w.hourSlot,
+        weight: w.weight,
+      }));
       await setTaskHourWeights(newId, hourWeights);
     }
 
