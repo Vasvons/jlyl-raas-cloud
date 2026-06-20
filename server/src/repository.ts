@@ -649,9 +649,9 @@ export async function generateBatch(params: {
       });
     }
 
-    // 更新用户数据时间
+    // 更新用户数据时间（使用北京时间）
     await client.query(
-      'UPDATE users SET date_time = to_char(CURRENT_TIMESTAMP, \'YYYY-MM-DD HH24:MI:SS\') WHERE id = $1',
+      "UPDATE users SET date_time = to_char(clock_timestamp() AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') WHERE id = $1",
       [params.userId]
     );
   });
