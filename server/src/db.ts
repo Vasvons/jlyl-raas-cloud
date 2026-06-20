@@ -1,7 +1,16 @@
-import { Pool, PoolClient } from 'pg';
+import { Pool, PoolClient, types } from 'pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
+
+// 自定义TIMESTAMP（不带时区）类型解析器
+// 数据库时区是UTC，存储的是UTC时间，但pg驱动默认按本地时区解析
+// Node.js容器设置了TZ=Asia/Shanghai，会导致解析偏移8小时
+// 解决方案：将TIMESTAMP视为UTC时间
+types.setTypeParser(1114, (val: string) => {
+  // 1114是TIMESTAMP（不带时区）的OID
+  return val ? new Date(val + 'Z') : null;
+});
 
 // PostgreSQL 连接池
 const pool = new Pool({
