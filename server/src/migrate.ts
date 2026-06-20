@@ -216,6 +216,8 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_has_lxfs ON zlgjcurl(has_lxfs)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_user ON pp(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dr_task_date ON daily_random(task_id, random_date)`);
+    // daily_random 需要 UNIQUE 约束才能使用 ON CONFLICT (task_id, random_date)
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_dr_task_date_unique ON daily_random(task_id, random_date)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dk_user ON distillate_keyword(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_token ON share_tokens(token)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)`);
