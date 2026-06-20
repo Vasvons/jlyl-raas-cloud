@@ -109,6 +109,25 @@ router.delete('/zlgjc/delete/:id', authMiddleware, adminMiddleware, async (req, 
   }
 });
 
+// 批量删除关键词
+router.post('/zlgjc/batchDelete', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.json({ code: 400, message: '缺少ids参数' });
+    }
+    const idList = ids.map((id: any) => parseInt(id)).filter((id: number) => !isNaN(id));
+    if (idList.length === 0) {
+      return res.json({ code: 400, message: '无效的ids' });
+    }
+    const placeholders = idList.map((_: number, i: number) => `$${i + 1}`).join(',');
+    await query(`DELETE FROM zlgjc WHERE id IN (${placeholders})`, idList);
+    res.json({ code: 200, data: { deleted: idList.length } });
+  } catch (e) {
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
 // 手动添加关键词
 router.post('/zlgjc/add', authMiddleware, adminMiddleware, async (req, res) => {
   try {

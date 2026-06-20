@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Input, Popconfirm, message, Select, Card, Tag, Checkbox, Tabs, Row, Col } from 'antd';
-import { PlusOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, ExperimentOutlined, TagsOutlined, KeyOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, ExperimentOutlined, TagsOutlined, KeyOutlined, SaveOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 
 interface PPItem {
@@ -105,6 +105,63 @@ export default function KeywordsPage() {
   const [brandGenCombos, setBrandGenCombos] = useState<string[]>(['A+B', 'A+B+C']);
   const [brandGenSubmitting, setBrandGenSubmitting] = useState(false);
   const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; total: number } | null>(null);
+
+  // 词汇配置的保存/加载（按用户ID存储到localStorage，防止预设词汇覆盖用户输入）
+  const DISTILLATE_KEY = 'kw_gen_distillate';
+  const BRAND_KEY = 'kw_gen_brand';
+
+  // 保存蒸馏关键词生成器配置
+  const saveDistillateConfig = () => {
+    const config = { A: genA, B: genB, D: genD, E: genE, F: genF, combos: genCombos };
+    localStorage.setItem(DISTILLATE_KEY, JSON.stringify(config));
+    message.success('蒸馏关键词词汇配置已保存');
+  };
+
+  // 加载蒸馏关键词生成器配置
+  const loadDistillateConfig = () => {
+    try {
+      const raw = localStorage.getItem(DISTILLATE_KEY);
+      if (raw) {
+        const config = JSON.parse(raw);
+        if (config.A !== undefined) setGenA(config.A);
+        if (config.B !== undefined) setGenB(config.B);
+        if (config.D !== undefined) setGenD(config.D);
+        if (config.E !== undefined) setGenE(config.E);
+        if (config.F !== undefined) setGenF(config.F);
+        if (Array.isArray(config.combos)) setGenCombos(config.combos);
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  // 保存品牌关键词生成器配置
+  const saveBrandConfig = () => {
+    const config = { C: brandGenC, D: brandGenD, combos: brandGenCombos };
+    localStorage.setItem(BRAND_KEY, JSON.stringify(config));
+    message.success('品牌关键词词汇配置已保存');
+  };
+
+  // 加载品牌关键词生成器配置
+  const loadBrandConfig = () => {
+    try {
+      const raw = localStorage.getItem(BRAND_KEY);
+      if (raw) {
+        const config = JSON.parse(raw);
+        if (config.C !== undefined) setBrandGenC(config.C);
+        if (config.D !== undefined) setBrandGenD(config.D);
+        if (Array.isArray(config.combos)) setBrandGenCombos(config.combos);
+        return true;
+      }
+    } catch {}
+    return false;
+  };
+
+  // 页面首次加载时尝试加载保存的配置
+  useEffect(() => {
+    loadDistillateConfig();
+    loadBrandConfig();
+  }, []);
 
   // 获取用户列表
   useEffect(() => {
@@ -291,6 +348,28 @@ export default function KeywordsPage() {
     }
   };
 
+  // 批量删除蒸馏关键词
+  const [selectedZlgjcIds, setSelectedZlgjcIds] = useState<React.Key[]>([]);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const batchDeleteZlgjc = async () => {
+    if (selectedZlgjcIds.length === 0) return;
+    setBatchDeleting(true);
+    try {
+      const res = await api.post('/zlgjc/batchDelete', { ids: selectedZlgjcIds });
+      if (res.data?.code === 200) {
+        message.success(`成功删除 ${selectedZlgjcIds.length} 条`);
+        setSelectedZlgjcIds([]);
+        fetchZlgjc(selectedUserId);
+      } else {
+        message.error(res.data?.message || '批量删除失败');
+      }
+    } catch (e) {
+      message.error('批量删除失败');
+    } finally {
+      setBatchDeleting(false);
+    }
+  };
+
   // 品牌关键词库操作
   const addBrand = async () => {
     if (!newBrandValue.trim() || !selectedUserId) return;
@@ -324,6 +403,28 @@ export default function KeywordsPage() {
       }
     } catch (e) {
       message.error('删除失败');
+    }
+  };
+
+  // 批量删除品牌关键词
+  const [selectedBrandIds, setSelectedBrandIds] = useState<React.Key[]>([]);
+  const [brandBatchDeleting, setBrandBatchDeleting] = useState(false);
+  const batchDeleteBrand = async () => {
+    if (selectedBrandIds.length === 0) return;
+    setBrandBatchDeleting(true);
+    try {
+      const res = await api.post('/zlgjc/batchDelete', { ids: selectedBrandIds });
+      if (res.data?.code === 200) {
+        message.success(`成功删除 ${selectedBrandIds.length} 条`);
+        setSelectedBrandIds([]);
+        fetchBrand(selectedUserId);
+      } else {
+        message.error(res.data?.message || '批量删除失败');
+      }
+    } catch (e) {
+      message.error('批量删除失败');
+    } finally {
+      setBrandBatchDeleting(false);
     }
   };
 
@@ -583,6 +684,7 @@ export default function KeywordsPage() {
                   <div className="console-tip console-tip-info" style={{ marginBottom: 12 }}>
                     <b>使用说明：</b>在下方各字段输入词组（每行一个），选择组合规则后点击"生成"。
                     <b>C主词</b>自动从核心关键词填入。组合规则如 <code>C+D</code> 表示将C和D的词两两拼接。
+                    点击"保存词汇配置"可将当前词汇保存到本地，避免页面刷新后被预设词汇覆盖。
                   </div>
                   <Row gutter={[8, 8]}>
                     {distillateFields.map((f) => (
@@ -609,7 +711,10 @@ export default function KeywordsPage() {
                     </Row>
                   </Checkbox.Group>
                   <div style={{ marginTop: 12 }}>
-                    <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={genSubmitting}>生成蒸馏关键词</Button>
+                    <Space>
+                      <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleGenerate} loading={genSubmitting}>生成蒸馏关键词</Button>
+                      <Button icon={<SaveOutlined />} onClick={saveDistillateConfig}>保存词汇配置</Button>
+                    </Space>
                   </div>
                   {genResult && (
                     <div className="console-tip console-tip-success" style={{ marginTop: 12, marginBottom: 0 }}>
@@ -631,6 +736,7 @@ export default function KeywordsPage() {
                   <div className="console-tip console-tip-info" style={{ marginBottom: 12 }}>
                     <b>使用说明：</b>A品牌词自动从品牌词列表填入（始终参与组合），B核心词自动从核心关键词填入（可选，若组合含B则需有值）。
                     C信息词和D疑问词可手动编辑。选择组合规则后点击"生成"。
+                    点击"保存词汇配置"可将当前词汇保存到本地，避免页面刷新后被预设词汇覆盖。
                   </div>
                   <Row gutter={[8, 8]}>
                     {brandFields.map((f) => (
@@ -658,7 +764,10 @@ export default function KeywordsPage() {
                     </Row>
                   </Checkbox.Group>
                   <div style={{ marginTop: 12 }}>
-                    <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleBrandGenerate} loading={brandGenSubmitting}>生成品牌关键词</Button>
+                    <Space>
+                      <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleBrandGenerate} loading={brandGenSubmitting}>生成品牌关键词</Button>
+                      <Button icon={<SaveOutlined />} onClick={saveBrandConfig}>保存词汇配置</Button>
+                    </Space>
                   </div>
                   {brandGenResult && (
                     <div className="console-tip console-tip-success" style={{ marginTop: 12, marginBottom: 0 }}>
@@ -705,12 +814,23 @@ export default function KeywordsPage() {
                       style={{ width: 250 }}
                     />
                     <Button type="primary" icon={<PlusOutlined />} onClick={addZlgjc}>手动添加</Button>
+                    {selectedZlgjcIds.length > 0 && (
+                      <Popconfirm title={`确定删除选中的 ${selectedZlgjcIds.length} 条关键词？`} onConfirm={batchDeleteZlgjc}>
+                        <Button danger icon={<DeleteOutlined />} loading={batchDeleting}>
+                          批量删除({selectedZlgjcIds.length})
+                        </Button>
+                      </Popconfirm>
+                    )}
                   </Space>
                   <Table
                     loading={loading}
                     dataSource={zlgjcList}
                     columns={zlgjcColumns}
                     rowKey="id"
+                    rowSelection={{
+                      selectedRowKeys: selectedZlgjcIds,
+                      onChange: (keys) => setSelectedZlgjcIds(keys),
+                    }}
                     pagination={{
                       current: zlgjcPageNum,
                       pageSize: zlgjcPageSize,
@@ -749,12 +869,23 @@ export default function KeywordsPage() {
                       style={{ width: 250 }}
                     />
                     <Button type="primary" icon={<PlusOutlined />} onClick={addBrand}>手动添加</Button>
+                    {selectedBrandIds.length > 0 && (
+                      <Popconfirm title={`确定删除选中的 ${selectedBrandIds.length} 条关键词？`} onConfirm={batchDeleteBrand}>
+                        <Button danger icon={<DeleteOutlined />} loading={brandBatchDeleting}>
+                          批量删除({selectedBrandIds.length})
+                        </Button>
+                      </Popconfirm>
+                    )}
                   </Space>
                   <Table
                     loading={loading}
                     dataSource={brandList}
                     columns={brandColumns}
                     rowKey="id"
+                    rowSelection={{
+                      selectedRowKeys: selectedBrandIds,
+                      onChange: (keys) => setSelectedBrandIds(keys),
+                    }}
                     pagination={{
                       current: brandPageNum,
                       pageSize: brandPageSize,
