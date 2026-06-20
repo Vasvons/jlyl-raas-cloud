@@ -509,11 +509,11 @@ export async function generateOneRecord(client: PoolClient, params: {
   realtime?: boolean;
 }) {
   if (params.realtime) {
-    // 实时生成：create_time = NOW()，query_time = NULL（等待查询收录动作触发）
+    // 实时生成：create_time = clock_timestamp()（实时时间），query_time = NULL（等待查询展示）
     await client.query(
       `INSERT INTO keyword_search_rank
        (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time, update_time, task_id)
-       VALUES ($1, $2, $3, $4, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $5)`,
+       VALUES ($1, $2, $3, $4, NULL, clock_timestamp(), clock_timestamp(), $5)`,
       [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, params.taskId]
     );
   } else {
@@ -528,12 +528,12 @@ export async function generateOneRecord(client: PoolClient, params: {
   }
 }
 
-// 查询收录动作：将待收录数据（query_time IS NULL）设置为已收录（query_time = NOW()）
-// 按时区权重决定本次收录多少条
+// 查询展示动作：将待展示数据（query_time IS NULL）设置为已展示（query_time = clock_timestamp()）
+// 使用 clock_timestamp() 确保返回实时时间
 export async function collectRecords(taskId: number, count: number): Promise<number> {
   const result = await query(
     `UPDATE keyword_search_rank
-     SET query_time = CURRENT_TIMESTAMP, update_time = CURRENT_TIMESTAMP
+     SET query_time = clock_timestamp(), update_time = clock_timestamp()
      WHERE id IN (
        SELECT id FROM keyword_search_rank
        WHERE task_id = $1 AND query_time IS NULL

@@ -85,8 +85,9 @@ export async function runQueryDisplay() {
   schedulerStatus.lastDisplayTime = new Date();
   try {
     // 将所有待展示数据设置为已展示
+    // 使用 clock_timestamp() 而非 CURRENT_TIMESTAMP，确保返回实时时间而非事务开始时间
     const result = await query(
-      `UPDATE keyword_search_rank SET query_time = CURRENT_TIMESTAMP, update_time = CURRENT_TIMESTAMP
+      `UPDATE keyword_search_rank SET query_time = clock_timestamp(), update_time = clock_timestamp()
        WHERE query_time IS NULL`
     );
     if (result.rowCount && result.rowCount > 0) {
