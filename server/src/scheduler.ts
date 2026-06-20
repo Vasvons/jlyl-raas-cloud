@@ -216,8 +216,9 @@ export async function generateForTask(task: any): Promise<string> {
     console.log(`[Scheduler] 任务 ${task.id} 今天(${todayStr})已生成 ${todayActualCount} 条，跳过`);
   }
 
-  // 检查是否完成
+  // 检查是否完成，并更新 task_progress 表
   const newGeneratedNum = await repo.getTaskGeneratedNum(task.id);
+  await repo.updateTaskProgress(task.id, newGeneratedNum);
   if (newGeneratedNum >= task.total_num) {
     await query('UPDATE task_info SET status = $1 WHERE id = $2', ['completed', task.id]);
     console.log(`[Scheduler] 任务 ${task.id} 已完成，共生成 ${newGeneratedNum} 条`);

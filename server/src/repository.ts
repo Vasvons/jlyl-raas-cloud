@@ -483,6 +483,16 @@ export async function getTaskGeneratedNum(taskId: number): Promise<number> {
   return Math.max(progressNum, actualNum);
 }
 
+// 更新任务进度表（UPSERT）
+export async function updateTaskProgress(taskId: number, generatedNum: number): Promise<void> {
+  await query(
+    `INSERT INTO task_progress (task_id, generated_num, update_time)
+     VALUES ($1, $2, CURRENT_TIMESTAMP)
+     ON CONFLICT (task_id) DO UPDATE SET generated_num = $2, update_time = CURRENT_TIMESTAMP`,
+    [taskId, generatedNum]
+  );
+}
+
 // 生成单条数据
 export async function generateOneRecord(client: PoolClient, params: {
   userId: string;
@@ -902,7 +912,7 @@ export async function getSystemOverview() {
     query("SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'running') as running FROM task_info"),
     query('SELECT COUNT(*) as total FROM keyword_search_rank'),
     query('SELECT (SELECT COUNT(*) FROM distillate_keyword) + (SELECT COUNT(*) FROM zlgjc) as total'),
-    query("SELECT COUNT(*) as total FROM keyword_search_rank WHERE query_time::date = CURRENT_DATE"),
+    query("SELECT COUNT(*) as total FROM keyword_search_rank WHERE create_time::date = CURRENT_DATE"),
   ]);
   return {
     totalUsers: parseInt(usersRes.rows[0].total) || 0,
