@@ -134,50 +134,9 @@ export async function generateForTask(task: any): Promise<string> {
 
   let generatedToday = 0;
 
-  if (generatedNum < expectedNum && daysElapsed > 0) {
-    // 需要补齐历史数据：从开始日期到昨天，逐天检查并补齐缺失的天
-    console.log(`[Scheduler] 任务 ${task.id} 需要补齐历史数据，已生成 ${generatedNum}，预期 ${expectedNum}`);
-
-    for (let d = 0; d < daysElapsed; d++) {
-      const date = new Date(startDate);
-      date.setDate(date.getDate() + d);
-      // 使用本地时间格式化日期，避免 toISOString() 的 UTC 偏移问题
-      const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-
-      // 同时检查 daily_random 和 keyword_search_rank 实际记录数
-      // 避免 daily_random 有记录但 keyword_search_rank 实际没数据导致永远跳过的问题
-      const dailyRandomExisting = await query(
-        'SELECT id, random_num FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
-        [task.id, dateStr]
-      );
-      const actualCountResult = await query(
-        'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time::date = $2::date',
-        [task.id, dateStr]
-      );
-      const actualCount = parseInt(actualCountResult.rows[0].count) || 0;
-
-      if (dailyRandomExisting.rows.length > 0 && actualCount >= dailyNum) {
-        continue; // 该天已生成且实际记录数足够，跳过
-      }
-
-      const needGenerate = dailyNum - actualCount;
-      console.log(`[Scheduler] 任务 ${task.id} 补齐 ${dateStr} 的数据，已有 ${actualCount}，需生成 ${needGenerate}`);
-      await repo.generateBatch({
-        userId: task.user_id,
-        taskId: task.id,
-        count: needGenerate,
-        weights,
-        zlgjcList,
-        brandZlgjcList,
-        ppList: ppNames,
-        targetDate: date,
-        hourWeights,
-      });
-
-      await repo.setDailyRandom(task.id, date, dailyNum);
-      generatedToday += needGenerate;
-    }
-  }
+  // 查询时间 = 生成时间 = 实际插入时间
+  // 因此不补齐历史数据（补齐的记录 query_time 会是今天，失去"逐天分布"的意义）
+  // 每天实际生成 dailyNum 条记录，query_time 自然分布在每一天
 
   // 生成今天的数据
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
@@ -186,8 +145,8 @@ export async function generateForTask(task: any): Promise<string> {
     [task.id, todayStr]
   );
   const todayActualCountResult = await query(
-    'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time::date = $2::date',
-    [task.id, todayStr]
+    'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time::date = CURRENT_DATE',
+    [task.id]
   );
   const todayActualCount = parseInt(todayActualCountResult.rows[0].count) || 0;
 
