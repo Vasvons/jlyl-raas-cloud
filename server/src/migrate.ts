@@ -217,6 +217,13 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_user ON pp(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dr_task_date ON daily_random(task_id, random_date)`);
     // daily_random 需要 UNIQUE 约束才能使用 ON CONFLICT (task_id, random_date)
+    // 先删除重复记录（每个 task_id+random_date 只保留 id 最大的一条）
+    await client.query(`
+      DELETE FROM daily_random
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM daily_random GROUP BY task_id, random_date
+      )
+    `);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_dr_task_date_unique ON daily_random(task_id, random_date)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dk_user ON distillate_keyword(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_token ON share_tokens(token)`);
