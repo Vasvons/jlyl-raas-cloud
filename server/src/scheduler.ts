@@ -22,8 +22,8 @@ export function startScheduler() {
     await runDailyGeneration();
   });
 
-  // 每10分钟检查一次是否有遗漏的任务（容错，提高生成及时性）
-  cron.schedule('*/10 * * * *', async () => {
+  // 每3分钟检查一次，实时生成数据（一条一条生成，权重决定生成时机）
+  cron.schedule('*/3 * * * *', async () => {
     await runDailyGeneration();
   });
 }
@@ -192,59 +192,57 @@ export async function generateForTask(task: any): Promise<string> {
   }
 
   // 生成今天的数据（实时生成：query_time = create_time = NOW()）
-  // 权重决定数据生成的密集度：高权重时段更密集地生成，而不是一次性生成全天的量
-  // 每次调度只生成一小批，让数据在一天中持续产生
+  // 核心原则：一条一条生成，生成一条就收录并展示一条
+  // 时区权重决定"是否生成"（生成时机），平台权重决定"在哪个平台生成"
+  // 高权重时段每次调度都生成1条，低权重时段按概率生成，权重为0的时段不生成
   const now = new Date();
   const currentHour = now.getHours();
   const currentSlot = Math.floor(currentHour / 3); // 0-7，每3小时一个时段
 
-  // 计算当前时段的权重和所有时段权重总和
+  // 计算当前时段权重
   const validHourWeights = hourWeights.filter((w: any) => w.weight > 0);
-  const totalWeight = validHourWeights.reduce((sum: number, w: any) => sum + w.weight, 0);
+  const maxWeight = validHourWeights.length > 0 ? Math.max(...validHourWeights.map((w: any) => w.weight)) : 0;
   const currentSlotWeight = validHourWeights.find((w: any) => w.hour_slot === currentSlot)?.weight || 0;
 
-  // 今日已生成数量（用 create_time 统计，因为实时生成时 query_time = create_time）
+  // 今日已生成数量
   const todayActualCountResult = await query(
     'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND create_time::date = CURRENT_DATE',
     [task.id]
   );
   const todayActualCount = parseInt(todayActualCountResult.rows[0].count) || 0;
 
-  // 今日预期生成数量 = dailyNum * (已过时段权重 / 总权重)
-  // 已过时段包括当前时段（因为当前时段正在生成中）
-  let elapsedWeight = 0;
-  for (const w of validHourWeights) {
-    if (w.hour_slot <= currentSlot) {
-      elapsedWeight += w.weight;
+  console.log(`[Scheduler] 任务 ${task.id} 今日已生成=${todayActualCount}/${dailyNum}, 当前时段=${currentSlot}(${currentHour}时), 权重=${currentSlotWeight}/${maxWeight}`);
+
+  // 只有当前时段权重 > 0 且今日还没达到目标时才考虑生成
+  if (currentSlotWeight > 0 && todayActualCount < dailyNum) {
+    // 生成概率 = 当前时段权重 / 最大权重
+    // 高权重时段概率=1（每次调度都生成），低权重时段概率<1（偶尔生成）
+    const generateProbability = maxWeight > 0 ? currentSlotWeight / maxWeight : 1;
+
+    if (Math.random() < generateProbability) {
+      // 每次只生成1条，query_time = create_time = NOW()
+      console.log(`[Scheduler] 任务 ${task.id} 实时生成1条（概率=${generateProbability.toFixed(2)}, 时段权重=${currentSlotWeight}）`);
+      await repo.generateBatch({
+        userId: task.user_id,
+        taskId: task.id,
+        count: 1,
+        weights,
+        zlgjcList,
+        brandZlgjcList,
+        ppList: ppNames,
+        targetDate: today,
+        hourWeights,
+        realtime: true, // query_time=create_time=NOW()，时间真实
+      });
+      generatedToday += 1;
+      console.log(`[Scheduler] 任务 ${task.id} 本次生成1条`);
+    } else {
+      console.log(`[Scheduler] 任务 ${task.id} 本次跳过（概率未命中）`);
     }
-  }
-  const expectedTodayByNow = totalWeight > 0 ? Math.ceil(dailyNum * elapsedWeight / totalWeight) : dailyNum;
-
-  console.log(`[Scheduler] 任务 ${task.id} 今日进度: 已生成=${todayActualCount}, 当前时段预期=${expectedTodayByNow}, 当前时段权重=${currentSlotWeight}/${totalWeight}, 当前时段=${currentSlot}(${currentHour}时)`);
-
-  // 只有当前时段权重 > 0 时才生成
-  if (currentSlotWeight > 0 && todayActualCount < expectedTodayByNow) {
-    // 本次需要生成的数量 = 预期数量 - 已生成数量
-    const needGenerate = Math.max(1, expectedTodayByNow - todayActualCount);
-    console.log(`[Scheduler] 任务 ${task.id} 实时生成 ${needGenerate} 条（当前时段权重=${currentSlotWeight}）`);
-    await repo.generateBatch({
-      userId: task.user_id,
-      taskId: task.id,
-      count: needGenerate,
-      weights,
-      zlgjcList,
-      brandZlgjcList,
-      ppList: ppNames,
-      targetDate: today,
-      hourWeights,
-      realtime: true, // 当下实时生成，query_time=create_time=NOW()
-    });
-    generatedToday += needGenerate;
-    console.log(`[Scheduler] 任务 ${task.id} 本次实时生成 ${needGenerate} 条`);
   } else if (currentSlotWeight === 0) {
-    console.log(`[Scheduler] 任务 ${task.id} 当前时段权重为0，跳过生成`);
+    console.log(`[Scheduler] 任务 ${task.id} 当前时段权重为0，不生成`);
   } else {
-    console.log(`[Scheduler] 任务 ${task.id} 今日已生成 ${todayActualCount} 条，达到当前时段预期 ${expectedTodayByNow}，等待下一个时段`);
+    console.log(`[Scheduler] 任务 ${task.id} 今日已达到目标 ${dailyNum}，等待明天`);
   }
 
   // 检查是否完成，并更新 task_progress 表
