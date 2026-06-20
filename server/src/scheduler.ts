@@ -65,12 +65,12 @@ export async function runDailyGeneration() {
     for (const task of tasks.rows) {
       try {
         await generateForTask(task);
-      } catch (e) {
+      } catch (e: any) {
         console.error(`[Scheduler] 任务 ${task.id} 生成失败:`, e);
         schedulerStatus.lastRunResult += `; 任务${task.id}失败: ${e.message}`;
       }
     }
-  } catch (e) {
+  } catch (e: any) {
     console.error('[Scheduler] 每日生成失败:', e);
     schedulerStatus.lastRunResult = `错误: ${e.message}`;
   }

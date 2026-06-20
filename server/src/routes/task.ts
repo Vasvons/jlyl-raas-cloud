@@ -328,7 +328,7 @@ router.get('/diagnose', authMiddleware, adminMiddleware, async (req, res) => {
         tasks,
       },
     });
-  } catch (e) {
+  } catch (e: any) {
     console.error('[Task] 诊断失败:', e);
     res.json({ code: 500, message: '诊断失败: ' + e.message });
   }
@@ -351,7 +351,7 @@ router.post('/trigger/:id', authMiddleware, adminMiddleware, async (req, res) =>
     const result = await generateForTask(task);
 
     res.json({ code: 200, data: { result }, message: '触发完成' });
-  } catch (e) {
+  } catch (e: any) {
     console.error('[Task] 手动触发失败:', e);
     res.json({ code: 500, message: '触发失败: ' + e.message });
   }
@@ -363,7 +363,7 @@ router.post('/trigger-all', authMiddleware, adminMiddleware, async (req, res) =>
     console.log('[Task] 手动触发所有任务生成');
     await runDailyGeneration();
     res.json({ code: 200, message: '触发完成' });
-  } catch (e) {
+  } catch (e: any) {
     console.error('[Task] 手动触发所有任务失败:', e);
     res.json({ code: 500, message: '触发失败: ' + e.message });
   }
