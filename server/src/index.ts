@@ -32,9 +32,54 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// 健康检查
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// 健康检查（含数据库连接诊断）
+app.get('/health', async (req, res) => {
+  const result: any = { status: 'ok', timestamp: new Date().toISOString() };
+  try {
+    const { query } = require('./db');
+    const dbResult = await query('SELECT 1 as test');
+    result.db = 'ok';
+    result.dbTest = dbResult.rows[0];
+  } catch (e: any) {
+    result.db = 'error';
+    result.dbError = e.message;
+    result.status = 'degraded';
+  }
+  res.json(result);
+});
+
+// 诊断接口（返回详细错误信息，便于排查）
+app.get('/diagnose', async (req, res) => {
+  const result: any = { timestamp: new Date().toISOString(), checks: {} };
+  // 检查数据库连接
+  try {
+    const { query } = require('./db');
+    const start = Date.now();
+    await query('SELECT 1 as test');
+    result.checks.db = { status: 'ok', latency: Date.now() - start };
+  } catch (e: any) {
+    result.checks.db = { status: 'error', message: e.message, code: e.code };
+  }
+  // 检查关键表
+  try {
+    const { query } = require('./db');
+    const tables = await query(`
+      SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' ORDER BY table_name
+    `);
+    result.checks.tables = { status: 'ok', count: tables.rows.length, names: tables.rows.map((r: any) => r.table_name) };
+  } catch (e: any) {
+    result.checks.tables = { status: 'error', message: e.message };
+  }
+  // 检查pt表
+  try {
+    const { query } = require('./db');
+    const ptCount = await query('SELECT COUNT(*) as count FROM pt');
+    result.checks.ptTable = { status: 'ok', count: parseInt(ptCount.rows[0].count) };
+  } catch (e: any) {
+    result.checks.ptTable = { status: 'error', message: e.message, code: e.code };
+  }
+  res.json(result);
 });
 
 // API 路由
