@@ -261,11 +261,11 @@ export async function generateForTask(task: any): Promise<string> {
     // 收录量基于剩余待收录数据和剩余天数计算，确保任务结束前收录完所有数据
     // 每天应收录 = 剩余待收录量 / 剩余天数（含今天）
     // 每个时段应收录 = 每天应收录 * (时段权重 / 总权重)
-    // 每次调度收录量 = 时段应收录 / 60（每3小时60次调度，每3分钟一次）
+    // 每次调度收录量 = 时段应收录 / 30（每3小时30次有效收录，提高收录速度）
     const totalWeight = validHourWeights.reduce((sum: number, w: any) => sum + w.weight, 0);
     const dailyCollect2 = pendingCount2 / remainingDays;
     const slotCollectTotal = totalWeight > 0 ? dailyCollect2 * (currentSlotWeight / totalWeight) : dailyCollect2 / 8;
-    const collectCount = Math.max(1, Math.ceil(slotCollectTotal / 60));
+    const collectCount = Math.max(1, Math.ceil(slotCollectTotal / 30));
 
     const actualCollect = Math.min(collectCount, pendingCount2);
     console.log(`[Scheduler] 任务 ${task.id} 查询收录 ${actualCollect} 条（时段=${currentSlot}(${currentHour}时), 权重=${currentSlotWeight}, 剩余天数=${remainingDays}, 日应收录=${dailyCollect2.toFixed(0)}, 时段应收录=${slotCollectTotal.toFixed(0)}, 待收录=${pendingCount2}）`);
