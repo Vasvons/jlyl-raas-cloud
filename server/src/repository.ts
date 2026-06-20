@@ -474,10 +474,12 @@ export async function generateOneRecord(client: PoolClient, params: {
   hourWeights?: { hour_slot: number; weight: number }[];
 }) {
   const queryTime = randomTimeInDate(params.targetDate, params.hourWeights);
+  // create_time 使用 CURRENT_TIMESTAMP（实际插入时间），保证搜索排名按 create_time DESC 能显示最新插入的记录
+  // query_time 保留为目标日期的随机时间，用于显示"收录时间"
   await client.query(
     `INSERT INTO keyword_search_rank
      (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time, update_time, task_id)
-     VALUES ($1, $2, $3, $4, $5, $5, $5, $6)`,
+     VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $6)`,
     [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, queryTime, params.taskId]
   );
 }
