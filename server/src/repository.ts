@@ -494,6 +494,8 @@ export async function updateTaskProgress(taskId: number, generatedNum: number): 
 }
 
 // 生成单条数据
+// realtime=true: 当下实时生成，query_time=create_time=NOW()，不会产生未来数据
+// realtime=false: 历史补齐，query_time=目标日期+时区权重随机时间，create_time同query_time，模拟过去的收录情况
 export async function generateOneRecord(client: PoolClient, params: {
   userId: string;
   expandedKeyword: string;
@@ -502,16 +504,26 @@ export async function generateOneRecord(client: PoolClient, params: {
   taskId: number;
   targetDate: Date;
   hourWeights?: { hour_slot: number; weight: number }[];
+  realtime?: boolean;
 }) {
-  // query_time = 目标日期 + 时区权重随机时间（模拟那一天24小时内的查询动作）
-  // create_time = 实际插入时间（用于排序、统计今日新增等）
-  const queryTime = randomTimeInDate(params.targetDate, params.hourWeights);
-  await client.query(
-    `INSERT INTO keyword_search_rank
-     (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time, update_time, task_id)
-     VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $6)`,
-    [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, queryTime, params.taskId]
-  );
+  if (params.realtime) {
+    // 实时生成：query_time = create_time = 当前时间，三者统一
+    await client.query(
+      `INSERT INTO keyword_search_rank
+       (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time, update_time, task_id)
+       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $5)`,
+      [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, params.taskId]
+    );
+  } else {
+    // 历史补齐：query_time = create_time = 目标日期 + 时区权重随机时间
+    const queryTime = randomTimeInDate(params.targetDate, params.hourWeights);
+    await client.query(
+      `INSERT INTO keyword_search_rank
+       (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time, update_time, task_id)
+       VALUES ($1, $2, $3, $4, $5, $5, $5, $6)`,
+      [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, queryTime, params.taskId]
+    );
+  }
 }
 
 // 在指定日期范围内生成随机时间
@@ -559,6 +571,8 @@ function randomTimeInDate(date: Date, hourWeights?: { hour_slot: number; weight:
 }
 
 // 批量生成数据
+// realtime=true: 当下实时生成，query_time=create_time=NOW()
+// realtime=false: 历史补齐，query_time=create_time=目标日期+时区权重随机时间
 export async function generateBatch(params: {
   userId: string;
   taskId: number;
@@ -569,6 +583,7 @@ export async function generateBatch(params: {
   ppList: string[];
   targetDate: Date;
   hourWeights?: { hour_slot: number; weight: number }[];
+  realtime?: boolean;
 }): Promise<void> {
   await withTransaction(async (client) => {
     // 构建加权平台列表
@@ -611,6 +626,7 @@ export async function generateBatch(params: {
         taskId: params.taskId,
         targetDate: params.targetDate,
         hourWeights: params.hourWeights,
+        realtime: params.realtime,
       });
     }
 

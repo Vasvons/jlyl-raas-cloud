@@ -229,6 +229,26 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_token ON share_tokens(token)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)`);
 
+    // 修正已有数据的时间逻辑：
+    // 1. 历史补齐数据（create_time 在今天之前）：create_time 应同步为 query_time（模拟的收录时间）
+    //    旧逻辑中 create_time 是实际插入时间，新逻辑要求 query_time = create_time = 目标日期+时区权重随机时间
+    const fixHistoryResult = await client.query(
+      `UPDATE keyword_search_rank SET create_time = query_time, update_time = query_time
+       WHERE create_time::date < CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
+    );
+    if (fixHistoryResult.rowCount && fixHistoryResult.rowCount > 0) {
+      console.log(`[Migrate] 修正 ${fixHistoryResult.rowCount} 条历史数据的 create_time 为 query_time`);
+    }
+    // 2. 今日数据：query_time 应同步为 create_time（实际生成时间）
+    //    旧逻辑中 query_time 可能是未来时间，新逻辑要求 query_time = create_time = NOW()
+    const fixTodayResult = await client.query(
+      `UPDATE keyword_search_rank SET query_time = create_time
+       WHERE create_time::date = CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
+    );
+    if (fixTodayResult.rowCount && fixTodayResult.rowCount > 0) {
+      console.log(`[Migrate] 修正 ${fixTodayResult.rowCount} 条今日数据的 query_time 为 create_time`);
+    }
+
     // 初始化平台数据
     const ptCount = await client.query('SELECT COUNT(*) as count FROM pt');
     if (parseInt(ptCount.rows[0].count) === 0) {

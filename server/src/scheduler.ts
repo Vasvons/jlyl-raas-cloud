@@ -132,6 +132,17 @@ export async function generateForTask(task: any): Promise<string> {
 
   console.log(`[Scheduler] 任务 ${task.id} 进度: 已生成=${generatedNum}, 预期=${expectedNum}, 每日=${dailyNum}, 总天数=${totalDays}, 已过天数=${daysElapsed}`);
 
+  // 修正今日已有数据：将今日记录的 query_time 同步为 create_time
+  // 因为今日数据应该是实时生成的，query_time = create_time = 实际生成时间
+  const fixResult = await query(
+    `UPDATE keyword_search_rank SET query_time = create_time
+     WHERE task_id = $1 AND create_time::date = CURRENT_DATE AND query_time != create_time`,
+    [task.id]
+  );
+  if (fixResult.rowCount && fixResult.rowCount > 0) {
+    console.log(`[Scheduler] 任务 ${task.id} 修正今日 ${fixResult.rowCount} 条记录的 query_time 为 create_time`);
+  }
+
   let generatedToday = 0;
 
   if (generatedNum < expectedNum && daysElapsed > 0) {
@@ -180,14 +191,15 @@ export async function generateForTask(task: any): Promise<string> {
     }
   }
 
-  // 生成今天的数据
+  // 生成今天的数据（实时生成：query_time = create_time = NOW()）
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const todayDailyRandom = await query(
     'SELECT id, random_num FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
     [task.id, todayStr]
   );
+  // 今日数据用 create_time 统计（因为实时生成时 query_time = create_time）
   const todayActualCountResult = await query(
-    'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time::date = CURRENT_DATE',
+    'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND create_time::date = CURRENT_DATE',
     [task.id]
   );
   const todayActualCount = parseInt(todayActualCountResult.rows[0].count) || 0;
@@ -206,6 +218,7 @@ export async function generateForTask(task: any): Promise<string> {
         ppList: ppNames,
         targetDate: today,
         hourWeights,
+        realtime: true, // 当下实时生成，query_time=create_time=NOW()
       });
 
       await repo.setDailyRandom(task.id, today, dailyNum);
