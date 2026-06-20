@@ -193,6 +193,7 @@ export async function generateForTask(task: any): Promise<string> {
 
   // ===== 今日数据：生成与收录分离 =====
   // 1. 数据生成：提前批量生成，create_time=NOW()，query_time=NULL（待收录）
+  //    不受每日量限制，只看总进度，数据提前生成等待收录
   // 2. 查询收录：调度器每次运行时，按当前时区权重决定收录多少条待收录数据
   //    query_time = 收录动作触发时间（NOW()），永远不会是未来时间
   // 3. 时区权重决定每次收录的数量，高权重时段收录更多
@@ -200,13 +201,6 @@ export async function generateForTask(task: any): Promise<string> {
   const now = new Date();
   const currentHour = now.getHours();
   const currentSlot = Math.floor(currentHour / 3); // 0-7，每3小时一个时段
-
-  // 今日已生成数量（含待收录）
-  const todayGeneratedResult = await query(
-    'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND create_time::date = CURRENT_DATE',
-    [task.id]
-  );
-  const todayGenerated = parseInt(todayGeneratedResult.rows[0].count) || 0;
 
   // 今日待收录数量（query_time IS NULL）
   const pendingResult = await query(
@@ -216,12 +210,13 @@ export async function generateForTask(task: any): Promise<string> {
   const pendingCount = parseInt(pendingResult.rows[0].count) || 0;
 
   // 第一步：补充生成数据（保持待收录池充足）
-  // 每次调度生成一小批，确保待收录池不会枯竭
-  // 每天480次调度（每3分钟一次），每次生成 dailyNum/480 条，一天总生成=dailyNum
-  const batchSize = Math.max(1, Math.ceil(dailyNum / 480));
-  if (todayGenerated < dailyNum && pendingCount < batchSize * 4) {
-    const needGenerate = Math.min(batchSize, dailyNum - todayGenerated);
-    console.log(`[Scheduler] 任务 ${task.id} 补充生成 ${needGenerate} 条（今日已生成=${todayGenerated}/${dailyNum}, 待收录=${pendingCount}）`);
+  // 数据提前生成，不受每日量限制，只看总进度和待收录池
+  // 每次生成剩余量的1/100，约5小时生成完所有数据，生成速度远快于收录速度
+  const remaining = task.total_num - generatedNum;
+  const batchSize = Math.max(10, Math.ceil(remaining / 100));
+  if (generatedNum < task.total_num && pendingCount < batchSize * 4) {
+    const needGenerate = Math.min(batchSize, remaining);
+    console.log(`[Scheduler] 任务 ${task.id} 补充生成 ${needGenerate} 条（总进度=${generatedNum}/${task.total_num}, 待收录=${pendingCount}）`);
     await repo.generateBatch({
       userId: task.user_id,
       taskId: task.id,
