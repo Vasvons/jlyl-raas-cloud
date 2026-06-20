@@ -9,7 +9,7 @@ import styles from './dashboard.module.css';
 
 const IMG = 'https://static.7asi.com/assets/reportGeo';
 
-// 平台图标映射（与 7asi 参考页一致；智谱AI 参考页未提供素材，使用占位图标）
+// 平台图标映射（与 7asi 参考页一致；智谱AI 使用品牌色蓝色背景+白色Z字母logo）
 const PLATFORM_ICONS: Record<string, string> = {
   '豆包': 'https://static.7asi.com/assets/GeoYy/Frame%20(2).png',
   '文心一言': 'https://static.7asi.com/assets/GeoYy/Frame%20(3).png',
@@ -19,7 +19,7 @@ const PLATFORM_ICONS: Record<string, string> = {
   '通义千问': 'https://static.7asi.com/assets/GeoYy/Frame%20(1).png',
   '百度AI': 'https://static.7asi.com/assets/GeoYy/baiduai.png',
   '纳米': 'https://static.7asi.com/assets/GeoYy/nm.png',
-  '智谱AI': 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPSc0MCcgaGVpZ2h0PSc0MCc+PGNpcmNsZSBjeD0nMjAnIGN5PScyMCcgcj0nMjAnIGZpbGw9JyUyM0U1MzkzNScvPjx0ZXh0IHg9JzIwJyB5PScyOCcgdGV4dC1hbmNob3I9J21pZGRsZScgZm9udC1zaXplPScyMCcgZmlsbD0nd2hpdGUnIGZvbnQtZmFtaWx5PSdzYW5zLXNlcmlmJz7mmbo8L3RleHQ+PC9zdmc+',
+  '智谱AI': 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPSc0MCcgaGVpZ2h0PSc0MCcgdmlld0JveD0nMCAwIDQwIDQwJz48cmVjdCB3aWR0aD0nNDAnIGhlaWdodD0nNDAnIHJ4PSc4JyBmaWxsPScjM0I1QkZGJy8+PHBhdGggZD0nTTI4IDEySDE0TDE5IDE5TDE0IDI2SDI4JyBzdHJva2U9J3doaXRlJyBzdHJva2Utd2lkdGg9JzMuNScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJyBzdHJva2UtbGluZWpvaW49J3JvdW5kJyBmaWxsPSdub25lJy8+PC9zdmc+',
 };
 
 interface StatsData {

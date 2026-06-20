@@ -1160,9 +1160,33 @@
 .prMobileLegend {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 8px 16px;
+  gap: 8px 12px;
   width: 100%;
-  padding: 0 12px 12px;
+  padding: 0 4px 8px;
+  box-sizing: border-box;
+}
+
+/* 移动端图例项：减小padding和gap，防止右边一列被截断 */
+.prMobileLegend .prLegendItem {
+  padding: 4px 4px;
+  gap: 6px;
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.prMobileLegend .prLegendIcon {
+  width: 16px;
+  height: 16px;
+}
+
+.prMobileLegend .prLegendName {
+  min-width: 0;
+}
+
+.prMobileLegend .prLegendCount {
+  min-width: auto;
+  flex-shrink: 0;
+  font-size: 12px;
 }
 
 .prMobileLegendItem {
