@@ -321,9 +321,9 @@ router.get('/dstillateKeyword/countDstillateKeyword', async (req, res) => {
     );
     const ppCount = parseInt(ppResult.rows[0].count) || 0;
 
-    // 总收录条数（keyword_search_rank 表）
+    // 总收录条数（只统计已收录的）
     const totalResult = await query(
-      'SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1', [userId]
+      'SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND query_time IS NOT NULL', [userId]
     );
     const totalCount = parseInt(totalResult.rows[0].count) || 0;
 

@@ -191,58 +191,81 @@ export async function generateForTask(task: any): Promise<string> {
     }
   }
 
-  // 生成今天的数据（实时生成：query_time = create_time = NOW()）
-  // 核心原则：一条一条生成，生成一条就收录并展示一条
-  // 时区权重决定"是否生成"（生成时机），平台权重决定"在哪个平台生成"
-  // 高权重时段每次调度都生成1条，低权重时段按概率生成，权重为0的时段不生成
+  // ===== 今日数据：生成与收录分离 =====
+  // 1. 数据生成：提前批量生成，create_time=NOW()，query_time=NULL（待收录）
+  // 2. 查询收录：调度器每次运行时，按当前时区权重决定收录多少条待收录数据
+  //    query_time = 收录动作触发时间（NOW()），永远不会是未来时间
+  // 3. 时区权重决定每次收录的数量，高权重时段收录更多
+
   const now = new Date();
   const currentHour = now.getHours();
   const currentSlot = Math.floor(currentHour / 3); // 0-7，每3小时一个时段
 
-  // 计算当前时段权重
-  const validHourWeights = hourWeights.filter((w: any) => w.weight > 0);
-  const maxWeight = validHourWeights.length > 0 ? Math.max(...validHourWeights.map((w: any) => w.weight)) : 0;
-  const currentSlotWeight = validHourWeights.find((w: any) => w.hour_slot === currentSlot)?.weight || 0;
-
-  // 今日已生成数量
-  const todayActualCountResult = await query(
+  // 今日已生成数量（含待收录）
+  const todayGeneratedResult = await query(
     'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND create_time::date = CURRENT_DATE',
     [task.id]
   );
-  const todayActualCount = parseInt(todayActualCountResult.rows[0].count) || 0;
+  const todayGenerated = parseInt(todayGeneratedResult.rows[0].count) || 0;
 
-  console.log(`[Scheduler] 任务 ${task.id} 今日已生成=${todayActualCount}/${dailyNum}, 当前时段=${currentSlot}(${currentHour}时), 权重=${currentSlotWeight}/${maxWeight}`);
+  // 今日待收录数量（query_time IS NULL）
+  const pendingResult = await query(
+    'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time IS NULL',
+    [task.id]
+  );
+  const pendingCount = parseInt(pendingResult.rows[0].count) || 0;
 
-  // 只有当前时段权重 > 0 且今日还没达到目标时才考虑生成
-  if (currentSlotWeight > 0 && todayActualCount < dailyNum) {
-    // 生成概率 = 当前时段权重 / 最大权重
-    // 高权重时段概率=1（每次调度都生成），低权重时段概率<1（偶尔生成）
-    const generateProbability = maxWeight > 0 ? currentSlotWeight / maxWeight : 1;
+  // 第一步：补充生成数据（保持待收录池充足）
+  // 每次调度生成一小批，确保待收录池不会枯竭
+  const batchSize = Math.max(5, Math.ceil(dailyNum / 48)); // 每次生成约1/48的日量（每3分钟一次，约48次/天）
+  if (todayGenerated < dailyNum && pendingCount < batchSize * 2) {
+    const needGenerate = Math.min(batchSize, dailyNum - todayGenerated);
+    console.log(`[Scheduler] 任务 ${task.id} 补充生成 ${needGenerate} 条（今日已生成=${todayGenerated}/${dailyNum}, 待收录=${pendingCount}）`);
+    await repo.generateBatch({
+      userId: task.user_id,
+      taskId: task.id,
+      count: needGenerate,
+      weights,
+      zlgjcList,
+      brandZlgjcList,
+      ppList: ppNames,
+      targetDate: today,
+      hourWeights,
+      realtime: true, // create_time=NOW(), query_time=NULL
+    });
+    generatedToday += needGenerate;
+  }
 
-    if (Math.random() < generateProbability) {
-      // 每次只生成1条，query_time = create_time = NOW()
-      console.log(`[Scheduler] 任务 ${task.id} 实时生成1条（概率=${generateProbability.toFixed(2)}, 时段权重=${currentSlotWeight}）`);
-      await repo.generateBatch({
-        userId: task.user_id,
-        taskId: task.id,
-        count: 1,
-        weights,
-        zlgjcList,
-        brandZlgjcList,
-        ppList: ppNames,
-        targetDate: today,
-        hourWeights,
-        realtime: true, // query_time=create_time=NOW()，时间真实
-      });
-      generatedToday += 1;
-      console.log(`[Scheduler] 任务 ${task.id} 本次生成1条`);
-    } else {
-      console.log(`[Scheduler] 任务 ${task.id} 本次跳过（概率未命中）`);
-    }
+  // 第二步：查询收录动作
+  // 时区权重决定本次收录多少条：权重越高，收录越多
+  const validHourWeights = hourWeights.filter((w: any) => w.weight > 0);
+  const currentSlotWeight = validHourWeights.find((w: any) => w.hour_slot === currentSlot)?.weight || 0;
+
+  // 重新查询待收录数量（可能刚生成了新的）
+  const pendingResult2 = await query(
+    'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time IS NULL',
+    [task.id]
+  );
+  const pendingCount2 = parseInt(pendingResult2.rows[0].count) || 0;
+
+  if (currentSlotWeight > 0 && pendingCount2 > 0) {
+    // 每次收录数量 = 基础量 * (当前时段权重 / 平均权重)
+    // 高权重时段收录更多，低权重时段收录更少
+    const totalWeight = validHourWeights.reduce((sum: number, w: any) => sum + w.weight, 0);
+    const avgWeight = totalWeight / validHourWeights.length;
+    const collectRatio = avgWeight > 0 ? currentSlotWeight / avgWeight : 1;
+    // 每次调度收录的数量 = 日总量 / 48(每天48次调度) * 权重比
+    const collectCount = Math.max(1, Math.ceil(dailyNum / 48 * collectRatio));
+
+    const actualCollect = Math.min(collectCount, pendingCount2);
+    console.log(`[Scheduler] 任务 ${task.id} 查询收录 ${actualCollect} 条（时段=${currentSlot}(${currentHour}时), 权重=${currentSlotWeight}, 待收录=${pendingCount2}）`);
+
+    const collected = await repo.collectRecords(task.id, actualCollect);
+    console.log(`[Scheduler] 任务 ${task.id} 实际收录 ${collected} 条`);
   } else if (currentSlotWeight === 0) {
-    console.log(`[Scheduler] 任务 ${task.id} 当前时段权重为0，不生成`);
+    console.log(`[Scheduler] 任务 ${task.id} 当前时段权重为0，不收录`);
   } else {
-    console.log(`[Scheduler] 任务 ${task.id} 今日已达到目标 ${dailyNum}，等待明天`);
+    console.log(`[Scheduler] 任务 ${task.id} 无待收录数据`);
   }
 
   // 检查是否完成，并更新 task_progress 表

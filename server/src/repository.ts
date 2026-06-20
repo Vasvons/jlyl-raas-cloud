@@ -157,7 +157,7 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
   const pageSize = params.pageSize || 20;
   const offset = (page - 1) * pageSize;
 
-  let where = ['k.user_id = $1'];
+  let where = ['k.user_id = $1', 'k.query_time IS NOT NULL'];
   let args: any[] = [params.userId];
   let argIdx = 2;
 
@@ -207,25 +207,25 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
   return { list: listResult.rows, total, page, pageSize };
 }
 
-// 获取关键词数量统计
+// 获取关键词数量统计（只统计已收录的）
 export async function getKeywordCount(userId: string) {
   const result = await query(
     `SELECT
        COUNT(DISTINCT expanded_keyword) as core_count,
        COUNT(DISTINCT distillate_keyword) as distillate_count,
        COUNT(*) as total_count
-     FROM keyword_search_rank WHERE user_id = $1`,
+     FROM keyword_search_rank WHERE user_id = $1 AND query_time IS NOT NULL`,
     [userId]
   );
   return result.rows[0];
 }
 
-// 获取平台占比
+// 获取平台占比（只统计已收录的）
 export async function getPlatformRatio(userId: string) {
   const result = await query(
     `SELECT p.pt, COUNT(k.id) as count
      FROM pt p
-     LEFT JOIN keyword_search_rank k ON k.platform = p.pt AND k.user_id = $1
+     LEFT JOIN keyword_search_rank k ON k.platform = p.pt AND k.user_id = $1 AND k.query_time IS NOT NULL
      GROUP BY p.pt
      ORDER BY CASE p.pt
        WHEN '豆包' THEN 1 WHEN 'DeepSeek' THEN 2 WHEN '腾讯元宝' THEN 3
@@ -236,12 +236,12 @@ export async function getPlatformRatio(userId: string) {
   return result.rows;
 }
 
-// 获取核心关键词排名（排除品牌关键词）
+// 获取核心关键词排名（排除品牌关键词，只统计已收录的）
 export async function getCoreKeywordRank(userId: string, limit: number = 20) {
   const result = await query(
     `SELECT expanded_keyword as keyword, COUNT(*) as count
      FROM keyword_search_rank k
-     WHERE k.user_id = $1 AND k.expanded_keyword != ''
+     WHERE k.user_id = $1 AND k.expanded_keyword != '' AND k.query_time IS NOT NULL
        AND NOT EXISTS (
          SELECT 1 FROM pp p
          WHERE p.pp = k.expanded_keyword AND p.user_id = k.user_id
@@ -494,8 +494,10 @@ export async function updateTaskProgress(taskId: number, generatedNum: number): 
 }
 
 // 生成单条数据
-// realtime=true: 当下实时生成，query_time=create_time=NOW()，不会产生未来数据
-// realtime=false: 历史补齐，query_time=目标日期+时区权重随机时间，create_time同query_time，模拟过去的收录情况
+// 数据生成和查询收录分离：
+// - 生成时 create_time = NOW()，query_time = NULL（尚未被查询收录）
+// - 历史补齐时 create_time = 目标日期+时区权重随机时间，query_time = create_time（模拟过去的查询收录）
+// - 查询收录动作触发时，UPDATE SET query_time = NOW()（实时收录，时间真实）
 export async function generateOneRecord(client: PoolClient, params: {
   userId: string;
   expandedKeyword: string;
@@ -507,15 +509,15 @@ export async function generateOneRecord(client: PoolClient, params: {
   realtime?: boolean;
 }) {
   if (params.realtime) {
-    // 实时生成：query_time = create_time = 当前时间，三者统一
+    // 实时生成：create_time = NOW()，query_time = NULL（等待查询收录动作触发）
     await client.query(
       `INSERT INTO keyword_search_rank
        (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time, update_time, task_id)
-       VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $5)`,
+       VALUES ($1, $2, $3, $4, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $5)`,
       [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, params.taskId]
     );
   } else {
-    // 历史补齐：query_time = create_time = 目标日期 + 时区权重随机时间
+    // 历史补齐：query_time = create_time = 目标日期 + 时区权重随机时间（模拟过去的查询收录）
     const queryTime = randomTimeInDate(params.targetDate, params.hourWeights);
     await client.query(
       `INSERT INTO keyword_search_rank
@@ -524,6 +526,23 @@ export async function generateOneRecord(client: PoolClient, params: {
       [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, queryTime, params.taskId]
     );
   }
+}
+
+// 查询收录动作：将待收录数据（query_time IS NULL）设置为已收录（query_time = NOW()）
+// 按时区权重决定本次收录多少条
+export async function collectRecords(taskId: number, count: number): Promise<number> {
+  const result = await query(
+    `UPDATE keyword_search_rank
+     SET query_time = CURRENT_TIMESTAMP, update_time = CURRENT_TIMESTAMP
+     WHERE id IN (
+       SELECT id FROM keyword_search_rank
+       WHERE task_id = $1 AND query_time IS NULL
+       ORDER BY create_time ASC
+       LIMIT $2
+     )`,
+    [taskId, count]
+  );
+  return result.rowCount || 0;
 }
 
 // 在指定日期范围内生成随机时间
@@ -824,7 +843,7 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
 // 关键词维护列表（从 keyword_search_rank 去重查询）
 export async function getKeywordMaintenanceList(params: { userId: string; platform?: string; pageNum: number; pageSize: number; keyword?: string }) {
   const offset = (params.pageNum - 1) * params.pageSize;
-  let where = ['k.user_id = $1'];
+  let where = ['k.user_id = $1', 'k.query_time IS NOT NULL'];
   let args: any[] = [params.userId];
   let argIdx = 2;
 
@@ -926,9 +945,9 @@ export async function getSystemOverview() {
   const [usersRes, tasksRes, recordsRes, keywordsRes, todayRes] = await Promise.all([
     query("SELECT COUNT(*) as total FROM users WHERE level = '0'"),
     query("SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'running') as running FROM task_info"),
-    query('SELECT COUNT(*) as total FROM keyword_search_rank'),
+    query('SELECT COUNT(*) as total FROM keyword_search_rank WHERE query_time IS NOT NULL'),
     query('SELECT (SELECT COUNT(*) FROM distillate_keyword) + (SELECT COUNT(*) FROM zlgjc) as total'),
-    query("SELECT COUNT(*) as total FROM keyword_search_rank WHERE create_time::date = CURRENT_DATE"),
+    query("SELECT COUNT(*) as total FROM keyword_search_rank WHERE query_time IS NOT NULL AND query_time::date = CURRENT_DATE"),
   ]);
   return {
     totalUsers: parseInt(usersRes.rows[0].total) || 0,
@@ -951,13 +970,13 @@ export async function getTaskStatusSummary() {
   }));
 }
 
-// 最近生成记录
+// 最近生成记录（只显示已收录的）
 export async function getRecentRecords(limit: number = 20) {
   const result = await query(
     `SELECT id, expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time
      FROM keyword_search_rank
-     WHERE create_time IS NOT NULL
-     ORDER BY create_time DESC NULLS LAST
+     WHERE query_time IS NOT NULL
+     ORDER BY query_time DESC NULLS LAST
      LIMIT $1`,
     [limit]
   );
@@ -989,7 +1008,7 @@ export async function getUserDataStats() {
       query('SELECT COUNT(*) as count FROM task_info WHERE user_id = $1', [userId]),
       query('SELECT COUNT(*) as count FROM distillate_keyword WHERE user_id = $1', [userId]),
       query('SELECT COUNT(*) as count FROM zlgjc WHERE userid = $1', [userId]),
-      query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1', [userId]),
+      query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND query_time IS NOT NULL', [userId]),
     ]);
     result.push({
       userId: user.id,
@@ -1024,11 +1043,11 @@ export async function getUserDetailStats(userId: string) {
     [userId]
   );
 
-  // 3. 各平台数据分布
+  // 3. 各平台数据分布（只统计已收录的）
   const platformRes = await query(
     `SELECT platform, COUNT(*) as count
      FROM keyword_search_rank
-     WHERE user_id = $1 AND platform != ''
+     WHERE user_id = $1 AND platform != '' AND query_time IS NOT NULL
      GROUP BY platform
      ORDER BY count DESC`,
     [userId]
@@ -1039,16 +1058,16 @@ export async function getUserDetailStats(userId: string) {
     query('SELECT COUNT(*) as count FROM distillate_keyword WHERE user_id = $1', [userId]),
     query('SELECT COUNT(*) as count FROM zlgjc WHERE userid = $1', [userId]),
     query('SELECT COUNT(*) as count FROM pp WHERE user_id = $1', [userId]),
-    query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1', [userId]),
-    query("SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND create_time::date = CURRENT_DATE", [userId]),
+    query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND query_time IS NOT NULL', [userId]),
+    query("SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND query_time IS NOT NULL AND query_time::date = CURRENT_DATE", [userId]),
   ]);
 
-  // 5. 最近7天每日生成趋势（按实际生成时间 create_time 统计）
+  // 5. 最近7天每日收录趋势（按 query_time 统计）
   const trendRes = await query(
-    `SELECT create_time::date as date, COUNT(*) as count
+    `SELECT query_time::date as date, COUNT(*) as count
      FROM keyword_search_rank
-     WHERE user_id = $1 AND create_time >= CURRENT_DATE - INTERVAL '6 days'
-     GROUP BY create_time::date
+     WHERE user_id = $1 AND query_time IS NOT NULL AND query_time >= CURRENT_DATE - INTERVAL '6 days'
+     GROUP BY query_time::date
      ORDER BY date`,
     [userId]
   );

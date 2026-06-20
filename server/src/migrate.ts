@@ -199,6 +199,7 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ksr_user_distillate ON keyword_search_rank(user_id, distillate_keyword)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ksr_task ON keyword_search_rank(task_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ksr_query_time ON keyword_search_rank(query_time DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ksr_pending ON keyword_search_rank(task_id) WHERE query_time IS NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_value ON zlgjc(value)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_userid ON zlgjc(userid)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_userid_value ON zlgjc(userid, value)`);
@@ -229,8 +230,8 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_token ON share_tokens(token)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)`);
 
-    // 修正已有数据的时间逻辑：
-    // 1. 历史补齐数据（create_time 在今天之前）：create_time 应同步为 query_time（模拟的收录时间）
+    // 修正已有数据的时间逻辑（新设计：生成与收录分离）
+    // 1. 历史数据（create_time 在今天之前）：保持 query_time = create_time（模拟过去的查询收录）
     //    旧逻辑中 create_time 是实际插入时间，新逻辑要求 query_time = create_time = 目标日期+时区权重随机时间
     const fixHistoryResult = await client.query(
       `UPDATE keyword_search_rank SET create_time = query_time, update_time = query_time
@@ -247,6 +248,15 @@ export async function migrate() {
     );
     if (fixTodayResult.rowCount && fixTodayResult.rowCount > 0) {
       console.log(`[Migrate] 修正 ${fixTodayResult.rowCount} 条今日数据的 query_time 为 create_time`);
+    }
+    // 3. 今日未收录数据（query_time IS NULL 且 create_time 在今天）：设为已收录
+    //    这些是旧逻辑生成的数据，需要立即展示
+    const fixPendingResult = await client.query(
+      `UPDATE keyword_search_rank SET query_time = create_time
+       WHERE query_time IS NULL AND create_time::date = CURRENT_DATE`
+    );
+    if (fixPendingResult.rowCount && fixPendingResult.rowCount > 0) {
+      console.log(`[Migrate] 将 ${fixPendingResult.rowCount} 条今日待收录数据设为已收录`);
     }
 
     // 初始化平台数据

@@ -83,15 +83,17 @@ app.get('/diagnose', async (req, res) => {
   try {
     const { query } = require('./db');
     const totalCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank');
-    const mismatchCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time IS NOT NULL AND query_time != create_time');
+    const collectedCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time IS NOT NULL');
+    const pendingCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time IS NULL');
     const futureCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time > CURRENT_TIMESTAMP');
-    const sample = await query('SELECT query_time, create_time FROM keyword_search_rank ORDER BY create_time DESC LIMIT 5');
+    const sample = await query('SELECT query_time, create_time FROM keyword_search_rank WHERE query_time IS NOT NULL ORDER BY query_time DESC LIMIT 5');
     result.checks.dataTimeLogic = {
-      status: parseInt(mismatchCount.rows[0].count) === 0 ? 'ok' : 'mismatch',
+      status: parseInt(futureCount.rows[0].count) === 0 ? 'ok' : 'future_data',
       totalRecords: parseInt(totalCount.rows[0].count),
-      mismatchedRecords: parseInt(mismatchCount.rows[0].count),
+      collectedRecords: parseInt(collectedCount.rows[0].count),
+      pendingRecords: parseInt(pendingCount.rows[0].count),
       futureRecords: parseInt(futureCount.rows[0].count),
-      sample: sample.rows.map((r: any) => ({ queryTime: r.query_time, createTime: r.create_time, matched: r.query_time?.getTime() === r.create_time?.getTime() })),
+      sample: sample.rows.map((r: any) => ({ queryTime: r.query_time, createTime: r.create_time })),
     };
   } catch (e: any) {
     result.checks.dataTimeLogic = { status: 'error', message: e.message };
@@ -113,12 +115,18 @@ app.post('/fix-data', async (req, res) => {
       `UPDATE keyword_search_rank SET query_time = create_time
        WHERE create_time::date = CURRENT_DATE AND query_time IS NOT NULL AND query_time != create_time`
     );
+    // 3. 今日待收录数据：设为已收录
+    const fixPending = await query(
+      `UPDATE keyword_search_rank SET query_time = create_time
+       WHERE query_time IS NULL AND create_time::date = CURRENT_DATE`
+    );
     res.json({
       code: 200,
       message: '数据修正完成',
       data: {
         historyFixed: fixHistory.rowCount || 0,
         todayFixed: fixToday.rowCount || 0,
+        pendingFixed: fixPending.rowCount || 0,
       },
     });
   } catch (e: any) {
