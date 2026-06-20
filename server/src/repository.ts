@@ -493,13 +493,14 @@ export async function generateOneRecord(client: PoolClient, params: {
   targetDate: Date;
   hourWeights?: { hour_slot: number; weight: number }[];
 }) {
-  // 查询时间就是生成时间：生成即模拟查询动作，query_time = create_time = 实际插入时间
-  // 这样数据监测页面"今日新增记录"按 query_time 统计才能正确反映今日生成情况
+  // query_time = 目标日期 + 时区权重随机时间（模拟那一天24小时内的查询动作）
+  // create_time = 实际插入时间（用于排序、统计今日新增等）
+  const queryTime = randomTimeInDate(params.targetDate, params.hourWeights);
   await client.query(
     `INSERT INTO keyword_search_rank
      (expanded_keyword, distillate_keyword, platform, user_id, query_time, create_time, update_time, task_id)
-     VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $5)`,
-    [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, params.taskId]
+     VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $6)`,
+    [params.expandedKeyword, params.distillateKeyword, params.platform, params.userId, queryTime, params.taskId]
   );
 }
 
@@ -987,15 +988,15 @@ export async function getUserDetailStats(userId: string) {
     query('SELECT COUNT(*) as count FROM zlgjc WHERE userid = $1', [userId]),
     query('SELECT COUNT(*) as count FROM pp WHERE user_id = $1', [userId]),
     query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1', [userId]),
-    query("SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND query_time::date = CURRENT_DATE", [userId]),
+    query("SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND create_time::date = CURRENT_DATE", [userId]),
   ]);
 
-  // 5. 最近7天每日生成趋势
+  // 5. 最近7天每日生成趋势（按实际生成时间 create_time 统计）
   const trendRes = await query(
-    `SELECT query_time::date as date, COUNT(*) as count
+    `SELECT create_time::date as date, COUNT(*) as count
      FROM keyword_search_rank
-     WHERE user_id = $1 AND query_time >= CURRENT_DATE - INTERVAL '6 days'
-     GROUP BY query_time::date
+     WHERE user_id = $1 AND create_time >= CURRENT_DATE - INTERVAL '6 days'
+     GROUP BY create_time::date
      ORDER BY date`,
     [userId]
   );
