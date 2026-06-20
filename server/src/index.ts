@@ -107,6 +107,14 @@ app.get('/diagnose', async (req, res) => {
        WHERE t.status = 'running'
        ORDER BY t.id`
     );
+    // 所有用户列表（含level，用于诊断分享链接问题）
+    const usersList = await query(
+      `SELECT id, username, level, date_time FROM users ORDER BY id`
+    );
+    // 最近的分享token
+    const recentShareTokens = await query(
+      `SELECT id, user_id, username, create_time, expire_time, last_use_time FROM share_tokens ORDER BY create_time DESC LIMIT 10`
+    );
     result.checks.dataTimeLogic = {
       status: parseInt(futureCount.rows[0].count) === 0 ? 'ok' : 'future_data',
       totalRecords: parseInt(totalCount.rows[0].count),
@@ -133,6 +141,8 @@ app.get('/diagnose', async (req, res) => {
         endDate: r.end_date,
         dateTime: r.date_time,
       })),
+      users: usersList.rows.map((u: any) => ({ id: u.id, username: u.username, level: u.level, dateTime: u.date_time })),
+      recentShareTokens: recentShareTokens.rows.map((t: any) => ({ id: t.id, userId: t.user_id, username: t.username, createTime: t.create_time, expireTime: t.expire_time, lastUseTime: t.last_use_time })),
     };
   } catch (e: any) {
     result.checks.dataTimeLogic = { status: 'error', message: e.message };
