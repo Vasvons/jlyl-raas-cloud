@@ -217,8 +217,9 @@ export async function generateForTask(task: any): Promise<string> {
 
   // 第一步：补充生成数据（保持待收录池充足）
   // 每次调度生成一小批，确保待收录池不会枯竭
-  const batchSize = Math.max(5, Math.ceil(dailyNum / 48)); // 每次生成约1/48的日量（每3分钟一次，约48次/天）
-  if (todayGenerated < dailyNum && pendingCount < batchSize * 2) {
+  // 每天480次调度（每3分钟一次），每次生成 dailyNum/480 条，一天总生成=dailyNum
+  const batchSize = Math.max(1, Math.ceil(dailyNum / 480));
+  if (todayGenerated < dailyNum && pendingCount < batchSize * 4) {
     const needGenerate = Math.min(batchSize, dailyNum - todayGenerated);
     console.log(`[Scheduler] 任务 ${task.id} 补充生成 ${needGenerate} 条（今日已生成=${todayGenerated}/${dailyNum}, 待收录=${pendingCount}）`);
     await repo.generateBatch({
@@ -249,16 +250,16 @@ export async function generateForTask(task: any): Promise<string> {
   const pendingCount2 = parseInt(pendingResult2.rows[0].count) || 0;
 
   if (currentSlotWeight > 0 && pendingCount2 > 0) {
-    // 每次收录数量 = 基础量 * (当前时段权重 / 平均权重)
-    // 高权重时段收录更多，低权重时段收录更少
+    // 时区权重决定本次收录多少条：权重越高，收录越多
+    // 每个时段应收录总量 = 日总量 * (时段权重 / 总权重)
+    // 每次调度收录量 = 时段总量 / 60（每3小时60次调度，每3分钟一次）
+    // 一天总收录 = sum(各时段收录) = dailyNum
     const totalWeight = validHourWeights.reduce((sum: number, w: any) => sum + w.weight, 0);
-    const avgWeight = totalWeight / validHourWeights.length;
-    const collectRatio = avgWeight > 0 ? currentSlotWeight / avgWeight : 1;
-    // 每次调度收录的数量 = 日总量 / 48(每天48次调度) * 权重比
-    const collectCount = Math.max(1, Math.ceil(dailyNum / 48 * collectRatio));
+    const slotCollectTotal = totalWeight > 0 ? dailyNum * (currentSlotWeight / totalWeight) : dailyNum / 8;
+    const collectCount = Math.max(1, Math.ceil(slotCollectTotal / 60));
 
     const actualCollect = Math.min(collectCount, pendingCount2);
-    console.log(`[Scheduler] 任务 ${task.id} 查询收录 ${actualCollect} 条（时段=${currentSlot}(${currentHour}时), 权重=${currentSlotWeight}, 待收录=${pendingCount2}）`);
+    console.log(`[Scheduler] 任务 ${task.id} 查询收录 ${actualCollect} 条（时段=${currentSlot}(${currentHour}时), 权重=${currentSlotWeight}, 时段应收录=${slotCollectTotal.toFixed(0)}, 待收录=${pendingCount2}）`);
 
     const collected = await repo.collectRecords(task.id, actualCollect);
     console.log(`[Scheduler] 任务 ${task.id} 实际收录 ${collected} 条`);
