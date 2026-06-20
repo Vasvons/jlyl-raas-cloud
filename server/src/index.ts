@@ -87,6 +87,13 @@ app.get('/diagnose', async (req, res) => {
     const pendingCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time IS NULL');
     const futureCount = await query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE query_time > CURRENT_TIMESTAMP');
     const sample = await query('SELECT query_time, create_time FROM keyword_search_rank WHERE query_time IS NOT NULL ORDER BY query_time DESC LIMIT 5');
+    // 任务状态概览
+    const taskStats = await query(
+      `SELECT status, COUNT(*) as count, 
+              string_agg(id::text, ',') as task_ids,
+              MAX(total_num) as max_total
+       FROM task_info GROUP BY status ORDER BY status`
+    );
     result.checks.dataTimeLogic = {
       status: parseInt(futureCount.rows[0].count) === 0 ? 'ok' : 'future_data',
       totalRecords: parseInt(totalCount.rows[0].count),
@@ -94,6 +101,7 @@ app.get('/diagnose', async (req, res) => {
       pendingRecords: parseInt(pendingCount.rows[0].count),
       futureRecords: parseInt(futureCount.rows[0].count),
       sample: sample.rows.map((r: any) => ({ queryTime: r.query_time, createTime: r.create_time })),
+      tasks: taskStats.rows.map((t: any) => ({ status: t.status, count: parseInt(t.count), taskIds: t.task_ids, maxTotal: t.max_total })),
     };
   } catch (e: any) {
     result.checks.dataTimeLogic = { status: 'error', message: e.message };
