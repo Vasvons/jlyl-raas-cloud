@@ -144,20 +144,28 @@ export async function generateForTask(task: any): Promise<string> {
       // 使用本地时间格式化日期，避免 toISOString() 的 UTC 偏移问题
       const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 
-      // 检查该天是否已生成
-      const existing = await query(
+      // 同时检查 daily_random 和 keyword_search_rank 实际记录数
+      // 避免 daily_random 有记录但 keyword_search_rank 实际没数据导致永远跳过的问题
+      const dailyRandomExisting = await query(
         'SELECT id, random_num FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
         [task.id, dateStr]
       );
-      if (existing.rows.length > 0) {
-        continue; // 该天已生成，跳过
+      const actualCountResult = await query(
+        'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time::date = $2::date',
+        [task.id, dateStr]
+      );
+      const actualCount = parseInt(actualCountResult.rows[0].count) || 0;
+
+      if (dailyRandomExisting.rows.length > 0 && actualCount >= dailyNum) {
+        continue; // 该天已生成且实际记录数足够，跳过
       }
 
-      console.log(`[Scheduler] 任务 ${task.id} 补齐 ${dateStr} 的数据，数量 ${dailyNum}`);
+      const needGenerate = dailyNum - actualCount;
+      console.log(`[Scheduler] 任务 ${task.id} 补齐 ${dateStr} 的数据，已有 ${actualCount}，需生成 ${needGenerate}`);
       await repo.generateBatch({
         userId: task.user_id,
         taskId: task.id,
-        count: dailyNum,
+        count: needGenerate,
         weights,
         zlgjcList,
         brandZlgjcList,
@@ -167,35 +175,44 @@ export async function generateForTask(task: any): Promise<string> {
       });
 
       await repo.setDailyRandom(task.id, date, dailyNum);
-      generatedToday += dailyNum;
+      generatedToday += needGenerate;
     }
   }
 
   // 生成今天的数据
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  const todayExisting = await query(
+  const todayDailyRandom = await query(
     'SELECT id, random_num FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
     [task.id, todayStr]
   );
-  if (todayExisting.rows.length === 0) {
-    console.log(`[Scheduler] 任务 ${task.id} 生成今日(${todayStr})数据，数量 ${dailyNum}`);
-    await repo.generateBatch({
-      userId: task.user_id,
-      taskId: task.id,
-      count: dailyNum,
-      weights,
-      zlgjcList,
-      brandZlgjcList,
-      ppList: ppNames,
-      targetDate: today,
-      hourWeights,
-    });
+  const todayActualCountResult = await query(
+    'SELECT COUNT(*) as count FROM keyword_search_rank WHERE task_id = $1 AND query_time::date = $2::date',
+    [task.id, todayStr]
+  );
+  const todayActualCount = parseInt(todayActualCountResult.rows[0].count) || 0;
 
-    await repo.setDailyRandom(task.id, today, dailyNum);
-    generatedToday += dailyNum;
-    console.log(`[Scheduler] 任务 ${task.id} 今日生成 ${dailyNum} 条`);
+  if (todayDailyRandom.rows.length === 0 || todayActualCount < dailyNum) {
+    const needGenerate = Math.max(0, dailyNum - todayActualCount);
+    if (needGenerate > 0) {
+      console.log(`[Scheduler] 任务 ${task.id} 生成今日(${todayStr})数据，已有 ${todayActualCount}，需生成 ${needGenerate}`);
+      await repo.generateBatch({
+        userId: task.user_id,
+        taskId: task.id,
+        count: needGenerate,
+        weights,
+        zlgjcList,
+        brandZlgjcList,
+        ppList: ppNames,
+        targetDate: today,
+        hourWeights,
+      });
+
+      await repo.setDailyRandom(task.id, today, dailyNum);
+      generatedToday += needGenerate;
+      console.log(`[Scheduler] 任务 ${task.id} 今日生成 ${needGenerate} 条`);
+    }
   } else {
-    console.log(`[Scheduler] 任务 ${task.id} 今天(${todayStr})已生成，跳过`);
+    console.log(`[Scheduler] 任务 ${task.id} 今天(${todayStr})已生成 ${todayActualCount} 条，跳过`);
   }
 
   // 检查是否完成
