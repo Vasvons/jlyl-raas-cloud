@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, Popconfirm, message, Modal, Form, Input, InputNumber, Select, DatePicker, Divider, Row, Col, Progress } from 'antd';
-import { PlusOutlined, DeleteOutlined, ReloadOutlined, PauseCircleOutlined, PlayCircleOutlined, EditOutlined, CopyOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, PauseCircleOutlined, PlayCircleOutlined, EditOutlined, CopyOutlined, ThunderboltOutlined, BugOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import api from '@/lib/api';
 
@@ -57,6 +57,10 @@ export default function TaskPage() {
   const [editForm] = Form.useForm();
   const [filterUserId, setFilterUserId] = useState<string>('all');
   const [editingTask, setEditingTask] = useState<TaskItem | null>(null);
+  const [diagnoseVisible, setDiagnoseVisible] = useState(false);
+  const [diagnoseData, setDiagnoseData] = useState<any>(null);
+  const [diagnoseLoading, setDiagnoseLoading] = useState(false);
+  const [triggering, setTriggering] = useState<number | null>(null);
 
   const [newPlatformWeights, setNewPlatformWeights] = useState<{ platform: string; weight: number }[]>([]);
   const [newHourWeights, setNewHourWeights] = useState<{ hourSlot: number; weight: number }[]>([]);
@@ -184,6 +188,42 @@ export default function TaskPage() {
     }
   };
 
+  // 诊断：获取调度器和任务详细状态
+  const fetchDiagnose = async () => {
+    setDiagnoseLoading(true);
+    try {
+      const res = await api.get('/task/diagnose');
+      if (res.data?.code === 200) {
+        setDiagnoseData(res.data.data);
+        setDiagnoseVisible(true);
+      } else {
+        message.error(res.data?.message || '诊断失败');
+      }
+    } catch (e) {
+      message.error('诊断失败，请检查云端连接');
+    } finally {
+      setDiagnoseLoading(false);
+    }
+  };
+
+  // 手动触发单个任务生成
+  const handleTrigger = async (id: number) => {
+    setTriggering(id);
+    try {
+      const res = await api.post(`/task/trigger/${id}`);
+      if (res.data?.code === 200) {
+        message.success('触发成功：' + (res.data?.data?.result || ''));
+        fetchTasks(filterUserId);
+      } else {
+        message.error(res.data?.message || '触发失败');
+      }
+    } catch (e) {
+      message.error('触发失败，请检查云端连接');
+    } finally {
+      setTriggering(null);
+    }
+  };
+
   // 打开编辑弹窗 - 使用 dayjs 转换日期字符串
   const openEdit = (task: TaskItem) => {
     setEditingTask(task);
@@ -288,7 +328,7 @@ export default function TaskPage() {
     },
     { title: '创建时间', dataIndex: 'createTime', width: 180, render: (v: string) => v || '-' },
     {
-      title: '操作', width: 280, fixed: 'right' as const,
+      title: '操作', width: 360, fixed: 'right' as const,
       render: (_: any, record: TaskItem) => (
         <Space wrap>
           {record.status === 'running' && (
@@ -298,6 +338,7 @@ export default function TaskPage() {
             <Button size="small" type="primary" icon={<PlayCircleOutlined />} onClick={() => handleStatusChange(record.id, 'running')}>恢复</Button>
           )}
           <Button size="small" type="primary" ghost icon={<EditOutlined />} onClick={() => openEdit(record)}>编辑</Button>
+          <Button size="small" icon={<ThunderboltOutlined />} loading={triggering === record.id} onClick={() => handleTrigger(record.id)}>触发</Button>
           <Button size="small" icon={<CopyOutlined />} onClick={() => handleCopy(record.id)}>复制</Button>
           <Popconfirm title="确定删除该任务？删除后不可恢复。" okText="确定删除" cancelText="取消" okButtonProps={{ danger: true }} onConfirm={() => handleDelete(record.id)}>
             <Button size="small" danger icon={<DeleteOutlined />}>删除</Button>
@@ -391,6 +432,7 @@ export default function TaskPage() {
             options={[{ value: 'all', label: '全部用户' }, ...users.map((u) => ({ value: String(u.id), label: u.username }))]}
           />
           <Button icon={<ReloadOutlined />} onClick={() => fetchTasks(filterUserId)}>刷新</Button>
+          <Button icon={<BugOutlined />} loading={diagnoseLoading} onClick={fetchDiagnose}>诊断</Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建任务</Button>
         </Space>
       </div>
@@ -498,6 +540,102 @@ export default function TaskPage() {
           <Divider style={{ borderColor: '#1677ff', color: '#1677ff', fontWeight: 600 }}>时区权重</Divider>
           {renderHourWeights(editHourWeights, setEditHourWeights)}
         </Form>
+      </Modal>
+
+      {/* 诊断弹窗 */}
+      <Modal
+        title="任务诊断"
+        open={diagnoseVisible}
+        onCancel={() => setDiagnoseVisible(false)}
+        footer={[<Button key="close" onClick={() => setDiagnoseVisible(false)}>关闭</Button>]}
+        width={900}
+      >
+        {diagnoseData && (
+          <div>
+            <div className="console-tip console-tip-info" style={{ marginBottom: 16 }}>
+              <div><strong>调度器状态</strong></div>
+              <div>时区: {diagnoseData.scheduler.timezone}</div>
+              <div>启动时间: {diagnoseData.scheduler.startedAt}</div>
+              <div>当前服务器时间: {diagnoseData.scheduler.currentTime}</div>
+              <div>最后运行时间: {diagnoseData.scheduler.lastRunTime || '从未运行'}</div>
+              <div>总运行次数: {diagnoseData.scheduler.totalRuns}</div>
+              <div>最后结果: {diagnoseData.scheduler.lastRunResult || '无'}</div>
+            </div>
+
+            <Divider>任务详情</Divider>
+
+            {diagnoseData.tasks.map((task: any) => (
+              <div key={task.id} style={{ marginBottom: 16, padding: 12, border: '1px solid #e8e8e8', borderRadius: 8 }}>
+                <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                  任务 #{task.id} - {task.name || '未命名'} ({task.userName || task.userId})
+                  <Tag color={task.status === 'running' ? 'processing' : 'default'} style={{ marginLeft: 8 }}>
+                    {task.status}
+                  </Tag>
+                  {task.isExpired && <Tag color="error" style={{ marginLeft: 4 }}>已过期</Tag>}
+                </div>
+                <Row gutter={16}>
+                  <Col span={6}>
+                    <div style={{ fontSize: 12, color: '#666' }}>日期范围</div>
+                    <div>{task.startDate} ~ {task.endDate}</div>
+                  </Col>
+                  <Col span={6}>
+                    <div style={{ fontSize: 12, color: '#666' }}>生成总数</div>
+                    <div>{task.totalNum}</div>
+                  </Col>
+                  <Col span={6}>
+                    <div style={{ fontSize: 12, color: '#666' }}>已生成</div>
+                    <div>{task.generatedNum}</div>
+                  </Col>
+                  <Col span={6}>
+                    <div style={{ fontSize: 12, color: '#666' }}>进度</div>
+                    <div>{task.daysElapsed}/{task.totalDays} 天</div>
+                  </Col>
+                </Row>
+                <Row gutter={16} style={{ marginTop: 8 }}>
+                  <Col span={6}>
+                    <div style={{ fontSize: 12, color: '#666' }}>蒸馏关键词库</div>
+                    <div>{task.zlgjcCount} 条 {task.zlgjcCount === 0 && <span style={{ color: '#ff4d4f' }}>(空，无法生成)</span>}</div>
+                  </Col>
+                  <Col span={6}>
+                    <div style={{ fontSize: 12, color: '#666' }}>品牌关键词库</div>
+                    <div>{task.brandZlgjcCount} 条</div>
+                  </Col>
+                  <Col span={6}>
+                    <div style={{ fontSize: 12, color: '#666' }}>平台权重</div>
+                    <div>{task.platformWeights.length} 个平台</div>
+                  </Col>
+                  <Col span={6}>
+                    <div style={{ fontSize: 12, color: '#666' }}>最新记录</div>
+                    <div>{task.latestRecord ? task.latestRecord.create_time : '无'}</div>
+                  </Col>
+                </Row>
+                {task.dailyRandomRecords && task.dailyRandomRecords.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 12, color: '#666' }}>daily_random 记录（最近5条）:</div>
+                    {task.dailyRandomRecords.map((dr: any, i: number) => (
+                      <Tag key={i} style={{ marginTop: 4 }}>{dr.random_date}: {dr.random_num}条</Tag>
+                    ))}
+                  </div>
+                )}
+                {task.platformWeights.length === 0 && (
+                  <div style={{ marginTop: 8, color: '#ff4d4f', fontSize: 12 }}>
+                    ⚠ 没有配置平台权重，调度器会跳过此任务
+                  </div>
+                )}
+                {task.zlgjcCount === 0 && (
+                  <div style={{ marginTop: 8, color: '#ff4d4f', fontSize: 12 }}>
+                    ⚠ 没有蒸馏关键词库，调度器会跳过此任务
+                  </div>
+                )}
+                {task.isExpired && (
+                  <div style={{ marginTop: 8, color: '#ff4d4f', fontSize: 12 }}>
+                    ⚠ 任务已过期（end_date 早于今天），调度器会标记为 completed
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </Modal>
     </div>
   );

@@ -2,9 +2,19 @@ import cron from 'node-cron';
 import { query } from './db';
 import * as repo from './repository';
 
+// 记录调度器运行状态
+let schedulerStatus = {
+  startedAt: new Date(),
+  lastRunTime: null as Date | null,
+  lastRunResult: '' as string,
+  totalRuns: 0,
+  timezone: '',
+};
+
 // 定时任务：每天凌晨 2:00 执行数据生成
 export function startScheduler() {
-  console.log('[Scheduler] 启动定时任务调度器... 当前时区:', Intl.DateTimeFormat().resolvedOptions().timeZone);
+  schedulerStatus.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  console.log('[Scheduler] 启动定时任务调度器... 当前时区:', schedulerStatus.timezone);
 
   // 每天 02:00 执行（北京时间）
   cron.schedule('0 2 * * *', async () => {
@@ -18,7 +28,19 @@ export function startScheduler() {
   });
 }
 
-async function runDailyGeneration() {
+// 获取调度器状态（供诊断接口使用）
+export function getSchedulerStatus() {
+  return {
+    ...schedulerStatus,
+    startedAt: schedulerStatus.startedAt.toISOString(),
+    lastRunTime: schedulerStatus.lastRunTime ? schedulerStatus.lastRunTime.toISOString() : null,
+    currentTime: new Date().toISOString(),
+  };
+}
+
+export async function runDailyGeneration() {
+  schedulerStatus.totalRuns++;
+  schedulerStatus.lastRunTime = new Date();
   try {
     // 获取所有运行中的任务
     const tasks = await query(
@@ -31,7 +53,13 @@ async function runDailyGeneration() {
       const pausedTasks = await query(
         `SELECT * FROM task_info WHERE status = 'paused'`
       );
-      console.log(`[Scheduler] 另有 ${pausedTasks.rows.length} 个已暂停的任务`);
+      const completedTasks = await query(
+        `SELECT * FROM task_info WHERE status = 'completed'`
+      );
+      console.log(`[Scheduler] 另有 ${pausedTasks.rows.length} 个已暂停的任务, ${completedTasks.rows.length} 个已完成的任务`);
+      schedulerStatus.lastRunResult = `无运行中任务（paused:${pausedTasks.rows.length}, completed:${completedTasks.rows.length}）`;
+    } else {
+      schedulerStatus.lastRunResult = `处理 ${tasks.rows.length} 个任务`;
     }
 
     for (const task of tasks.rows) {
@@ -39,32 +67,39 @@ async function runDailyGeneration() {
         await generateForTask(task);
       } catch (e) {
         console.error(`[Scheduler] 任务 ${task.id} 生成失败:`, e);
+        schedulerStatus.lastRunResult += `; 任务${task.id}失败: ${e.message}`;
       }
     }
   } catch (e) {
     console.error('[Scheduler] 每日生成失败:', e);
+    schedulerStatus.lastRunResult = `错误: ${e.message}`;
   }
 }
 
-async function generateForTask(task: any) {
+export async function generateForTask(task: any): Promise<string> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   const endDate = new Date(task.end_date);
   endDate.setHours(0, 0, 0, 0);
 
+  const startDate = new Date(task.start_date);
+  startDate.setHours(0, 0, 0, 0);
+
+  console.log(`[Scheduler] 任务 ${task.id} 诊断: status=${task.status}, start=${task.start_date}, end=${task.end_date}, total=${task.total_num}, user=${task.user_id}, today=${today.toISOString().split('T')[0]}`);
+
   // 检查任务是否已结束
   if (today > endDate) {
     await query('UPDATE task_info SET status = $1 WHERE id = $2', ['completed', task.id]);
-    console.log(`[Scheduler] 任务 ${task.id} 已完成`);
-    return;
+    console.log(`[Scheduler] 任务 ${task.id} 已结束（end_date ${task.end_date} 早于今天），标记为 completed`);
+    return `任务已结束（end_date=${task.end_date}），已标记为completed`;
   }
 
   // 获取任务权重
   const weights = await repo.getTaskWeights(task.id);
   if (weights.length === 0) {
     console.log(`[Scheduler] 任务 ${task.id} 没有配置权重，跳过`);
-    return;
+    return `任务没有配置平台权重，跳过生成`;
   }
 
   // 获取时区权重
@@ -74,8 +109,8 @@ async function generateForTask(task: any) {
   // 获取关键词库（蒸馏关键词 keyword_type=0）
   const zlgjcList = await repo.getZlgjcByUserId(task.user_id, 0);
   if (zlgjcList.length === 0) {
-    console.log(`[Scheduler] 任务 ${task.id} 没有蒸馏关键词库，跳过`);
-    return;
+    console.log(`[Scheduler] 任务 ${task.id} 没有蒸馏关键词库（user_id=${task.user_id}, keyword_type=0），跳过`);
+    return `用户${task.user_id}没有蒸馏关键词库，跳过生成`;
   }
 
   // 获取品牌关键词库（keyword_type=1）
@@ -87,9 +122,6 @@ async function generateForTask(task: any) {
   const ppNames = ppList.map((p: any) => p.pp);
 
   // 计算每日生成数量
-  const startDate = new Date(task.start_date);
-  startDate.setHours(0, 0, 0, 0);
-
   const totalDays = Math.floor((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1;
   const dailyNum = Math.ceil(task.total_num / totalDays);
 
@@ -97,6 +129,10 @@ async function generateForTask(task: any) {
   const generatedNum = await repo.getTaskGeneratedNum(task.id);
   const daysElapsed = Math.floor((today.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000));
   const expectedNum = daysElapsed * dailyNum;
+
+  console.log(`[Scheduler] 任务 ${task.id} 进度: 已生成=${generatedNum}, 预期=${expectedNum}, 每日=${dailyNum}, 总天数=${totalDays}, 已过天数=${daysElapsed}`);
+
+  let generatedToday = 0;
 
   if (generatedNum < expectedNum && daysElapsed > 0) {
     // 需要补齐历史数据：从开始日期到昨天，逐天检查并补齐缺失的天
@@ -110,7 +146,7 @@ async function generateForTask(task: any) {
 
       // 检查该天是否已生成
       const existing = await query(
-        'SELECT id FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
+        'SELECT id, random_num FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
         [task.id, dateStr]
       );
       if (existing.rows.length > 0) {
@@ -131,16 +167,18 @@ async function generateForTask(task: any) {
       });
 
       await repo.setDailyRandom(task.id, date, dailyNum);
+      generatedToday += dailyNum;
     }
   }
 
   // 生成今天的数据
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const todayExisting = await query(
-    'SELECT id FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
+    'SELECT id, random_num FROM daily_random WHERE task_id = $1 AND random_date = $2 AND random_num > 0',
     [task.id, todayStr]
   );
   if (todayExisting.rows.length === 0) {
+    console.log(`[Scheduler] 任务 ${task.id} 生成今日(${todayStr})数据，数量 ${dailyNum}`);
     await repo.generateBatch({
       userId: task.user_id,
       taskId: task.id,
@@ -154,9 +192,10 @@ async function generateForTask(task: any) {
     });
 
     await repo.setDailyRandom(task.id, today, dailyNum);
+    generatedToday += dailyNum;
     console.log(`[Scheduler] 任务 ${task.id} 今日生成 ${dailyNum} 条`);
   } else {
-    console.log(`[Scheduler] 任务 ${task.id} 今天已生成，跳过`);
+    console.log(`[Scheduler] 任务 ${task.id} 今天(${todayStr})已生成，跳过`);
   }
 
   // 检查是否完成
@@ -167,4 +206,6 @@ async function generateForTask(task: any) {
   } else {
     console.log(`[Scheduler] 任务 ${task.id} 总计 ${newGeneratedNum}/${task.total_num}`);
   }
+
+  return `本次生成${generatedToday}条，总进度${newGeneratedNum}/${task.total_num}`;
 }
