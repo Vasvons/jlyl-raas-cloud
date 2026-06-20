@@ -212,7 +212,34 @@ export default function TaskPage() {
     try {
       const res = await api.post(`/task/trigger/${id}`);
       if (res.data?.code === 200) {
-        message.success('触发成功：' + (res.data?.data?.result || ''));
+        const data = res.data?.data;
+        message.success('触发成功：' + (data?.result || ''));
+        // 显示调试信息
+        if (data?.debug) {
+          const hw = data.debug.hourWeights || [];
+          const hwStr = hw.map((w: any) => `slot${w.hour_slot}=${w.weight}`).join(', ');
+          console.log('时区权重配置:', hwStr);
+          console.log('生成样本(query_time vs create_time):', data.debug.sample);
+          // 用 Modal 显示调试信息
+          Modal.info({
+            title: '触发结果详情',
+            width: 600,
+            content: (
+              <div style={{ fontSize: 13 }}>
+                <p><b>生成结果：</b>{data?.result}</p>
+                <p><b>时区权重配置：</b>{hwStr || '无（使用默认分布）'}</p>
+                <p><b>最新20条记录（query_time → create_time）：</b></p>
+                <div style={{ maxHeight: 300, overflow: 'auto', background: '#f5f5f5', padding: 8, borderRadius: 4 }}>
+                  {(data.debug.sample || []).map((s: any, i: number) => (
+                    <div key={i}>
+                      query_time: <b>{s.queryTime}</b> | create_time: {s.createTime}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ),
+          });
+        }
         fetchTasks(filterUserId);
       } else {
         message.error(res.data?.message || '触发失败');

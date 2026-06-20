@@ -353,9 +353,31 @@ router.post('/trigger/:id', authMiddleware, adminMiddleware, async (req, res) =>
     const task = taskResult.rows[0];
     console.log(`[Task] 手动触发任务 ${taskId}`);
 
+    // 触发前获取时区权重配置
+    const hourWeightsBefore = await getTaskHourWeights(taskId);
+
     const result = await generateForTask(task);
 
-    res.json({ code: 200, data: { result }, message: '触发完成' });
+    // 触发后获取最新的 query_time 样本，验证时区权重分布
+    const sampleResult = await query(
+      `SELECT query_time, create_time FROM keyword_search_rank WHERE task_id = $1 ORDER BY create_time DESC LIMIT 20`,
+      [taskId]
+    );
+
+    res.json({
+      code: 200,
+      data: {
+        result,
+        debug: {
+          hourWeights: hourWeightsBefore,
+          sample: sampleResult.rows.map((r: any) => ({
+            queryTime: r.query_time,
+            createTime: r.create_time,
+          })),
+        },
+      },
+      message: '触发完成',
+    });
   } catch (e: any) {
     console.error('[Task] 手动触发失败:', e);
     res.json({ code: 500, message: '触发失败: ' + e.message });
