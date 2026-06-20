@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { migrate } from './migrate';
-import { startScheduler } from './scheduler';
+import { startScheduler, getSchedulerStatus } from './scheduler';
 import authRoutes from './routes/auth';
 import dashboardRoutes from './routes/dashboard';
 import taskRoutes from './routes/task';
@@ -105,6 +105,12 @@ app.get('/diagnose', async (req, res) => {
     };
   } catch (e: any) {
     result.checks.dataTimeLogic = { status: 'error', message: e.message };
+  }
+  // 调度器状态
+  try {
+    result.checks.scheduler = getSchedulerStatus();
+  } catch (e: any) {
+    result.checks.scheduler = { status: 'error', message: e.message };
   }
   res.json(result);
 });
