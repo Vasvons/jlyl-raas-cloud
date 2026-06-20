@@ -178,7 +178,8 @@ router.post('/copy', authMiddleware, adminMiddleware, async (req, res) => {
     if (!taskId) return res.json({ code: 400, message: '缺少 taskId' });
 
     const tasks = await getAllTasks('all');
-    const original = tasks.find((t: any) => t.id === parseInt(taskId));
+    // 注意：PostgreSQL BIGINT 返回的是字符串，需要用 String() 统一类型比较
+    const original = tasks.find((t: any) => String(t.id) === String(taskId));
     if (!original) return res.json({ code: 404, message: '原任务不存在' });
 
     const newId = Date.now();
@@ -204,7 +205,7 @@ router.post('/copy', authMiddleware, adminMiddleware, async (req, res) => {
     }
 
     res.json({ code: 200, data: { id: newId }, message: '复制成功' });
-  } catch (e) {
+  } catch (e: any) {
     console.error('[Task] 复制任务失败:', e);
     res.json({ code: 500, message: '服务器错误' });
   }

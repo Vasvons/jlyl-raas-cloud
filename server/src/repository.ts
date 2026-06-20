@@ -389,13 +389,18 @@ export async function updateTask(id: number, task: any): Promise<void> {
     values.push(task.name);
   }
 
-  if (fields.length === 0) return;
+  if (fields.length === 0) {
+    console.log(`[Repository] updateTask(${id}) 无字段需要更新`);
+    return;
+  }
 
   values.push(id);
-  await query(
-    `UPDATE task_info SET ${fields.join(', ')} WHERE id = $${paramIndex}`,
-    values
-  );
+  const sql = `UPDATE task_info SET ${fields.join(', ')} WHERE id = $${paramIndex}`;
+  console.log(`[Repository] updateTask SQL: ${sql}`);
+  console.log(`[Repository] updateTask values:`, JSON.stringify(values));
+
+  const result = await query(sql, values);
+  console.log(`[Repository] updateTask 影响行数: ${result.rowCount}`);
 }
 
 export async function deleteTask(id: number): Promise<void> {
