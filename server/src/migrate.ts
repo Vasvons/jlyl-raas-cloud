@@ -236,6 +236,20 @@ export async function migrate() {
     // 今日数据：query_time IS NULL 表示尚未被查询展示，由查询展示cron处理（每10分钟）
     // 不再自动设置query_time，保持生成与展示分离
 
+    // 修正未来时间数据：历史补齐时 randomTimeInDate 使用了本地时区 setHours，
+    // 导致北京时间被当作UTC存储，产生未来时间。修正方法：将未来时间减去8小时。
+    const futureFixResult = await client.query(
+      `UPDATE keyword_search_rank
+       SET query_time = query_time - INTERVAL '8 hours',
+           create_time = create_time - INTERVAL '8 hours',
+           update_time = update_time - INTERVAL '8 hours'
+       WHERE query_time > clock_timestamp()
+          OR create_time > clock_timestamp()`
+    );
+    if (futureFixResult.rowCount && futureFixResult.rowCount > 0) {
+      console.log(`[Migrate] 修正 ${futureFixResult.rowCount} 条未来时间数据（减8小时）`);
+    }
+
     // 初始化平台数据
     const ptCount = await client.query('SELECT COUNT(*) as count FROM pt');
     if (parseInt(ptCount.rows[0].count) === 0) {

@@ -569,22 +569,23 @@ function randomTimeInDate(date: Date, hourWeights?: { hour_slot: number; weight:
     const selectedSlot = weightedSlots[Math.floor(Math.random() * weightedSlots.length)];
     const startHour = selectedSlot * 3; // slot 0 -> 0:00, slot 1 -> 3:00, ...
     // 在该时段的3小时内随机生成时间
-    result.setHours(startHour + Math.floor(Math.random() * 3));
-    result.setMinutes(Math.floor(Math.random() * 60));
-    result.setSeconds(Math.floor(Math.random() * 60));
+    // 注意：使用setUTCHours确保写入数据库的是UTC时间，避免本地时区转换导致偏移
+    result.setUTCHours(startHour + Math.floor(Math.random() * 3));
+    result.setUTCMinutes(Math.floor(Math.random() * 60));
+    result.setUTCSeconds(Math.floor(Math.random() * 60));
   } else {
-    // 默认分布：80% 集中在 8:00-24:00
+    // 默认分布：80% 集中在 8:00-24:00（UTC时间）
     const isPeak = Math.random() < 0.8;
     if (isPeak) {
       // 8:00 - 23:59:59
-      result.setHours(8 + Math.floor(Math.random() * 16));
-      result.setMinutes(Math.floor(Math.random() * 60));
-      result.setSeconds(Math.floor(Math.random() * 60));
+      result.setUTCHours(8 + Math.floor(Math.random() * 16));
+      result.setUTCMinutes(Math.floor(Math.random() * 60));
+      result.setUTCSeconds(Math.floor(Math.random() * 60));
     } else {
       // 0:00 - 7:59:59
-      result.setHours(Math.floor(Math.random() * 8));
-      result.setMinutes(Math.floor(Math.random() * 60));
-      result.setSeconds(Math.floor(Math.random() * 60));
+      result.setUTCHours(Math.floor(Math.random() * 8));
+      result.setUTCMinutes(Math.floor(Math.random() * 60));
+      result.setUTCSeconds(Math.floor(Math.random() * 60));
     }
   }
 
