@@ -61,14 +61,30 @@ jobs:
             fi
             echo ">>> 使用命令: $DC"
 
-            echo ">>> 重启数据库容器（确保连接可用）..."
-            $DC restart db
-            sleep 5
+            echo ">>> 停止所有服务..."
+            $DC down
+
+            echo ">>> 启动数据库容器..."
+            $DC up -d db
+
+            echo ">>> 等待数据库健康（最多等待120秒）..."
+            for i in $(seq 1 24); do
+              status=$($DC ps --format json db 2>/dev/null | grep -o '"Health":"healthy"' || echo "")
+              if [ -n "$status" ]; then
+                echo ">>> 数据库已健康"
+                break
+              fi
+              echo "等待数据库启动... ($i/24)"
+              sleep 5
+            done
+
+            echo ">>> 数据库状态:"
+            $DC ps db
 
             echo ">>> 构建 Docker 镜像..."
             $DC build
 
-            echo ">>> 启动服务..."
+            echo ">>> 启动所有服务..."
             $DC up -d
 
             # 等待服务启动
