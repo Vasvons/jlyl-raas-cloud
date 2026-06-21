@@ -23,13 +23,14 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN npm install
+RUN npm run build
+RUN npm prune --omit=dev
 
 # 安装Playwright Chromium
 RUN npx playwright install chromium
 
 COPY . .
-RUN npm run build
 
 ENV WORKER_PORT=3003
 ENV SERVER_URL=http://jlyl-cloud-server:3002
