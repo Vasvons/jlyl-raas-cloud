@@ -207,7 +207,10 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
     genWhere.push(`(k.expanded_keyword ILIKE $${keywordParamIdx} OR k.distillate_keyword ILIKE $${keywordParamIdx})`);
   }
   // 类型过滤
-  if (params.type === 'brand') {
+  if (params.type === 'keywords') {
+    // 关键词搜索：只统计蒸馏关键词（keyword_type=0）
+    genWhere.push(`EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 0)`);
+  } else if (params.type === 'brand') {
     // 品牌搜索：distillate_keyword 在品牌关键词库中（keyword_type=1）
     genWhere.push(`EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 1)`);
   } else if (params.type === 'scene') {
@@ -296,7 +299,10 @@ export async function getKeywordCount(userId: string) {
 export async function getPlatformRatio(userId: string, type?: string) {
   // 构建生成结果的额外WHERE条件
   let genExtraWhere = '';
-  if (type === 'brand') {
+  if (type === 'keywords') {
+    // 关键词搜索：只统计蒸馏关键词（keyword_type=0）
+    genExtraWhere = `AND EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 0)`;
+  } else if (type === 'brand') {
     // 品牌搜索：distillate_keyword 在品牌关键词库中（keyword_type=1）
     genExtraWhere = `AND EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 1)`;
   } else if (type === 'scene') {
