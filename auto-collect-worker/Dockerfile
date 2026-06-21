@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --production
+RUN npm install --omit=dev
 
 # 安装Playwright Chromium
 RUN npx playwright install chromium
