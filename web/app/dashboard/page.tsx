@@ -19,7 +19,7 @@ const PLATFORM_ICONS: Record<string, string> = {
   '通义千问': 'https://static.7asi.com/assets/GeoYy/Frame%20(1).png',
   '百度AI': 'https://static.7asi.com/assets/GeoYy/baiduai.png',
   '纳米': 'https://static.7asi.com/assets/GeoYy/nm.png',
-  '智谱AI': 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPSc0MCcgaGVpZ2h0PSc0MCcgdmlld0JveD0nMCAwIDQwIDQwJz48cmVjdCB3aWR0aD0nNDAnIGhlaWdodD0nNDAnIHJ4PSc4JyBmaWxsPScjM0I1QkZGJy8+PHBhdGggZD0nTTI4IDEySDE0TDE5IDE5TDE0IDI2SDI4JyBzdHJva2U9J3doaXRlJyBzdHJva2Utd2lkdGg9JzMuNScgc3Ryb2tlLWxpbmVjYXA9J3JvdW5kJyBzdHJva2UtbGluZWpvaW49J3JvdW5kJyBmaWxsPSdub25lJy8+PC9zdmc+',
+  '智谱AI': "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='40'%20height='40'%20viewBox='0%200%2040%2040'%3E%3Crect%20width='40'%20height='40'%20rx='8'%20fill='%233B5BFF'/%3E%3Cpath%20d='M28%2012H14L19%2019L14%2026H28'%20stroke='white'%20stroke-width='3.5'%20stroke-linecap='round'%20stroke-linejoin='round'%20fill='none'/%3E%3C/svg%3E",
 };
 
 interface StatsData {
@@ -301,7 +301,7 @@ function KeywordRankChart({ isMobile, userId }: { isMobile: boolean; userId: str
           <div className={styles.gIcon}>
             <img src={`${IMG}/Iconly_Glass_Activity.png`} alt="" />
           </div>
-          <div className={styles.krTitle}>核心关键词排名</div>
+          <div className={styles.krTitle}>核心关键词热度排名</div>
         </div>
       }
       className={`${styles.gCard} ${styles.krWrapper} ${isMobile ? styles.krMobile : styles.krPc}`}
@@ -439,7 +439,7 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
       return;
     }
     const params: Record<string, string> = { userId };
-    const res = await api.get('/keywordsearchrank/platformRatio', { params });
+    const res = await api.get('/keywordsearchrank/platformRatio', { params: { ...params, type: searchType } });
     if (res.data?.code === 200) {
       setPlatforms(res.data.data || []);
       setActivePlatform(res.data.data?.[0]);
@@ -456,9 +456,27 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  const handleSearchTypeChange = (v: string) => {
+  const handleSearchTypeChange = async (v: string) => {
     setSearchType(v);
     setPage({ current: 1, pageSize: page.pageSize });
+    // 重新获取平台数量（按类型过滤）
+    if (userId) {
+      try {
+        const res = await api.get('/keywordsearchrank/platformRatio', { params: { userId, type: v } });
+        if (res.data?.code === 200) {
+          const newPlatforms = res.data.data || [];
+          setPlatforms(newPlatforms);
+          // 保持当前选中平台，如果新列表中没有则选第一个
+          const stillExists = newPlatforms.find((p: PlatformRatioItem) => p.platform === activePlatform?.platform);
+          const newActive = stillExists || newPlatforms[0];
+          setActivePlatform(newActive);
+          fetchData(v, newActive?.platform, keyword, 1, page.pageSize);
+          return;
+        }
+      } catch {
+        // 忽略错误，降级为不更新平台数量
+      }
+    }
     fetchData(v, activePlatform?.platform, keyword, 1, page.pageSize);
   };
 
@@ -668,6 +686,7 @@ export default function DashboardPage() {
   const [shareModalVisible, setShareModalVisible] = useState(false);
   const [shareLoading, setShareLoading] = useState(false);
   const [shareUrl, setShareUrl] = useState('');
+  const [shareCustomTitle, setShareCustomTitle] = useState('');
   const [shareTokens, setShareTokens] = useState<Array<{ token: string; createTime: string; lastUseTime: string | null }>>([]);
   // 云端配置状态
   const [cloudConfigError, setCloudConfigError] = useState<string>('');
@@ -703,6 +722,11 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
+    // 如果是通过分享链接进入，恢复自定义浏览器标题
+    const shareCustomTitle = localStorage.getItem('shareCustomTitle');
+    if (shareCustomTitle) {
+      document.title = shareCustomTitle;
+    }
     const fetchUser = async () => {
       try {
         const res = await api.get('/users/getLoginUser');
@@ -790,6 +814,9 @@ export default function DashboardPage() {
       if (isAdmin && selectedUserId) {
         body.userId = selectedUserId;
       }
+      if (shareCustomTitle.trim()) {
+        body.customTitle = shareCustomTitle.trim();
+      }
       const res = await api.post('/users/generateShareToken', body);
       if (res.data?.code === 200 && res.data.data?.shareToken) {
         // 将用户名直接以中文形式加入分享链接（不使用encodeURIComponent，便于用户直观看到用户名）
@@ -871,6 +898,7 @@ export default function DashboardPage() {
   const onOpenShareModal = () => {
     setShareModalVisible(true);
     setShareUrl('');
+    setShareCustomTitle('');
     loadShareTokens();
   };
 
@@ -1017,6 +1045,18 @@ export default function DashboardPage() {
         width={isMobile ? '90%' : 560}
       >
         <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 13, color: '#666', marginBottom: 6 }}>自定义报告标题（可选）：</div>
+            <Input
+              placeholder="如：川务财税-GEO报告"
+              value={shareCustomTitle}
+              onChange={(e) => setShareCustomTitle(e.target.value)}
+              maxLength={50}
+            />
+            <div style={{ marginTop: 4, fontSize: 11, color: '#999' }}>
+              设置后，分享链接打开后浏览器顶部将显示此标题，留空则默认显示"聚量引力 RaaS - GEO报告"。
+            </div>
+          </div>
           <Button
             type="primary"
             onClick={onGenerateShare}

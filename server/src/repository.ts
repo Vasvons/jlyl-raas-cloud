@@ -292,12 +292,35 @@ export async function getKeywordCount(userId: string) {
   return result.rows[0];
 }
 
-// 获取平台占比（只统计已收录的）
-export async function getPlatformRatio(userId: string) {
+// 获取平台占比（只统计已收录的，支持按类型过滤）
+export async function getPlatformRatio(userId: string, type?: string) {
+  // 构建生成结果的额外WHERE条件
+  let genExtraWhere = '';
+  if (type === 'brand') {
+    // 品牌搜索：distillate_keyword 在品牌关键词库中（keyword_type=1）
+    genExtraWhere = `AND EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 1)`;
+  } else if (type === 'scene') {
+    // 联系方式：has_lxfs = 1
+    genExtraWhere = `AND EXISTS (SELECT 1 FROM zlgjc z2 INNER JOIN zlgjcurl u2 ON z2.id = u2.zlgjcid WHERE z2.value = k.distillate_keyword AND z2.userid = k.user_id AND u2.has_lxfs = 1 AND u2.pt = k.platform)`;
+  }
+
+  // 真实结果的额外WHERE条件（品牌搜索和联系方式都统计has_contact或brand_matched）
+  let realExtraWhere = '';
+  if (type === 'scene') {
+    // 联系方式：只统计有联系方式的
+    realExtraWhere = `AND rcr.has_contact = true`;
+  }
+
   const result = await query(
-    `SELECT p.pt, COUNT(k.id) as count
+    `SELECT p.pt, COUNT(c.platform) as count
      FROM pt p
-     LEFT JOIN keyword_search_rank k ON k.platform = p.pt AND k.user_id = $1 AND k.query_time IS NOT NULL
+     LEFT JOIN (
+       SELECT rcr.platform FROM real_collect_record rcr
+       WHERE rcr.user_id = $1 AND rcr.brand_matched = true ${realExtraWhere}
+       UNION ALL
+       SELECT k.platform FROM keyword_search_rank k
+       WHERE k.user_id = $1 AND k.query_time IS NOT NULL ${genExtraWhere}
+     ) c ON c.platform = p.pt
      GROUP BY p.pt
      ORDER BY CASE p.pt
        WHEN '豆包' THEN 1 WHEN 'DeepSeek' THEN 2 WHEN '腾讯元宝' THEN 3

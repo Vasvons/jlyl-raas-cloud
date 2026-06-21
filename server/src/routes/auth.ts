@@ -241,9 +241,10 @@ router.post('/generateShareToken', authMiddleware, async (req, res) => {
     expireTime.setDate(expireTime.getDate() + 365);
 
     // 存入数据库（每个用户只保留最新的5个分享token，避免过多）
+    const customTitle = (req.body.customTitle || '').toString().slice(0, 200);
     await query(
-      `INSERT INTO share_tokens (token, user_id, username, expire_time) VALUES ($1, $2, $3, $4)`,
-      [shareToken, targetUserId, targetUsername, expireTime]
+      `INSERT INTO share_tokens (token, user_id, username, expire_time, custom_title) VALUES ($1, $2, $3, $4, $5)`,
+      [shareToken, targetUserId, targetUsername, expireTime, customTitle]
     );
 
     // 清理该用户的旧token（只保留最新5个）
@@ -282,7 +283,7 @@ router.get('/verifyShareToken', async (req, res) => {
 
     // 查询分享token
     const tokenResult = await query(
-      `SELECT id, user_id, username, create_time, expire_time FROM share_tokens WHERE token = $1`,
+      `SELECT id, user_id, username, create_time, expire_time, custom_title FROM share_tokens WHERE token = $1`,
       [shareToken]
     );
 
@@ -323,6 +324,7 @@ router.get('/verifyShareToken', async (req, res) => {
       message: '登录成功',
       data: {
         token: loginToken,
+        customTitle: tokenData.custom_title || '',
         userInfo: {
           id: user.id,
           username: user.username,

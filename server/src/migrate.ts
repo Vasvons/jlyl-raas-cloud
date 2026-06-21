@@ -230,6 +230,13 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_token ON share_tokens(token)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_share_user ON share_tokens(user_id)`);
 
+    // 增量迁移：为 share_tokens 表添加 custom_title 列（自定义分享链接标题）
+    try {
+      await client.query(`ALTER TABLE share_tokens ADD COLUMN IF NOT EXISTS custom_title VARCHAR(200) DEFAULT ''`);
+    } catch (e) {
+      // 列已存在则忽略
+    }
+
     // 修正已有数据的时间逻辑
     // 新设计：生成（=收录）create_time=NOW(), query_time=NULL；查询展示 query_time=NOW()
     // 历史数据（create_time 在今天之前）：query_time 应已设置（历史已展示），无需修正

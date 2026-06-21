@@ -40,6 +40,14 @@ export default function ShareClient({ token: propToken }: { token: string }) {
           localStorage.setItem('userInfo', JSON.stringify(res.data.data.userInfo));
           // 标记为通过分享链接登录（可选，用于UI提示）
           localStorage.setItem('shareLogin', '1');
+          // 设置自定义浏览器标题
+          const customTitle = res.data.data.customTitle;
+          if (customTitle) {
+            localStorage.setItem('shareCustomTitle', customTitle);
+            document.title = customTitle;
+          } else {
+            localStorage.removeItem('shareCustomTitle');
+          }
           const displayName = res.data.data.userInfo?.username || urlUsername;
           message.success(displayName ? `${displayName} 的GEO报告加载成功，正在跳转...` : '登录成功，正在跳转...');
           // 跳转到 dashboard

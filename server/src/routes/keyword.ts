@@ -263,7 +263,8 @@ router.get('/keywordsearchrank/platformRatio', async (req, res) => {
     const userId = req.query.userId as string;
     if (!userId) return res.json({ code: 400, message: '缺少userId' });
 
-    const data = await getPlatformRatio(userId);
+    const type = req.query.type as string | undefined;
+    const data = await getPlatformRatio(userId, type);
     res.json({
       code: 200,
       data: data.map((item: any) => ({
