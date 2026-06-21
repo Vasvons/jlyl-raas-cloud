@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY package*.json ./
+COPY tsconfig.json ./
 RUN npm install
 RUN npm run build
 RUN npm prune --omit=dev
