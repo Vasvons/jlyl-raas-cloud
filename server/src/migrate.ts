@@ -271,6 +271,88 @@ export async function migrate() {
       console.log('[Migrate] 已创建管理员账号:', process.env.ADMIN_USERNAME || 'admin');
     }
 
+    // ===== 真实收录查询功能相关表 =====
+
+    // 真实查询任务表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS real_collect_task (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        task_name VARCHAR(100) NOT NULL,
+        keyword_type SMALLINT NOT NULL,
+        platforms TEXT[] NOT NULL,
+        cron_expr VARCHAR(50) NOT NULL,
+        status VARCHAR(20) DEFAULT 'active',
+        last_run_time TIMESTAMP,
+        last_run_end_time TIMESTAMP,
+        last_run_status VARCHAR(20),
+        last_run_record_count INTEGER DEFAULT 0,
+        last_run_brand_count INTEGER DEFAULT 0,
+        last_error TEXT,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rct_user ON real_collect_task(user_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rct_status ON real_collect_task(status)`);
+
+    // 真实查询结果表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS real_collect_record (
+        id BIGSERIAL PRIMARY KEY,
+        task_id BIGINT NOT NULL,
+        user_id TEXT NOT NULL,
+        keyword TEXT NOT NULL,
+        keyword_type SMALLINT NOT NULL,
+        platform VARCHAR(50) NOT NULL,
+        brand_matched BOOLEAN DEFAULT FALSE,
+        matched_brands TEXT[],
+        has_contact BOOLEAN DEFAULT FALSE,
+        contacts JSONB,
+        share_url TEXT,
+        static_page_id BIGINT,
+        raw_content TEXT,
+        query_time TIMESTAMP NOT NULL,
+        worker_id VARCHAR(50),
+        retry_count INTEGER DEFAULT 0,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_rct_task FOREIGN KEY (task_id) REFERENCES real_collect_task(id) ON DELETE CASCADE
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_user_platform ON real_collect_record(user_id, platform)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_query_time ON real_collect_record(query_time DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_brand_matched ON real_collect_record(brand_matched) WHERE brand_matched = true`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_task ON real_collect_record(task_id)`);
+
+    // 静态页存储表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS real_collect_static_page (
+        id BIGSERIAL PRIMARY KEY,
+        record_id BIGINT NOT NULL,
+        html_content TEXT NOT NULL,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_rsp_record FOREIGN KEY (record_id) REFERENCES real_collect_record(id) ON DELETE CASCADE
+      )
+    `);
+
+    // 平台凭据表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS platform_credentials (
+        id SERIAL PRIMARY KEY,
+        platform VARCHAR(50) NOT NULL UNIQUE,
+        username VARCHAR(100),
+        password VARCHAR(200),
+        cookies JSONB,
+        cookie_expire_time TIMESTAMP,
+        login_status VARCHAR(20) DEFAULT 'unknown',
+        last_login_time TIMESTAMP,
+        last_error TEXT,
+        update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    console.log('[Migrate] 真实收录查询相关表创建/验证完成');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

@@ -159,51 +159,121 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
   const pageSize = params.pageSize || 20;
   const offset = (page - 1) * pageSize;
 
-  let where = ['k.user_id = $1', 'k.query_time IS NOT NULL'];
-  let args: any[] = [params.userId];
-  let argIdx = 2;
+  // ============ 构建统一参数数组 ============
+  // 真实结果与生成结果共享 userId / platform 参数（PostgreSQL 允许同一 $N 多次引用）
+  const hasPlatform = !!(params.platform && params.platform !== '全部');
+  const hasKeyword = !!params.keyword;
 
-  if (params.platform && params.platform !== '全部') {
-    where.push(`k.platform = $${argIdx++}`);
+  const args: any[] = [params.userId]; // $1 = userId
+  let argIdx = 1;
+
+  // $2 = platform（如果存在，真实结果和生成结果共用）
+  let platformParamIdx = 0;
+  if (hasPlatform) {
+    argIdx++;
+    platformParamIdx = argIdx;
     args.push(params.platform);
   }
 
-  if (params.keyword) {
-    where.push(`(k.expanded_keyword ILIKE $${argIdx} OR k.distillate_keyword ILIKE $${argIdx})`);
-    args.push(`%${params.keyword}%`);
+  // $3 = keyword（如果存在，仅生成结果使用）
+  let keywordParamIdx = 0;
+  if (hasKeyword) {
     argIdx++;
+    keywordParamIdx = argIdx;
+    args.push(`%${params.keyword}%`);
   }
 
+  // LIMIT / OFFSET 参数（放在最后，用于外层包装查询）
+  argIdx++;
+  const limitParamIdx = argIdx;
+  args.push(pageSize);
+  argIdx++;
+  const offsetParamIdx = argIdx;
+  args.push(offset);
+
+  // ============ 真实结果 WHERE 条件 ============
+  const realWhere = [`rcr.user_id = $1`, 'rcr.brand_matched = true'];
+  if (hasPlatform) {
+    realWhere.push(`rcr.platform = $${platformParamIdx}`);
+  }
+  const realWhereClause = realWhere.join(' AND ');
+
+  // ============ 生成结果 WHERE 条件（保持原逻辑完全不变）============
+  const genWhere = [`k.user_id = $1`, 'k.query_time IS NOT NULL'];
+  if (hasPlatform) {
+    genWhere.push(`k.platform = $${platformParamIdx}`);
+  }
+  if (hasKeyword) {
+    genWhere.push(`(k.expanded_keyword ILIKE $${keywordParamIdx} OR k.distillate_keyword ILIKE $${keywordParamIdx})`);
+  }
   // 类型过滤
   if (params.type === 'brand') {
     // 品牌搜索：distillate_keyword 在品牌关键词库中（keyword_type=1）
-    where.push(`EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 1)`);
+    genWhere.push(`EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 1)`);
   } else if (params.type === 'scene') {
     // 联系方式：has_lxfs = 1
-    where.push(`EXISTS (SELECT 1 FROM zlgjc z2 INNER JOIN zlgjcurl u2 ON z2.id = u2.zlgjcid WHERE z2.value = k.distillate_keyword AND z2.userid = k.user_id AND u2.has_lxfs = 1 AND u2.pt = k.platform)`);
+    genWhere.push(`EXISTS (SELECT 1 FROM zlgjc z2 INNER JOIN zlgjcurl u2 ON z2.id = u2.zlgjcid WHERE z2.value = k.distillate_keyword AND z2.userid = k.user_id AND u2.has_lxfs = 1 AND u2.pt = k.platform)`);
   }
+  const genWhereClause = genWhere.join(' AND ');
 
-  const whereClause = where.join(' AND ');
-
-  // 查询总数
+  // ============ 查询总数（包含真实结果 + 生成结果）============
+  // 排除末尾的 LIMIT/OFFSET 参数
+  const countArgs = args.slice(0, -2);
   const countResult = await query(
-    `SELECT COUNT(*) as total FROM keyword_search_rank k WHERE ${whereClause}`,
-    args
+    `SELECT COUNT(*) as total FROM (
+       SELECT 1 FROM real_collect_record rcr WHERE ${realWhereClause}
+       UNION ALL
+       SELECT 1 FROM keyword_search_rank k WHERE ${genWhereClause}
+     ) combined`,
+    countArgs
   );
   const total = parseInt(countResult.rows[0].total);
 
-  // 查询列表
+  // ============ 查询列表（真实结果置顶，UNION ALL 连接）============
   const listResult = await query(
-    `SELECT k.id, k.expanded_keyword, k.distillate_keyword, k.platform, k.user_id,
-            k.query_time, k.url, k.create_time,
-            u.url as zlgjc_url, u.has_lxfs
-     FROM keyword_search_rank k
-     LEFT JOIN zlgjc z ON z.value = k.distillate_keyword AND z.userid = k.user_id
-     LEFT JOIN zlgjcurl u ON u.zlgjcid = z.id AND u.pt = k.platform
-     WHERE ${whereClause}
-     ORDER BY k.query_time DESC, k.create_time DESC
-     LIMIT $${argIdx++} OFFSET $${argIdx++}`,
-    [...args, pageSize, offset]
+    `SELECT * FROM (
+       -- 真实查询结果（置顶展示）
+       SELECT
+         rcr.id,
+         rcr.keyword AS expanded_keyword,
+         rcr.keyword AS distillate_keyword,
+         rcr.platform,
+         rcr.user_id,
+         rcr.query_time,
+         COALESCE(rcr.share_url, '/api/real-collect/results/' || rcr.id || '/page') AS url,
+         rcr.create_time,
+         NULL::text AS zlgjc_url,
+         CASE WHEN rcr.has_contact THEN 1 ELSE 0 END AS has_lxfs,
+         'real' AS source
+       FROM real_collect_record rcr
+       WHERE ${realWhereClause}
+
+       UNION ALL
+
+       -- 生成结果（保持原逻辑不变）
+       SELECT
+         k.id,
+         k.expanded_keyword,
+         k.distillate_keyword,
+         k.platform,
+         k.user_id,
+         k.query_time,
+         k.url,
+         k.create_time,
+         u.url AS zlgjc_url,
+         u.has_lxfs,
+         'generated' AS source
+       FROM keyword_search_rank k
+       LEFT JOIN zlgjc z ON z.value = k.distillate_keyword AND z.userid = k.user_id
+       LEFT JOIN zlgjcurl u ON u.zlgjcid = z.id AND u.pt = k.platform
+       WHERE ${genWhereClause}
+     ) combined
+     ORDER BY
+       CASE WHEN source = 'real' THEN 0 ELSE 1 END,
+       query_time DESC,
+       create_time DESC
+     LIMIT $${limitParamIdx} OFFSET $${offsetParamIdx}`,
+    args
   );
 
   return { list: listResult.rows, total, page, pageSize };
@@ -1388,4 +1458,232 @@ export async function bulkImportData(data: {
   });
 
   return counts;
+}
+
+// ===== 真实收录查询相关 =====
+
+/** 创建真实查询任务 */
+export async function createRealCollectTask(params: {
+  userId: string;
+  taskName: string;
+  keywordType: number;
+  platforms: string[];
+  cronExpr: string;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status)
+     VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
+    [params.userId, params.taskName, params.keywordType, params.platforms, params.cronExpr]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新真实查询任务 */
+export async function updateRealCollectTask(id: number, params: {
+  taskName?: string;
+  keywordType?: number;
+  platforms?: string[];
+  cronExpr?: string;
+  status?: string;
+}): Promise<void> {
+  const sets: string[] = [];
+  const values: any[] = [id];
+  let paramIdx = 2;
+  if (params.taskName !== undefined) { sets.push(`task_name = $${paramIdx++}`); values.push(params.taskName); }
+  if (params.keywordType !== undefined) { sets.push(`keyword_type = $${paramIdx++}`); values.push(params.keywordType); }
+  if (params.platforms !== undefined) { sets.push(`platforms = $${paramIdx++}`); values.push(params.platforms); }
+  if (params.cronExpr !== undefined) { sets.push(`cron_expr = $${paramIdx++}`); values.push(params.cronExpr); }
+  if (params.status !== undefined) { sets.push(`status = $${paramIdx++}`); values.push(params.status); }
+  sets.push(`update_time = CURRENT_TIMESTAMP`);
+  await query(`UPDATE real_collect_task SET ${sets.join(', ')} WHERE id = $1`, values);
+}
+
+/** 删除真实查询任务(软删除) */
+export async function deleteRealCollectTask(id: number): Promise<void> {
+  await query(`UPDATE real_collect_task SET status = 'deleted' WHERE id = $1`, [id]);
+}
+
+/** 获取真实查询任务列表 */
+export async function getRealCollectTasks(userId?: string): Promise<any[]> {
+  const sql = `SELECT * FROM real_collect_task WHERE status != 'deleted' ${userId ? 'AND user_id = $1' : ''} ORDER BY create_time DESC`;
+  const result = await query(sql, userId ? [userId] : []);
+  return result.rows;
+}
+
+/** 获取单个真实查询任务 */
+export async function getRealCollectTaskById(id: number): Promise<any | null> {
+  const result = await query(`SELECT * FROM real_collect_task WHERE id = $1`, [id]);
+  return result.rows[0] || null;
+}
+
+/** 更新任务执行状态 */
+export async function updateTaskRunStatus(id: number, params: {
+  status: string;
+  recordCount?: number;
+  brandCount?: number;
+  error?: string;
+  endTime?: Date;
+}): Promise<void> {
+  const sets: string[] = [`last_run_status = $2`];
+  const values: any[] = [id, params.status];
+  let paramIdx = 3;
+  if (params.recordCount !== undefined) { sets.push(`last_run_record_count = $${paramIdx++}`); values.push(params.recordCount); }
+  if (params.brandCount !== undefined) { sets.push(`last_run_brand_count = $${paramIdx++}`); values.push(params.brandCount); }
+  if (params.error !== undefined) { sets.push(`last_error = $${paramIdx++}`); values.push(params.error); }
+  if (params.endTime !== undefined) { sets.push(`last_run_end_time = $${paramIdx++}`); values.push(params.endTime); }
+  await query(`UPDATE real_collect_task SET ${sets.join(', ')} WHERE id = $1`, values);
+}
+
+/** 插入真实查询结果 */
+export async function insertRealCollectRecord(params: {
+  taskId: number;
+  userId: string;
+  keyword: string;
+  keywordType: number;
+  platform: string;
+  brandMatched: boolean;
+  matchedBrands: string[];
+  hasContact: boolean;
+  contacts: any;
+  shareUrl: string | null;
+  staticPageId: number | null;
+  rawContent: string;
+  queryTime: Date;
+  workerId: string;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO real_collect_record 
+     (task_id, user_id, keyword, keyword_type, platform, brand_matched, matched_brands, 
+      has_contact, contacts, share_url, static_page_id, raw_content, query_time, worker_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+    [params.taskId, params.userId, params.keyword, params.keywordType, params.platform,
+     params.brandMatched, params.matchedBrands, params.hasContact, JSON.stringify(params.contacts),
+     params.shareUrl, params.staticPageId, params.rawContent, params.queryTime, params.workerId]
+  );
+  return result.rows[0].id;
+}
+
+/** 插入静态页 */
+export async function insertStaticPage(recordId: number, htmlContent: string): Promise<number> {
+  const result = await query(
+    `INSERT INTO real_collect_static_page (record_id, html_content) VALUES ($1, $2) RETURNING id`,
+    [recordId, htmlContent]
+  );
+  return result.rows[0].id;
+}
+
+/** 获取静态页内容 */
+export async function getStaticPageByRecordId(recordId: number): Promise<string | null> {
+  const result = await query(
+    `SELECT html_content FROM real_collect_static_page WHERE record_id = $1`,
+    [recordId]
+  );
+  return result.rows[0]?.html_content || null;
+}
+
+/** 更新记录的static_page_id */
+export async function updateRecordStaticPageId(recordId: number, staticPageId: number): Promise<void> {
+  await query(`UPDATE real_collect_record SET static_page_id = $1 WHERE id = $2`, [staticPageId, recordId]);
+}
+
+/** 查询真实结果列表(分页) */
+export async function getRealCollectRecords(params: {
+  userId?: string;
+  platform?: string;
+  keywordType?: number;
+  pageNum: number;
+  pageSize: number;
+  startTime?: Date;
+  endTime?: Date;
+}): Promise<{ list: any[]; total: number }> {
+  const conditions: string[] = [];
+  const values: any[] = [];
+  let paramIdx = 1;
+
+  if (params.userId) { conditions.push(`user_id = $${paramIdx++}`); values.push(params.userId); }
+  if (params.platform) { conditions.push(`platform = $${paramIdx++}`); values.push(params.platform); }
+  if (params.keywordType !== undefined) { conditions.push(`keyword_type = $${paramIdx++}`); values.push(params.keywordType); }
+  if (params.startTime) { conditions.push(`query_time >= $${paramIdx++}`); values.push(params.startTime); }
+  if (params.endTime) { conditions.push(`query_time <= $${paramIdx++}`); values.push(params.endTime); }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const countResult = await query(`SELECT COUNT(*) as total FROM real_collect_record ${whereClause}`, values);
+  const total = parseInt(countResult.rows[0].total);
+
+  const offset = (params.pageNum - 1) * params.pageSize;
+  const limitIdx = paramIdx++;
+  const offsetIdx = paramIdx++;
+  values.push(params.pageSize);
+  values.push(offset);
+
+  const listResult = await query(
+    `SELECT * FROM real_collect_record ${whereClause} ORDER BY query_time DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+    values
+  );
+
+  return { list: listResult.rows, total };
+}
+
+/** 获取GEO报告中的真实结果(品牌词匹配成功的) */
+export async function getRealCollectRecordsForDashboard(params: {
+  userId: string;
+  platform?: string;
+  limit: number;
+}): Promise<any[]> {
+  const values: any[] = [params.userId];
+  let platformCondition = '';
+  if (params.platform) {
+    values.push(params.platform);
+    platformCondition = `AND platform = $2`;
+  }
+  const limitParam = params.platform ? '$3' : '$2';
+  values.push(params.limit);
+
+  const result = await query(
+    `SELECT id, keyword, keyword_type, platform, matched_brands, has_contact, contacts,
+            share_url, static_page_id, query_time
+     FROM real_collect_record 
+     WHERE user_id = $1 AND brand_matched = true ${platformCondition}
+     ORDER BY query_time DESC LIMIT ${limitParam}`,
+    values
+  );
+  return result.rows;
+}
+
+/** 获取单个真实结果详情 */
+export async function getRealCollectRecordById(id: number): Promise<any | null> {
+  const result = await query(`SELECT * FROM real_collect_record WHERE id = $1`, [id]);
+  return result.rows[0] || null;
+}
+
+/** 删除真实结果 */
+export async function deleteRealCollectRecord(id: number): Promise<void> {
+  await query(`DELETE FROM real_collect_record WHERE id = $1`, [id]);
+}
+
+/** 获取所有active的真实查询任务 */
+export async function getDueRealCollectTasks(): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM real_collect_task WHERE status = 'active' ORDER BY id`
+  );
+  return result.rows;
+}
+
+/** 获取用户的品牌词库 */
+export async function getBrandKeywords(userId: string): Promise<string[]> {
+  const result = await query(
+    `SELECT value FROM zlgjc WHERE userid = $1 AND keyword_type = 1`,
+    [userId]
+  );
+  return result.rows.map((r: any) => r.value);
+}
+
+/** 获取用户的蒸馏词库 */
+export async function getDistillateKeywords(userId: string): Promise<string[]> {
+  const result = await query(
+    `SELECT value FROM zlgjc WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL)`,
+    [userId]
+  );
+  return result.rows.map((r: any) => r.value);
 }

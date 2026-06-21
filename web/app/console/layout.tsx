@@ -14,8 +14,8 @@ import './console.css';
 const MENU_ITEMS = [
   { key: '/console/users', label: '用户管理', icon: <UserOutlined /> },
   { key: '/console/keywords', label: '关键词配置', icon: <KeyOutlined /> },
-  { key: '/console/keywordsmaintain', label: '收录跳转维护', icon: <LinkOutlined /> },
-  { key: '/console/task', label: '数据生成任务', icon: <ScheduleOutlined /> },
+  { key: '/console/keywordsmaintain', label: '收录结果', icon: <LinkOutlined /> },
+  { key: '/console/task', label: '收录查询', icon: <ScheduleOutlined /> },
   { key: '/console/monitor', label: '数据监测', icon: <DashboardOutlined /> },
 ];
 

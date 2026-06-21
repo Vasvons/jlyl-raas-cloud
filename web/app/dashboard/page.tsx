@@ -792,9 +792,9 @@ export default function DashboardPage() {
       }
       const res = await api.post('/users/generateShareToken', body);
       if (res.data?.code === 200 && res.data.data?.shareToken) {
-        // 将用户名加入分享链接作为query参数，便于在分享页面显示
+        // 将用户名直接以中文形式加入分享链接（不使用encodeURIComponent，便于用户直观看到用户名）
         const username = res.data.data.username || '';
-        const url = `${window.location.origin}/share/${res.data.data.shareToken}${username ? `?u=${encodeURIComponent(username)}` : ''}`;
+        const url = `${window.location.origin}/share/${res.data.data.shareToken}${username ? `?u=${username}` : ''}`;
         setShareUrl(url);
         message.success('分享链接生成成功');
         // 刷新分享链接列表

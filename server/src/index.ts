@@ -8,6 +8,9 @@ import dashboardRoutes from './routes/dashboard';
 import taskRoutes from './routes/task';
 import keywordRoutes from './routes/keyword';
 import monitorRoutes from './routes/monitor';
+import realCollectTaskRoutes from './routes/realCollectTask';
+import realCollectResultRoutes from './routes/realCollectResult';
+import { startRealCollectScheduler } from './services/realCollect/scheduler';
 
 dotenv.config();
 
@@ -194,6 +197,8 @@ app.use('/dashboard', dashboardRoutes);
 app.use('/task', taskRoutes);
 app.use('/monitor', monitorRoutes);
 app.use('/', keywordRoutes);
+app.use('/real-collect/tasks', realCollectTaskRoutes);
+app.use('/real-collect/results', realCollectResultRoutes);
 
 // 错误处理
 app.use((err: any, req: any, res: any, next: any) => {
@@ -209,6 +214,9 @@ async function start() {
 
     // 启动定时任务
     startScheduler();
+
+    // 启动真实收录查询定时调度器
+    startRealCollectScheduler();
 
     // 启动HTTP服务
     app.listen(PORT, '0.0.0.0', () => {

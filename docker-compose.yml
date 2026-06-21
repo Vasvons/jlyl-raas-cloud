@@ -80,6 +80,24 @@ services:
     networks:
       - jlyl-cloud-network
 
+  # 自动收录查询Worker服务
+  auto-collect-worker:
+    build:
+      context: ./auto-collect-worker
+      dockerfile: Dockerfile
+    container_name: jlyl-cloud-worker
+    restart: always
+    depends_on:
+      - server
+    environment:
+      WORKER_PORT: 3003
+      SERVER_URL: http://server:3002
+    ports:
+      - "127.0.0.1:3003:3003"
+    mem_limit: 1g
+    networks:
+      - jlyl-cloud-network
+
 volumes:
   jlyl-cloud-db-data:
     name: jlyl-cloud-db-data
