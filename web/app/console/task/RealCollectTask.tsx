@@ -137,11 +137,11 @@ export default function RealCollectTask() {
     try {
       const res = await api.post(`/real-collect/tasks/${id}/run`);
       if (res.data?.code === 200) {
-        message.success('任务已加入队列，Worker将自动消费执行');
+        message.success('任务已加入队列（高优先级），Worker将立即消费执行');
         loadData();
       }
     } catch (e: any) {
-      message.error(e?.response?.data?.message || '入队失败');
+      message.error(e?.response?.data?.message || '执行失败');
     }
   };
 
@@ -201,7 +201,7 @@ export default function RealCollectTask() {
       title: '操作', key: 'action', width: 240,
       render: (_: any, record: any) => (
         <Space size="small">
-          <Button type="link" size="small" icon={<ThunderboltOutlined />} onClick={() => handleRunNow(record.id)}>入队</Button>
+          <Button type="link" size="small" icon={<ThunderboltOutlined />} onClick={() => handleRunNow(record.id)}>立即执行</Button>
           {record.status === 'active'
             ? <Button type="link" size="small" icon={<PauseOutlined />} onClick={() => handlePause(record.id)}>暂停</Button>
             : <Button type="link" size="small" icon={<CaretRightOutlined />} onClick={() => handleResume(record.id)}>恢复</Button>
