@@ -118,6 +118,10 @@ jobs:
             echo ">>> 等待服务启动..."
             sleep 20
 
+            # 执行数据库迁移
+            echo ">>> 执行数据库迁移..."
+            $DC exec -T server node /app/server/dist/migrate.js || echo "迁移执行失败（可能已是最新）"
+
             # 检查服务状态
             echo ">>> 检查服务状态..."
             $DC ps

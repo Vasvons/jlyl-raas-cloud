@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Input, Popconfirm, message, Select, Card, Tag, Checkbox, Tabs, Row, Col } from 'antd';
-import { PlusOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, ExperimentOutlined, TagsOutlined, KeyOutlined, SaveOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, ReloadOutlined, ThunderboltOutlined, ExperimentOutlined, TagsOutlined, KeyOutlined, SaveOutlined, ClearOutlined } from '@ant-design/icons';
 import api from '@/lib/api';
 
 interface PPItem {
@@ -449,6 +449,34 @@ export default function KeywordsPage() {
     }
   };
 
+  // 手动去重
+  const [deduplicating, setDeduplicating] = useState(false);
+  const handleDeduplicate = async (keywordType: number) => {
+    if (!selectedUserId) {
+      message.warning('请先选择用户');
+      return;
+    }
+    setDeduplicating(true);
+    try {
+      const res = await api.post('/zlgjc/deduplicate', { userId: selectedUserId, keywordType });
+      if (res.data?.code === 200) {
+        const { deleted, remaining } = res.data.data;
+        message.success(`去重完成：删除${deleted}条重复记录，剩余${remaining}条`);
+        if (keywordType === 0) {
+          fetchZlgjc(selectedUserId);
+        } else {
+          fetchBrand(selectedUserId);
+        }
+      } else {
+        message.error(res.data?.message || '去重失败');
+      }
+    } catch (e: any) {
+      message.error(e?.response?.data?.message || '去重失败');
+    } finally {
+      setDeduplicating(false);
+    }
+  };
+
   // 生成蒸馏关键词
   const handleGenerate = async () => {
     if (!selectedUserId) {
@@ -847,6 +875,9 @@ export default function KeywordsPage() {
                       style={{ width: 250 }}
                     />
                     <Button type="primary" icon={<PlusOutlined />} onClick={addZlgjc}>手动添加</Button>
+                    <Popconfirm title="确定对蒸馏关键词库进行去重？将删除value重复的记录（保留最早添加的）。" onConfirm={() => handleDeduplicate(0)}>
+                      <Button icon={<ClearOutlined />} loading={deduplicating}>手动去重</Button>
+                    </Popconfirm>
                     {selectedZlgjcIds.length > 0 && (
                       <Popconfirm title={`确定删除选中的 ${selectedZlgjcIds.length} 条关键词？`} onConfirm={batchDeleteZlgjc}>
                         <Button danger icon={<DeleteOutlined />} loading={batchDeleting}>
@@ -902,6 +933,9 @@ export default function KeywordsPage() {
                       style={{ width: 250 }}
                     />
                     <Button type="primary" icon={<PlusOutlined />} onClick={addBrand}>手动添加</Button>
+                    <Popconfirm title="确定对品牌关键词库进行去重？将删除value重复的记录（保留最早添加的）。" onConfirm={() => handleDeduplicate(1)}>
+                      <Button icon={<ClearOutlined />} loading={deduplicating}>手动去重</Button>
+                    </Popconfirm>
                     {selectedBrandIds.length > 0 && (
                       <Popconfirm title={`确定删除选中的 ${selectedBrandIds.length} 条关键词？`} onConfirm={batchDeleteBrand}>
                         <Button danger icon={<DeleteOutlined />} loading={brandBatchDeleting}>

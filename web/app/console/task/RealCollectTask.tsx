@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Table, Card, Button, Modal, Form, Input, Select, TimePicker, Tag, Space, message, Popconfirm } from 'antd';
+import { Table, Card, Button, Modal, Form, Input, Select, TimePicker, Tag, Space, message, Popconfirm, Checkbox, Row, Col } from 'antd';
 import { PlusOutlined, EditOutlined, PauseOutlined, CaretRightOutlined, ThunderboltOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import api from '@/lib/api';
@@ -51,22 +51,30 @@ export default function RealCollectTask() {
     form.resetFields();
     form.setFieldsValue({
       keywordType: 0,
-      frequency: 'daily',
-      time: dayjs('02:00', 'HH:mm'),
+      enqueueTime: dayjs('02:00', 'HH:mm'),
     });
     setModalVisible(true);
   };
 
   const handleEdit = (record: any) => {
     setEditingTask(record);
+    // 从cron表达式解析入队时间（cron格式: m h * * *）
+    let enqueueTime = dayjs('02:00', 'HH:mm');
+    if (record.cron_expr) {
+      const parts = record.cron_expr.split(' ');
+      if (parts.length >= 2) {
+        const minute = parseInt(parts[0]) || 0;
+        const hour = parseInt(parts[1]) || 2;
+        enqueueTime = dayjs().hour(hour).minute(minute);
+      }
+    }
     form.setFieldsValue({
       ...record,
       userId: record.user_id,
       taskName: record.task_name,
       keywordType: record.keyword_type,
       platforms: record.platforms,
-      frequency: 'custom',
-      cronExpr: record.cron_expr,
+      enqueueTime,
     });
     setModalVisible(true);
   };
@@ -76,14 +84,9 @@ export default function RealCollectTask() {
       const values = await form.validateFields();
       setSubmitting(true);
 
-      let cronExpr = values.cronExpr;
-      if (values.frequency === 'daily') {
-        const time = values.time as dayjs.Dayjs;
-        cronExpr = `${time.minute()} ${time.hour()} * * *`;
-      } else if (values.frequency === 'weekly') {
-        const time = values.time as dayjs.Dayjs;
-        cronExpr = `${time.minute()} ${time.hour()} * * 1`;
-      }
+      // 队列模式：每天入队，入队时间转为cron表达式
+      const time = values.enqueueTime as dayjs.Dayjs;
+      const cronExpr = `${time.minute()} ${time.hour()} * * *`;
 
       const payload = {
         userId: values.userId,
@@ -134,11 +137,11 @@ export default function RealCollectTask() {
     try {
       const res = await api.post(`/real-collect/tasks/${id}/run`);
       if (res.data?.code === 200) {
-        message.success('任务已触发执行，请稍后查看结果');
+        message.success('任务已加入队列，Worker将自动消费执行');
         loadData();
       }
     } catch (e: any) {
-      message.error(e?.response?.data?.message || '触发失败');
+      message.error(e?.response?.data?.message || '入队失败');
     }
   };
 
@@ -150,6 +153,18 @@ export default function RealCollectTask() {
     } catch (e: any) {
       message.error(e?.response?.data?.message || '删除失败');
     }
+  };
+
+  // 从cron表达式解析显示用的入队时间
+  const formatCronTime = (cronExpr: string) => {
+    if (!cronExpr) return '-';
+    const parts = cronExpr.split(' ');
+    if (parts.length >= 2) {
+      const minute = parts[0].padStart(2, '0');
+      const hour = parts[1].padStart(2, '0');
+      return `${hour}:${minute}`;
+    }
+    return cronExpr;
   };
 
   const columns = [
@@ -166,7 +181,10 @@ export default function RealCollectTask() {
       title: '平台', dataIndex: 'platforms', key: 'platforms', width: 200,
       render: (platforms: string[]) => platforms?.map(p => <Tag key={p}>{p}</Tag>)
     },
-    { title: '频率', dataIndex: 'cron_expr', key: 'cron_expr', width: 120 },
+    {
+      title: '入队时间', dataIndex: 'cron_expr', key: 'cron_expr', width: 100,
+      render: (cronExpr: string) => `每天 ${formatCronTime(cronExpr)}`
+    },
     {
       title: '上次执行', key: 'last_run', width: 200,
       render: (_: any, record: any) => record.last_run_time
@@ -183,7 +201,7 @@ export default function RealCollectTask() {
       title: '操作', key: 'action', width: 240,
       render: (_: any, record: any) => (
         <Space size="small">
-          <Button type="link" size="small" icon={<ThunderboltOutlined />} onClick={() => handleRunNow(record.id)}>执行</Button>
+          <Button type="link" size="small" icon={<ThunderboltOutlined />} onClick={() => handleRunNow(record.id)}>入队</Button>
           {record.status === 'active'
             ? <Button type="link" size="small" icon={<PauseOutlined />} onClick={() => handlePause(record.id)}>暂停</Button>
             : <Button type="link" size="small" icon={<CaretRightOutlined />} onClick={() => handleResume(record.id)}>恢复</Button>
@@ -202,6 +220,9 @@ export default function RealCollectTask() {
       <Card>
         <div style={{ marginBottom: 16 }}>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>新建任务</Button>
+          <span style={{ marginLeft: 12, color: '#999', fontSize: 13 }}>
+            队列模式：任务每天按设定时间自动入队，Worker自动消费执行
+          </span>
         </div>
         <Table
           columns={columns}
@@ -236,28 +257,23 @@ export default function RealCollectTask() {
               <Option value={1}>品牌词库</Option>
             </Select>
           </Form.Item>
-          <Form.Item name="platforms" label="查询平台" rules={[{ required: true, message: '请选择平台' }]}>
-            <Select mode="multiple" placeholder="选择要查询的平台">
-              {platforms.map(p => <Option key={p.pt} value={p.pt}>{p.pt}</Option>)}
-            </Select>
+          <Form.Item name="platforms" label="查询平台（点选）" rules={[{ required: true, message: '请至少选择一个平台' }]}>
+            <Checkbox.Group style={{ width: '100%' }}>
+              <Row gutter={[8, 8]}>
+                {platforms.map(p => (
+                  <Col key={p.pt} span={6}>
+                    <Checkbox value={p.pt} style={{ fontSize: 13 }}>{p.pt}</Checkbox>
+                  </Col>
+                ))}
+              </Row>
+            </Checkbox.Group>
           </Form.Item>
-          <Form.Item name="frequency" label="执行频率" rules={[{ required: true }]}>
-            <Select>
-              <Option value="daily">每天</Option>
-              <Option value="weekly">每周</Option>
-              <Option value="custom">自定义(cron)</Option>
-            </Select>
-          </Form.Item>
-          <Form.Item name="time" label="执行时间" rules={[{ required: true }]}>
+          <Form.Item name="enqueueTime" label="每天入队时间" rules={[{ required: true, message: '请选择入队时间' }]}>
             <TimePicker format="HH:mm" />
           </Form.Item>
-          <Form.Item noStyle shouldUpdate={(prev, cur) => prev.frequency !== cur.frequency}>
-            {({ getFieldValue }) => getFieldValue('frequency') === 'custom' ? (
-              <Form.Item name="cronExpr" label="Cron表达式" rules={[{ required: true }]}>
-                <Input placeholder="如: 0 2 * * * (每天凌晨2点)" />
-              </Form.Item>
-            ) : null}
-          </Form.Item>
+          <div style={{ color: '#999', fontSize: 12 }}>
+            说明：任务每天在设定的时间自动入队，Worker按队列顺序消费执行。
+          </div>
         </Form>
       </Modal>
     </div>

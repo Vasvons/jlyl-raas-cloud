@@ -843,6 +843,40 @@ export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: 
   return { list, total };
 }
 
+// 手动去重：删除同一用户同一keyword_type下value重复的关键词（保留id最小的）
+export async function deduplicateZlgjc(userId: string, keywordType: number): Promise<{ deleted: number; remaining: number }> {
+  // 先查询总数
+  const beforeResult = await query(
+    'SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1 AND keyword_type = $2',
+    [userId, keywordType]
+  );
+  const beforeCount = parseInt(beforeResult.rows[0].total) || 0;
+
+  // 删除重复记录（保留每组value中id最小的一条）
+  const deleteResult = await query(
+    `DELETE FROM zlgjc
+     WHERE id IN (
+       SELECT id FROM (
+         SELECT id, ROW_NUMBER() OVER (PARTITION BY value, userid, keyword_type ORDER BY id ASC) as rn
+         FROM zlgjc
+         WHERE userid = $1 AND keyword_type = $2
+       ) t WHERE rn > 1
+     )`,
+    [userId, keywordType]
+  );
+
+  const deleted = deleteResult.rowCount || 0;
+
+  // 查询去重后的数量
+  const afterResult = await query(
+    'SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1 AND keyword_type = $2',
+    [userId, keywordType]
+  );
+  const remaining = parseInt(afterResult.rows[0].total) || 0;
+
+  return { deleted, remaining };
+}
+
 // 删除蒸馏关键词（级联删除跳转链接）
 export async function deleteZlgjc(id: number): Promise<void> {
   await withTransaction(async (client) => {
@@ -1186,7 +1220,7 @@ export async function getSystemOverview() {
     query("SELECT COUNT(*) as total FROM users WHERE level = '0'"),
     query("SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE status = 'running') as running FROM task_info"),
     query('SELECT COUNT(*) as total FROM keyword_search_rank WHERE query_time IS NOT NULL'),
-    query('SELECT (SELECT COUNT(*) FROM distillate_keyword) + (SELECT COUNT(*) FROM zlgjc) as total'),
+    query('SELECT (SELECT COUNT(*) FROM distillate_keyword) + (SELECT COUNT(DISTINCT value) FROM zlgjc) as total'),
     query("SELECT COUNT(*) as total FROM keyword_search_rank WHERE query_time IS NOT NULL AND query_time::date = CURRENT_DATE"),
   ]);
   return {
@@ -1247,7 +1281,7 @@ export async function getUserDataStats() {
     const [taskRes, dkRes, zlgjcRes, recordRes] = await Promise.all([
       query('SELECT COUNT(*) as count FROM task_info WHERE user_id = $1', [userId]),
       query('SELECT COUNT(*) as count FROM distillate_keyword WHERE user_id = $1', [userId]),
-      query('SELECT COUNT(*) as count FROM zlgjc WHERE userid = $1', [userId]),
+      query('SELECT COUNT(DISTINCT value) as count FROM zlgjc WHERE userid = $1', [userId]),
       query('SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND query_time IS NOT NULL', [userId]),
     ]);
     result.push({
