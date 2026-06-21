@@ -79,7 +79,11 @@ jobs:
             df -h /
 
             echo ">>> 停止所有服务..."
-            $DC down
+            $DC down --remove-orphans || true
+
+            # 强制清理可能残留的容器（避免容器名冲突）
+            echo ">>> 强制清理残留容器..."
+            docker rm -f jlyl-cloud-server jlyl-cloud-db jlyl-cloud-auto-collect-worker jlyl-cloud-web 2>/dev/null || true
 
             echo ">>> 启动数据库容器..."
             $DC up -d db
