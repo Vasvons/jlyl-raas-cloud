@@ -1,63 +1,22 @@
 /**
- * 定时调度器：扫描到期的任务，调用Worker执行
+ * 定时调度器：扫描到期的任务，放入队列由Worker消费
  */
 import cron from 'node-cron';
-import axios from 'axios';
-import { getDueRealCollectTasks, updateTaskRunStatus, getDistillateKeywords, getBrandKeywords } from '../../repository';
+import {
+  getDueRealCollectTasks,
+  updateTaskRunStatus,
+  getDistillateKeywords,
+  getBrandKeywords,
+  enqueueRealCollectTask,
+  getQueuePendingCount,
+} from '../../repository';
 
-const WORKER_URL = process.env.WORKER_URL || 'http://localhost:3003';
 let schedulerStarted = false;
 
-export async function triggerTaskExecution(task: any): Promise<void> {
-  console.log(`[RealCollect] 触发任务执行: ${task.id} (${task.task_name})`);
-
-  await updateTaskRunStatus(task.id, { status: 'running' });
-
-  try {
-    const keywords = task.keyword_type === 1
-      ? await getBrandKeywords(task.user_id)
-      : await getDistillateKeywords(task.user_id);
-
-    if (keywords.length === 0) {
-      await updateTaskRunStatus(task.id, {
-        status: 'success',
-        recordCount: 0,
-        brandCount: 0,
-        endTime: new Date()
-      });
-      return;
-    }
-
-    const response = await axios.post(`${WORKER_URL}/execute`, {
-      taskId: task.id,
-      userId: task.user_id,
-      keywordType: task.keyword_type,
-      keywords,
-      platforms: task.platforms
-    }, {
-      timeout: 3600000
-    });
-
-    const { totalRecords, brandMatched } = response.data as { totalRecords: number; brandMatched: number };
-    await updateTaskRunStatus(task.id, {
-      status: 'success',
-      recordCount: totalRecords,
-      brandCount: brandMatched,
-      endTime: new Date()
-    });
-
-    console.log(`[RealCollect] 任务 ${task.id} 执行完成: ${totalRecords}条记录, ${brandMatched}条品牌词匹配`);
-  } catch (e: any) {
-    console.error(`[RealCollect] 任务 ${task.id} 执行失败:`, e.message);
-    await updateTaskRunStatus(task.id, {
-      status: 'failed',
-      error: e.message,
-      endTime: new Date()
-    });
-  }
-}
-
-async function checkAndRunDueTasks(): Promise<void> {
+/**
+ * 将到期任务放入队列
+ */
+async function checkAndEnqueueDueTasks(): Promise<void> {
   try {
     const tasks = await getDueRealCollectTasks();
     for (const task of tasks) {
@@ -66,20 +25,30 @@ async function checkAndRunDueTasks(): Promise<void> {
       const now = new Date();
       const lastRun = task.last_run_time ? new Date(task.last_run_time) : null;
 
-      // 计算下次应该执行的时间
-      const schedule = cron.schedule(task.cron_expr, () => {}, { scheduled: false });
-      const nextRun = (schedule as any).nextRunAt();
-      schedule.stop();
-
-      if (!nextRun) continue;
-
-      // 如果从未执行过，或上次执行时间早于(下次执行时间-1个周期)，则执行
-      // 简化判断：如果上次执行时间为空，或距离上次执行已超过1小时，则检查是否在当前分钟应执行
+      // 如果从未执行过，或距离上次执行已超过1小时，则检查是否在当前分钟应执行
       if (!lastRun || (now.getTime() - lastRun.getTime()) > 3600000) {
-        // 检查当前时间是否匹配cron
         const currentMatch = checkCronMatch(task.cron_expr, now);
         if (currentMatch) {
-          await triggerTaskExecution(task);
+          // 获取关键词
+          const keywords = task.keyword_type === 1
+            ? await getBrandKeywords(task.user_id)
+            : await getDistillateKeywords(task.user_id);
+
+          if (keywords.length === 0) {
+            await updateTaskRunStatus(task.id, {
+              status: 'success',
+              recordCount: 0,
+              brandCount: 0,
+              endTime: new Date()
+            });
+            continue;
+          }
+
+          // 放入队列
+          const queueId = await enqueueRealCollectTask(task, keywords);
+          // 更新任务状态为queued
+          await updateTaskRunStatus(task.id, { status: 'queued' });
+          console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 已入队(queueId=${queueId}), ${keywords.length}个关键词`);
         }
       }
     }
@@ -124,6 +93,30 @@ function checkCronMatch(cronExpr: string, date: Date): boolean {
   }
 }
 
+/**
+ * 立即将任务放入队列（用于手动触发"立即执行"）
+ */
+export async function enqueueTaskNow(task: any): Promise<number> {
+  const keywords = task.keyword_type === 1
+    ? await getBrandKeywords(task.user_id)
+    : await getDistillateKeywords(task.user_id);
+
+  if (keywords.length === 0) {
+    await updateTaskRunStatus(task.id, {
+      status: 'success',
+      recordCount: 0,
+      brandCount: 0,
+      endTime: new Date()
+    });
+    return 0;
+  }
+
+  const queueId = await enqueueRealCollectTask(task, keywords);
+  await updateTaskRunStatus(task.id, { status: 'queued' });
+  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动入队(queueId=${queueId}), ${keywords.length}个关键词`);
+  return queueId;
+}
+
 export function startRealCollectScheduler(): void {
   if (schedulerStarted) {
     console.log('[RealCollect] 调度器已启动，跳过');
@@ -131,11 +124,12 @@ export function startRealCollectScheduler(): void {
   }
   schedulerStarted = true;
 
+  // 每分钟检查到期任务，放入队列
   cron.schedule('* * * * *', () => {
-    checkAndRunDueTasks().catch(e => {
+    checkAndEnqueueDueTasks().catch(e => {
       console.error('[RealCollect] 调度器异常:', e.message);
     });
   });
 
-  console.log('[RealCollect] 定时调度器已启动(每分钟检查到期任务)');
+  console.log('[RealCollect] 定时调度器已启动(每分钟检查到期任务并放入队列)');
 }

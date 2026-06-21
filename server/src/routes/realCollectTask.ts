@@ -7,7 +7,7 @@ import {
   getRealCollectTasks,
   getRealCollectTaskById
 } from '../repository';
-import { triggerTaskExecution } from '../services/realCollect/scheduler';
+import { enqueueTaskNow } from '../services/realCollect/scheduler';
 
 const router = Router();
 
@@ -72,8 +72,8 @@ router.post('/:id/run', async (req, res) => {
     if (!task) {
       return res.status(404).json({ code: 404, message: '任务不存在' });
     }
-    await triggerTaskExecution(task);
-    res.json({ code: 200, message: '任务已触发执行' });
+    const queueId = await enqueueTaskNow(task);
+    res.json({ code: 200, message: '任务已加入队列', data: { queueId } });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }

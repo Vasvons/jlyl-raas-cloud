@@ -33,9 +33,7 @@ RUN npm prune --omit=dev
 # 安装Playwright Chromium
 RUN npx playwright install chromium
 
-ENV WORKER_PORT=3003
 ENV SERVER_URL=http://jlyl-cloud-server:3002
-
-EXPOSE 3003
+ENV POLL_INTERVAL=5000
 
 CMD ["node", "dist/index.js"]

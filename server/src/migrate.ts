@@ -360,6 +360,41 @@ export async function migrate() {
 
     console.log('[Migrate] 真实收录查询相关表创建/验证完成');
 
+    // 关键词生成器配置表（持久化词汇配置，替代localStorage）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS kw_config (
+        id SERIAL PRIMARY KEY,
+        user_id VARCHAR(50) NOT NULL,
+        config_type VARCHAR(20) NOT NULL,
+        config_json TEXT NOT NULL,
+        update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, config_type)
+      )
+    `);
+
+    // 真实查询任务队列表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS real_collect_queue (
+        id BIGSERIAL PRIMARY KEY,
+        task_id BIGINT NOT NULL,
+        user_id TEXT NOT NULL,
+        keyword_type SMALLINT NOT NULL,
+        platforms TEXT[] NOT NULL,
+        keywords JSONB NOT NULL,
+        status VARCHAR(20) DEFAULT 'pending',
+        worker_id VARCHAR(50),
+        result_record_count INTEGER DEFAULT 0,
+        result_brand_count INTEGER DEFAULT 0,
+        error TEXT,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        start_time TIMESTAMP,
+        end_time TIMESTAMP,
+        CONSTRAINT fk_rcq_task FOREIGN KEY (task_id) REFERENCES real_collect_task(id) ON DELETE CASCADE
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_status ON real_collect_queue(status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_task ON real_collect_queue(task_id)`);
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

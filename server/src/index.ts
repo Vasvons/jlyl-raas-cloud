@@ -10,6 +10,7 @@ import keywordRoutes from './routes/keyword';
 import monitorRoutes from './routes/monitor';
 import realCollectTaskRoutes from './routes/realCollectTask';
 import realCollectResultRoutes from './routes/realCollectResult';
+import realCollectQueueRoutes from './routes/realCollectQueue';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 
 dotenv.config();
@@ -199,6 +200,7 @@ app.use('/monitor', monitorRoutes);
 app.use('/', keywordRoutes);
 app.use('/real-collect/tasks', realCollectTaskRoutes);
 app.use('/real-collect/results', realCollectResultRoutes);
+app.use('/real-collect/queue', realCollectQueueRoutes);
 
 // 错误处理
 app.use((err: any, req: any, res: any, next: any) => {

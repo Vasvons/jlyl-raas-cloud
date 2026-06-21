@@ -106,23 +106,34 @@ export default function KeywordsPage() {
   const [brandGenSubmitting, setBrandGenSubmitting] = useState(false);
   const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; total: number; debug?: any } | null>(null);
 
-  // 词汇配置的保存/加载（按用户ID存储到localStorage，防止预设词汇覆盖用户输入）
-  const DISTILLATE_KEY = 'kw_gen_distillate';
-  const BRAND_KEY = 'kw_gen_brand';
-
+  // 词汇配置的保存/加载（持久化到后端数据库，按用户ID存储）
   // 保存蒸馏关键词生成器配置
-  const saveDistillateConfig = () => {
+  const saveDistillateConfig = async () => {
+    if (!selectedUserId) {
+      message.warning('请先选择用户');
+      return;
+    }
     const config = { A: genA, B: genB, D: genD, E: genE, F: genF, combos: genCombos };
-    localStorage.setItem(DISTILLATE_KEY, JSON.stringify(config));
-    message.success('蒸馏关键词词汇配置已保存');
+    try {
+      await api.post('/keywordsearchrank/saveKwConfig', {
+        userId: selectedUserId,
+        configType: 'distillate',
+        configJson: config,
+      });
+      message.success('蒸馏关键词词汇配置已保存');
+    } catch {
+      message.error('保存配置失败');
+    }
   };
 
   // 加载蒸馏关键词生成器配置
-  const loadDistillateConfig = () => {
+  const loadDistillateConfig = async (userId: string) => {
     try {
-      const raw = localStorage.getItem(DISTILLATE_KEY);
-      if (raw) {
-        const config = JSON.parse(raw);
+      const res = await api.get('/keywordsearchrank/getKwConfig', {
+        params: { userId, configType: 'distillate' },
+      });
+      if (res.data?.code === 200 && res.data.data) {
+        const config = res.data.data;
         if (config.A !== undefined) setGenA(config.A);
         if (config.B !== undefined) setGenB(config.B);
         if (config.D !== undefined) setGenD(config.D);
@@ -136,18 +147,32 @@ export default function KeywordsPage() {
   };
 
   // 保存品牌关键词生成器配置
-  const saveBrandConfig = () => {
+  const saveBrandConfig = async () => {
+    if (!selectedUserId) {
+      message.warning('请先选择用户');
+      return;
+    }
     const config = { C: brandGenC, D: brandGenD, combos: brandGenCombos };
-    localStorage.setItem(BRAND_KEY, JSON.stringify(config));
-    message.success('品牌关键词词汇配置已保存');
+    try {
+      await api.post('/keywordsearchrank/saveKwConfig', {
+        userId: selectedUserId,
+        configType: 'brand',
+        configJson: config,
+      });
+      message.success('品牌关键词词汇配置已保存');
+    } catch {
+      message.error('保存配置失败');
+    }
   };
 
   // 加载品牌关键词生成器配置
-  const loadBrandConfig = () => {
+  const loadBrandConfig = async (userId: string) => {
     try {
-      const raw = localStorage.getItem(BRAND_KEY);
-      if (raw) {
-        const config = JSON.parse(raw);
+      const res = await api.get('/keywordsearchrank/getKwConfig', {
+        params: { userId, configType: 'brand' },
+      });
+      if (res.data?.code === 200 && res.data.data) {
+        const config = res.data.data;
         if (config.C !== undefined) setBrandGenC(config.C);
         if (config.D !== undefined) setBrandGenD(config.D);
         if (Array.isArray(config.combos)) setBrandGenCombos(config.combos);
@@ -156,12 +181,6 @@ export default function KeywordsPage() {
     } catch {}
     return false;
   };
-
-  // 页面首次加载时尝试加载保存的配置
-  useEffect(() => {
-    loadDistillateConfig();
-    loadBrandConfig();
-  }, []);
 
   // 获取用户列表
   useEffect(() => {
@@ -187,6 +206,8 @@ export default function KeywordsPage() {
     setLoading(true);
     try {
       await Promise.all([fetchPp(userId), fetchDk(userId), fetchZlgjc(userId), fetchBrand(userId)]);
+      // 加载保存的词汇配置（在fetchDk之后，因为fetchDk会覆盖C/B字段）
+      await Promise.all([loadDistillateConfig(userId), loadBrandConfig(userId)]);
     } finally {
       setLoading(false);
     }
