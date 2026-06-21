@@ -1058,12 +1058,12 @@ export async function autoGenerateBrandKeywords(userId: string, brandWord: strin
 // ============ 真实查询任务队列 ============
 
 // 将任务放入队列
-export async function enqueueRealCollectTask(task: any, keywords: string[]): Promise<number> {
+export async function enqueueRealCollectTask(task: any, keywords: string[], priority: number = 0): Promise<number> {
   const result = await query(
-    `INSERT INTO real_collect_queue (task_id, user_id, keyword_type, platforms, keywords, status)
-     VALUES ($1, $2, $3, $4, $5, 'pending')
+    `INSERT INTO real_collect_queue (task_id, user_id, keyword_type, platforms, keywords, status, priority)
+     VALUES ($1, $2, $3, $4, $5, 'pending', $6)
      RETURNING id`,
-    [task.id, task.user_id, task.keyword_type, task.platforms, JSON.stringify(keywords)]
+    [task.id, task.user_id, task.keyword_type, task.platforms, JSON.stringify(keywords), priority]
   );
   return result.rows[0].id;
 }
@@ -1071,13 +1071,14 @@ export async function enqueueRealCollectTask(task: any, keywords: string[]): Pro
 // Worker从队列消费任务（原子操作，防止多Worker竞争）
 export async function dequeueRealCollectTask(workerId: string): Promise<any | null> {
   // 使用SELECT FOR UPDATE SKIP LOCKED获取下一个pending任务
+  // 优先消费priority=1（手动立即执行）的任务，其次按创建时间FIFO
   const result = await query(
     `UPDATE real_collect_queue
      SET status = 'running', worker_id = $1, start_time = NOW()
      WHERE id = (
        SELECT id FROM real_collect_queue
        WHERE status = 'pending'
-       ORDER BY create_time ASC
+       ORDER BY priority DESC, create_time ASC
        FOR UPDATE SKIP LOCKED
        LIMIT 1
      )

@@ -5,7 +5,7 @@ import { executeTask } from './taskFetcher';
 dotenv.config();
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
-const POLL_INTERVAL = process.env.POLL_INTERVAL ? parseInt(process.env.POLL_INTERVAL) : 5000; // 默认5秒轮询一次
+const POLL_INTERVAL = process.env.POLL_INTERVAL ? parseInt(process.env.POLL_INTERVAL) : 2000; // 默认2秒轮询一次，保证手动立即执行的任务能快速被消费
 
 const WORKER_ID = `worker-${process.pid}-${Date.now()}`;
 

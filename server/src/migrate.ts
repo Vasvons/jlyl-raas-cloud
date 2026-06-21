@@ -394,6 +394,9 @@ export async function migrate() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_status ON real_collect_queue(status)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_task ON real_collect_queue(task_id)`);
+    // 添加priority字段（0=普通定时入队，1=手动立即执行），兼容已存在表
+    await client.query(`ALTER TABLE real_collect_queue ADD COLUMN IF NOT EXISTS priority SMALLINT DEFAULT 0`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_priority ON real_collect_queue(priority)`);
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {

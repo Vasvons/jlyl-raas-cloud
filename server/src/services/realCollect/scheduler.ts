@@ -111,9 +111,9 @@ export async function enqueueTaskNow(task: any): Promise<number> {
     return 0;
   }
 
-  const queueId = await enqueueRealCollectTask(task, keywords);
+  const queueId = await enqueueRealCollectTask(task, keywords, 1); // priority=1 手动立即执行，优先消费
   await updateTaskRunStatus(task.id, { status: 'queued' });
-  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动入队(queueId=${queueId}), ${keywords.length}个关键词`);
+  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动入队(queueId=${queueId}, 高优先级), ${keywords.length}个关键词`);
   return queueId;
 }
 
