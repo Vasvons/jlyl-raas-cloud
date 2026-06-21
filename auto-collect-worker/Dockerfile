@@ -25,13 +25,13 @@ WORKDIR /app
 COPY package*.json ./
 COPY tsconfig.json ./
 RUN npm install
+
+COPY . .
 RUN npm run build
 RUN npm prune --omit=dev
 
 # 安装Playwright Chromium
 RUN npx playwright install chromium
-
-COPY . .
 
 ENV WORKER_PORT=3003
 ENV SERVER_URL=http://jlyl-cloud-server:3002
