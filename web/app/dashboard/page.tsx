@@ -675,6 +675,7 @@ export default function DashboardPage() {
   }, []);
 
   const [loading, setLoading] = useState(true);
+  const [gLoadingText, setGLoadingText] = useState('聚量引力GEO');
   const [user, setUser] = useState<LoginUser>({ id: '-1', username: '', phone: '', url: '', email: '', password: '', address: '', level: '', cid: '', dateTime: '' });
   const [lastUpdate, setLastUpdate] = useState('');
   const [currentTime, setCurrentTime] = useState('');
@@ -726,6 +727,7 @@ export default function DashboardPage() {
     const shareCustomTitle = localStorage.getItem('shareCustomTitle');
     if (shareCustomTitle) {
       document.title = shareCustomTitle;
+      setGLoadingText(shareCustomTitle);
     }
     const fetchUser = async () => {
       try {
@@ -906,7 +908,7 @@ export default function DashboardPage() {
     <div className={`${styles.wrapper} ${isMobile ? styles.mobile : styles.pc}`}>
       {loading && (
         <div className={styles.gLoading}>
-          <Spin tip="聚量引力GEO" size="large">
+          <Spin tip={gLoadingText} size="large">
             <div style={{ width: '280px' }}>1</div>
           </Spin>
         </div>
@@ -1054,7 +1056,7 @@ export default function DashboardPage() {
               maxLength={50}
             />
             <div style={{ marginTop: 4, fontSize: 11, color: '#999' }}>
-              设置后，分享链接打开后浏览器顶部将显示此标题，留空则默认显示"聚量引力 RaaS - GEO报告"。
+              设置后，分享链接打开后浏览器顶部及加载页面将显示此标题，留空则默认显示"聚量引力GEO"。
             </div>
           </div>
           <Button
