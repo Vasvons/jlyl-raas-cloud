@@ -556,7 +556,7 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
           <div className={styles.gIcon}>
             <img src={`${IMG}/Iconly_Glass_Chart.png`} alt="" />
           </div>
-          <div className={styles.srTitle}>搜索排名</div>
+          <div className={styles.srTitle}>搜索详情</div>
         </div>
       }
       className={`${styles.gCard} ${styles.srWrapper} ${isMobile ? styles.srMobile : styles.srPc}`}
