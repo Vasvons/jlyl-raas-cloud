@@ -430,6 +430,8 @@ export async function migrate() {
     // 添加priority字段（0=普通定时入队，1=手动立即执行），兼容已存在表
     await client.query(`ALTER TABLE real_collect_queue ADD COLUMN IF NOT EXISTS priority SMALLINT DEFAULT 0`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_priority ON real_collect_queue(priority)`);
+    // 添加abort_requested字段（用于中断正在执行的任务）
+    await client.query(`ALTER TABLE real_collect_queue ADD COLUMN IF NOT EXISTS abort_requested BOOLEAN DEFAULT false`);
 
     // Worker 运行日志表
     await client.query(`

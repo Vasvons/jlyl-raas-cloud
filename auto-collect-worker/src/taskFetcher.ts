@@ -27,6 +27,7 @@ const platformAdapters: Record<string, PlatformAdapter> = {
 
 export interface ExecuteTaskParams {
   taskId: number;
+  queueId: number;
   userId: string;
   keywordType: number;
   keywords: string[];
@@ -38,6 +39,17 @@ export interface ExecuteTaskParams {
 export interface ExecuteTaskResult {
   totalRecords: number;
   brandMatched: number;
+  aborted: boolean;
+}
+
+/** 检查任务是否被请求中断 */
+async function checkAbortRequested(queueId: number): Promise<boolean> {
+  try {
+    const resp = await axios.get(`${SERVER_URL}/real-collect/queue/check-abort/${queueId}`, { timeout: 5000 });
+    return resp.data?.code === 200 && resp.data?.data?.aborted === true;
+  } catch {
+    return false;
+  }
 }
 
 /** 从云端账号池借用账号 */
@@ -166,20 +178,25 @@ async function executeSingleQuery(
 }
 
 export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTaskResult> {
-  const { taskId, userId, keywordType, keywords, platforms, concurrency, workerId } = params;
+  const { taskId, queueId, userId, keywordType, keywords, platforms, concurrency, workerId } = params;
   const maxConcurrency = concurrency || 8;
 
   logger.info(`开始执行任务 ${taskId}: ${keywords.length}个关键词 × ${platforms.length}个平台 = ${keywords.length * platforms.length}次查询, 并发=${maxConcurrency}`);
 
   let totalRecords = 0;
   let brandMatched = 0;
+  let aborted = false;
 
   // 启动一个共享 browser
-  const browser = await chromium.launch({
+  let browser = await chromium.launch({
     headless: true,
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
   });
+
+  // 每 N 个批次重启 browser，防止内存泄漏导致 Page crashed
+  const BROWSER_RESTART_INTERVAL = 50;
+  let batchSinceRestart = 0;
 
   try {
     // 构建所有查询任务（关键词 × 平台的笛卡尔积）
@@ -199,6 +216,28 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
     logger.info(`共 ${allQueries.length} 次查询，分 ${batches.length} 批执行`);
 
     for (let i = 0; i < batches.length; i++) {
+      // 检查中断请求
+      if (i > 0 && i % 5 === 0) {
+        const isAborted = await checkAbortRequested(queueId);
+        if (isAborted) {
+          logger.warn(`任务 ${taskId} 被请求中断，停止执行（已完成 ${i}/${batches.length} 批）`);
+          aborted = true;
+          break;
+        }
+      }
+
+      // 定期重启 browser 防止内存泄漏
+      if (batchSinceRestart >= BROWSER_RESTART_INTERVAL) {
+        logger.info(`定期重启 browser 防止内存泄漏 (已完成 ${i}/${batches.length} 批)`);
+        try { await browser.close(); } catch {}
+        browser = await chromium.launch({
+          headless: true,
+          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        });
+        batchSinceRestart = 0;
+      }
+
       const batch = batches[i];
       logger.info(`任务 ${taskId} 批次 ${i + 1}/${batches.length} (${batch.length} 个并发查询)`);
 
@@ -216,15 +255,21 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
         }
       }
 
+      batchSinceRestart++;
+
       // 批次间随机延迟（反爬）
       if (i < batches.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1500));
       }
     }
   } finally {
-    await browser.close();
+    try { await browser.close(); } catch {}
   }
 
-  logger.info(`任务 ${taskId} 完成: ${totalRecords}条记录, 品牌命中${brandMatched}条`);
-  return { totalRecords, brandMatched };
+  if (aborted) {
+    logger.info(`任务 ${taskId} 已中断: 已完成 ${totalRecords}条记录`);
+  } else {
+    logger.info(`任务 ${taskId} 完成: ${totalRecords}条记录, 品牌命中${brandMatched}条`);
+  }
+  return { totalRecords, brandMatched, aborted };
 }

@@ -1113,6 +1113,50 @@ export async function getQueuePendingCount(): Promise<number> {
   return parseInt(result.rows[0].count) || 0;
 }
 
+// 获取队列中running的任务数
+export async function getQueueRunningCount(): Promise<number> {
+  const result = await query("SELECT COUNT(*) as count FROM real_collect_queue WHERE status = 'running'");
+  return parseInt(result.rows[0].count) || 0;
+}
+
+// 请求中断指定队列任务
+export async function requestQueueAbort(queueId: number): Promise<boolean> {
+  const result = await query(
+    `UPDATE real_collect_queue SET abort_requested = true WHERE id = $1 AND status = 'running'`,
+    [queueId]
+  );
+  return (result.rowCount || 0) > 0;
+}
+
+// 检查队列任务是否被请求中断
+export async function checkQueueAbort(queueId: number): Promise<boolean> {
+  const result = await query(
+    `SELECT abort_requested FROM real_collect_queue WHERE id = $1`,
+    [queueId]
+  );
+  return result.rows[0]?.abort_requested === true;
+}
+
+// 中断所有正在运行的队列任务（用于紧急停止）
+export async function abortAllRunningTasks(): Promise<number> {
+  const result = await query(
+    `UPDATE real_collect_queue SET abort_requested = true WHERE status = 'running'`
+  );
+  return result.rowCount || 0;
+}
+
+// 获取当前正在运行的队列任务
+export async function getRunningQueueTask(): Promise<any | null> {
+  const result = await query(
+    `SELECT id, task_id, user_id, keyword_type, platforms, start_time, abort_requested
+     FROM real_collect_queue
+     WHERE status = 'running'
+     ORDER BY start_time DESC
+     LIMIT 1`
+  );
+  return result.rows[0] || null;
+}
+
 // ============ 关键词维护列表 ============
 
 // 关键词维护列表（从 keyword_search_rank 去重查询）
@@ -2134,7 +2178,7 @@ export async function getQueuePressure(): Promise<{ pendingCount: number; proces
   const result = await query(
     `SELECT
        COUNT(*) FILTER (WHERE status = 'pending') as pending,
-       COUNT(*) FILTER (WHERE status = 'processing') as processing
+       COUNT(*) FILTER (WHERE status = 'running') as processing
      FROM real_collect_queue`
   );
   return {

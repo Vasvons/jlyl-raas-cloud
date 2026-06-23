@@ -66,6 +66,7 @@ async function pollAndExecute(): Promise<void> {
       const concurrency = await getCurrentConcurrency();
       const result = await executeTask({
         taskId: task.taskId,
+        queueId: task.queueId,
         userId: task.userId,
         keywordType: task.keywordType,
         keywords: task.keywords,
@@ -75,7 +76,10 @@ async function pollAndExecute(): Promise<void> {
       });
       recordCount = result.totalRecords;
       brandCount = result.brandMatched;
-      logger.info(`任务执行完成 queueId=${task.queueId} records=${recordCount} brands=${brandCount}`);
+      if (result.aborted) {
+        errorMsg = '任务被用户中断';
+      }
+      logger.info(`任务执行完成 queueId=${task.queueId} records=${recordCount} brands=${brandCount} aborted=${result.aborted}`);
     } catch (e: any) {
       errorMsg = e.message;
       logger.error(`任务执行失败 queueId=${task.queueId}: ${e.message}`);

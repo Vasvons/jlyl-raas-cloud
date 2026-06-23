@@ -37,27 +37,59 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
   async query(page: Page, keyword: string): Promise<QueryResult> {
     // 导航到聊天页（新对话）
-    await page.goto(this.chatUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-    await page.waitForTimeout(1000);
+    await page.goto(this.chatUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.waitForTimeout(2000); // 等待页面渲染完成
 
-    // 等待输入框出现
-    await page.waitForSelector(this.inputSelector, { timeout: 10000 });
-    
+    // 等待输入框出现（增加超时到20秒，兼容慢加载页面）
+    let activeSelector = this.inputSelector;
+    let inputFound = false;
+    try {
+      await page.waitForSelector(this.inputSelector, { timeout: 20000, state: 'visible' });
+      inputFound = true;
+    } catch {
+      // 主选择器超时，尝试通用回退选择器
+      const fallbackSelectors = [
+        'textarea',
+        'div[contenteditable="true"]',
+        '#chat-input',
+        '.chat-input',
+        '[class*="chat-input"]',
+        '[class*="input-area"] textarea',
+        '[role="textbox"]',
+      ];
+      for (const fallback of fallbackSelectors) {
+        if (fallback === this.inputSelector) continue; // 跳过已尝试的主选择器
+        try {
+          await page.waitForSelector(fallback, { timeout: 5000, state: 'visible' });
+          activeSelector = fallback;
+          inputFound = true;
+          console.log(`[${this.platformName}] 主选择器超时，使用回退选择器: ${fallback}`);
+          break;
+        } catch {
+          // 继续尝试下一个
+        }
+      }
+    }
+
+    if (!inputFound) {
+      throw new Error(`输入框未找到: 主选择器(${this.inputSelector})及所有回退选择器均超时`);
+    }
+
     // 清空输入框并填入关键词
-    await page.fill(this.inputSelector, '');
-    await page.fill(this.inputSelector, keyword);
+    await page.fill(activeSelector, '');
+    await page.fill(activeSelector, keyword);
     await randomDelay(500, 1500);
-    
+
     // 提交
-    await page.press(this.inputSelector, 'Enter');
-    
+    await page.press(activeSelector, 'Enter');
+
     // 等待 AI 回答完成
     await this.waitForResponse(page);
-    
+
     // 提取内容
     const { text, html } = await this.extractContent(page);
     const shareUrl = await this.extractShareLink(page);
-    
+
     return {
       content: text,
       shareUrl,
