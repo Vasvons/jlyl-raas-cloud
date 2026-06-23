@@ -5,7 +5,8 @@ import {
   updateRealCollectTask,
   deleteRealCollectTask,
   getRealCollectTasks,
-  getRealCollectTaskById
+  getRealCollectTaskById,
+  getTaskShardProgress,
 } from '../repository';
 import { enqueueTaskNow } from '../services/realCollect/scheduler';
 
@@ -37,11 +38,11 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { userId, taskName, keywordType, platforms, cronExpr } = req.body;
+    const { userId, taskName, keywordType, platforms, cronExpr, shardSize } = req.body;
     if (!userId || !taskName || keywordType === undefined || !platforms || !cronExpr) {
       return res.status(400).json({ code: 400, message: '缺少必要参数' });
     }
-    const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr });
+    const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize });
     res.json({ code: 200, message: '创建成功', data: { id } });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -50,7 +51,8 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    await updateRealCollectTask(parseInt(req.params.id), req.body);
+    const { taskName, keywordType, platforms, cronExpr, shardSize } = req.body;
+    await updateRealCollectTask(parseInt(req.params.id), { taskName, keywordType, platforms, cronExpr, shardSize });
     res.json({ code: 200, message: '更新成功' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -92,6 +94,16 @@ router.post('/:id/resume', async (req, res) => {
   try {
     await updateRealCollectTask(parseInt(req.params.id), { status: 'active' });
     res.json({ code: 200, message: '任务已恢复' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 获取任务分片执行进度
+router.get('/:id/progress', async (req, res) => {
+  try {
+    const progress = await getTaskShardProgress(parseInt(req.params.id));
+    res.json({ code: 200, data: progress });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }

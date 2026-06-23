@@ -302,6 +302,8 @@ export async function migrate() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rct_user ON real_collect_task(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rct_status ON real_collect_task(status)`);
+    // 添加 shard_size 字段（每片关键词数量，默认50）
+    await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS shard_size INTEGER DEFAULT 50`);
 
     // 真实查询结果表
     await client.query(`

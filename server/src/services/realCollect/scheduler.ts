@@ -17,14 +17,15 @@ import {
 
 let schedulerStarted = false;
 
-/** 单个队列任务最大关键词数量（防止巨型任务长时间阻塞队列） */
-const MAX_KEYWORDS_PER_QUEUE_TASK = 50;
+/** 默认单个队列任务最大关键词数量（防止巨型任务长时间阻塞队列） */
+const DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK = 50;
 
 /** 将关键词数组分片为多个小批次 */
 function shardKeywords(keywords: string[], shardSize: number): string[][] {
+  const size = Math.max(1, shardSize);
   const shards: string[][] = [];
-  for (let i = 0; i < keywords.length; i += shardSize) {
-    shards.push(keywords.slice(i, i + shardSize));
+  for (let i = 0; i < keywords.length; i += size) {
+    shards.push(keywords.slice(i, i + size));
   }
   return shards;
 }
@@ -62,7 +63,8 @@ async function checkAndEnqueueDueTasks(): Promise<void> {
           }
 
           // 分片入队，防止单个任务过大阻塞队列
-          const shards = shardKeywords(keywords, MAX_KEYWORDS_PER_QUEUE_TASK);
+          const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
+          const shards = shardKeywords(keywords, shardSize);
           let firstQueueId = 0;
           for (const shard of shards) {
             const queueId = await enqueueRealCollectTask(task, shard, 0);
@@ -70,7 +72,7 @@ async function checkAndEnqueueDueTasks(): Promise<void> {
           }
           // 更新任务状态为queued
           await updateTaskRunStatus(task.id, { status: 'queued' });
-          console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 已入队(${shards.length}个分片, 共${keywords.length}个关键词), 首个queueId=${firstQueueId}`);
+          console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 已入队(${shards.length}个分片, 每片${shardSize}个关键词, 共${keywords.length}个关键词), 首个queueId=${firstQueueId}`);
         }
       }
     }
@@ -135,14 +137,15 @@ export async function enqueueTaskNow(task: any): Promise<number> {
   }
 
   // 分片入队（高优先级），防止单个任务过大阻塞队列
-  const shards = shardKeywords(keywords, MAX_KEYWORDS_PER_QUEUE_TASK);
+  const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
+  const shards = shardKeywords(keywords, shardSize);
   let firstQueueId = 0;
   for (const shard of shards) {
     const queueId = await enqueueRealCollectTask(task, shard, 1); // priority=1 手动立即执行，优先消费
     if (firstQueueId === 0) firstQueueId = queueId;
   }
   await updateTaskRunStatus(task.id, { status: 'queued' });
-  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动入队(${shards.length}个分片, 共${keywords.length}个关键词, 高优先级), 首个queueId=${firstQueueId}`);
+  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动入队(${shards.length}个分片, 每片${shardSize}个关键词, 共${keywords.length}个关键词, 高优先级), 首个queueId=${firstQueueId}`);
   return firstQueueId;
 }
 

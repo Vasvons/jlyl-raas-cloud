@@ -1157,6 +1157,51 @@ export async function getRunningQueueTask(): Promise<any | null> {
   return result.rows[0] || null;
 }
 
+// 获取任务的分片执行进度（按 task_id 聚合今日的队列状态）
+export async function getTaskShardProgress(taskId: number): Promise<{
+  taskId: number;
+  totalShards: number;
+  completedShards: number;
+  runningShards: number;
+  pendingShards: number;
+  failedShards: number;
+  totalKeywords: number;
+  shardSize: number;
+}> {
+  // 获取任务配置的分片大小
+  const taskResult = await query(
+    `SELECT shard_size FROM real_collect_task WHERE id = $1`,
+    [taskId]
+  );
+  const shardSize = taskResult.rows[0]?.shard_size || 50;
+
+  // 统计今日该任务的所有队列分片状态
+  const result = await query(
+    `SELECT
+       COUNT(*) as total,
+       COUNT(*) FILTER (WHERE status = 'done') as completed,
+       COUNT(*) FILTER (WHERE status = 'running') as running,
+       COUNT(*) FILTER (WHERE status = 'pending') as pending,
+       COUNT(*) FILTER (WHERE status = 'failed') as failed,
+       COALESCE(SUM(jsonb_array_length(keywords)), 0) as total_keywords
+     FROM real_collect_queue
+     WHERE task_id = $1
+       AND create_time >= CURRENT_DATE`,
+    [taskId]
+  );
+  const row = result.rows[0] || {};
+  return {
+    taskId,
+    totalShards: parseInt(row.total || '0'),
+    completedShards: parseInt(row.completed || '0'),
+    runningShards: parseInt(row.running || '0'),
+    pendingShards: parseInt(row.pending || '0'),
+    failedShards: parseInt(row.failed || '0'),
+    totalKeywords: parseInt(row.total_keywords || '0'),
+    shardSize,
+  };
+}
+
 // ============ 关键词维护列表 ============
 
 // 关键词维护列表（从 keyword_search_rank 去重查询）
@@ -1715,11 +1760,12 @@ export async function createRealCollectTask(params: {
   keywordType: number;
   platforms: string[];
   cronExpr: string;
+  shardSize?: number;
 }): Promise<number> {
   const result = await query(
-    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status)
-     VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
-    [params.userId, params.taskName, params.keywordType, params.platforms, params.cronExpr]
+    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status, shard_size)
+     VALUES ($1, $2, $3, $4, $5, 'active', $6) RETURNING id`,
+    [params.userId, params.taskName, params.keywordType, params.platforms, params.cronExpr, params.shardSize || 50]
   );
   return result.rows[0].id;
 }
@@ -1731,6 +1777,7 @@ export async function updateRealCollectTask(id: number, params: {
   platforms?: string[];
   cronExpr?: string;
   status?: string;
+  shardSize?: number;
 }): Promise<void> {
   const sets: string[] = [];
   const values: any[] = [id];
@@ -1740,6 +1787,7 @@ export async function updateRealCollectTask(id: number, params: {
   if (params.platforms !== undefined) { sets.push(`platforms = $${paramIdx++}`); values.push(params.platforms); }
   if (params.cronExpr !== undefined) { sets.push(`cron_expr = $${paramIdx++}`); values.push(params.cronExpr); }
   if (params.status !== undefined) { sets.push(`status = $${paramIdx++}`); values.push(params.status); }
+  if (params.shardSize !== undefined) { sets.push(`shard_size = $${paramIdx++}`); values.push(params.shardSize); }
   sets.push(`update_time = CURRENT_TIMESTAMP`);
   await query(`UPDATE real_collect_task SET ${sets.join(', ')} WHERE id = $1`, values);
 }
