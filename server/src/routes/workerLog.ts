@@ -17,10 +17,8 @@ function internalAuth(req: any, res: any, next: any): void {
   next();
 }
 
-router.use(internalAuth);
-
-// Worker 上报日志（无鉴权，worker 直接调用）
-router.post('/report', async (req, res) => {
+// Worker 上报日志（内部调用，需要密钥）
+router.post('/report', internalAuth, async (req, res) => {
   try {
     const { workerId, taskId, level, message } = req.body;
     if (!workerId || !message) {
@@ -38,7 +36,7 @@ router.post('/report', async (req, res) => {
   }
 });
 
-// 查询日志（鉴权由调用方处理，这里简单放行）
+// 查询日志（前端调用，不需要内部密钥）
 router.get('/list', async (req, res) => {
   try {
     const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
@@ -51,8 +49,8 @@ router.get('/list', async (req, res) => {
   }
 });
 
-// 队列压力（worker 用于动态扩缩容）
-router.get('/queue-pressure', async (req, res) => {
+// 队列压力（worker 用于动态扩缩容，内部调用）
+router.get('/queue-pressure', internalAuth, async (req, res) => {
   try {
     const pressure = await getQueuePressure();
     // 根据pending数量推荐并发数
