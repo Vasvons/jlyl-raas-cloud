@@ -29,6 +29,9 @@ startRenewer();
 let isProcessing = false;
 let isShuttingDown = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+// 连续失败计数（用于退避）
+let consecutiveFailures = 0;
+const MAX_BACKOFF_INTERVAL = 30000; // 最大退避到30秒
 
 async function pollAndExecute(): Promise<void> {
   if (isProcessing || isShuttingDown) {
@@ -42,6 +45,9 @@ async function pollAndExecute(): Promise<void> {
     }, {
       timeout: 10000
     });
+
+    // 成功连接，重置失败计数
+    consecutiveFailures = 0;
 
     const task = resp.data?.data;
     if (!task) {
@@ -93,7 +99,12 @@ async function pollAndExecute(): Promise<void> {
 
     logger.setTaskId(undefined);
   } catch (e: any) {
-    logger.error(`轮询失败: ${e.message}`);
+    consecutiveFailures++;
+    // 指数退避：失败次数越多，等待越久（最多30秒）
+    const backoff = Math.min(POLL_INTERVAL * Math.pow(2, consecutiveFailures - 1), MAX_BACKOFF_INTERVAL);
+    logger.error(`轮询失败(第${consecutiveFailures}次): ${e.message}，${Math.round(backoff / 1000)}秒后重试`);
+    // 延迟下一次轮询
+    await new Promise(resolve => setTimeout(resolve, backoff));
   } finally {
     isProcessing = false;
   }

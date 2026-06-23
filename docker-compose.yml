@@ -59,6 +59,12 @@ services:
     ports:
       - "127.0.0.1:3002:3002"
     mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3002/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     networks:
       - jlyl-cloud-network
 
@@ -70,7 +76,8 @@ services:
     container_name: jlyl-cloud-web
     restart: always
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_API_URL: http://server:3002
@@ -88,7 +95,8 @@ services:
     container_name: jlyl-cloud-worker
     restart: always
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     environment:
       WORKER_PORT: 3003
       SERVER_URL: http://server:3002
