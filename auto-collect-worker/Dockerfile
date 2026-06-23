@@ -8,7 +8,7 @@ RUN apk add --no-cache tzdata && \
 
 ENV TZ=Asia/Shanghai
 
-# 安装 Playwright Chromium 运行所需的依赖库（alpine 版本）
+# 安装 Chromium 及 Playwright 运行所需依赖（alpine 的 chromium 包会自动拉取大部分依赖）
 # 参考: https://playwright.dev/docs/browsers#google-chrome--microsoft-edge
 RUN apk add --no-cache \
     chromium \
@@ -16,24 +16,7 @@ RUN apk add --no-cache \
     freetype \
     harfbuzz \
     ca-certificates \
-    ttf-freefont \
-    mesa-va-gallium \
-    mesa-vdpau-gallium \
-    ffmpeg \
-    libxcomposite \
-    libxrandr \
-    libxdamage \
-    libxfixes \
-    libxkbcommon \
-    libdrm \
-    alsa-lib \
-    cups-libs \
-    pango \
-    cairo-gobject \
-    at-spi2-core \
-    atk \
-    gtk+3.0 \
-    libgbm
+    ttf-freefont
 
 # 告知 Playwright 使用系统已安装的 Chromium，不再下载
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
