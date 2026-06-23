@@ -22,6 +22,9 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# 设置 npm 国内镜像源（避免 Docker 构建时访问 npmjs.org 超时）
+RUN npm config set registry https://registry.npmmirror.com
+
 COPY package*.json ./
 COPY tsconfig.json ./
 RUN npm install

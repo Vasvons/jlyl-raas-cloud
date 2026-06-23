@@ -11,14 +11,20 @@ ENV TZ=Asia/Shanghai
 
 WORKDIR /app
 
-# 安装依赖
-COPY server/package*.json ./
-RUN npm install --production
+# 设置 npm 国内镜像源（避免 Docker 构建时访问 npmjs.org 超时）
+RUN npm config set registry https://registry.npmmirror.com
 
-# 复制源码并构建
+# 安装全部依赖（包含 devDependencies 中的 typescript 等，用于编译）
+COPY server/package*.json ./
+RUN npm install
+
+# 复制源码并编译
 COPY server/tsconfig.json ./
 COPY server/src ./src
-RUN npm install typescript ts-node-dev && npx tsc
+RUN npx tsc
+
+# 清理开发依赖，只保留生产依赖
+RUN npm prune --production
 
 # 环境变量
 ENV NODE_ENV=production
