@@ -3,8 +3,8 @@ import { BasePlatformAdapter } from './baseAdapter';
 /** 纳米搜索适配器 */
 export class NanoAdapter extends BasePlatformAdapter {
   platformName = '纳米';
-  loginUrl = 'https://nano.baidu.com/';
-  chatUrl = 'https://nano.baidu.com/';
+  loginUrl = 'https://www.n.cn/';
+  chatUrl = 'https://www.n.cn/chat';
   supportsShare = false;
   protected inputSelector = 'textarea, input[type="text"]';
   protected responseSelector = '.answer, .result-content, [class*="answer"]';

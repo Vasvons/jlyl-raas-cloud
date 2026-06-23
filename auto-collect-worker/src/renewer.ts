@@ -16,7 +16,7 @@ const PLATFORM_CHAT_URLS: Record<string, string> = {
   '通义千问': 'https://tongyi.aliyun.com/qianwen/',
   '腾讯元宝': 'https://yuanbao.tencent.com/chat/',
   '文心一言': 'https://yiyan.baidu.com/',
-  '纳米': 'https://nano.baidu.com/',
+  '纳米': 'https://www.n.cn/chat',
   '智谱AI': 'https://chatglm.cn/chat/',
 };
 
