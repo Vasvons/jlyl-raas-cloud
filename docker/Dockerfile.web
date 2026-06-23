@@ -4,8 +4,11 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 
+# 使用国内 npm 镜像源加速安装
+RUN npm config set registry https://registry.npmmirror.com
+
 COPY web/package*.json ./
-RUN npm install
+RUN npm install --no-audit --no-fund
 
 COPY web/ ./
 RUN mkdir -p public && npm run build
