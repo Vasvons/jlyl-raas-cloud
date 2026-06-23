@@ -388,6 +388,9 @@ export async function migrate() {
       console.log(`[Migrate] 已将 ${dailyLimitUpdate.rowCount} 个账号的每日限额从 50 更新为 200`);
     }
 
+    // 增量迁移：添加 avatar_url 字段（用于账号列表显示头像）
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS avatar_url TEXT`);
+
     console.log('[Migrate] 真实收录查询相关表创建/验证完成');
 
     // 关键词生成器配置表（持久化词汇配置，替代localStorage）

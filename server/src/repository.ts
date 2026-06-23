@@ -1913,6 +1913,7 @@ export async function savePlatformAuth(params: {
   accountName?: string;
   storageState: string;
   expiresAt?: Date;
+  avatarUrl?: string;
 }): Promise<number> {
   const existing = await query(
     `SELECT id FROM platform_auth 
@@ -1924,16 +1925,17 @@ export async function savePlatformAuth(params: {
       `UPDATE platform_auth 
        SET storage_state = $1, expires_at = $2, status = 'active', 
            health_score = 100, last_query_count = 0, cooldown_until = NULL,
+           avatar_url = COALESCE($4, avatar_url),
            updated_at = NOW()
        WHERE id = $3`,
-      [params.storageState, params.expiresAt || null, existing.rows[0].id]
+      [params.storageState, params.expiresAt || null, existing.rows[0].id, params.avatarUrl || null]
     );
     return existing.rows[0].id;
   }
   const result = await query(
-    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, expires_at, status)
-     VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
-    [params.userId || null, params.platform, params.accountName || null, params.storageState, params.expiresAt || null]
+    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, expires_at, status, avatar_url)
+     VALUES ($1, $2, $3, $4, $5, 'active', $6) RETURNING id`,
+    [params.userId || null, params.platform, params.accountName || null, params.storageState, params.expiresAt || null, params.avatarUrl || null]
   );
   return result.rows[0].id;
 }
@@ -1943,7 +1945,7 @@ export async function getPlatformAuthList(userId?: string) {
   const result = await query(
     `SELECT id, user_id, platform, account_name, expires_at, status, 
             last_used_at, last_query_count, daily_limit, cooldown_until, health_score,
-            created_at, updated_at
+            avatar_url, created_at, updated_at
      FROM platform_auth
      WHERE $1::text IS NULL OR user_id = $1
      ORDER BY platform, created_at`,

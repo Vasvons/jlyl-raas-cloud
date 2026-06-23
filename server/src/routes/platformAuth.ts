@@ -137,7 +137,7 @@ router.get('/:id', async (req, res) => {
 // 保存/更新账号授权（桌面端登录成功后调用）
 router.post('/save', async (req, res) => {
   try {
-    const { userId, platform, accountName, storageState, expiresAt } = req.body;
+    const { userId, platform, accountName, storageState, expiresAt, avatarUrl } = req.body;
     if (!platform || !storageState) {
       return res.status(400).json({ code: 400, message: '缺少 platform 或 storageState 参数' });
     }
@@ -153,6 +153,7 @@ router.post('/save', async (req, res) => {
       accountName,
       storageState,
       expiresAt: expiresAt ? new Date(expiresAt) : undefined,
+      avatarUrl,
     });
     res.json({ code: 200, message: '保存成功', data: { id } });
   } catch (e: any) {
@@ -166,6 +167,20 @@ router.delete('/:id', async (req, res) => {
     const id = parseInt(req.params.id);
     await deletePlatformAuth(id);
     res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 获取账号的 storageState（桌面端"登入"已登录账号时使用，需鉴权）
+router.get('/:id/storage-state', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const auth = await getPlatformAuthById(id);
+    if (!auth) {
+      return res.status(404).json({ code: 404, message: '账号不存在' });
+    }
+    res.json({ code: 200, data: { storageState: auth.storage_state, platform: auth.platform } });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }
