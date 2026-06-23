@@ -62,10 +62,23 @@ jobs:
             fi
             echo ">>> 使用命令: $DC"
 
+            # 先配置 Docker 镜像加速器（在 prune 之前，确保后续拉取镜像时加速器已生效）
+            echo ">>> 更新 Docker 镜像加速器配置..."
+            mkdir -p /etc/docker
+            echo '{"registry-mirrors":["https://0vmzj3q6.mirror.aliyuncs.com","https://docker.m.daocloud.io","https://docker.mirrors.ustc.edu.cn"]}' > /etc/docker/daemon.json
+            systemctl restart docker
+            echo ">>> Docker 已重启，等待恢复..."
+            sleep 8
+            # 验证镜像加速器是否生效
+            echo ">>> 验证镜像加速器配置："
+            docker info 2>/dev/null | grep -A5 "Registry Mirrors" || echo "警告：未检测到镜像加速器配置"
+
+            # 清理 Docker 无用资源（不删除正在使用的基础镜像，避免重新拉取）
             echo ">>> 清理Docker无用资源释放磁盘空间..."
-            docker system prune -af 2>/dev/null || true
-            docker image prune -af 2>/dev/null || true
             docker container prune -f 2>/dev/null || true
+            docker builder prune -af 2>/dev/null || true
+            # 只清理未使用的镜像（不加 -a），保留基础镜像缓存
+            docker image prune -f 2>/dev/null || true
             # 清理系统日志（保留最近1天）
             journalctl --vacuum-time=1d 2>/dev/null || true
             # 清理apt缓存
@@ -73,22 +86,18 @@ jobs:
             rm -rf /var/cache/apt/archives/* 2>/dev/null || true
             # 清理临时文件
             rm -rf /tmp/* 2>/dev/null || true
-            # 清理Docker构建缓存
-            docker builder prune -af 2>/dev/null || true
 
             echo ">>> 查看磁盘空间："
             df -h /
 
-            # 更新 Docker 镜像加速器配置（避免单个加速器故障导致构建失败）
-            echo ">>> 更新 Docker 镜像加速器配置..."
-            echo '{"registry-mirrors":["https://0vmzj3q6.mirror.aliyuncs.com","https://docker.m.daocloud.io","https://docker.mirrors.ustc.edu.cn"]}' > /etc/docker/daemon.json
-            systemctl restart docker
-            echo ">>> Docker 已重启，等待恢复..."
-            sleep 5
-
             # 预拉取基础镜像（带重试，避免单次拉取失败）
             echo ">>> 预拉取基础镜像..."
             for img in node:18-alpine node:20-slim postgres:15-alpine; do
+              # 检查镜像是否已存在（缓存），存在则跳过
+              if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${img}$"; then
+                echo ">>> $img 已存在，跳过拉取"
+                continue
+              fi
               for attempt in 1 2 3; do
                 echo ">>> 拉取 $img (尝试 $attempt/3)..."
                 if docker pull $img; then
