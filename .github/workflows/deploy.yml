@@ -80,10 +80,26 @@ jobs:
 
             # 更新 Docker 镜像加速器配置（避免单个加速器故障导致构建失败）
             echo ">>> 更新 Docker 镜像加速器配置..."
-            printf '%s\n' '{"registry-mirrors":["https://mirror.ccs.tencentyun.com","https://docker.mirrors.ustc.edu.cn","https://hub-mirror.c.163.com","https://dockerhub.azk8s.cn","https://0vmzj3q6.mirror.aliyuncs.com"]}' > /etc/docker/daemon.json
+            echo '{"registry-mirrors":["https://0vmzj3q6.mirror.aliyuncs.com","https://docker.m.daocloud.io","https://docker.mirrors.ustc.edu.cn"]}' > /etc/docker/daemon.json
             systemctl restart docker
             echo ">>> Docker 已重启，等待恢复..."
             sleep 5
+
+            # 预拉取基础镜像（带重试，避免单次拉取失败）
+            echo ">>> 预拉取基础镜像..."
+            for img in node:18-alpine node:20-slim postgres:15-alpine; do
+              for attempt in 1 2 3; do
+                echo ">>> 拉取 $img (尝试 $attempt/3)..."
+                if docker pull $img; then
+                  echo ">>> $img 拉取成功"
+                  break
+                elif [ $attempt -eq 3 ]; then
+                  echo ">>> 错误：$img 拉取失败，已重试3次"
+                  exit 1
+                fi
+                sleep 3
+              done
+            done
 
             echo ">>> 停止所有服务..."
             $DC down --remove-orphans || true
