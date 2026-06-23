@@ -80,17 +80,7 @@ jobs:
 
             # 更新 Docker 镜像加速器配置（避免单个加速器故障导致构建失败）
             echo ">>> 更新 Docker 镜像加速器配置..."
-            cat > /etc/docker/daemon.json << 'DEOF'
-{
-  "registry-mirrors": [
-    "https://mirror.ccs.tencentyun.com",
-    "https://docker.mirrors.ustc.edu.cn",
-    "https://hub-mirror.c.163.com",
-    "https://dockerhub.azk8s.cn",
-    "https://0vmzj3q6.mirror.aliyuncs.com"
-  ]
-}
-DEOF
+            printf '%s\n' '{"registry-mirrors":["https://mirror.ccs.tencentyun.com","https://docker.mirrors.ustc.edu.cn","https://hub-mirror.c.163.com","https://dockerhub.azk8s.cn","https://0vmzj3q6.mirror.aliyuncs.com"]}' > /etc/docker/daemon.json
             systemctl restart docker
             echo ">>> Docker 已重启，等待恢复..."
             sleep 5
