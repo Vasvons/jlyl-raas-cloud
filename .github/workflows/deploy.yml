@@ -18,7 +18,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          command_timeout: 20m
+          command_timeout: 30m
           script: |
             set -e
             echo "===== 开始部署 jlyl-cloud ====="
@@ -90,25 +90,27 @@ jobs:
             echo ">>> 查看磁盘空间："
             df -h /
 
-            # 预拉取基础镜像（带重试，避免单次拉取失败）
+            # 预拉取基础镜像（带重试，失败不阻塞部署，docker compose build 会自动拉取）
             echo ">>> 预拉取基础镜像..."
-            for img in node:18-alpine node:20-slim postgres:15-alpine; do
+            for img in node:18-alpine node:20-slim postgres:15-alpine nginx:alpine; do
               # 检查镜像是否已存在（缓存），存在则跳过
               if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${img}$"; then
                 echo ">>> $img 已存在，跳过拉取"
                 continue
               fi
+              pulled=false
               for attempt in 1 2 3; do
                 echo ">>> 拉取 $img (尝试 $attempt/3)..."
                 if docker pull $img; then
                   echo ">>> $img 拉取成功"
+                  pulled=true
                   break
-                elif [ $attempt -eq 3 ]; then
-                  echo ">>> 错误：$img 拉取失败，已重试3次"
-                  exit 1
                 fi
                 sleep 3
               done
+              if [ "$pulled" = false ]; then
+                echo ">>> 警告：$img 拉取失败，将在 docker compose build 时自动拉取"
+              fi
             done
 
             echo ">>> 停止所有服务..."
