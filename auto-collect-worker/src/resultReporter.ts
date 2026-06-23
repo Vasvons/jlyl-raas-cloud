@@ -1,4 +1,5 @@
 import axios from 'axios';
+import * as logger from './logger';
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 
@@ -21,9 +22,9 @@ export async function reportResult(result: {
     }, {
       timeout: 30000
     });
-    console.log(`[Reporter] 结果回写成功: ${result.platform}/${result.keyword.substring(0, 20)}`);
+    logger.info(`[Reporter] 结果回写成功: ${result.platform}/${result.keyword.substring(0, 20)}`);
   } catch (e: any) {
-    console.error(`[Reporter] 结果回写失败: ${e.message}`);
+    logger.error(`[Reporter] 结果回写失败: ${e.message}`);
     throw e;
   }
 }

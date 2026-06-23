@@ -358,6 +358,28 @@ export async function migrate() {
       )
     `);
 
+    // 平台账号池表（支持一个平台多个账号，用于账号池并发）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS platform_auth (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT,
+        platform VARCHAR(32) NOT NULL,
+        account_name VARCHAR(128),
+        storage_state TEXT NOT NULL,
+        expires_at TIMESTAMP,
+        status VARCHAR(16) DEFAULT 'active',
+        last_used_at TIMESTAMP,
+        last_query_count INTEGER DEFAULT 0,
+        daily_limit INTEGER DEFAULT 50,
+        cooldown_until TIMESTAMP,
+        health_score INTEGER DEFAULT 100,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_platform_status ON platform_auth(platform, status, last_used_at)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_user ON platform_auth(user_id)`);
+
     console.log('[Migrate] 真实收录查询相关表创建/验证完成');
 
     // 关键词生成器配置表（持久化词汇配置，替代localStorage）
@@ -397,6 +419,44 @@ export async function migrate() {
     // 添加priority字段（0=普通定时入队，1=手动立即执行），兼容已存在表
     await client.query(`ALTER TABLE real_collect_queue ADD COLUMN IF NOT EXISTS priority SMALLINT DEFAULT 0`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_priority ON real_collect_queue(priority)`);
+
+    // Worker 运行日志表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS worker_log (
+        id BIGSERIAL PRIMARY KEY,
+        worker_id VARCHAR(64) NOT NULL,
+        task_id BIGINT,
+        level VARCHAR(16) DEFAULT 'info',
+        message TEXT NOT NULL,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_task ON worker_log(task_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_wl_create_time ON worker_log(create_time DESC)`);
+
+    // AEO 分析报告表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS aeo_report (
+        id BIGSERIAL PRIMARY KEY,
+        task_id BIGINT NOT NULL,
+        user_id TEXT NOT NULL,
+        report_date DATE NOT NULL,
+        visibility_score INTEGER DEFAULT 0,
+        mention_count INTEGER DEFAULT 0,
+        positive_ratio NUMERIC(5,2) DEFAULT 0,
+        neutral_ratio NUMERIC(5,2) DEFAULT 0,
+        negative_ratio NUMERIC(5,2) DEFAULT 0,
+        competitor_analysis TEXT,
+        suggestions TEXT,
+        raw_analysis TEXT,
+        record_ids BIGINT[],
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_aeo_task FOREIGN KEY (task_id) REFERENCES real_collect_task(id) ON DELETE CASCADE
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_task ON aeo_report(task_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_user_date ON aeo_report(user_id, report_date DESC)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_aeo_task_date_unique ON aeo_report(task_id, report_date)`);
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {

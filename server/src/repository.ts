@@ -1889,3 +1889,411 @@ export async function getDistillateKeywords(userId: string): Promise<string[]> {
   );
   return result.rows.map((r: any) => r.value);
 }
+
+/** 获取用户的蒸馏词库（分片版：按星期几取 1/7） */
+export async function getDistillateKeywordsSharded(userId: string, shards: number = 7): Promise<string[]> {
+  const dayOfWeek = new Date().getDay(); // 0=周日
+  const shardIndex = dayOfWeek % shards;
+  const result = await query(
+    `SELECT value FROM zlgjc 
+     WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL)
+       AND (id % $2) = $3
+     ORDER BY id`,
+    [userId, shards, shardIndex]
+  );
+  return result.rows.map((r: any) => r.value);
+}
+
+// ============ 平台账号池 ============
+
+/** 保存或更新平台账号授权 */
+export async function savePlatformAuth(params: {
+  userId?: string;
+  platform: string;
+  accountName?: string;
+  storageState: string;
+  expiresAt?: Date;
+}): Promise<number> {
+  const existing = await query(
+    `SELECT id FROM platform_auth 
+     WHERE platform = $1 AND account_name = $2`,
+    [params.platform, params.accountName || null]
+  );
+  if (existing.rows.length > 0) {
+    await query(
+      `UPDATE platform_auth 
+       SET storage_state = $1, expires_at = $2, status = 'active', 
+           health_score = 100, last_query_count = 0, cooldown_until = NULL,
+           updated_at = NOW()
+       WHERE id = $3`,
+      [params.storageState, params.expiresAt || null, existing.rows[0].id]
+    );
+    return existing.rows[0].id;
+  }
+  const result = await query(
+    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, expires_at, status)
+     VALUES ($1, $2, $3, $4, $5, 'active') RETURNING id`,
+    [params.userId || null, params.platform, params.accountName || null, params.storageState, params.expiresAt || null]
+  );
+  return result.rows[0].id;
+}
+
+/** 查询用户所有平台授权 */
+export async function getPlatformAuthList(userId?: string) {
+  const result = await query(
+    `SELECT id, user_id, platform, account_name, expires_at, status, 
+            last_used_at, last_query_count, daily_limit, cooldown_until, health_score,
+            created_at, updated_at
+     FROM platform_auth
+     WHERE $1::text IS NULL OR user_id = $1
+     ORDER BY platform, created_at`,
+    [userId || null]
+  );
+  return result.rows;
+}
+
+/** 查询单个账号的完整信息（含 storage_state，worker 用） */
+export async function getPlatformAuthById(id: number) {
+  const result = await query(`SELECT * FROM platform_auth WHERE id = $1`, [id]);
+  return result.rows[0] || null;
+}
+
+/** 从账号池借用一个可用账号（最久未使用优先） */
+export async function acquirePlatformAccount(platform: string): Promise<{ id: number; storageState: string } | null> {
+  const result = await query(
+    `UPDATE platform_auth 
+     SET last_used_at = NOW(), last_query_count = last_query_count + 1
+     WHERE id = (
+       SELECT id FROM platform_auth 
+       WHERE platform = $1 
+         AND status = 'active'
+         AND (expires_at IS NULL OR expires_at > NOW())
+         AND (cooldown_until IS NULL OR cooldown_until < NOW())
+         AND last_query_count < daily_limit
+       ORDER BY last_used_at ASC NULLS FIRST
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+     )
+     RETURNING id, storage_state`,
+    [platform]
+  );
+  if (result.rows.length === 0) return null;
+  return { id: result.rows[0].id, storageState: result.rows[0].storage_state };
+}
+
+/** 归还账号（根据查询结果更新健康度） */
+export async function releasePlatformAccount(
+  authId: number,
+  result: 'success' | 'failed' | 'rate_limited'
+): Promise<void> {
+  if (result === 'success') {
+    await query(
+      `UPDATE platform_auth SET health_score = LEAST(100, health_score + 1), updated_at = NOW() WHERE id = $1`,
+      [authId]
+    );
+  } else if (result === 'rate_limited') {
+    await query(
+      `UPDATE platform_auth 
+       SET cooldown_until = NOW() + INTERVAL '30 minutes',
+           health_score = GREATEST(0, health_score - 20),
+           status = CASE WHEN health_score - 20 < 30 THEN 'cooling' ELSE status END,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [authId]
+    );
+  } else {
+    await query(
+      `UPDATE platform_auth SET health_score = GREATEST(0, health_score - 5), updated_at = NOW() WHERE id = $1`,
+      [authId]
+    );
+  }
+}
+
+/** 删除平台账号授权 */
+export async function deletePlatformAuth(id: number): Promise<void> {
+  await query(`DELETE FROM platform_auth WHERE id = $1`, [id]);
+}
+
+/** 每日重置查询计数 + 恢复冷却中的账号 */
+export async function resetDailyAuthCounters(): Promise<void> {
+  await query(
+    `UPDATE platform_auth
+     SET last_query_count = 0,
+         status = CASE
+           WHEN status = 'cooling' AND health_score > 30 THEN 'active'
+           WHEN status = 'cooling' THEN 'expired'
+           ELSE status
+         END,
+         updated_at = NOW()
+     WHERE last_query_count > 0 OR status = 'cooling'`
+  );
+}
+
+/** 获取所有活跃授权（用于自动续期） */
+export async function getAllActiveAuths() {
+  const result = await query(
+    `SELECT id, platform, storage_state FROM platform_auth WHERE status = 'active'`
+  );
+  return result.rows;
+}
+
+/** 更新账号的 storageState（续期时用） */
+export async function updatePlatformAuthStorage(id: number, storageState: string, expiresAt?: Date): Promise<void> {
+  await query(
+    `UPDATE platform_auth SET storage_state = $1, expires_at = $2, updated_at = NOW() WHERE id = $3`,
+    [storageState, expiresAt || null, id]
+  );
+}
+
+/** 标记账号状态 */
+export async function updatePlatformAuthStatus(id: number, status: string): Promise<void> {
+  await query(`UPDATE platform_auth SET status = $1, updated_at = NOW() WHERE id = $2`, [status, id]);
+}
+
+/** 获取可用账号数统计 */
+export async function getAvailableAuthCount(): Promise<{ total: number; byPlatform: Record<string, number> }> {
+  const result = await query(
+    `SELECT platform, COUNT(*) as count 
+     FROM platform_auth 
+     WHERE status = 'active' 
+       AND (expires_at IS NULL OR expires_at > NOW())
+       AND (cooldown_until IS NULL OR cooldown_until < NOW())
+       AND last_query_count < daily_limit
+     GROUP BY platform`
+  );
+  const byPlatform: Record<string, number> = {};
+  let total = 0;
+  for (const row of result.rows) {
+    byPlatform[row.platform] = parseInt(row.count);
+    total += parseInt(row.count);
+  }
+  return { total, byPlatform };
+}
+
+// ============ Worker 日志 ============
+
+export async function insertWorkerLog(params: {
+  workerId: string;
+  taskId?: number;
+  level: string;
+  message: string;
+}): Promise<void> {
+  await query(
+    `INSERT INTO worker_log (worker_id, task_id, level, message) VALUES ($1, $2, $3, $4)`,
+    [params.workerId, params.taskId || null, params.level, params.message]
+  );
+}
+
+export async function getWorkerLogs(params: {
+  taskId?: number;
+  limit?: number;
+  sinceId?: number;
+}): Promise<any[]> {
+  const limit = params.limit || 100;
+  const conditions: string[] = [];
+  const args: any[] = [];
+  let idx = 1;
+
+  if (params.taskId) {
+    conditions.push(`task_id = $${idx++}`);
+    args.push(params.taskId);
+  }
+  if (params.sinceId) {
+    conditions.push(`id > $${idx++}`);
+    args.push(params.sinceId);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  args.push(limit);
+
+  const result = await query(
+    `SELECT id, worker_id, task_id, level, message,
+            to_char((create_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') as create_time
+     FROM worker_log ${whereClause}
+     ORDER BY id DESC LIMIT $${idx}`,
+    args
+  );
+  return result.rows;
+}
+
+export async function cleanOldWorkerLogs(daysToKeep: number = 7): Promise<void> {
+  const safeDays = Math.max(1, Math.min(365, Math.floor(daysToKeep)));
+  await query(`DELETE FROM worker_log WHERE create_time < NOW() - make_interval(days => $1)`, [safeDays]);
+}
+
+// ============ 队列压力监控 ============
+
+export async function getQueuePressure(): Promise<{ pendingCount: number; processingCount: number }> {
+  const result = await query(
+    `SELECT
+       COUNT(*) FILTER (WHERE status = 'pending') as pending,
+       COUNT(*) FILTER (WHERE status = 'processing') as processing
+     FROM real_collect_queue`
+  );
+  return {
+    pendingCount: parseInt(result.rows[0]?.pending || '0'),
+    processingCount: parseInt(result.rows[0]?.processing || '0'),
+  };
+}
+
+// ============ 账号续期 ============
+
+export async function getAuthsForRenewal(): Promise<any[]> {
+  // 获取所有活跃且超过3天未更新的账号，使用 FOR UPDATE SKIP LOCKED 防止并发竞态
+  const result = await query(
+    `UPDATE platform_auth
+     SET updated_at = NOW()
+     WHERE id IN (
+       SELECT id FROM platform_auth
+       WHERE status = 'active'
+         AND updated_at < NOW() - INTERVAL '3 days'
+       ORDER BY updated_at ASC
+       LIMIT 50
+       FOR UPDATE SKIP LOCKED
+     )
+     RETURNING id, platform, storage_state`
+  );
+  return result.rows;
+}
+
+// ============ AEO 报告 ============
+
+export async function insertAeoReport(params: {
+  taskId: number;
+  userId: string;
+  reportDate: string;
+  visibilityScore: number;
+  mentionCount: number;
+  positiveRatio: number;
+  neutralRatio: number;
+  negativeRatio: number;
+  competitorAnalysis: string;
+  suggestions: string;
+  rawAnalysis: string;
+  recordIds: number[];
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO aeo_report
+     (task_id, user_id, report_date, visibility_score, mention_count,
+      positive_ratio, neutral_ratio, negative_ratio,
+      competitor_analysis, suggestions, raw_analysis, record_ids)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     ON CONFLICT (task_id, report_date) DO UPDATE SET
+       visibility_score = EXCLUDED.visibility_score,
+       mention_count = EXCLUDED.mention_count,
+       positive_ratio = EXCLUDED.positive_ratio,
+       neutral_ratio = EXCLUDED.neutral_ratio,
+       negative_ratio = EXCLUDED.negative_ratio,
+       competitor_analysis = EXCLUDED.competitor_analysis,
+       suggestions = EXCLUDED.suggestions,
+       raw_analysis = EXCLUDED.raw_analysis,
+       record_ids = EXCLUDED.record_ids
+     RETURNING id`,
+    [params.taskId, params.userId, params.reportDate, params.visibilityScore, params.mentionCount,
+     params.positiveRatio, params.neutralRatio, params.negativeRatio,
+     params.competitorAnalysis, params.suggestions, params.rawAnalysis, params.recordIds]
+  );
+  return result.rows[0].id;
+}
+
+export async function getAeoReports(params: {
+  taskId?: number;
+  userId?: string;
+  limit?: number;
+}): Promise<any[]> {
+  const limit = params.limit || 30;
+  const conditions: string[] = [];
+  const args: any[] = [];
+  let idx = 1;
+
+  if (params.taskId) {
+    conditions.push(`task_id = $${idx++}`);
+    args.push(params.taskId);
+  }
+  if (params.userId) {
+    conditions.push(`user_id = $${idx++}`);
+    args.push(params.userId);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  args.push(limit);
+
+  const result = await query(
+    `SELECT id, task_id, user_id,
+            to_char(report_date, 'YYYY-MM-DD') as report_date,
+            visibility_score, mention_count,
+            positive_ratio, neutral_ratio, negative_ratio,
+            competitor_analysis, suggestions, raw_analysis, record_ids,
+            to_char((create_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') as create_time
+     FROM aeo_report ${whereClause}
+     ORDER BY report_date DESC, id DESC LIMIT $${idx}`,
+    args
+  );
+  return result.rows;
+}
+
+export async function getLatestAeoReport(taskId: number): Promise<any | null> {
+  const result = await query(
+    `SELECT id, task_id, user_id,
+            to_char(report_date, 'YYYY-MM-DD') as report_date,
+            visibility_score, mention_count,
+            positive_ratio, neutral_ratio, negative_ratio,
+            competitor_analysis, suggestions, raw_analysis, record_ids,
+            to_char((create_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') as create_time
+     FROM aeo_report
+     WHERE task_id = $1
+     ORDER BY report_date DESC LIMIT 1`,
+    [taskId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getAeoReportById(id: number): Promise<any | null> {
+  const result = await query(
+    `SELECT id, task_id, user_id,
+            to_char(report_date, 'YYYY-MM-DD') as report_date,
+            visibility_score, mention_count,
+            positive_ratio, neutral_ratio, negative_ratio,
+            competitor_analysis, suggestions, raw_analysis, record_ids,
+            to_char((create_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') as create_time
+     FROM aeo_report WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+/** 获取任务当天已收集的品牌提及记录 */
+export async function getBrandMentionRecordsForAeo(taskId: number, limit: number = 200): Promise<any[]> {
+  const safeLimit = Math.max(1, Math.min(1000, Math.floor(limit)));
+  const result = await query(
+    `SELECT id, keyword, platform, raw_content, share_url, matched_brands,
+            to_char((query_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') as query_time
+     FROM real_collect_record
+     WHERE task_id = $1
+       AND brand_matched = true
+       AND query_time >= (CURRENT_DATE AT TIME ZONE 'Asia/Shanghai')::timestamp
+     ORDER BY query_time DESC LIMIT $2`,
+    [taskId, safeLimit]
+  );
+  return result.rows;
+}
+
+/** 获取所有需要生成 AEO 日报的活跃任务 */
+export async function getActiveTasksForAeo(): Promise<any[]> {
+  const result = await query(
+    `SELECT t.id, t.user_id, t.task_name, t.keyword_type
+     FROM real_collect_task t
+     WHERE t.status = 'active'
+     ORDER BY t.id`
+  );
+  return result.rows;
+}
+
+/** 检查今日是否已生成 AEO 报告 */
+export async function checkAeoReportExists(taskId: number, reportDate: string): Promise<boolean> {
+  const result = await query(
+    `SELECT 1 FROM aeo_report WHERE task_id = $1 AND report_date = $2`,
+    [taskId, reportDate]
+  );
+  return result.rows.length > 0;
+}

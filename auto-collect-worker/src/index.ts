@@ -1,29 +1,42 @@
 import dotenv from 'dotenv';
 import axios from 'axios';
 import { executeTask } from './taskFetcher';
+import * as logger from './logger';
+import { getCurrentConcurrency } from './dynamicConcurrency';
+import { startRenewer, stopRenewer } from './renewer';
 
 dotenv.config();
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
-const POLL_INTERVAL = process.env.POLL_INTERVAL ? parseInt(process.env.POLL_INTERVAL) : 2000; // 默认2秒轮询一次，保证手动立即执行的任务能快速被消费
+const POLL_INTERVAL = process.env.POLL_INTERVAL ? parseInt(process.env.POLL_INTERVAL) : 2000;
 
 const WORKER_ID = `worker-${process.pid}-${Date.now()}`;
 
-console.log(`[Worker] 自动收录查询Worker已启动`);
-console.log(`[Worker] WORKER_ID=${WORKER_ID}`);
-console.log(`[Worker] SERVER_URL=${SERVER_URL}`);
-console.log(`[Worker] POLL_INTERVAL=${POLL_INTERVAL}ms`);
+// P3-5: SERVER_URL 缺 fail-fast 提示
+if (!process.env.SERVER_URL) {
+  console.error('[Worker] 警告: SERVER_URL 环境变量未设置，使用默认值 http://localhost:3002');
+  console.error('[Worker] 生产环境请务必设置 SERVER_URL 指向云端服务地址');
+}
+
+logger.info(`自动收录查询Worker已启动`);
+logger.info(`WORKER_ID=${WORKER_ID}`);
+logger.info(`SERVER_URL=${SERVER_URL}`);
+logger.info(`POLL_INTERVAL=${POLL_INTERVAL}ms`);
+
+// 启动账号续期器
+startRenewer();
 
 let isProcessing = false;
+let isShuttingDown = false;
+let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function pollAndExecute(): Promise<void> {
-  if (isProcessing) {
-    return; // 上一个任务还在执行，跳过本次轮询
+  if (isProcessing || isShuttingDown) {
+    return;
   }
 
   isProcessing = true;
   try {
-    // 从队列消费任务
     const resp = await axios.post(`${SERVER_URL}/real-collect/queue/dequeue`, {
       workerId: WORKER_ID
     }, {
@@ -32,29 +45,34 @@ async function pollAndExecute(): Promise<void> {
 
     const task = resp.data?.data;
     if (!task) {
-      return; // 队列为空
+      return;
     }
 
-    console.log(`[Worker] 消费到任务 queueId=${task.queueId} taskId=${task.taskId} userId=${task.userId} keywords=${task.keywords?.length} platforms=${task.platforms?.length}`);
+    logger.setTaskId(task.taskId);
+    logger.info(`消费到任务 queueId=${task.queueId} taskId=${task.taskId} userId=${task.userId} keywords=${task.keywords?.length} platforms=${task.platforms?.length}`);
 
     let recordCount = 0;
     let brandCount = 0;
     let errorMsg: string | undefined;
 
     try {
+      // 获取动态并发数
+      const concurrency = await getCurrentConcurrency();
       const result = await executeTask({
         taskId: task.taskId,
         userId: task.userId,
         keywordType: task.keywordType,
         keywords: task.keywords,
-        platforms: task.platforms
+        platforms: task.platforms,
+        concurrency,
+        workerId: WORKER_ID,
       });
       recordCount = result.totalRecords;
       brandCount = result.brandMatched;
-      console.log(`[Worker] 任务执行完成 queueId=${task.queueId} records=${recordCount} brands=${brandCount}`);
+      logger.info(`任务执行完成 queueId=${task.queueId} records=${recordCount} brands=${brandCount}`);
     } catch (e: any) {
       errorMsg = e.message;
-      console.error(`[Worker] 任务执行失败 queueId=${task.queueId}:`, e.message);
+      logger.error(`任务执行失败 queueId=${task.queueId}: ${e.message}`);
     }
 
     // 回写队列结果
@@ -68,36 +86,59 @@ async function pollAndExecute(): Promise<void> {
       }, {
         timeout: 10000
       });
-      console.log(`[Worker] 队列结果回写成功 queueId=${task.queueId}`);
+      logger.info(`队列结果回写成功 queueId=${task.queueId}`);
     } catch (e: any) {
-      console.error(`[Worker] 队列结果回写失败 queueId=${task.queueId}:`, e.message);
+      logger.error(`队列结果回写失败 queueId=${task.queueId}: ${e.message}`);
     }
+
+    logger.setTaskId(undefined);
   } catch (e: any) {
-    console.error(`[Worker] 轮询失败:`, e.message);
+    logger.error(`轮询失败: ${e.message}`);
   } finally {
     isProcessing = false;
   }
 }
 
 // 启动轮询
-setInterval(() => {
+pollTimer = setInterval(() => {
   pollAndExecute().catch(e => {
-    console.error('[Worker] 轮询异常:', e.message);
+    logger.error(`轮询异常: ${e.message}`);
   });
 }, POLL_INTERVAL);
 
 // 启动时立即执行一次
 pollAndExecute().catch(e => {
-  console.error('[Worker] 启动轮询异常:', e.message);
+  logger.error(`启动轮询异常: ${e.message}`);
 });
 
-// 优雅退出
-process.on('SIGTERM', () => {
-  console.log('[Worker] 收到SIGTERM信号，准备退出');
-  process.exit(0);
-});
+// 优雅停机
+async function shutdown(signal: string): Promise<void> {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  logger.info(`收到${signal}信号，准备优雅退出`);
 
-process.on('SIGINT', () => {
-  console.log('[Worker] 收到SIGINT信号，准备退出');
+  // 停止续期器
+  stopRenewer();
+
+  // 清理轮询定时器
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  // 等待当前任务完成（最多30秒）
+  const startTime = Date.now();
+  while (isProcessing && Date.now() - startTime < 30000) {
+    logger.info('等待当前任务完成...');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  // 刷新日志
+  await logger.flushLogs();
+
+  logger.info('退出完成');
   process.exit(0);
-});
+}
+
+process.on('SIGTERM', () => { shutdown('SIGTERM').catch(() => process.exit(0)); });
+process.on('SIGINT', () => { shutdown('SIGINT').catch(() => process.exit(0)); });

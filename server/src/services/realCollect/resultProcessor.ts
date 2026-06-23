@@ -1,7 +1,8 @@
 /**
- * 结果处理器：接收Worker回写的原始结果，识别品牌词和联系方式，生成静态页，入库
+ * 结果处理器：接收Worker回写的原始结果，做品牌词包含检查，生成静态页，入库
+ * 
+ * 简化版：只检查 content 是否包含品牌词，不做复杂识别（联系方式识别留给 AEO 阶段）
  */
-import { recognizeContent } from './recognizer';
 import {
   insertRealCollectRecord,
   insertStaticPage,
@@ -52,22 +53,26 @@ function generateStaticHtml(keyword: string, platform: string, content: string, 
 }
 
 export async function processWorkerResult(result: WorkerResult): Promise<void> {
+  // 获取用户品牌词
   const brandKeywords = await getBrandKeywords(result.userId);
-  const recognizeResult = recognizeContent(result.content, brandKeywords);
 
-  let staticPageId: number | null = null;
+  // 纯代码品牌词包含检查
+  const matchedBrands = brandKeywords.filter(brand =>
+    result.content.toLowerCase().includes(brand.toLowerCase())
+  );
+  const brandMatched = matchedBrands.length > 0;
 
-  // 先插入record获取id
+  // 先插入 record 获取 id
   const recordId = await insertRealCollectRecord({
     taskId: result.taskId,
     userId: result.userId,
     keyword: result.keyword,
     keywordType: result.keywordType,
     platform: result.platform,
-    brandMatched: recognizeResult.brandMatched,
-    matchedBrands: recognizeResult.matchedBrands,
-    hasContact: recognizeResult.hasContact,
-    contacts: recognizeResult.contacts,
+    brandMatched,
+    matchedBrands,
+    hasContact: false,
+    contacts: null,
     shareUrl: result.shareUrl,
     staticPageId: null,
     rawContent: result.content,
@@ -78,7 +83,7 @@ export async function processWorkerResult(result: WorkerResult): Promise<void> {
   // 不支持分享的平台或没有分享链接的，生成静态页
   if (!result.supportsShare || !result.shareUrl) {
     const html = generateStaticHtml(result.keyword, result.platform, result.content, result.htmlContent);
-    staticPageId = await insertStaticPage(recordId, html);
+    const staticPageId = await insertStaticPage(recordId, html);
     await updateRecordStaticPageId(recordId, staticPageId);
   }
 }

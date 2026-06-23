@@ -1,61 +1,36 @@
 import { Page } from 'playwright';
-import { PlatformAdapter, PlatformCredentials, QueryResult } from './base';
+import { BasePlatformAdapter } from './baseAdapter';
 
-export class KimiAdapter extends PlatformAdapter {
+/** Kimi 适配器 */
+export class KimiAdapter extends BasePlatformAdapter {
   platformName = 'Kimi';
   loginUrl = 'https://kimi.moonshot.cn/login';
   chatUrl = 'https://kimi.moonshot.cn/chat';
   supportsShare = true;
-
-  async login(page: Page, credentials: PlatformCredentials): Promise<boolean> {
-    await page.goto(this.loginUrl, { waitUntil: 'networkidle' });
-    // TODO: 实现具体登录逻辑
-    return await this.checkLoginStatus(page);
-  }
-
-  async checkLoginStatus(page: Page): Promise<boolean> {
-    await page.goto(this.chatUrl, { waitUntil: 'networkidle' });
-    return !page.url().includes('login');
-  }
-
-  async query(page: Page, keyword: string): Promise<QueryResult> {
-    await page.goto(this.chatUrl, { waitUntil: 'networkidle' });
-    const inputSelector = 'textarea';
-    await page.waitForSelector(inputSelector, { timeout: 10000 });
-    await page.fill(inputSelector, keyword);
-    await page.press(inputSelector, 'Enter');
-    await this.waitForResponse(page);
-    const { text, html } = await this.extractContent(page);
-    const shareUrl = await this.extractShareLink(page);
-    return {
-      content: text,
-      shareUrl,
-      htmlContent: html,
-      supportsShare: this.supportsShare
-    };
-  }
+  protected inputSelector = 'textarea';
+  protected responseSelector = '.chat-content-item-assistant, [class*="assistant"]';
+  protected stopButtonSelector = '[class*="stop"], .stop-btn';
+  protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
     try {
-      // TODO: 根据Kimi实际页面结构调整
+      // Kimi 的分享按钮通常在对话完成后出现
+      const shareBtn = await page.$('button:has-text("分享"), [class*="share"]:not([class*="share-text"])');
+      if (shareBtn) {
+        await shareBtn.click();
+        await page.waitForTimeout(1500);
+        // 尝试从弹窗中获取链接
+        const linkEl = await page.$('input[readonly], [class*="share-link"], [class*="link-input"]');
+        if (linkEl) {
+          const val = await linkEl.inputValue().catch(() => null);
+          if (val) return val;
+          const text = await linkEl.textContent();
+          if (text && text.startsWith('http')) return text.trim();
+        }
+      }
       return null;
-    } catch (e) {
-      console.error('[Kimi] 提取分享链接失败:', e);
+    } catch {
       return null;
     }
-  }
-
-  async extractContent(page: Page): Promise<{ text: string; html: string }> {
-    const responseSelector = '.chat-content-item-assistant';
-    await page.waitForSelector(responseSelector, { timeout: 30000 });
-    const text = await page.textContent(responseSelector) || '';
-    const html = await page.innerHTML(responseSelector) || '';
-    return { text: text.trim(), html };
-  }
-
-  async waitForResponse(page: Page): Promise<void> {
-    try {
-      await page.waitForSelector('.stop-button', { state: 'detached', timeout: 60000 });
-    } catch (e) {}
   }
 }

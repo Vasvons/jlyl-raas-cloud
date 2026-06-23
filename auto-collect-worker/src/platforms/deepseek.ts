@@ -1,62 +1,33 @@
 import { Page } from 'playwright';
-import { PlatformAdapter, PlatformCredentials, QueryResult } from './base';
+import { BasePlatformAdapter } from './baseAdapter';
 
-export class DeepSeekAdapter extends PlatformAdapter {
+/** DeepSeek 适配器 */
+export class DeepSeekAdapter extends BasePlatformAdapter {
   platformName = 'DeepSeek';
   loginUrl = 'https://chat.deepseek.com/sign_in';
   chatUrl = 'https://chat.deepseek.com/';
   supportsShare = true;
-
-  async login(page: Page, credentials: PlatformCredentials): Promise<boolean> {
-    await page.goto(this.loginUrl, { waitUntil: 'networkidle' });
-    // TODO: 实现具体登录逻辑，需要根据DeepSeek实际页面结构调整
-    return await this.checkLoginStatus(page);
-  }
-
-  async checkLoginStatus(page: Page): Promise<boolean> {
-    await page.goto(this.chatUrl, { waitUntil: 'networkidle' });
-    return !page.url().includes('sign_in');
-  }
-
-  async query(page: Page, keyword: string): Promise<QueryResult> {
-    await page.goto(this.chatUrl, { waitUntil: 'networkidle' });
-    const inputSelector = 'textarea';
-    await page.waitForSelector(inputSelector, { timeout: 10000 });
-    await page.fill(inputSelector, keyword);
-    await page.press(inputSelector, 'Enter');
-    await this.waitForResponse(page);
-    const { text, html } = await this.extractContent(page);
-    const shareUrl = await this.extractShareLink(page);
-    return {
-      content: text,
-      shareUrl,
-      htmlContent: html,
-      supportsShare: this.supportsShare
-    };
-  }
+  protected inputSelector = 'textarea';
+  protected responseSelector = '.ds-message--content';
+  protected stopButtonSelector = '.stop-button';
+  protected loginUrlPattern = 'sign_in';
 
   async extractShareLink(page: Page): Promise<string | null> {
     try {
-      // TODO: 根据DeepSeek实际页面结构调整
+      // 尝试点击分享按钮
+      const shareBtn = await page.$('[class*="share"], button:has-text("分享")');
+      if (shareBtn) {
+        await shareBtn.click();
+        await page.waitForTimeout(1000);
+        // 尝试获取分享链接
+        const linkInput = await page.$('input[class*="share"], [class*="share-url"]');
+        if (linkInput) {
+          return await linkInput.inputValue();
+        }
+      }
       return null;
-    } catch (e) {
-      console.error('[DeepSeek] 提取分享链接失败:', e);
+    } catch {
       return null;
     }
-  }
-
-  async extractContent(page: Page): Promise<{ text: string; html: string }> {
-    // TODO: 调整为实际选择器
-    const responseSelector = '.ds-message--content';
-    await page.waitForSelector(responseSelector, { timeout: 30000 });
-    const text = await page.textContent(responseSelector) || '';
-    const html = await page.innerHTML(responseSelector) || '';
-    return { text: text.trim(), html };
-  }
-
-  async waitForResponse(page: Page): Promise<void> {
-    try {
-      await page.waitForSelector('.stop-button', { state: 'detached', timeout: 60000 });
-    } catch (e) {}
   }
 }

@@ -6,9 +6,13 @@ import {
   getDueRealCollectTasks,
   updateTaskRunStatus,
   getDistillateKeywords,
+  getDistillateKeywordsSharded,
   getBrandKeywords,
   enqueueRealCollectTask,
   getQueuePendingCount,
+  resetDailyAuthCounters,
+  getAuthsForRenewal,
+  cleanOldWorkerLogs,
 } from '../../repository';
 
 let schedulerStarted = false;
@@ -30,9 +34,10 @@ async function checkAndEnqueueDueTasks(): Promise<void> {
         const currentMatch = checkCronMatch(task.cron_expr, now);
         if (currentMatch) {
           // 获取关键词
+          // 品牌词每天全量查询；蒸馏词按7分片轮询（每天查 1/7）
           const keywords = task.keyword_type === 1
             ? await getBrandKeywords(task.user_id)
-            : await getDistillateKeywords(task.user_id);
+            : await getDistillateKeywordsSharded(task.user_id, 7);
 
           if (keywords.length === 0) {
             await updateTaskRunStatus(task.id, {
@@ -97,6 +102,7 @@ function checkCronMatch(cronExpr: string, date: Date): boolean {
  * 立即将任务放入队列（用于手动触发"立即执行"）
  */
 export async function enqueueTaskNow(task: any): Promise<number> {
+  // 手动触发时使用全量关键词（不分片）
   const keywords = task.keyword_type === 1
     ? await getBrandKeywords(task.user_id)
     : await getDistillateKeywords(task.user_id);
@@ -131,5 +137,37 @@ export function startRealCollectScheduler(): void {
     });
   });
 
-  console.log('[RealCollect] 定时调度器已启动(每分钟检查到期任务并放入队列)');
+  // 每天凌晨0点重置账号池查询计数
+  cron.schedule('0 0 * * *', async () => {
+    try {
+      await resetDailyAuthCounters();
+      console.log('[RealCollect] 账号池每日计数已重置');
+    } catch (e: any) {
+      console.error('[RealCollect] 账号池重置失败:', e.message);
+    }
+  });
+
+  // 每天凌晨 3 点触发账号续期（worker 会轮询 /platform-auth/renew/pending）
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      console.log('[RealCollect] 触发账号续期检查...');
+      // 续期由 worker 主动拉取，这里只做日志
+      const auths = await getAuthsForRenewal();
+      console.log(`[RealCollect] ${auths.length} 个账号需要续期，等待 worker 处理`);
+    } catch (e: any) {
+      console.error('[RealCollect] 账号续期检查失败:', e.message);
+    }
+  });
+
+  // 每天凌晨 4 点清理 7 天前的日志
+  cron.schedule('0 4 * * *', async () => {
+    try {
+      await cleanOldWorkerLogs(7);
+      console.log('[RealCollect] 已清理7天前的worker日志');
+    } catch (e: any) {
+      console.error('[RealCollect] 日志清理失败:', e.message);
+    }
+  });
+
+  console.log('[RealCollect] 定时调度器已启动(每分钟检查到期任务并放入队列, 每天0点重置账号池计数)');
 }

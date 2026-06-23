@@ -11,7 +11,11 @@ import monitorRoutes from './routes/monitor';
 import realCollectTaskRoutes from './routes/realCollectTask';
 import realCollectResultRoutes from './routes/realCollectResult';
 import realCollectQueueRoutes from './routes/realCollectQueue';
+import platformAuthRoutes from './routes/platformAuth';
+import workerLogRoutes from './routes/workerLog';
+import aeoRoutes from './routes/aeo';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
+import { startAeoScheduler } from './services/aeo/scheduler';
 
 dotenv.config();
 
@@ -22,11 +26,15 @@ const PORT = parseInt(process.env.PORT || '3002');
 const allowedOrigins = process.env.CORS_ORIGIN?.split(',').map(s => s.trim()) || [];
 app.use(cors({
   origin: (origin, callback) => {
-    // 允许所有来源：未配置白名单时放行所有，配置了白名单时只放行白名单
-    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+    // 允许的来源：白名单 + 本地开发环境（桌面端 Electron / file:// / localhost）
+    const isLocal = !origin ||
+      origin.startsWith('http://localhost') ||
+      origin.startsWith('http://127.0.0.1') ||
+      origin.startsWith('file://');
+    if (isLocal || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      callback(null, true); // 桌面端需要从任意来源访问，暂时全部放行
+      callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true,
@@ -54,6 +62,14 @@ app.get('/health', async (req, res) => {
 
 // 诊断接口（返回详细错误信息，便于排查）
 app.get('/diagnose', async (req, res) => {
+  // 简单鉴权：需要 admin token（未配置 ADMIN_TOKEN 时放行，开发环境兼容）
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken) {
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
+    if (token !== adminToken) {
+      return res.status(403).json({ code: 403, message: '需要管理员权限' });
+    }
+  }
   const result: any = { timestamp: new Date().toISOString(), checks: {} };
   // 检查数据库连接
   try {
@@ -162,6 +178,14 @@ app.get('/diagnose', async (req, res) => {
 
 // 手动触发查询展示（无需重启服务即可执行）
 app.post('/fix-data', async (req, res) => {
+  // 简单鉴权：需要 admin token（未配置 ADMIN_TOKEN 时放行，开发环境兼容）
+  const adminToken = process.env.ADMIN_TOKEN;
+  if (adminToken) {
+    const token = req.headers.authorization?.replace('Bearer ', '') || req.query.token;
+    if (token !== adminToken) {
+      return res.status(403).json({ code: 403, message: '需要管理员权限' });
+    }
+  }
   try {
     const { query } = require('./db');
     // 将所有待展示数据（query_time IS NULL）设置为已展示
@@ -201,6 +225,9 @@ app.use('/', keywordRoutes);
 app.use('/real-collect/tasks', realCollectTaskRoutes);
 app.use('/real-collect/results', realCollectResultRoutes);
 app.use('/real-collect/queue', realCollectQueueRoutes);
+app.use('/platform-auth', platformAuthRoutes);
+app.use('/real-collect/logs', workerLogRoutes);
+app.use('/aeo', aeoRoutes);
 
 // 错误处理
 app.use((err: any, req: any, res: any, next: any) => {
@@ -219,6 +246,9 @@ async function start() {
 
     // 启动真实收录查询定时调度器
     startRealCollectScheduler();
+
+    // 启动 AEO 日报调度器
+    startAeoScheduler();
 
     // 启动HTTP服务
     app.listen(PORT, '0.0.0.0', () => {
