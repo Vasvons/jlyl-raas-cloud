@@ -370,7 +370,7 @@ export async function migrate() {
         status VARCHAR(16) DEFAULT 'active',
         last_used_at TIMESTAMP,
         last_query_count INTEGER DEFAULT 0,
-        daily_limit INTEGER DEFAULT 50,
+        daily_limit INTEGER DEFAULT 200,
         cooldown_until TIMESTAMP,
         health_score INTEGER DEFAULT 100,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -379,6 +379,14 @@ export async function migrate() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_platform_status ON platform_auth(platform, status, last_used_at)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_user ON platform_auth(user_id)`);
+
+    // 增量迁移：将旧默认值 50 的账号更新为新的默认值 200
+    const dailyLimitUpdate = await client.query(
+      `UPDATE platform_auth SET daily_limit = 200 WHERE daily_limit = 50 OR daily_limit IS NULL`
+    );
+    if (dailyLimitUpdate.rowCount && dailyLimitUpdate.rowCount > 0) {
+      console.log(`[Migrate] 已将 ${dailyLimitUpdate.rowCount} 个账号的每日限额从 50 更新为 200`);
+    }
 
     console.log('[Migrate] 真实收录查询相关表创建/验证完成');
 

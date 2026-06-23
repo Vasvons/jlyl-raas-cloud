@@ -9,6 +9,7 @@ import {
   getAuthsForRenewal,
   updatePlatformAuthStorage,
   updatePlatformAuthStatus,
+  updatePlatformAuthDailyLimit,
   acquirePlatformAccount,
   releasePlatformAccount,
 } from '../repository';
@@ -165,6 +166,21 @@ router.delete('/:id', async (req, res) => {
     const id = parseInt(req.params.id);
     await deletePlatformAuth(id);
     res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 更新账号每日查询限额
+router.patch('/:id/daily-limit', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const { dailyLimit } = req.body;
+    if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 10000) {
+      return res.json({ code: 400, message: 'dailyLimit 必须是 1-10000 之间的整数' });
+    }
+    await updatePlatformAuthDailyLimit(id, dailyLimit);
+    res.json({ code: 200, message: '更新成功', data: { dailyLimit } });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }

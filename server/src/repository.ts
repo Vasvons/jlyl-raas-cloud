@@ -2050,6 +2050,11 @@ export async function updatePlatformAuthStatus(id: number, status: string): Prom
   await query(`UPDATE platform_auth SET status = $1, updated_at = NOW() WHERE id = $2`, [status, id]);
 }
 
+/** 更新账号每日查询限额 */
+export async function updatePlatformAuthDailyLimit(id: number, dailyLimit: number): Promise<void> {
+  await query(`UPDATE platform_auth SET daily_limit = $1, updated_at = NOW() WHERE id = $2`, [dailyLimit, id]);
+}
+
 /** 获取可用账号数统计 */
 export async function getAvailableAuthCount(): Promise<{ total: number; byPlatform: Record<string, number> }> {
   const result = await query(
