@@ -1,24 +1,43 @@
-FROM node:20-slim
+FROM node:18-alpine
 
-# 安装Chromium依赖
-RUN apt-get update && apt-get install -y \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libatspi2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# 设置时区为 Asia/Shanghai
+RUN apk add --no-cache tzdata && \
+    cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone && \
+    apk del tzdata
+
+ENV TZ=Asia/Shanghai
+
+# 安装 Playwright Chromium 运行所需的依赖库（alpine 版本）
+# 参考: https://playwright.dev/docs/browsers#google-chrome--microsoft-edge
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    mesa-va-gallium \
+    mesa-vdpau-gallium \
+    ffmpeg \
+    libxcomposite \
+    libxrandr \
+    libxdamage \
+    libxfixes \
+    libxkbcommon \
+    libdrm \
+    alsa-lib \
+    cups-libs \
+    pango \
+    cairo-gobject \
+    at-spi2-core \
+    atk \
+    gtk+3.0 \
+    libgbm
+
+# 告知 Playwright 使用系统已安装的 Chromium，不再下载
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 WORKDIR /app
 
@@ -32,9 +51,6 @@ RUN npm install
 COPY . .
 RUN npm run build
 RUN npm prune --omit=dev
-
-# 安装Playwright Chromium
-RUN npx playwright install chromium
 
 ENV SERVER_URL=http://jlyl-cloud-server:3002
 ENV POLL_INTERVAL=2000

@@ -92,7 +92,7 @@ jobs:
 
             # 预拉取基础镜像（带重试，失败不阻塞部署，docker compose build 会自动拉取）
             echo ">>> 预拉取基础镜像..."
-            for img in node:18-alpine node:20-slim postgres:15-alpine nginx:alpine; do
+            for img in node:18-alpine postgres:15-alpine nginx:alpine; do
               # 检查镜像是否已存在（缓存），存在则跳过
               if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${img}$"; then
                 echo ">>> $img 已存在，跳过拉取"
