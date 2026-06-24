@@ -2568,15 +2568,17 @@ export async function getQueuePressure(): Promise<{ pendingCount: number; proces
 // ============ 账号续期 ============
 
 export async function getAuthsForRenewal(): Promise<any[]> {
-  // 获取所有活跃且超过3天未更新的账号，使用 FOR UPDATE SKIP LOCKED 防止并发竞态
+  // 获取所有活跃且超过7天未续期的账号，使用 FOR UPDATE SKIP LOCKED 防止并发竞态
+  // 排除已 expired/banned/offline 的账号，只续期 active 且 health_status=normal 的
   const result = await query(
     `UPDATE platform_auth
      SET updated_at = NOW()
      WHERE id IN (
        SELECT id FROM platform_auth
        WHERE status = 'active'
-         AND updated_at < NOW() - INTERVAL '3 days'
-       ORDER BY updated_at ASC
+         AND health_status = 'normal'
+         AND (last_renewal_attempt IS NULL OR last_renewal_attempt < NOW() - INTERVAL '7 days')
+       ORDER BY last_renewal_attempt ASC NULLS FIRST
        LIMIT 50
        FOR UPDATE SKIP LOCKED
      )

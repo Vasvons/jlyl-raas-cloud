@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authMiddleware, adminMiddleware } from '../auth';
+import { query } from '../db';
 import {
   savePlatformAuth,
   getPlatformAuthList,
@@ -79,6 +80,10 @@ router.post('/renew/fetch', async (req, res) => {
 });
 
 // 提交续期结果（worker 调用）
+// 续期失败不立即标记 expired，只累加失败计数，连续失败 3 次才标记 expired
+// 避免临时网络问题/Page crashed 导致账号被误标为过期
+const RENEWAL_FAIL_THRESHOLD = 3;
+
 router.post('/renew/complete', async (req, res) => {
   try {
     const { id, success, storageState, expiresAt } = req.body;
@@ -93,11 +98,31 @@ router.post('/renew/complete', async (req, res) => {
       } catch {
         return res.json({ code: 400, message: 'storageState 不是合法 JSON' });
       }
-      await updatePlatformAuthStorage(authId, storageState, expiresAt);
+      // 续期成功：更新 storageState、过期时间，重置失败计数
+      await query(
+        `UPDATE platform_auth
+         SET storage_state = $1, expires_at = $2, renewal_fail_count = 0, last_renewal_attempt = NOW(), updated_at = NOW()
+         WHERE id = $3`,
+        [storageState, expiresAt || null, authId]
+      );
       console.log(`[PlatformAuth] 账号 ${authId} 续期成功`);
     } else {
-      await updatePlatformAuthStatus(authId, 'expired');
-      console.log(`[PlatformAuth] 账号 ${authId} 续期失败，标记为过期`);
+      // 续期失败：累加失败计数，达到阈值才标记 expired
+      const result = await query(
+        `UPDATE platform_auth
+         SET renewal_fail_count = renewal_fail_count + 1, last_renewal_attempt = NOW(), updated_at = NOW()
+         WHERE id = $1
+         RETURNING renewal_fail_count, platform`,
+        [authId]
+      );
+      const failCount = result.rows[0]?.renewal_fail_count || 0;
+      const platform = result.rows[0]?.platform || '';
+      if (failCount >= RENEWAL_FAIL_THRESHOLD) {
+        await updatePlatformAuthStatus(authId, 'expired');
+        console.log(`[PlatformAuth] 账号 ${authId} (${platform}) 连续续期失败 ${failCount} 次，标记为过期`);
+      } else {
+        console.log(`[PlatformAuth] 账号 ${authId} (${platform}) 续期失败 (第${failCount}/${RENEWAL_FAIL_THRESHOLD}次)，暂不标记过期`);
+      }
     }
     res.json({ code: 200, message: 'ok' });
   } catch (e: any) {

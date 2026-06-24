@@ -525,6 +525,24 @@ export async function migrate() {
     // 健康状态索引
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_health ON platform_auth(platform, health_status, last_used_at)`);
 
+    // ============ platform_auth 续期失败计数字段 ============
+    // 续期失败不立即标记 expired，连续失败 N 次才标记，避免临时网络问题导致账号不可用
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS renewal_fail_count INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS last_renewal_attempt TIMESTAMP`);
+
+    // 修复历史数据：将被续期器误标记为 expired 但 health_status 仍为 normal 的账号恢复为 active
+    // （续期器单次失败就标记 expired 的旧逻辑已修复，这里恢复被误标的账号）
+    const recoverResult = await client.query(
+      `UPDATE platform_auth
+       SET status = 'active', renewal_fail_count = 0
+       WHERE status = 'expired' AND health_status = 'normal'
+       RETURNING id, platform`
+    );
+    if (recoverResult.rows.length > 0) {
+      console.log(`[Migrate] 恢复 ${recoverResult.rows.length} 个被续期器误标记为 expired 的账号:`,
+        recoverResult.rows.map((r: any) => `${r.platform}#${r.id}`).join(', '));
+    }
+
     // ============ real_collect_task 轮次号字段 ============
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS round_no INTEGER DEFAULT 0`);
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS round_start_time TIMESTAMP`);

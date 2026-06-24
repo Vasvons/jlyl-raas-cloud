@@ -22,6 +22,7 @@ const PLATFORM_CHAT_URLS: Record<string, string> = {
 
 /**
  * 执行账号续期
+ * 单次续期失败不标记 expired（云端会累加失败计数，连续3次才标记）
  */
 let isRenewing = false;
 
@@ -44,7 +45,7 @@ async function performRenewal(): Promise<void> {
     const browser = await chromium.launch({
       headless: true,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
     });
 
     try {
@@ -88,7 +89,29 @@ async function performRenewal(): Promise<void> {
 
           try {
             const page = await context.newPage();
-            await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+            // 续期访问：带重试，单次失败不标记 expired
+            let pageLoaded = false;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+              try {
+                await page.goto(chatUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+                pageLoaded = true;
+                break;
+              } catch (navErr: any) {
+                warn(`[Renewer] 账号 ${auth.id} (${platform}) 导航失败(尝试${attempt}/2): ${navErr.message}`);
+                if (attempt < 2) await page.waitForTimeout(3000);
+              }
+            }
+
+            if (!pageLoaded) {
+              // 两次导航都失败，上报续期失败（云端会累加计数，不立即标记 expired）
+              await axios.post(`${SERVER_URL}/platform-auth/renew/complete`, {
+                id: auth.id,
+                success: false,
+              }, { timeout: 10000 }).catch(() => {});
+              error(`[Renewer] 账号 ${auth.id} (${platform}) 两次导航均失败，上报续期失败`);
+              continue;
+            }
+
             // 等待页面加载，让 cookie 刷新
             try {
               await page.waitForLoadState('networkidle', { timeout: 10000 });
@@ -127,7 +150,7 @@ async function performRenewal(): Promise<void> {
             await context.close();
           }
         } catch (e: any) {
-          // 上报续期失败
+          // 上报续期失败（云端会累加计数，不立即标记 expired）
           await axios.post(`${SERVER_URL}/platform-auth/renew/complete`, {
             id: auth.id,
             success: false,
