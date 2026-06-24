@@ -1069,18 +1069,33 @@ export async function enqueueRealCollectTask(task: any, keywords: string[], prio
 }
 
 // Worker从队列消费任务（原子操作，防止多Worker竞争）
+// 严格轮询策略：优先级高的先执行；同优先级内，选择"最近最少执行"的task的下一个分片
 export async function dequeueRealCollectTask(workerId: string): Promise<any | null> {
-  // 使用SELECT FOR UPDATE SKIP LOCKED获取下一个pending任务
-  // 优先消费priority=1（手动立即执行）的任务，其次按创建时间FIFO
+  // 使用子查询找出"该task最近一次running/done的时间"最早的task，
+  // 然后从该task的pending分片中取最早入队的一个
   const result = await query(
     `UPDATE real_collect_queue
      SET status = 'running', worker_id = $1, start_time = NOW()
      WHERE id = (
-       SELECT id FROM real_collect_queue
-       WHERE status = 'pending'
-       ORDER BY priority DESC, create_time ASC
-       FOR UPDATE SKIP LOCKED
+       WITH ranked AS (
+         SELECT
+           q.id,
+           q.task_id,
+           q.priority,
+           q.create_time,
+           -- 计算该task最近一次被消费的时间（running/done/failed的最大start_time）
+           COALESCE(
+             (SELECT MAX(q2.start_time) FROM real_collect_queue q2
+              WHERE q2.task_id = q.task_id AND q2.status IN ('running','done','failed')),
+             '1970-01-01'::timestamp
+           ) as last_consumed
+         FROM real_collect_queue q
+         WHERE q.status = 'pending'
+       )
+       SELECT r.id FROM ranked r
+       ORDER BY r.priority DESC, r.last_consumed ASC, r.create_time ASC
        LIMIT 1
+       FOR UPDATE SKIP LOCKED
      )
      RETURNING id, task_id, user_id, keyword_type, platforms, keywords`,
     [workerId]
@@ -1157,7 +1172,7 @@ export async function getRunningQueueTask(): Promise<any | null> {
   return result.rows[0] || null;
 }
 
-// 获取任务的分片执行进度（按 task_id 聚合今日的队列状态）
+// 获取任务的分片执行进度（按 task_id 聚合当前轮次的队列状态）
 export async function getTaskShardProgress(taskId: number): Promise<{
   taskId: number;
   totalShards: number;
@@ -1167,26 +1182,32 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   failedShards: number;
   totalKeywords: number;
   shardSize: number;
+  roundNo: number;
 }> {
-  // 获取任务配置的分片大小
+  // 获取任务配置
   const taskResult = await query(
-    `SELECT shard_size FROM real_collect_task WHERE id = $1`,
+    `SELECT shard_size, round_no FROM real_collect_task WHERE id = $1`,
     [taskId]
   );
   const shardSize = taskResult.rows[0]?.shard_size || 50;
+  const roundNo = taskResult.rows[0]?.round_no || 0;
 
-  // 统计今日该任务的所有队列分片状态
+  // 统计当前轮次（round_no 对应的）队列分片状态
+  // 当前轮次的分片是最近一批入队的，用 create_time >= round_start_time 过滤
   const result = await query(
-    `SELECT
+    `WITH task_round AS (
+       SELECT id, round_start_time FROM real_collect_task WHERE id = $1
+     )
+     SELECT
        COUNT(*) as total,
-       COUNT(*) FILTER (WHERE status = 'done') as completed,
-       COUNT(*) FILTER (WHERE status = 'running') as running,
-       COUNT(*) FILTER (WHERE status = 'pending') as pending,
-       COUNT(*) FILTER (WHERE status = 'failed') as failed,
-       COALESCE(SUM(jsonb_array_length(keywords)), 0) as total_keywords
-     FROM real_collect_queue
-     WHERE task_id = $1
-       AND create_time >= CURRENT_DATE`,
+       COUNT(*) FILTER (WHERE q.status = 'done') as completed,
+       COUNT(*) FILTER (WHERE q.status = 'running') as running,
+       COUNT(*) FILTER (WHERE q.status = 'pending') as pending,
+       COUNT(*) FILTER (WHERE q.status = 'failed') as failed,
+       COALESCE(SUM(jsonb_array_length(q.keywords)), 0) as total_keywords
+     FROM real_collect_queue q, task_round tr
+     WHERE q.task_id = $1
+       AND q.create_time >= COALESCE(tr.round_start_time, '1970-01-01'::timestamp)`,
     [taskId]
   );
   const row = result.rows[0] || {};
@@ -1199,7 +1220,185 @@ export async function getTaskShardProgress(taskId: number): Promise<{
     failedShards: parseInt(row.failed || '0'),
     totalKeywords: parseInt(row.total_keywords || '0'),
     shardSize,
+    roundNo,
   };
+}
+
+// ============ 循环调度相关 ============
+
+/** 服务器重启时恢复：将所有 running 状态的队列任务重置为 pending */
+export async function resetRunningQueueOnRestart(): Promise<number> {
+  const result = await query(
+    `UPDATE real_collect_queue
+     SET status = 'pending', worker_id = NULL, start_time = NULL
+     WHERE status = 'running'`
+  );
+  return result.rowCount || 0;
+}
+
+/** 检查任务当前轮次是否全部完成（所有分片 done/failed，无 pending/running） */
+export async function isTaskRoundComplete(taskId: number): Promise<boolean> {
+  const result = await query(
+    `WITH task_round AS (
+       SELECT id, round_start_time FROM real_collect_task WHERE id = $1
+     )
+     SELECT
+       COUNT(*) FILTER (WHERE q.status IN ('pending', 'running')) as unfinished,
+       COUNT(*) as total
+     FROM real_collect_queue q, task_round tr
+     WHERE q.task_id = $1
+       AND q.create_time >= COALESCE(tr.round_start_time, '1970-01-01'::timestamp)`,
+    [taskId]
+  );
+  const row = result.rows[0] || {};
+  const total = parseInt(row.total || '0');
+  const unfinished = parseInt(row.unfinished || '0');
+  return total > 0 && unfinished === 0;
+}
+
+/** 开始任务的新一轮：递增 round_no，设置 round_start_time，入队全部分片 */
+export async function startNewRound(
+  taskId: number,
+  keywords: string[],
+  shardSize: number,
+  priority: number = 0
+): Promise<{ roundNo: number; shardCount: number; firstQueueId: number }> {
+  // 递增轮次号并设置轮次开始时间
+  const taskResult = await query(
+    `UPDATE real_collect_task
+     SET round_no = round_no + 1, round_start_time = NOW()
+     WHERE id = $1
+     RETURNING round_no`,
+    [taskId]
+  );
+  const roundNo = taskResult.rows[0]?.round_no || 1;
+
+  // 分片入队
+  const size = Math.max(1, shardSize);
+  const shards: string[][] = [];
+  for (let i = 0; i < keywords.length; i += size) {
+    shards.push(keywords.slice(i, i + size));
+  }
+
+  let firstQueueId = 0;
+  for (const shard of shards) {
+    const result = await query(
+      `INSERT INTO real_collect_queue (task_id, user_id, keyword_type, platforms, keywords, status, priority)
+       SELECT $1, user_id, keyword_type, platforms, $2, 'pending', $3
+       FROM real_collect_task WHERE id = $1
+       RETURNING id`,
+      [taskId, JSON.stringify(shard), priority]
+    );
+    if (firstQueueId === 0) firstQueueId = result.rows[0].id;
+  }
+
+  return { roundNo, shardCount: shards.length, firstQueueId };
+}
+
+/** 获取需要启动新一轮的任务（active 且当前轮次无 pending 分片） */
+export async function getTasksNeedingNewRound(): Promise<any[]> {
+  // 找出 active 任务中，当前没有 pending 分片的
+  const result = await query(
+    `SELECT t.id, t.user_id, t.task_name, t.keyword_type, t.platforms, t.shard_size, t.round_no
+     FROM real_collect_task t
+     WHERE t.status = 'active'
+       AND NOT EXISTS (
+         SELECT 1 FROM real_collect_queue q
+         WHERE q.task_id = t.id AND q.status = 'pending'
+       )
+     ORDER BY t.id`
+  );
+  return result.rows;
+}
+
+// ============ AEO 轮次报告 ============
+
+/** 插入AEO轮次报告 */
+export async function insertAeoFullReport(params: {
+  taskId: number;
+  userId: string;
+  roundNo: number;
+  totalKeywords: number;
+  totalRecords: number;
+  brandMatchedCount: number;
+  visibilityScore: number;
+  mentionCount: number;
+  positiveRatio: number;
+  neutralRatio: number;
+  negativeRatio: number;
+  competitorAnalysis: string;
+  suggestions: string;
+  rawAnalysis: string;
+  recordIds: number[];
+  roundStartTime: Date;
+  roundEndTime: Date;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO aeo_full_report
+     (task_id, user_id, round_no, total_keywords, total_records, brand_matched_count,
+      visibility_score, mention_count, positive_ratio, neutral_ratio, negative_ratio,
+      competitor_analysis, suggestions, raw_analysis, record_ids, round_start_time, round_end_time)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+     ON CONFLICT (task_id, round_no) DO UPDATE SET
+      total_keywords = EXCLUDED.total_keywords,
+      total_records = EXCLUDED.total_records,
+      brand_matched_count = EXCLUDED.brand_matched_count,
+      visibility_score = EXCLUDED.visibility_score,
+      mention_count = EXCLUDED.mention_count,
+      positive_ratio = EXCLUDED.positive_ratio,
+      neutral_ratio = EXCLUDED.neutral_ratio,
+      negative_ratio = EXCLUDED.negative_ratio,
+      competitor_analysis = EXCLUDED.competitor_analysis,
+      suggestions = EXCLUDED.suggestions,
+      raw_analysis = EXCLUDED.raw_analysis,
+      record_ids = EXCLUDED.record_ids,
+      round_end_time = EXCLUDED.round_end_time
+     RETURNING id`,
+    [
+      params.taskId, params.userId, params.roundNo, params.totalKeywords,
+      params.totalRecords, params.brandMatchedCount, params.visibilityScore,
+      params.mentionCount, params.positiveRatio, params.neutralRatio,
+      params.negativeRatio, params.competitorAnalysis, params.suggestions,
+      params.rawAnalysis, params.recordIds, params.roundStartTime, params.roundEndTime
+    ]
+  );
+  return result.rows[0].id;
+}
+
+/** 获取本轮的所有品牌命中记录（用于AEO轮次分析） */
+export async function getRoundRecordsForAeo(taskId: number, roundStartTime: Date): Promise<any[]> {
+  const result = await query(
+    `SELECT id, keyword, platform, raw_content, share_url, matched_brands,
+       to_char((query_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') as query_time
+     FROM real_collect_record
+     WHERE task_id = $1
+       AND brand_matched = true
+       AND query_time >= $2
+     ORDER BY query_time DESC`,
+    [taskId, roundStartTime]
+  );
+  return result.rows;
+}
+
+/** 获取AEO轮次报告列表 */
+export async function getAeoFullReports(taskId: number, limit: number = 20): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM aeo_full_report
+     WHERE task_id = $1
+     ORDER BY round_no DESC
+     LIMIT $2`,
+    [taskId, limit]
+  );
+  return result.rows;
+}
+
+/** 获取任务轮次开始时间 */
+export async function getTaskRoundStartTime(taskId: number): Promise<Date | null> {
+  const result = await query(
+    `SELECT round_start_time FROM real_collect_task WHERE id = $1`,
+    [taskId]
+  );
+  return result.rows[0]?.round_start_time || null;
 }
 
 // ============ 关键词维护列表 ============
@@ -2037,6 +2236,7 @@ export async function getPlatformAuthList(userId?: string) {
   const result = await query(
     `SELECT id, user_id, platform, account_name, expires_at, status, 
             last_used_at, last_query_count, daily_limit, cooldown_until, health_score,
+            health_status, risk_level, risk_count, risk_detected_at,
             avatar_url, created_at, updated_at
      FROM platform_auth
      WHERE $1::text IS NULL OR user_id = $1
@@ -2052,17 +2252,31 @@ export async function getPlatformAuthById(id: number) {
   return result.rows[0] || null;
 }
 
-/** 从账号池借用一个可用账号（最久未使用优先） */
+/** 从账号池借用一个可用账号（最久未使用优先）
+ * 四态健康状态：只借用 healthy 状态的账号
+ * warning/danger 状态的账号在冷却期结束后自动恢复为 healthy
+ */
 export async function acquirePlatformAccount(platform: string): Promise<{ id: number; storageState: string } | null> {
+  // 先恢复冷却期已过的 warning/danger 账号
+  await query(
+    `UPDATE platform_auth
+     SET health_status = 'healthy', risk_level = 'none', cooldown_until = NULL, updated_at = NOW()
+     WHERE platform = $1
+       AND health_status IN ('warning', 'danger')
+       AND cooldown_until IS NOT NULL
+       AND cooldown_until < NOW()`,
+    [platform]
+  );
+
+  // 只借用 healthy 状态的账号
   const result = await query(
     `UPDATE platform_auth 
      SET last_used_at = NOW(), last_query_count = last_query_count + 1
      WHERE id = (
        SELECT id FROM platform_auth 
        WHERE platform = $1 
-         AND status = 'active'
+         AND health_status = 'healthy'
          AND (expires_at IS NULL OR expires_at > NOW())
-         AND (cooldown_until IS NULL OR cooldown_until < NOW())
          AND last_query_count < daily_limit
        ORDER BY last_used_at ASC NULLS FIRST
        LIMIT 1
@@ -2075,32 +2289,95 @@ export async function acquirePlatformAccount(platform: string): Promise<{ id: nu
   return { id: result.rows[0].id, storageState: result.rows[0].storage_state };
 }
 
-/** 归还账号（根据查询结果更新健康度） */
+/** 归还账号（根据查询结果更新健康状态）
+ * 四态流转：
+ * - success: health_score +1（上限100），health_status 保持 healthy
+ * - failed: health_score -5，连续失败可能降级
+ * - rate_limited: 根据当前状态升级危险等级
+ *   healthy → warning（冷却30分钟）
+ *   warning → danger（冷却2小时）
+ *   danger → banned（需人工处理）
+ */
 export async function releasePlatformAccount(
   authId: number,
   result: 'success' | 'failed' | 'rate_limited'
 ): Promise<void> {
   if (result === 'success') {
     await query(
-      `UPDATE platform_auth SET health_score = LEAST(100, health_score + 1), updated_at = NOW() WHERE id = $1`,
+      `UPDATE platform_auth
+       SET health_score = LEAST(100, health_score + 1),
+           risk_count = GREATEST(0, risk_count - 1),
+           updated_at = NOW()
+       WHERE id = $1`,
       [authId]
     );
   } else if (result === 'rate_limited') {
+    // 根据当前健康状态升级危险等级
     await query(
       `UPDATE platform_auth 
-       SET cooldown_until = NOW() + INTERVAL '30 minutes',
-           health_score = GREATEST(0, health_score - 20),
-           status = CASE WHEN health_score - 20 < 30 THEN 'cooling' ELSE status END,
+       SET health_score = GREATEST(0, health_score - 20),
+           risk_count = risk_count + 1,
+           risk_detected_at = NOW(),
+           health_status = CASE
+             WHEN health_status = 'healthy' THEN 'warning'
+             WHEN health_status = 'warning' THEN 'danger'
+             ELSE 'banned'
+           END,
+           risk_level = CASE
+             WHEN health_status = 'healthy' THEN 'low'
+             WHEN health_status = 'warning' THEN 'high'
+             ELSE 'banned'
+           END,
+           cooldown_until = CASE
+             WHEN health_status = 'healthy' THEN NOW() + INTERVAL '30 minutes'
+             WHEN health_status = 'warning' THEN NOW() + INTERVAL '2 hours'
+             ELSE NOW() + INTERVAL '24 hours'
+           END,
+           status = CASE
+             WHEN health_status = 'warning' THEN 'cooling'
+             WHEN health_status = 'danger' THEN 'cooling'
+             ELSE 'expired'
+           END,
            updated_at = NOW()
        WHERE id = $1`,
       [authId]
     );
   } else {
+    // failed: 扣减健康度，连续失败5次降级为 warning
     await query(
-      `UPDATE platform_auth SET health_score = GREATEST(0, health_score - 5), updated_at = NOW() WHERE id = $1`,
+      `UPDATE platform_auth
+       SET health_score = GREATEST(0, health_score - 5),
+           risk_count = risk_count + 1,
+           health_status = CASE
+             WHEN risk_count + 1 >= 5 AND health_status = 'healthy' THEN 'warning'
+             ELSE health_status
+           END,
+           cooldown_until = CASE
+             WHEN risk_count + 1 >= 5 AND health_status = 'healthy' THEN NOW() + INTERVAL '15 minutes'
+             ELSE cooldown_until
+           END,
+           updated_at = NOW()
+       WHERE id = $1`,
       [authId]
     );
   }
+}
+
+/** 手动重置账号健康状态（用于前端"恢复"按钮） */
+export async function resetAccountHealth(authId: number): Promise<void> {
+  await query(
+    `UPDATE platform_auth
+     SET health_status = 'healthy',
+         risk_level = 'none',
+         risk_count = 0,
+         risk_detected_at = NULL,
+         cooldown_until = NULL,
+         status = 'active',
+         health_score = LEAST(100, health_score + 20),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [authId]
+  );
 }
 
 /** 删除平台账号授权 */
@@ -2110,17 +2387,21 @@ export async function deletePlatformAuth(id: number): Promise<void> {
 
 /** 每日重置查询计数 + 恢复冷却中的账号 */
 export async function resetDailyAuthCounters(): Promise<void> {
+  // 重置查询计数
+  await query(`UPDATE platform_auth SET last_query_count = 0 WHERE last_query_count > 0`);
+  // 恢复 warning/danger 状态的账号为 healthy（冷却期已过）
   await query(
     `UPDATE platform_auth
-     SET last_query_count = 0,
-         status = CASE
-           WHEN status = 'cooling' AND health_score > 30 THEN 'active'
-           WHEN status = 'cooling' THEN 'expired'
-           ELSE status
-         END,
+     SET health_status = 'healthy',
+         risk_level = 'none',
+         risk_count = 0,
+         cooldown_until = NULL,
+         status = 'active',
          updated_at = NOW()
-     WHERE last_query_count > 0 OR status = 'cooling'`
+     WHERE health_status IN ('warning', 'danger')
+       AND (cooldown_until IS NULL OR cooldown_until < NOW())`
   );
+  // banned 状态需要人工恢复，不自动恢复
 }
 
 /** 获取所有活跃授权（用于自动续期） */

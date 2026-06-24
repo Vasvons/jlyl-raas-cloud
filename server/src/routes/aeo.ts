@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getAeoReports, getLatestAeoReport, getAeoReportById } from '../repository';
+import { getAeoReports, getLatestAeoReport, getAeoReportById, getAeoFullReports } from '../repository';
 import { generateAeoReport } from '../services/aeo/analyzer';
 import { authMiddleware } from '../auth';
 
@@ -67,6 +67,21 @@ router.get('/:id', async (req, res) => {
       return res.json({ code: 404, message: '报告不存在' });
     }
     res.json({ code: 200, data: report });
+  } catch (e: any) {
+    res.json({ code: 500, message: e.message });
+  }
+});
+
+// 查询 AEO 轮次报告列表（基于完整关键词库的分析，每轮100%完成后生成）
+router.get('/full-reports/:taskId', authMiddleware, async (req, res) => {
+  try {
+    const taskId = Number(req.params.taskId);
+    if (!taskId) {
+      return res.json({ code: 400, message: '缺少 taskId' });
+    }
+    const limit = req.query.limit ? Number(req.query.limit) : 20;
+    const reports = await getAeoFullReports(taskId, limit);
+    res.json({ code: 200, data: reports });
   } catch (e: any) {
     res.json({ code: 500, message: e.message });
   }

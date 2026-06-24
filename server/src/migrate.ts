@@ -473,6 +473,47 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_user_date ON aeo_report(user_id, report_date DESC)`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_aeo_task_date_unique ON aeo_report(task_id, report_date)`);
 
+    // ============ AEO 轮次报告表（基于完整关键词库的分析，每轮100%完成后生成）============
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS aeo_full_report (
+        id BIGSERIAL PRIMARY KEY,
+        task_id BIGINT NOT NULL,
+        user_id TEXT NOT NULL,
+        round_no INTEGER NOT NULL,
+        total_keywords INTEGER DEFAULT 0,
+        total_records INTEGER DEFAULT 0,
+        brand_matched_count INTEGER DEFAULT 0,
+        visibility_score INTEGER DEFAULT 0,
+        mention_count INTEGER DEFAULT 0,
+        positive_ratio NUMERIC(5,2) DEFAULT 0,
+        neutral_ratio NUMERIC(5,2) DEFAULT 0,
+        negative_ratio NUMERIC(5,2) DEFAULT 0,
+        competitor_analysis TEXT,
+        suggestions TEXT,
+        raw_analysis TEXT,
+        record_ids BIGINT[],
+        round_start_time TIMESTAMP,
+        round_end_time TIMESTAMP,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_aeo_full_task FOREIGN KEY (task_id) REFERENCES real_collect_task(id) ON DELETE CASCADE
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_full_task ON aeo_full_report(task_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_full_task_round ON aeo_full_report(task_id, round_no DESC)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_aeo_full_task_round_unique ON aeo_full_report(task_id, round_no)`);
+
+    // ============ platform_auth 健康状态字段 ============
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS health_status VARCHAR(16) DEFAULT 'healthy'`);
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS risk_level VARCHAR(16) DEFAULT 'none'`);
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS risk_detected_at TIMESTAMP`);
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS risk_count INTEGER DEFAULT 0`);
+    // 健康状态索引
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_health ON platform_auth(platform, health_status, last_used_at)`);
+
+    // ============ real_collect_task 轮次号字段 ============
+    await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS round_no INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS round_start_time TIMESTAMP`);
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

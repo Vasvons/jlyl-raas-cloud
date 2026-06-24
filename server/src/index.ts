@@ -244,8 +244,10 @@ async function start() {
     // 启动定时任务
     startScheduler();
 
-    // 启动真实收录查询定时调度器
-    startRealCollectScheduler();
+    // 启动真实收录查询循环调度器（24/7持续执行，重启自动恢复）
+    startRealCollectScheduler().catch(e => {
+      console.error('[Server] 循环调度器启动失败:', e.message);
+    });
 
     // 启动 AEO 日报调度器
     startAeoScheduler();

@@ -1,127 +1,126 @@
 /**
- * 定时调度器：扫描到期的任务，放入队列由Worker消费
+ * 循环调度器：任务24/7持续循环执行
+ * - 服务器启动时：恢复中断的任务，为无pending分片的active任务启动新一轮
+ * - 每30秒检查：哪些任务当前轮次已完成(100%)，触发AEO分析并启动新一轮
+ * - 多任务严格轮询：由 dequeue 的 SQL 保证（按 task 最近消费时间轮询）
  */
 import cron from 'node-cron';
 import {
   getDueRealCollectTasks,
   updateTaskRunStatus,
   getDistillateKeywords,
-  getDistillateKeywordsSharded,
   getBrandKeywords,
-  enqueueRealCollectTask,
-  getQueuePendingCount,
   resetDailyAuthCounters,
   getAuthsForRenewal,
   cleanOldWorkerLogs,
+  resetRunningQueueOnRestart,
+  getTasksNeedingNewRound,
+  isTaskRoundComplete,
+  startNewRound,
+  getTaskRoundStartTime,
 } from '../../repository';
+import { generateAeoFullReport } from '../aeo/analyzer';
 
 let schedulerStarted = false;
+let loopTimer: ReturnType<typeof setInterval> | null = null;
 
-/** 默认单个队列任务最大关键词数量（防止巨型任务长时间阻塞队列） */
+/** 默认单个队列任务最大关键词数量 */
 const DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK = 50;
 
-/** 将关键词数组分片为多个小批次 */
-function shardKeywords(keywords: string[], shardSize: number): string[][] {
-  const size = Math.max(1, shardSize);
-  const shards: string[][] = [];
-  for (let i = 0; i < keywords.length; i += size) {
-    shards.push(keywords.slice(i, i + size));
+/**
+ * 服务器重启时恢复：
+ * 1. 将所有 running 状态的队列任务重置为 pending（Worker可能已死）
+ * 2. 为无 pending 分片的 active 任务启动新一轮
+ */
+async function recoverOnRestart(): Promise<void> {
+  try {
+    // 1. 恢复中断的队列任务
+    const resetCount = await resetRunningQueueOnRestart();
+    if (resetCount > 0) {
+      console.log(`[RealCollect] 重启恢复：${resetCount} 个中断的队列任务已重置为 pending`);
+    }
+
+    // 2. 为无 pending 分片的 active 任务启动新一轮
+    const tasks = await getTasksNeedingNewRound();
+    for (const task of tasks) {
+      await startNewRoundForTask(task);
+    }
+    console.log(`[RealCollect] 重启恢复完成，${tasks.length} 个任务已启动新一轮`);
+  } catch (e: any) {
+    console.error('[RealCollect] 重启恢复失败:', e.message);
   }
-  return shards;
 }
 
 /**
- * 将到期任务放入队列
+ * 为任务启动新一轮
  */
-async function checkAndEnqueueDueTasks(): Promise<void> {
+async function startNewRoundForTask(task: any): Promise<void> {
   try {
-    const tasks = await getDueRealCollectTasks();
-    for (const task of tasks) {
-      if (!cron.validate(task.cron_expr)) continue;
+    // 获取全量关键词（循环模式：每轮都查全量，不再分片轮询）
+    const keywords = task.keyword_type === 1
+      ? await getBrandKeywords(task.user_id)
+      : await getDistillateKeywords(task.user_id);
 
-      const now = new Date();
-      const lastRun = task.last_run_time ? new Date(task.last_run_time) : null;
-
-      // 如果从未执行过，或距离上次执行已超过1小时，则检查是否在当前分钟应执行
-      if (!lastRun || (now.getTime() - lastRun.getTime()) > 3600000) {
-        const currentMatch = checkCronMatch(task.cron_expr, now);
-        if (currentMatch) {
-          // 获取关键词
-          // 品牌词每天全量查询；蒸馏词按7分片轮询（每天查 1/7）
-          const keywords = task.keyword_type === 1
-            ? await getBrandKeywords(task.user_id)
-            : await getDistillateKeywordsSharded(task.user_id, 7);
-
-          if (keywords.length === 0) {
-            await updateTaskRunStatus(task.id, {
-              status: 'success',
-              recordCount: 0,
-              brandCount: 0,
-              endTime: new Date()
-            });
-            continue;
-          }
-
-          // 分片入队，防止单个任务过大阻塞队列
-          const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
-          const shards = shardKeywords(keywords, shardSize);
-          let firstQueueId = 0;
-          for (const shard of shards) {
-            const queueId = await enqueueRealCollectTask(task, shard, 0);
-            if (firstQueueId === 0) firstQueueId = queueId;
-          }
-          // 更新任务状态为queued
-          await updateTaskRunStatus(task.id, { status: 'queued' });
-          console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 已入队(${shards.length}个分片, 每片${shardSize}个关键词, 共${keywords.length}个关键词), 首个queueId=${firstQueueId}`);
-        }
-      }
+    if (keywords.length === 0) {
+      console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 无关键词，跳过`);
+      return;
     }
+
+    const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
+    const result = await startNewRound(task.id, keywords, shardSize, 0);
+    console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 启动第 ${result.roundNo} 轮: ${result.shardCount} 个分片, ${keywords.length} 个关键词`);
   } catch (e: any) {
-    console.error('[RealCollect] 调度器检查失败:', e.message);
+    console.error(`[RealCollect] 任务 ${task.id} 启动新一轮失败:`, e.message);
   }
 }
 
-/** 简单检查当前时间是否匹配cron表达式（分钟级） */
-function checkCronMatch(cronExpr: string, date: Date): boolean {
+/**
+ * 循环检查：检测已完成的轮次，触发AEO分析并启动下一轮
+ */
+async function checkCompletedRounds(): Promise<void> {
   try {
-    const parts = cronExpr.split(' ');
-    if (parts.length !== 5) return false;
-    const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+    // 获取所有 active 任务
+    const tasks = await getDueRealCollectTasks();
 
-    const m = date.getMinutes();
-    const h = date.getHours();
-    const dom = date.getDate();
-    const mon = date.getMonth() + 1;
-    const dow = date.getDay();
+    for (const task of tasks) {
+      // 检查当前轮次是否完成
+      const isComplete = await isTaskRoundComplete(task.id);
+      if (!isComplete) continue;
 
-    const match = (expr: string, val: number): boolean => {
-      if (expr === '*') return true;
-      if (expr === val.toString()) return true;
-      if (expr.includes(',')) return expr.split(',').some(p => p === val.toString());
-      if (expr.includes('/')) {
-        const [base, step] = expr.split('/');
-        const stepNum = parseInt(step);
-        if (base === '*') return val % stepNum === 0;
-        return false;
+      // 轮次完成，触发AEO分析
+      try {
+        const roundStartTime = await getTaskRoundStartTime(task.id);
+        if (roundStartTime) {
+          console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 第 ${task.round_no} 轮完成，触发AEO分析`);
+          // 异步触发AEO分析，不阻塞下一轮入队
+          generateAeoFullReport(task.id, task.user_id, task.round_no, roundStartTime, new Date())
+            .then(reportId => {
+              if (reportId) {
+                console.log(`[RealCollect] 任务 ${task.id} AEO轮次报告已生成: reportId=${reportId}`);
+              }
+            })
+            .catch(e => {
+              console.error(`[RealCollect] 任务 ${task.id} AEO分析失败:`, e.message);
+            });
+        }
+      } catch (e: any) {
+        console.error(`[RealCollect] 任务 ${task.id} AEO触发失败:`, e.message);
       }
-      if (expr.includes('-')) {
-        const [start, end] = expr.split('-').map(Number);
-        return val >= start && val <= end;
-      }
-      return false;
-    };
 
-    return match(minute, m) && match(hour, h) && match(dayOfMonth, dom) && match(month, mon) && match(dayOfWeek, dow);
-  } catch {
-    return false;
+      // 启动新一轮
+      await startNewRoundForTask(task);
+    }
+  } catch (e: any) {
+    console.error('[RealCollect] 循环检查失败:', e.message);
   }
 }
 
 /**
  * 立即将任务放入队列（用于手动触发"立即执行"）
+ * 手动触发会中断当前轮次的剩余分片，重新开始新一轮
  */
 export async function enqueueTaskNow(task: any): Promise<number> {
-  // 手动触发时使用全量关键词（不分片轮询）
+  // 获取全量关键词
   const keywords = task.keyword_type === 1
     ? await getBrandKeywords(task.user_id)
     : await getDistillateKeywords(task.user_id);
@@ -136,34 +135,32 @@ export async function enqueueTaskNow(task: any): Promise<number> {
     return 0;
   }
 
-  // 分片入队（高优先级），防止单个任务过大阻塞队列
+  // 启动新一轮（高优先级）
   const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
-  const shards = shardKeywords(keywords, shardSize);
-  let firstQueueId = 0;
-  for (const shard of shards) {
-    const queueId = await enqueueRealCollectTask(task, shard, 1); // priority=1 手动立即执行，优先消费
-    if (firstQueueId === 0) firstQueueId = queueId;
-  }
+  const result = await startNewRound(task.id, keywords, shardSize, 1);
   await updateTaskRunStatus(task.id, { status: 'queued' });
-  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动入队(${shards.length}个分片, 每片${shardSize}个关键词, 共${keywords.length}个关键词, 高优先级), 首个queueId=${firstQueueId}`);
-  return firstQueueId;
+  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动触发第 ${result.roundNo} 轮: ${result.shardCount} 个分片, 高优先级`);
+  return result.firstQueueId;
 }
 
-export function startRealCollectScheduler(): void {
+export async function startRealCollectScheduler(): Promise<void> {
   if (schedulerStarted) {
     console.log('[RealCollect] 调度器已启动，跳过');
     return;
   }
   schedulerStarted = true;
 
-  // 每分钟检查到期任务，放入队列
-  cron.schedule('* * * * *', () => {
-    checkAndEnqueueDueTasks().catch(e => {
-      console.error('[RealCollect] 调度器异常:', e.message);
-    });
-  });
+  // 1. 重启恢复
+  await recoverOnRestart();
 
-  // 每天凌晨0点重置账号池查询计数
+  // 2. 启动循环检查（每30秒检查一次是否有轮次完成）
+  loopTimer = setInterval(() => {
+    checkCompletedRounds().catch(e => {
+      console.error('[RealCollect] 循环检查异常:', e.message);
+    });
+  }, 30000);
+
+  // 3. 每天凌晨0点重置账号池查询计数
   cron.schedule('0 0 * * *', async () => {
     try {
       await resetDailyAuthCounters();
@@ -173,11 +170,10 @@ export function startRealCollectScheduler(): void {
     }
   });
 
-  // 每天凌晨 3 点触发账号续期（worker 会轮询 /platform-auth/renew/pending）
+  // 4. 每天凌晨 3 点触发账号续期检查
   cron.schedule('0 3 * * *', async () => {
     try {
       console.log('[RealCollect] 触发账号续期检查...');
-      // 续期由 worker 主动拉取，这里只做日志
       const auths = await getAuthsForRenewal();
       console.log(`[RealCollect] ${auths.length} 个账号需要续期，等待 worker 处理`);
     } catch (e: any) {
@@ -185,7 +181,7 @@ export function startRealCollectScheduler(): void {
     }
   });
 
-  // 每天凌晨 4 点清理 7 天前的日志
+  // 5. 每天凌晨 4 点清理 7 天前的日志
   cron.schedule('0 4 * * *', async () => {
     try {
       await cleanOldWorkerLogs(7);
@@ -195,5 +191,5 @@ export function startRealCollectScheduler(): void {
     }
   });
 
-  console.log('[RealCollect] 定时调度器已启动(每分钟检查到期任务并放入队列, 每天0点重置账号池计数)');
+  console.log('[RealCollect] 循环调度器已启动(24/7持续执行, 30秒检查轮次完成, 重启自动恢复)');
 }

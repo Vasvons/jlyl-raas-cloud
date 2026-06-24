@@ -1,6 +1,7 @@
 /**
- * AEO 分析器：调用大模型对品牌提及记录进行分析，生成日报
- * 每个任务每天生成一次报告，包含：可见度、情感分布、竞品分析、优化建议
+ * AEO 分析器：调用大模型对品牌提及记录进行分析，生成日报和轮次报告
+ * - 日报：每个任务每天生成一次（保留原有功能）
+ * - 轮次报告：每轮100%完成后生成，基于完整关键词库的分析结果
  */
 import axios from 'axios';
 import {
@@ -8,6 +9,9 @@ import {
   insertAeoReport,
   checkAeoReportExists,
   getBrandKeywords,
+  getRoundRecordsForAeo,
+  insertAeoFullReport,
+  getDistillateKeywords,
 } from '../../repository';
 
 const LLM_API_URL = process.env.LLM_API_URL || '';
@@ -201,4 +205,75 @@ function fallbackAnalysis(
     suggestions,
     raw: JSON.stringify({ fallback: true, records: records.length }),
   };
+}
+
+/**
+ * 生成 AEO 轮次报告（基于完整关键词库的分析）
+ * 每轮100%完成后触发，分析本轮所有品牌命中记录
+ */
+export async function generateAeoFullReport(
+  taskId: number,
+  userId: string,
+  roundNo: number,
+  roundStartTime: Date,
+  roundEndTime: Date
+): Promise<number | null> {
+  try {
+    // 获取本轮所有品牌命中记录
+    const records = await getRoundRecordsForAeo(taskId, roundStartTime);
+    if (records.length === 0) {
+      console.log(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮无品牌命中记录，跳过轮次报告`);
+      return null;
+    }
+
+    // 获取品牌词和蒸馏词（用于分析上下文）
+    const brandKeywords = await getBrandKeywords(userId);
+    let totalKeywords = 0;
+    try {
+      const distillateKeywords = await getDistillateKeywords(userId);
+      totalKeywords = distillateKeywords.length;
+    } catch {}
+
+    // 准备分析数据
+    const analysisInput = records.map(r => ({
+      platform: r.platform,
+      keyword: r.keyword,
+      content: (r.raw_content || '').substring(0, 500),
+      matchedBrands: r.matched_brands,
+      shareUrl: r.share_url,
+    }));
+
+    // 调用 LLM 分析（复用现有函数）
+    const analysis = await callLlmForAeo(analysisInput, brandKeywords);
+
+    // 统计本轮总记录数和品牌命中数
+    const brandMatchedCount = records.length;
+
+    // 入库
+    const reportId = await insertAeoFullReport({
+      taskId,
+      userId,
+      roundNo,
+      totalKeywords,
+      totalRecords: brandMatchedCount,
+      brandMatchedCount,
+      visibilityScore: analysis.visibilityScore,
+      mentionCount: brandMatchedCount,
+      positiveRatio: analysis.positiveRatio,
+      neutralRatio: analysis.neutralRatio,
+      negativeRatio: analysis.negativeRatio,
+      competitorAnalysis: analysis.competitorAnalysis,
+      suggestions: analysis.suggestions,
+      rawAnalysis: analysis.raw,
+      recordIds: records.map(r => r.id),
+      roundStartTime,
+      roundEndTime,
+    });
+
+    console.log(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮报告生成成功 reportId=${reportId} mentions=${brandMatchedCount} keywords=${totalKeywords}`);
+    return reportId;
+  } catch (e: any) {
+    console.error(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮报告生成失败:`, e.message);
+    return null;
+  }
 }

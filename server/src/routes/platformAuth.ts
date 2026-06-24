@@ -12,6 +12,7 @@ import {
   updatePlatformAuthDailyLimit,
   acquirePlatformAccount,
   releasePlatformAccount,
+  resetAccountHealth,
 } from '../repository';
 
 const router = Router();
@@ -206,6 +207,17 @@ router.get('/stats/available', async (req, res) => {
   try {
     const stats = await getAvailableAuthCount();
     res.json({ code: 200, data: stats });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 手动重置账号健康状态（将 warning/danger/banned 恢复为 healthy）
+router.post('/:id/reset-health', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    await resetAccountHealth(id);
+    res.json({ code: 200, message: '账号健康状态已重置' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }

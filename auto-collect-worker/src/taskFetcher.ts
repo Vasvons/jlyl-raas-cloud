@@ -106,6 +106,7 @@ async function executeSingleQuery(
   }
 
   let context: any = null;
+  let page: any = null;
   try {
     // 用 storageState 创建 context（自动登录态）
     let storageState: any;
@@ -120,7 +121,7 @@ async function executeSingleQuery(
       userAgent: getRandomUA(),
       viewport: { width: 1280, height: 800 },
     });
-    const page = await context.newPage();
+    page = await context.newPage();
 
     // 检查登录态
     const isLoggedIn = await adapter.checkLoginStatus(page);
@@ -159,16 +160,47 @@ async function executeSingleQuery(
     await releaseAccount(account.authId, 'success');
     return { success: true, brandMatched };
   } catch (e: any) {
-    // 判断是否风控
+    // 判断是否风控（多维度检测）
     const errMsg = String(e?.message || '');
     const isRateLimited = errMsg.includes('429') ||
       errMsg.includes('频率') ||
       errMsg.includes('rate') ||
       errMsg.includes('Too Many Requests') ||
       errMsg.includes('rate_limited') ||
-      errMsg.includes('风控');
-    await releaseAccount(account.authId, isRateLimited ? 'rate_limited' : 'failed');
-    logger.error(`查询失败: ${platform}/${keyword.substring(0, 30)} - ${e.message}`);
+      errMsg.includes('风控') ||
+      errMsg.includes('验证码') ||
+      errMsg.includes('captcha') ||
+      errMsg.includes('安全验证') ||
+      errMsg.includes('登录失效') ||
+      errMsg.includes('unauthorized') ||
+      errMsg.includes('forbidden') ||
+      errMsg.includes('访问过于频繁') ||
+      errMsg.includes('请稍后再试');
+
+    // 如果有 page 对象，检测页面内容是否包含风控提示
+    let pageRiskDetected = false;
+    try {
+      if (page && !page.isClosed()) {
+        const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 2000) || '').catch(() => '');
+        const riskKeywords = [
+          '验证码', '安全验证', '请完成验证', '人机验证',
+          '访问过于频繁', '请稍后再试', '操作太频繁',
+          '账号已被限制', '账号异常', '登录已失效',
+          '请重新登录', 'unusual traffic', '机器人',
+        ];
+        for (const kw of riskKeywords) {
+          if (bodyText.includes(kw)) {
+            pageRiskDetected = true;
+            logger.warn(`检测到风控提示 "${kw}": ${platform}/${keyword.substring(0, 30)}`);
+            break;
+          }
+        }
+      }
+    } catch {}
+
+    const finalResult = (isRateLimited || pageRiskDetected) ? 'rate_limited' : 'failed';
+    await releaseAccount(account.authId, finalResult);
+    logger.error(`查询失败: ${platform}/${keyword.substring(0, 30)} - ${e.message}${pageRiskDetected ? ' [检测到页面风控提示]' : ''}`);
     return { success: false, brandMatched: false };
   } finally {
     if (context) {
