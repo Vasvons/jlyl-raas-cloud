@@ -38,7 +38,7 @@ router.post('/acquire', async (req, res) => {
 // 归还账号
 router.post('/release', async (req, res) => {
   try {
-    const { authId, result } = req.body;
+    const { authId, result, detail } = req.body;
     if (!authId || !Number.isFinite(Number(authId))) {
       return res.status(400).json({ code: 400, message: '缺少或无效的 authId' });
     }
@@ -46,7 +46,7 @@ router.post('/release', async (req, res) => {
     if (!validResults.includes(result)) {
       return res.status(400).json({ code: 400, message: 'result 必须是 success/failed/rate_limited' });
     }
-    await releasePlatformAccount(Number(authId), result);
+    await releasePlatformAccount(Number(authId), result, detail);
     res.json({ code: 200, message: 'ok' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });

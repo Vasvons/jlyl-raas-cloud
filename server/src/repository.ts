@@ -1192,11 +1192,12 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   const shardSize = taskResult.rows[0]?.shard_size || 50;
   const roundNo = taskResult.rows[0]?.round_no || 0;
 
-  // 统计当前轮次（round_no 对应的）队列分片状态
-  // 当前轮次的分片是最近一批入队的，用 create_time >= round_start_time 过滤
+  // 统计当前轮次的队列分片状态
+  // 用 round_no 精准过滤当前轮次（避免 round_start_time 为 NULL 时回退到 1970-01-01 导致跨轮次累计）
+  // 兼容旧数据：若 queue 表 round_no 为 0（旧分片），回退用 create_time >= round_start_time 过滤
   const result = await query(
     `WITH task_round AS (
-       SELECT id, round_start_time FROM real_collect_task WHERE id = $1
+       SELECT id, round_no, round_start_time FROM real_collect_task WHERE id = $1
      )
      SELECT
        COUNT(*) as total,
@@ -1207,7 +1208,11 @@ export async function getTaskShardProgress(taskId: number): Promise<{
        COALESCE(SUM(jsonb_array_length(q.keywords)), 0) as total_keywords
      FROM real_collect_queue q, task_round tr
      WHERE q.task_id = $1
-       AND q.create_time >= COALESCE(tr.round_start_time, '1970-01-01'::timestamp)`,
+       AND (
+         (tr.round_no > 0 AND q.round_no = tr.round_no)
+         OR
+         (tr.round_no = 0 AND q.round_no = 0 AND q.create_time >= COALESCE(tr.round_start_time, q.create_time))
+       )`,
     [taskId]
   );
   const row = result.rows[0] || {};
@@ -1273,6 +1278,15 @@ export async function startNewRound(
   );
   const roundNo = taskResult.rows[0]?.round_no || 1;
 
+  // 清理旧轮次已完成的 queue 记录，避免表无限膨胀（保留最近一轮用于审计）
+  if (roundNo > 1) {
+    await query(
+      `DELETE FROM real_collect_queue
+       WHERE task_id = $1 AND round_no > 0 AND round_no < $2 AND status = 'done'`,
+      [taskId, roundNo - 1]
+    );
+  }
+
   // 分片入队
   const size = Math.max(1, shardSize);
   const shards: string[][] = [];
@@ -1283,11 +1297,11 @@ export async function startNewRound(
   let firstQueueId = 0;
   for (const shard of shards) {
     const result = await query(
-      `INSERT INTO real_collect_queue (task_id, user_id, keyword_type, platforms, keywords, status, priority)
-       SELECT $1, user_id, keyword_type, platforms, $2, 'pending', $3
+      `INSERT INTO real_collect_queue (task_id, user_id, keyword_type, platforms, keywords, status, priority, round_no)
+       SELECT $1, user_id, keyword_type, platforms, $2, 'pending', $3, $4
        FROM real_collect_task WHERE id = $1
        RETURNING id`,
-      [taskId, JSON.stringify(shard), priority]
+      [taskId, JSON.stringify(shard), priority, roundNo]
     );
     if (firstQueueId === 0) firstQueueId = result.rows[0].id;
   }
@@ -2284,29 +2298,21 @@ export async function getPlatformAuthById(id: number) {
 }
 
 /** 从账号池借用一个可用账号（最久未使用优先）
- * 四态健康状态：只借用 healthy 状态的账号
- * warning/danger 状态的账号在冷却期结束后自动恢复为 healthy
+ * 账号状态（account_status）：normal / banned / offline
+ * - normal：正常可用，acquire 只借用 normal 状态且未超日限额的账号
+ * - banned：被平台封禁，需人工恢复
+ * - offline：登录态掉线，需重新登录
+ * 到达每日查询量（last_query_count >= daily_limit）的账号当天不再借用，次日 0 点重置计数
  */
 export async function acquirePlatformAccount(platform: string): Promise<{ id: number; storageState: string } | null> {
-  // 先恢复冷却期已过的 warning/danger 账号
-  await query(
-    `UPDATE platform_auth
-     SET health_status = 'healthy', risk_level = 'none', cooldown_until = NULL, updated_at = NOW()
-     WHERE platform = $1
-       AND health_status IN ('warning', 'danger')
-       AND cooldown_until IS NOT NULL
-       AND cooldown_until < NOW()`,
-    [platform]
-  );
-
-  // 只借用 healthy 状态的账号
+  // 只借用 normal 状态、未过期、未超日限额的账号（最久未使用优先）
   const result = await query(
     `UPDATE platform_auth 
      SET last_used_at = NOW(), last_query_count = last_query_count + 1
      WHERE id = (
        SELECT id FROM platform_auth 
        WHERE platform = $1 
-         AND health_status = 'healthy'
+         AND health_status = 'normal'
          AND (expires_at IS NULL OR expires_at > NOW())
          AND last_query_count < daily_limit
        ORDER BY last_used_at ASC NULLS FIRST
@@ -2320,91 +2326,74 @@ export async function acquirePlatformAccount(platform: string): Promise<{ id: nu
   return { id: result.rows[0].id, storageState: result.rows[0].storage_state };
 }
 
-/** 归还账号（根据查询结果更新健康状态）
- * 四态流转：
- * - success: health_score +1（上限100），health_status 保持 healthy
- * - failed: health_score -5，连续失败可能降级
- * - rate_limited: 根据当前状态升级危险等级
- *   healthy → warning（冷却30分钟）
- *   warning → danger（冷却2小时）
- *   danger → banned（需人工处理）
+/** 归还账号（根据查询结果更新账号状态）
+ * 新设计：取消自动降健康度，只在明确识别到平台封禁或登录掉线时才改状态
+ * - success: 仅更新使用时间，不动状态
+ * - failed: 登录态失效 → 标记 offline；其他失败不改状态（避免误降级）
+ * - rate_limited: 明确检测到封禁类关键词 → 标记 banned；普通风控提示不改状态
  */
 export async function releasePlatformAccount(
   authId: number,
-  result: 'success' | 'failed' | 'rate_limited'
+  result: 'success' | 'failed' | 'rate_limited',
+  detail?: string
 ): Promise<void> {
   if (result === 'success') {
+    // 成功：仅更新时间，不动状态
     await query(
-      `UPDATE platform_auth
-       SET health_score = LEAST(100, health_score + 1),
-           risk_count = GREATEST(0, risk_count - 1),
-           updated_at = NOW()
-       WHERE id = $1`,
+      `UPDATE platform_auth SET updated_at = NOW() WHERE id = $1`,
       [authId]
     );
   } else if (result === 'rate_limited') {
-    // 根据当前健康状态升级危险等级
-    await query(
-      `UPDATE platform_auth 
-       SET health_score = GREATEST(0, health_score - 20),
-           risk_count = risk_count + 1,
-           risk_detected_at = NOW(),
-           health_status = CASE
-             WHEN health_status = 'healthy' THEN 'warning'
-             WHEN health_status = 'warning' THEN 'danger'
-             ELSE 'banned'
-           END,
-           risk_level = CASE
-             WHEN health_status = 'healthy' THEN 'low'
-             WHEN health_status = 'warning' THEN 'high'
-             ELSE 'banned'
-           END,
-           cooldown_until = CASE
-             WHEN health_status = 'healthy' THEN NOW() + INTERVAL '30 minutes'
-             WHEN health_status = 'warning' THEN NOW() + INTERVAL '2 hours'
-             ELSE NOW() + INTERVAL '24 hours'
-           END,
-           status = CASE
-             WHEN health_status = 'warning' THEN 'cooling'
-             WHEN health_status = 'danger' THEN 'cooling'
-             ELSE 'expired'
-           END,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [authId]
-    );
+    // rate_limited：只有明确检测到封禁类信号才标记 banned
+    // detail 传入具体的风控关键词，用于判断是否真正封禁
+    const banKeywords = ['账号已被限制', '账号异常', '账号被封', '封禁', 'banned', 'limited account'];
+    const isBanned = detail ? banKeywords.some(kw => detail.includes(kw)) : false;
+    if (isBanned) {
+      await query(
+        `UPDATE platform_auth
+         SET health_status = 'banned',
+             risk_detected_at = NOW(),
+             status = 'expired',
+             updated_at = NOW()
+         WHERE id = $1`,
+        [authId]
+      );
+    }
+    // 普通风控提示（验证码、频率限制等）不改状态，账号继续可用
   } else {
-    // failed: 扣减健康度，连续失败5次降级为 warning
-    await query(
-      `UPDATE platform_auth
-       SET health_score = GREATEST(0, health_score - 5),
-           risk_count = risk_count + 1,
-           health_status = CASE
-             WHEN risk_count + 1 >= 5 AND health_status = 'healthy' THEN 'warning'
-             ELSE health_status
-           END,
-           cooldown_until = CASE
-             WHEN risk_count + 1 >= 5 AND health_status = 'healthy' THEN NOW() + INTERVAL '15 minutes'
-             ELSE cooldown_until
-           END,
-           updated_at = NOW()
-       WHERE id = $1`,
-      [authId]
-    );
+    // failed：只有登录态失效才标记 offline，其他失败不改状态
+    const isLoginExpired = detail ? (
+      detail.includes('登录态失效') ||
+      detail.includes('登录失效') ||
+      detail.includes('请重新登录') ||
+      detail.includes('登录已失效') ||
+      detail.includes('unauthorized')
+    ) : false;
+    if (isLoginExpired) {
+      await query(
+        `UPDATE platform_auth
+         SET health_status = 'offline',
+             risk_detected_at = NOW(),
+             status = 'expired',
+             updated_at = NOW()
+         WHERE id = $1`,
+        [authId]
+      );
+    }
+    // 其他失败（Page crashed、超时、选择器未找到等）不改状态，账号继续可用
   }
 }
 
-/** 手动重置账号健康状态（用于前端"恢复"按钮） */
+/** 手动重置账号状态（用于前端"恢复"按钮，将 banned/offline 恢复为 normal） */
 export async function resetAccountHealth(authId: number): Promise<void> {
   await query(
     `UPDATE platform_auth
-     SET health_status = 'healthy',
+     SET health_status = 'normal',
          risk_level = 'none',
          risk_count = 0,
          risk_detected_at = NULL,
          cooldown_until = NULL,
          status = 'active',
-         health_score = LEAST(100, health_score + 20),
          updated_at = NOW()
      WHERE id = $1`,
     [authId]
@@ -2416,23 +2405,13 @@ export async function deletePlatformAuth(id: number): Promise<void> {
   await query(`DELETE FROM platform_auth WHERE id = $1`, [id]);
 }
 
-/** 每日重置查询计数 + 恢复冷却中的账号 */
+/** 每日重置查询计数（凌晨 0 点执行）
+ * 新设计：只重置 last_query_count，不自动恢复 banned/offline 状态（需人工处理）
+ */
 export async function resetDailyAuthCounters(): Promise<void> {
   // 重置查询计数
   await query(`UPDATE platform_auth SET last_query_count = 0 WHERE last_query_count > 0`);
-  // 恢复 warning/danger 状态的账号为 healthy（冷却期已过）
-  await query(
-    `UPDATE platform_auth
-     SET health_status = 'healthy',
-         risk_level = 'none',
-         risk_count = 0,
-         cooldown_until = NULL,
-         status = 'active',
-         updated_at = NOW()
-     WHERE health_status IN ('warning', 'danger')
-       AND (cooldown_until IS NULL OR cooldown_until < NOW())`
-  );
-  // banned 状态需要人工恢复，不自动恢复
+  // banned/offline 状态需要人工恢复，不自动恢复
 }
 
 /** 获取所有活跃授权（用于自动续期） */
@@ -2466,9 +2445,8 @@ export async function getAvailableAuthCount(): Promise<{ total: number; byPlatfo
   const result = await query(
     `SELECT platform, COUNT(*) as count 
      FROM platform_auth 
-     WHERE status = 'active' 
+     WHERE health_status = 'normal'
        AND (expires_at IS NULL OR expires_at > NOW())
-       AND (cooldown_until IS NULL OR cooldown_until < NOW())
        AND last_query_count < daily_limit
      GROUP BY platform`
   );

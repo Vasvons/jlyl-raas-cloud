@@ -434,6 +434,9 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_priority ON real_collect_queue(priority)`);
     // 添加abort_requested字段（用于中断正在执行的任务）
     await client.query(`ALTER TABLE real_collect_queue ADD COLUMN IF NOT EXISTS abort_requested BOOLEAN DEFAULT false`);
+    // 添加round_no字段（标记分片所属轮次，用于精准统计当前轮次进度，避免跨轮次累计）
+    await client.query(`ALTER TABLE real_collect_queue ADD COLUMN IF NOT EXISTS round_no INTEGER DEFAULT 0`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_task_round ON real_collect_queue(task_id, round_no)`);
 
     // Worker 运行日志表
     await client.query(`
@@ -502,11 +505,15 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_full_task_round ON aeo_full_report(task_id, round_no DESC)`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_aeo_full_task_round_unique ON aeo_full_report(task_id, round_no)`);
 
-    // ============ platform_auth 健康状态字段 ============
-    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS health_status VARCHAR(16) DEFAULT 'healthy'`);
+    // ============ platform_auth 账号状态字段 ============
+    // 账号状态（health_status）：normal（正常）/ banned（被封禁）/ offline（掉线）
+    // 取消旧的 healthy/warning/danger 四态健康度设计，改为三态账号状态
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS health_status VARCHAR(16) DEFAULT 'normal'`);
     await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS risk_level VARCHAR(16) DEFAULT 'none'`);
     await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS risk_detected_at TIMESTAMP`);
     await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS risk_count INTEGER DEFAULT 0`);
+    // 迁移历史数据：healthy → normal，warning/danger → normal（取消自动降级，恢复可用）
+    await client.query(`UPDATE platform_auth SET health_status = 'normal' WHERE health_status IN ('healthy', 'warning', 'danger')`);
     // 健康状态索引
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_health ON platform_auth(platform, health_status, last_used_at)`);
 

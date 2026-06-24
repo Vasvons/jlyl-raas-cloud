@@ -69,10 +69,16 @@ async function acquireAccount(platform: string): Promise<{ authId: number; stora
   }
 }
 
-/** 归还账号到云端账号池 */
-async function releaseAccount(authId: number, result: 'success' | 'failed' | 'rate_limited'): Promise<void> {
+/** 归还账号到云端账号池
+ * detail 传入具体的风控关键词或错误信息，云端据此判断是否标记 banned/offline
+ */
+async function releaseAccount(
+  authId: number,
+  result: 'success' | 'failed' | 'rate_limited',
+  detail?: string
+): Promise<void> {
   try {
-    await axios.post(`${SERVER_URL}/platform-auth/release`, { authId, result }, { timeout: 10000 });
+    await axios.post(`${SERVER_URL}/platform-auth/release`, { authId, result, detail }, { timeout: 10000 });
   } catch (e: any) {
     logger.error(`归还账号失败 authId=${authId}: ${e.message}`);
   }
@@ -127,7 +133,7 @@ async function executeSingleQuery(
     const isLoggedIn = await adapter.checkLoginStatus(page);
     if (!isLoggedIn) {
       logger.warn(`登录态失效: ${platform}/${keyword.substring(0, 20)}`);
-      await releaseAccount(account.authId, 'failed');
+      await releaseAccount(account.authId, 'failed', '登录态失效');
       return { success: false, brandMatched: false };
     }
 
@@ -179,6 +185,7 @@ async function executeSingleQuery(
 
     // 如果有 page 对象，检测页面内容是否包含风控提示
     let pageRiskDetected = false;
+    let detectedKeyword = '';
     try {
       if (page && !page.isClosed()) {
         const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 2000) || '').catch(() => '');
@@ -191,6 +198,7 @@ async function executeSingleQuery(
         for (const kw of riskKeywords) {
           if (bodyText.includes(kw)) {
             pageRiskDetected = true;
+            detectedKeyword = kw;
             logger.warn(`检测到风控提示 "${kw}": ${platform}/${keyword.substring(0, 30)}`);
             break;
           }
@@ -199,7 +207,9 @@ async function executeSingleQuery(
     } catch {}
 
     const finalResult = (isRateLimited || pageRiskDetected) ? 'rate_limited' : 'failed';
-    await releaseAccount(account.authId, finalResult);
+    // detail 传入命中的风控关键词或错误消息，云端据此判断是否标记 banned/offline
+    const detail = detectedKeyword || (isRateLimited ? errMsg.substring(0, 200) : errMsg.substring(0, 200));
+    await releaseAccount(account.authId, finalResult, detail);
     logger.error(`查询失败: ${platform}/${keyword.substring(0, 30)} - ${e.message}${pageRiskDetected ? ' [检测到页面风控提示]' : ''}`);
     return { success: false, brandMatched: false };
   } finally {
