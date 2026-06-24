@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import axios from 'axios';
+import http from 'http';
 import { executeTask } from './taskFetcher';
 import * as logger from './logger';
 import { getCurrentConcurrency } from './dynamicConcurrency';
@@ -9,6 +10,7 @@ dotenv.config();
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 const POLL_INTERVAL = process.env.POLL_INTERVAL ? parseInt(process.env.POLL_INTERVAL) : 2000;
+const WORKER_PORT = parseInt(process.env.WORKER_PORT || '3003');
 
 const WORKER_ID = `worker-${process.pid}-${Date.now()}`;
 
@@ -22,6 +24,20 @@ logger.info(`自动收录查询Worker已启动`);
 logger.info(`WORKER_ID=${WORKER_ID}`);
 logger.info(`SERVER_URL=${SERVER_URL}`);
 logger.info(`POLL_INTERVAL=${POLL_INTERVAL}ms`);
+
+// 健康检查 HTTP 服务器（供 Docker healthcheck 使用）
+const healthServer = http.createServer((req, res) => {
+  if (req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', workerId: WORKER_ID, isProcessing }));
+  } else {
+    res.writeHead(404);
+    res.end('Not Found');
+  }
+});
+healthServer.listen(WORKER_PORT, () => {
+  logger.info(`健康检查服务监听端口 ${WORKER_PORT}`);
+});
 
 // 启动账号续期器
 startRenewer();
@@ -134,6 +150,11 @@ async function shutdown(signal: string): Promise<void> {
 
   // 停止续期器
   stopRenewer();
+
+  // 关闭健康检查服务器
+  if (healthServer) {
+    healthServer.close();
+  }
 
   // 清理轮询定时器
   if (pollTimer) {
