@@ -30,7 +30,19 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       const currentUrl = page.url();
       // 如果被重定向到登录页，说明未登录
       return !currentUrl.includes(this.loginUrlPattern) && !currentUrl.includes('sign_in');
-    } catch {
+    } catch (e: any) {
+      // 区分"页面崩溃/浏览器异常"和"真正登录失效"
+      // 页面崩溃时不要误判为登录态失效，抛出异常让上层作为查询失败处理
+      // 否则会导致账号被错误标记为 failed，账号池被快速消耗
+      if (page.isClosed()) {
+        throw new Error(`checkLoginStatus 失败: 页面已关闭 (${e.message})`);
+      }
+      // Page crashed 等浏览器级异常也抛出，不当作登录失效
+      const errMsg = String(e?.message || '');
+      if (errMsg.includes('Page crashed') || errMsg.includes('Target closed') || errMsg.includes('Browser closed')) {
+        throw new Error(`checkLoginStatus 失败: 浏览器异常 (${errMsg})`);
+      }
+      // 其他异常（如导航超时）保留原逻辑，返回 false
       return false;
     }
   }
