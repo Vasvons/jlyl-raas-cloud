@@ -5,7 +5,8 @@ import { BasePlatformAdapter } from './baseAdapter';
 export class DeepSeekAdapter extends BasePlatformAdapter {
   platformName = 'DeepSeek';
   loginUrl = 'https://chat.deepseek.com/sign_in';
-  chatUrl = 'https://chat.deepseek.com/';
+  // 使用 /chat 路径，避免访问根路径时显示营销页
+  chatUrl = 'https://chat.deepseek.com/chat';
   supportsShare = true;
   protected inputSelector = 'textarea, #chat-input, [class*="chat-input"] textarea, [class*="input-area"] textarea';
   protected responseSelector = '.ds-message--content, [class*="message--content"], [class*="response"], [class*="answer"]';

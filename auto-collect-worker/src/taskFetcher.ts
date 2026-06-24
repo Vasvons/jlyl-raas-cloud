@@ -240,7 +240,16 @@ async function executeSingleQuery(
   } catch (e: any) {
     // 判断是否风控（多维度检测）
     const errMsg = String(e?.message || '');
-    const isRateLimited = errMsg.includes('429') ||
+
+    // 登录态失效单独处理：必须走 failed 路径，让云端标记 offline
+    // 不能放入 isRateLimited，否则会走 rate_limited 路径而不标记 offline
+    const isLoginExpired = errMsg.includes('登录态失效') ||
+      errMsg.includes('登录失效') ||
+      errMsg.includes('请重新登录') ||
+      errMsg.includes('登录已失效');
+
+    const isRateLimited = !isLoginExpired && (
+      errMsg.includes('429') ||
       errMsg.includes('频率') ||
       errMsg.includes('rate') ||
       errMsg.includes('Too Many Requests') ||
@@ -249,11 +258,11 @@ async function executeSingleQuery(
       errMsg.includes('验证码') ||
       errMsg.includes('captcha') ||
       errMsg.includes('安全验证') ||
-      errMsg.includes('登录失效') ||
       errMsg.includes('unauthorized') ||
       errMsg.includes('forbidden') ||
       errMsg.includes('访问过于频繁') ||
-      errMsg.includes('请稍后再试');
+      errMsg.includes('请稍后再试')
+    );
 
     // 如果有 page 对象，检测页面内容是否包含风控提示
     let pageRiskDetected = false;
@@ -278,12 +287,14 @@ async function executeSingleQuery(
       }
     } catch {}
 
-    const finalResult = (isRateLimited || pageRiskDetected) ? 'rate_limited' : 'failed';
-    // detail 传入命中的风控关键词或错误消息，云端据此判断是否标记 banned/offline
-    const detail = detectedKeyword || (isRateLimited ? errMsg.substring(0, 200) : errMsg.substring(0, 200));
+    // 登录态失效 → failed + detail='登录态失效'，云端会标记 offline
+    // 风控/封禁 → rate_limited + detail=风控关键词，云端会判断是否 banned
+    // 其他失败 → failed + detail=错误消息，不改状态
+    const finalResult = isLoginExpired ? 'failed' : (isRateLimited || pageRiskDetected ? 'rate_limited' : 'failed');
+    const detail = isLoginExpired ? '登录态失效' : (detectedKeyword || (isRateLimited ? errMsg.substring(0, 200) : errMsg.substring(0, 200)));
     await releaseAccount(account.authId, finalResult, detail);
     recordPlatformResult(platform, false);
-    logger.error(`查询失败: ${platform}/${keyword.substring(0, 30)} - ${e.message}${pageRiskDetected ? ' [检测到页面风控提示]' : ''}`);
+    logger.error(`查询失败: ${platform}/${keyword.substring(0, 30)} - ${e.message}${pageRiskDetected ? ' [检测到页面风控提示]' : ''}${isLoginExpired ? ' [登录态失效]' : ''}`);
     return { success: false, brandMatched: false };
   } finally {
     // 显式关闭 page 再关闭 context，避免 page 泄漏

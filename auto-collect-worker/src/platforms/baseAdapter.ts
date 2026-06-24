@@ -63,6 +63,35 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
     await page.waitForTimeout(3000); // 等待 SPA 渲染完成
 
+    // ============ 登录状态检查 ============
+    // 如果账号未登录/storageState 过期，页面会被重定向到登录页或营销首页
+    // 此时不应继续等待输入框（必然超时），而是直接抛异常让上层标记账号 offline
+    const currentUrl = page.url();
+    const pageTitle = await page.title().catch(() => '');
+
+    // 检查1: URL 是否包含登录关键词（被重定向到登录页）
+    const urlLower = currentUrl.toLowerCase();
+    if (urlLower.includes('login') || urlLower.includes('sign_in') || urlLower.includes('signin')) {
+      throw new Error(`登录态失效: 页面被重定向到登录页 (URL=${currentUrl})`);
+    }
+
+    // 检查2: 页面是否有明显的登录按钮（说明未登录，被重定向到营销/首页）
+    const hasLoginButton = await page.evaluate(() => {
+      const loginTexts = ['登录', '登 录', 'Sign in', 'Sign In', 'Log in', 'Log In', '登录/注册'];
+      const elements = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+      for (const el of elements) {
+        const text = (el.textContent || '').trim();
+        if (loginTexts.some(lt => text === lt || text.includes(lt))) {
+          return true;
+        }
+      }
+      return false;
+    }).catch(() => false);
+
+    if (hasLoginButton) {
+      throw new Error(`登录态失效: 页面检测到登录按钮 (URL=${currentUrl}, title=${pageTitle})`);
+    }
+
     // 等待输入框出现（带重试机制）
     let activeSelector = this.inputSelector;
     let inputFound = false;
