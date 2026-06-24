@@ -75,6 +75,8 @@ async function startNewRoundForTask(task: any): Promise<void> {
 
     const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
     const result = await startNewRound(task.id, keywords, shardSize, 0);
+    // 标记任务为 running 状态并记录开始时间
+    await updateTaskRunStatus(task.id, { status: 'running', startTime: new Date() });
     console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 启动第 ${result.roundNo} 轮: ${result.shardCount} 个分片, ${keywords.length} 个关键词`);
   } catch (e: any) {
     console.error(`[RealCollect] 任务 ${task.id} 启动新一轮失败:`, e.message);
@@ -99,6 +101,8 @@ async function checkCompletedRounds(): Promise<void> {
         const roundStartTime = await getTaskRoundStartTime(task.id);
         if (roundStartTime) {
           console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 第 ${task.round_no} 轮完成，触发AEO分析`);
+          // 标记任务为 success 状态并记录结束时间
+          await updateTaskRunStatus(task.id, { status: 'success', endTime: new Date() });
           // 异步触发AEO分析，不阻塞下一轮入队
           generateAeoFullReport(task.id, task.user_id, task.round_no, roundStartTime, new Date())
             .then(reportId => {

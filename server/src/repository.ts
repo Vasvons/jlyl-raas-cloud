@@ -2061,6 +2061,7 @@ export async function updateTaskRunStatus(id: number, params: {
   brandCount?: number;
   error?: string;
   endTime?: Date;
+  startTime?: Date;
 }): Promise<void> {
   const sets: string[] = [`last_run_status = $2`];
   const values: any[] = [id, params.status];
@@ -2069,6 +2070,7 @@ export async function updateTaskRunStatus(id: number, params: {
   if (params.brandCount !== undefined) { sets.push(`last_run_brand_count = $${paramIdx++}`); values.push(params.brandCount); }
   if (params.error !== undefined) { sets.push(`last_error = $${paramIdx++}`); values.push(params.error); }
   if (params.endTime !== undefined) { sets.push(`last_run_end_time = $${paramIdx++}`); values.push(params.endTime); }
+  if (params.startTime !== undefined) { sets.push(`last_run_time = $${paramIdx++}`); values.push(params.startTime); }
   await query(`UPDATE real_collect_task SET ${sets.join(', ')} WHERE id = $1`, values);
 }
 

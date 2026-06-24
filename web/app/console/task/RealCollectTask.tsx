@@ -17,13 +17,27 @@ export default function RealCollectTask() {
   const [editingTask, setEditingTask] = useState<any>(null);
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
+  const [progressMap, setProgressMap] = useState<Record<number, any>>({});
 
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
       const res = await api.get('/real-collect/tasks');
       if (res.data?.code === 200) {
-        setData(res.data.data || []);
+        const tasks = res.data.data || [];
+        setData(tasks);
+        // 并行加载所有 active 任务的分片进度
+        const activeTasks = tasks.filter((t: any) => t.status === 'active');
+        const progressResults = await Promise.all(
+          activeTasks.map((t: any) =>
+            api.get(`/real-collect/tasks/${t.id}/progress`).then(r => [t.id, r.data?.data]).catch(() => [t.id, null])
+          )
+        );
+        const newMap: Record<number, any> = {};
+        for (const [id, progress] of progressResults) {
+          if (progress) newMap[id as number] = progress;
+        }
+        setProgressMap(newMap);
       }
     } catch (e: any) {
       message.error(e?.response?.data?.message || '加载失败');
@@ -188,14 +202,45 @@ export default function RealCollectTask() {
     {
       title: '上次执行', key: 'last_run', width: 200,
       render: (_: any, record: any) => record.last_run_time
-        ? `${dayjs(record.last_run_time).format('MM-DD HH:mm')} ${record.last_run_status === 'success' ? '✓' : record.last_run_status === 'failed' ? '✗' : '...'} ${record.last_run_record_count || 0}条`
+        ? `${dayjs(record.last_run_time).format('MM-DD HH:mm')} ${record.last_run_status === 'success' ? '✓' : record.last_run_status === 'failed' ? '✗' : record.last_run_status === 'running' ? '⟳' : '...'} ${record.last_run_record_count || 0}条`
         : '-'
     },
     {
-      title: '状态', dataIndex: 'status', key: 'status', width: 80,
-      render: (status: string) => status === 'active'
-        ? <Tag color="green">运行中</Tag>
-        : status === 'paused' ? <Tag color="orange">已暂停</Tag> : <Tag>{status}</Tag>
+      title: '状态', key: 'status', width: 100,
+      render: (_: any, record: any) => {
+        if (record.status === 'paused') return <Tag color="orange">已暂停</Tag>;
+        if (record.status === 'deleted') return <Tag color="red">已删除</Tag>;
+        // status === 'active'，根据 last_run_status 细分
+        if (record.last_run_status === 'running') return <Tag color="processing">执行中</Tag>;
+        if (record.last_run_status === 'success') return <Tag color="green">已完成</Tag>;
+        if (record.last_run_status === 'failed') return <Tag color="red">执行失败</Tag>;
+        if (record.last_run_status === 'queued') return <Tag color="blue">已入队</Tag>;
+        return <Tag color="default">待执行</Tag>;
+      }
+    },
+    {
+      title: '当前轮次进度', key: 'progress', width: 180,
+      render: (_: any, record: any) => {
+        const p = progressMap[record.id];
+        if (!p || record.status !== 'active') return '-';
+        const total = p.totalShards || 0;
+        const completed = p.completedShards || 0;
+        const running = p.runningShards || 0;
+        const pending = p.pendingShards || 0;
+        const failed = p.failedShards || 0;
+        const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+        return (
+          <div style={{ fontSize: 12 }}>
+            <div>第 {p.roundNo || 0} 轮 · {percent}%</div>
+            <div style={{ color: '#999' }}>
+              {completed}/{total} 分片
+              {running > 0 && <span style={{ color: '#1677ff' }}> · {running}执行</span>}
+              {pending > 0 && <span style={{ color: '#faad14' }}> · {pending}待执行</span>}
+              {failed > 0 && <span style={{ color: '#ff4d4f' }}> · {failed}失败</span>}
+            </div>
+          </div>
+        );
+      }
     },
     {
       title: '操作', key: 'action', width: 240,

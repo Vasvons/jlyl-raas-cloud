@@ -38,13 +38,12 @@ router.post('/complete', async (req, res) => {
     }
     await completeQueueTask(queueId, recordCount || 0, brandCount || 0, error);
 
-    // 同步更新任务运行状态
-    if (taskId) {
+    // 分片完成时不改变任务的 running 状态（整个轮次完成由 scheduler 检测并更新）
+    // 只在分片失败时记录错误信息到任务表
+    if (taskId && error) {
       await updateTaskRunStatus(taskId, {
-        status: error ? 'failed' : 'success',
-        recordCount: recordCount || 0,
-        brandCount: brandCount || 0,
-        endTime: new Date()
+        status: 'running',
+        error: error
       });
     }
 
