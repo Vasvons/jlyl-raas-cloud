@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Table, Card, Button, Modal, Form, Input, Select, Tag, Space, message, Popconfirm, Checkbox, Row, Col } from 'antd';
 import { PlusOutlined, EditOutlined, PauseOutlined, CaretRightOutlined, ThunderboltOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -18,6 +18,7 @@ export default function RealCollectTask() {
   const [form] = Form.useForm();
   const [submitting, setSubmitting] = useState(false);
   const [progressMap, setProgressMap] = useState<Record<number, any>>({});
+  const progressTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -27,17 +28,7 @@ export default function RealCollectTask() {
         const tasks = res.data.data || [];
         setData(tasks);
         // 并行加载所有 active 任务的分片进度
-        const activeTasks = tasks.filter((t: any) => t.status === 'active');
-        const progressResults = await Promise.all(
-          activeTasks.map((t: any) =>
-            api.get(`/real-collect/tasks/${t.id}/progress`).then(r => [t.id, r.data?.data]).catch(() => [t.id, null])
-          )
-        );
-        const newMap: Record<number, any> = {};
-        for (const [id, progress] of progressResults) {
-          if (progress) newMap[id as number] = progress;
-        }
-        setProgressMap(newMap);
+        await refreshProgress(tasks);
       }
     } catch (e: any) {
       message.error(e?.response?.data?.message || '加载失败');
@@ -45,6 +36,26 @@ export default function RealCollectTask() {
       setLoading(false);
     }
   }, []);
+
+  // 刷新所有 active 任务的分片进度（供定时轮询调用）
+  const refreshProgress = useCallback(async (tasks?: any[]) => {
+    const taskList = tasks || data;
+    const activeTasks = taskList.filter((t: any) => t.status === 'active');
+    if (activeTasks.length === 0) {
+      setProgressMap({});
+      return;
+    }
+    const progressResults = await Promise.all(
+      activeTasks.map((t: any) =>
+        api.get(`/real-collect/tasks/${t.id}/progress`).then(r => [t.id, r.data?.data]).catch(() => [t.id, null])
+      )
+    );
+    const newMap: Record<number, any> = {};
+    for (const [id, progress] of progressResults) {
+      if (progress) newMap[id as number] = progress;
+    }
+    setProgressMap(newMap);
+  }, [data]);
 
   useEffect(() => {
     loadData();
@@ -58,7 +69,19 @@ export default function RealCollectTask() {
         setPlatforms(res.data.data || []);
       }
     }).catch(() => {});
-  }, [loadData]);
+
+    // 定时轮询进度（每5秒刷新一次，实时显示当前分片和关键词进度）
+    progressTimerRef.current = setInterval(() => {
+      refreshProgress();
+    }, 5000);
+
+    return () => {
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+    };
+  }, [loadData, refreshProgress]);
 
   const handleAdd = () => {
     setEditingTask(null);
@@ -187,7 +210,7 @@ export default function RealCollectTask() {
       }
     },
     {
-      title: '当前轮次进度', key: 'progress', width: 180,
+      title: '当前轮次进度', key: 'progress', width: 220,
       render: (_: any, record: any) => {
         const p = progressMap[record.id];
         if (!p || record.status !== 'active') return '-';
@@ -197,6 +220,10 @@ export default function RealCollectTask() {
         const pending = p.pendingShards || 0;
         const failed = p.failedShards || 0;
         const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+        // 当前正在执行的分片和关键词进度
+        const curShardIdx = p.currentShardIndex || 0;
+        const curKwIdx = p.currentKeywordIndex ?? -1;
+        const curShardKwCount = p.currentShardKeywordCount || 0;
         return (
           <div style={{ fontSize: 12 }}>
             <div>第 {p.roundNo || 0} 轮 · {percent}%</div>
@@ -206,6 +233,11 @@ export default function RealCollectTask() {
               {pending > 0 && <span style={{ color: '#faad14' }}> · {pending}待执行</span>}
               {failed > 0 && <span style={{ color: '#ff4d4f' }}> · {failed}失败</span>}
             </div>
+            {curShardIdx > 0 && curShardKwCount > 0 && (
+              <div style={{ color: '#1677ff' }}>
+                分片 {curShardIdx}/{total} · 关键词 {Math.min(curKwIdx + 1, curShardKwCount)}/{curShardKwCount}
+              </div>
+            )}
           </div>
         );
       }

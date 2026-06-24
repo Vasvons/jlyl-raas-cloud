@@ -1192,6 +1192,9 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   totalKeywords: number;
   shardSize: number;
   roundNo: number;
+  currentShardIndex: number; // 当前正在执行的分片序号（从1开始，0表示无正在执行的分片）
+  currentKeywordIndex: number; // 当前分片已处理到的关键词索引（从0开始，-1表示未开始）
+  currentShardKeywordCount: number; // 当前分片的关键词总数
 }> {
   // 获取任务配置
   const taskResult = await query(
@@ -1225,16 +1228,46 @@ export async function getTaskShardProgress(taskId: number): Promise<{
     [taskId]
   );
   const row = result.rows[0] || {};
+
+  // 查询当前正在执行的 running 分片的详细进度
+  // 按 create_time 排序，取最早的 running 分片（即正在执行的分片）
+  const runningResult = await query(
+    `WITH task_round AS (
+       SELECT id, round_no, round_start_time FROM real_collect_task WHERE id = $1
+     )
+     SELECT q.id, q.last_keyword_index, jsonb_array_length(q.keywords) as keyword_count
+     FROM real_collect_queue q, task_round tr
+     WHERE q.task_id = $1 AND q.status = 'running'
+       AND (
+         (tr.round_no > 0 AND q.round_no = tr.round_no)
+         OR
+         (tr.round_no = 0 AND q.round_no = 0 AND q.create_time >= COALESCE(tr.round_start_time, q.create_time))
+       )
+     ORDER BY q.start_time ASC
+     LIMIT 1`,
+    [taskId]
+  );
+
+  // 计算当前正在执行的分片序号（已完成分片数 + 1）
+  const completedCount = parseInt(row.completed || '0');
+  const runningShard = runningResult.rows[0];
+  const currentShardIndex = runningShard ? completedCount + 1 : 0;
+  const currentKeywordIndex = runningShard?.last_keyword_index ?? -1;
+  const currentShardKeywordCount = runningShard ? parseInt(runningShard.keyword_count || '0') : 0;
+
   return {
     taskId,
     totalShards: parseInt(row.total || '0'),
-    completedShards: parseInt(row.completed || '0'),
+    completedShards: completedCount,
     runningShards: parseInt(row.running || '0'),
     pendingShards: parseInt(row.pending || '0'),
     failedShards: parseInt(row.failed || '0'),
     totalKeywords: parseInt(row.total_keywords || '0'),
     shardSize,
     roundNo,
+    currentShardIndex,
+    currentKeywordIndex,
+    currentShardKeywordCount,
   };
 }
 
