@@ -67,16 +67,27 @@ jobs:
             mkdir -p /etc/docker
             echo '{"registry-mirrors":["https://0vmzj3q6.mirror.aliyuncs.com","https://docker.m.daocloud.io","https://docker.mirrors.ustc.edu.cn"]}' > /etc/docker/daemon.json
             systemctl restart docker
-            echo ">>> Docker 已重启，等待恢复..."
-            sleep 8
+            echo ">>> Docker 已重启，等待 buildkit 完全就绪..."
+            # 等待 Docker daemon 完全就绪（最多等 30 秒）
+            for i in $(seq 1 15); do
+              if docker info > /dev/null 2>&1; then
+                echo ">>> Docker daemon 已就绪"
+                break
+              fi
+              echo "等待 Docker daemon 启动... ($i/15)"
+              sleep 2
+            done
+            # 额外等待 buildkit 就绪
+            sleep 5
             # 验证镜像加速器是否生效
             echo ">>> 验证镜像加速器配置："
             docker info 2>/dev/null | grep -A5 "Registry Mirrors" || echo "警告：未检测到镜像加速器配置"
 
-            # 清理 Docker 无用资源（不删除正在使用的基础镜像，避免重新拉取）
+            # 清理 Docker 无用资源（保留构建缓存，避免 buildkit 状态不一致）
             echo ">>> 清理Docker无用资源释放磁盘空间..."
             docker container prune -f 2>/dev/null || true
-            docker builder prune -af 2>/dev/null || true
+            # 只清理悬空的构建缓存（不加 -a，保留已构建的层缓存，加速后续 build）
+            docker builder prune -f 2>/dev/null || true
             # 只清理未使用的镜像（不加 -a），保留基础镜像缓存
             docker image prune -f 2>/dev/null || true
             # 清理系统日志（保留最近1天）
@@ -147,8 +158,23 @@ jobs:
             echo ">>> 数据库状态:"
             $DC ps db
 
-            echo ">>> 构建 Docker 镜像..."
-            $DC build
+            echo ">>> 构建 Docker 镜像（带重试）..."
+            build_success=false
+            for attempt in 1 2 3; do
+              echo ">>> 构建尝试 $attempt/3..."
+              if $DC build; then
+                echo ">>> 构建成功"
+                build_success=true
+                break
+              fi
+              echo ">>> 构建失败，清理 buildkit 状态后重试..."
+              docker builder prune -f 2>/dev/null || true
+              sleep 5
+            done
+            if [ "$build_success" = false ]; then
+              echo ">>> 错误：Docker 镜像构建连续 3 次失败"
+              exit 1
+            fi
 
             echo ">>> 启动所有服务..."
             $DC up -d
