@@ -52,6 +52,11 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
   }
 
+  /** 导航后特殊处理钩子（子类可重写，用于点击"开始对话"等入口按钮） */
+  protected async afterNavigate(page: Page): Promise<void> {
+    // 默认无操作
+  }
+
   async query(page: Page, keyword: string): Promise<QueryResult> {
     // 导航到聊天页（新对话）
     // 使用 networkidle 等待 SPA 页面 JS 渲染完成（比 domcontentloaded 更可靠）
@@ -76,6 +81,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
 
     // 检查2: 页面是否有明显的登录按钮（说明未登录，被重定向到营销/首页）
+    // 注意：部分平台（如通义千问）的营销首页即使已登录也会显示"登录"按钮
+    // 因此需要二次校验：如果页面同时存在用户头像/用户名等已登录标志，则不判定为登录失效
     const hasLoginButton = await page.evaluate(() => {
       const loginTexts = ['登录', '登 录', 'Sign in', 'Sign In', 'Log in', 'Log In', '登录/注册'];
       const elements = Array.from(document.querySelectorAll('button, a, [role="button"]'));
@@ -89,8 +96,55 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }).catch(() => false);
 
     if (hasLoginButton) {
-      throw new Error(`登录态失效: 页面检测到登录按钮 (URL=${currentUrl}, title=${pageTitle})`);
+      // 二次校验：检查是否有已登录标志（用户头像、用户名、个人中心等）
+      // 如果存在已登录标志，说明账号实际已登录，只是营销首页仍显示登录按钮
+      const hasLoggedInIndicator = await page.evaluate(() => {
+        // 已登录标志选择器：用户头像、用户名、个人中心、退出登录等
+        const loggedInSelectors = [
+          '[class*="avatar"]', '[class*="Avatar"]',
+          '[class*="user-info"]', '[class*="userInfo"]', '[class*="user-menu"]', '[class*="userMenu"]',
+          '[class*="nickname"]', '[class*="userName"]', '[class*="user-name"]',
+          '[class*="account"]', '[class*="profile"]',
+          'img[class*="avatar"]', 'img[class*="Avatar"]',
+          // 退出登录按钮的存在也说明已登录
+          'button:has-text("退出")', 'a:has-text("退出")', 'button:has-text("登出")', 'a:has-text("登出")',
+        ];
+        for (const sel of loggedInSelectors) {
+          try {
+            const el = document.querySelector(sel);
+            if (el) {
+              // 排除隐藏元素
+              const rect = el.getBoundingClientRect();
+              if (rect.width > 0 && rect.height > 0) {
+                return true;
+              }
+            }
+          } catch {
+            // 继续
+          }
+        }
+        // 检查 localStorage/sessionStorage 中的登录态 token
+        try {
+          const tokens = ['token', 'Token', 'access_token', 'accessToken', 'userToken', 'userInfo', 'user_info', 'loginState', 'isLogin'];
+          for (const key of tokens) {
+            if (localStorage.getItem(key) || sessionStorage.getItem(key)) {
+              return true;
+            }
+          }
+        } catch {
+          // 继续
+        }
+        return false;
+      }).catch(() => false);
+
+      if (!hasLoggedInIndicator) {
+        throw new Error(`登录态失效: 页面检测到登录按钮 (URL=${currentUrl}, title=${pageTitle})`);
+      }
+      // 已登录标志存在，继续执行（不抛异常）
     }
+
+    // 导航后特殊处理钩子（子类可重写，用于点击"开始对话"等入口按钮）
+    await this.afterNavigate(page);
 
     // 等待输入框出现（带重试机制）
     let activeSelector = this.inputSelector;

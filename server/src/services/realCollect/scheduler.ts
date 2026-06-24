@@ -5,6 +5,7 @@
  * - 多任务严格轮询：由 dequeue 的 SQL 保证（按 task 最近消费时间轮询）
  */
 import cron from 'node-cron';
+import { query } from '../../db';
 import {
   getDueRealCollectTasks,
   updateTaskRunStatus,
@@ -48,7 +49,21 @@ async function recoverOnRestart(): Promise<void> {
       console.log(`[RealCollect] 已清理过大的 pending 队列项，涉及任务: ${affectedTaskIds.join(', ')}`);
     }
 
-    // 3. 为无 pending 分片的 active 任务启动新一轮
+    // 3. 恢复服务器重启时被误标记为 expired 的账号
+    // 服务器/Worker 重启时，续期器可能正在执行续期，被中断后导致续期失败累加 renewal_fail_count
+    // 连续3次失败会标记 expired，但实际账号可能仍然有效
+    // 重启时重置 renewal_fail_count，并将 health_status=normal 的 expired 账号恢复为 active
+    const recoverAccountResult = await query(
+      `UPDATE platform_auth
+       SET status = 'active', renewal_fail_count = 0, updated_at = NOW()
+       WHERE status = 'expired' AND health_status = 'normal'
+       RETURNING id, platform`
+    );
+    if (recoverAccountResult.rows.length > 0) {
+      console.log(`[RealCollect] 重启恢复：${recoverAccountResult.rows.length} 个被误标记为 expired 的账号已恢复为 active`);
+    }
+
+    // 4. 为无 pending 分片的 active 任务启动新一轮
     const tasks = await getTasksNeedingNewRound();
     for (const task of tasks) {
       await startNewRoundForTask(task);
