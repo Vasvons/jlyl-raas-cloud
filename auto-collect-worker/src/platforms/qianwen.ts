@@ -7,9 +7,9 @@ export class QianwenAdapter extends BasePlatformAdapter {
   loginUrl = 'https://tongyi.aliyun.com/qianwen';
   chatUrl = 'https://tongyi.aliyun.com/qianwen/';
   supportsShare = true;
-  protected inputSelector = 'textarea, [contenteditable="true"]';
-  protected responseSelector = '.answer-area, .markdown-body, [class*="answer"]';
-  protected stopButtonSelector = '[class*="stop"], .stop-btn';
+  protected inputSelector = 'textarea, [contenteditable="true"], #chat-input, [class*="chat-input"] textarea, [class*="input-area"] textarea';
+  protected responseSelector = '.answer-area, .markdown-body, [class*="answer"], [class*="response"], [class*="message-content"]';
+  protected stopButtonSelector = '[class*="stop"], .stop-btn, [class*="Stop"]';
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {

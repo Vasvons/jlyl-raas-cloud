@@ -7,9 +7,9 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
   loginUrl = 'https://chat.deepseek.com/sign_in';
   chatUrl = 'https://chat.deepseek.com/';
   supportsShare = true;
-  protected inputSelector = 'textarea';
-  protected responseSelector = '.ds-message--content';
-  protected stopButtonSelector = '.stop-button';
+  protected inputSelector = 'textarea, #chat-input, [class*="chat-input"] textarea, [class*="input-area"] textarea';
+  protected responseSelector = '.ds-message--content, [class*="message--content"], [class*="response"], [class*="answer"]';
+  protected stopButtonSelector = '.stop-button, [class*="stop"], [class*="Stop"]';
   protected loginUrlPattern = 'sign_in';
 
   async extractShareLink(page: Page): Promise<string | null> {

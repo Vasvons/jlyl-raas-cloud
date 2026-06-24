@@ -77,6 +77,7 @@ async function startNewRoundForTask(task: any): Promise<void> {
     const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
     const result = await startNewRound(task.id, keywords, shardSize, 0);
     // 标记任务为 running 状态并记录开始时间
+    // updateTaskRunStatus 中 startTime 会更新 last_run_time 字段，status 会更新 last_run_status 字段
     await updateTaskRunStatus(task.id, { status: 'running', startTime: new Date() });
     console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 启动第 ${result.roundNo} 轮: ${result.shardCount} 个分片, ${keywords.length} 个关键词`);
   } catch (e: any) {

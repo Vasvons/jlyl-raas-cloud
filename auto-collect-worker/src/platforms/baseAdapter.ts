@@ -271,48 +271,112 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   }
 
   async extractContent(page: Page): Promise<{ text: string; html: string }> {
+    // 滚动到底部触发懒加载，再滚动回顶部（确保所有内容渲染完成）
+    await this.scrollToBottom(page);
+
     if (!this.responseSelector) {
       // 无选择器时，尝试获取页面上最后一段长文本
+      // 优先查找常见的 AI 回答容器，避免获取到侧边栏/导航等无关内容
       const text = await page.evaluate(() => {
+        // 1. 优先查找常见的 AI 回答容器
+        const answerSelectors = [
+          '[class*="answer"]', '[class*="response"]', '[class*="message"]',
+          '[class*="chat-content"]', '[class*="chat-content"]',
+          '[class*="bubble"]', '[class*="content"]', 'article', 'main'
+        ];
+        for (const sel of answerSelectors) {
+          const els = Array.from(document.querySelectorAll(sel));
+          if (els.length > 0) {
+            // 取最后一个（最新的回答）
+            const lastEl = els[els.length - 1];
+            const t = (lastEl.textContent || '').trim();
+            if (t.length > 50) return t;
+          }
+        }
+        // 2. 兜底：获取页面上最长的 div 文本
         const elements = Array.from(document.querySelectorAll('div, section, article'));
         let lastLongText = '';
         for (const el of elements) {
-          const t = el.textContent || '';
+          const t = (el.textContent || '').trim();
           if (t.length > lastLongText.length) lastLongText = t;
         }
-        return lastLongText.trim();
+        return lastLongText;
       });
       return { text, html: `<div>${text}</div>` };
     }
-    
+
     try {
+      // 等待回答选择器出现
       await page.waitForSelector(this.responseSelector, { timeout: 30000 });
+      // 再次滚动确保完整渲染
+      await this.scrollToBottom(page);
       // 取最后一个匹配的元素（最新的回答）
       const elements = await page.$$(this.responseSelector);
       const lastEl = elements[elements.length - 1];
       if (lastEl) {
-        const text = await lastEl.textContent() || '';
-        const html = await lastEl.innerHTML() || '';
+        const text = (await lastEl.textContent()) || '';
+        const html = (await lastEl.innerHTML()) || '';
         return { text: text.trim(), html };
       }
     } catch (e) {
       console.error(`[${this.platformName}] 提取内容失败:`, (e as Error).message);
+      // 兜底：尝试获取页面所有文本
+      try {
+        const text = await page.evaluate(() => document.body.textContent || '');
+        if (text.trim().length > 0) {
+          return { text: text.trim().substring(0, 10000), html: `<div>${text}</div>` };
+        }
+      } catch {}
     }
     return { text: '', html: '' };
+  }
+
+  /**
+   * 滚动到页面底部，触发 SPA 懒加载，确保 AI 回答完整渲染
+   */
+  protected async scrollToBottom(page: Page): Promise<void> {
+    try {
+      await page.evaluate(async () => {
+        await new Promise<void>((resolve) => {
+          let totalHeight = 0;
+          const distance = 200;
+          const timer = setInterval(() => {
+            const scrollHeight = document.body.scrollHeight;
+            window.scrollBy(0, distance);
+            totalHeight += distance;
+            if (totalHeight >= scrollHeight || totalHeight > 10000) {
+              clearInterval(timer);
+              resolve();
+            }
+          }, 100);
+        });
+      });
+      // 滚动回顶部
+      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+    } catch {
+      // 滚动失败不影响主流程
+    }
   }
 
   async waitForResponse(page: Page): Promise<void> {
     // 等待停止按钮出现后再消失（表示回答完成）
     if (this.stopButtonSelector) {
       try {
-        await page.waitForSelector(this.stopButtonSelector, { timeout: 5000 });
-        await page.waitForSelector(this.stopButtonSelector, { state: 'detached', timeout: 90000 });
+        // 先等待停止按钮出现（表示 AI 开始生成）
+        await page.waitForSelector(this.stopButtonSelector, { timeout: 10000 });
+        // 然后等待停止按钮消失（表示 AI 生成完成）
+        await page.waitForSelector(this.stopButtonSelector, { state: 'detached', timeout: 120000 });
+        // 额外等待 2 秒确保最终内容渲染完成
+        await page.waitForTimeout(2000);
       } catch {
-        // 超时或按钮未出现，继续
+        // 停止按钮超时，再等待固定时间
+        console.log(`[${this.platformName}] 停止按钮等待超时，额外等待10秒`);
+        await page.waitForTimeout(10000);
       }
     } else {
-      // 无停止按钮选择器时，等待固定时间
-      await page.waitForTimeout(15000);
+      // 无停止按钮选择器时，等待更长时间（30秒）让 AI 完成生成
+      // 然后滚动页面触发懒加载
+      await page.waitForTimeout(30000);
     }
   }
 }

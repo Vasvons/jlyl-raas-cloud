@@ -7,9 +7,9 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   loginUrl = 'https://www.doubao.com/';
   chatUrl = 'https://www.doubao.com/chat/';
   supportsShare = true;
-  protected inputSelector = 'textarea';
-  protected responseSelector = '[data-testid="message_text_content"], .message-content, .receive-message';
-  protected stopButtonSelector = '[data-testid="stop_button"], .stop-btn';
+  protected inputSelector = 'textarea, [data-testid="chat_input"], [class*="chat-input"] textarea, [class*="input-area"] textarea';
+  protected responseSelector = '[data-testid="message_text_content"], .message-content, .receive-message, [class*="message-content"], [class*="answer"]';
+  protected stopButtonSelector = '[data-testid="stop_button"], .stop-btn, [class*="stop"], [class*="Stop"]';
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
