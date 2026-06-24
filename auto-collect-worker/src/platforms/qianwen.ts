@@ -13,25 +13,12 @@ export class QianwenAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
-    try {
-      // 通义千问分享按钮通常在消息操作栏
-      const shareBtn = await page.$('[class*="share"], [class*="Share"], button:has-text("分享"), [data-testid*="share"]');
-      if (shareBtn) {
-        await shareBtn.click();
-        await page.waitForTimeout(1500);
-        // 分享弹窗中的链接输入框或复制按钮
-        const linkInput = await page.$('input[class*="share"], input[class*="link"], [class*="share-url"], input[readonly]');
-        if (linkInput) {
-          const url = await linkInput.inputValue();
-          if (url && url.startsWith('http')) return url;
-        }
-        // 尝试从剪贴板获取（部分平台点分享后直接复制到剪贴板）
-        const clipText = await page.evaluate(() => navigator.clipboard?.readText?.() || '').catch(() => '');
-        if (clipText && clipText.startsWith('http')) return clipText;
-      }
-      return null;
-    } catch {
-      return null;
-    }
+    // 通义千问：分享按钮在消息操作栏，点击后弹出对话框
+    const url = await this.extractShareLinkFromDialog(
+      page,
+      '[class*="share"], [class*="Share"], button:has-text("分享"), [data-testid*="share"], [aria-label*="分享"]',
+      '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
+    );
+    return url || this.getCurrentPageShareUrl(page);
   }
 }

@@ -14,6 +14,14 @@ import axios from 'axios';
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 
+/** 并发硬上限（与 docker-compose mem_limit 配套，2g 内存下安全值） */
+const MAX_CONCURRENCY_HARD_LIMIT = 4;
+
+/** 故障熔断：连续失败计数 */
+const platformFailureStats: Record<string, { consecutiveFailures: number; lastFailureTime: number }> = {};
+const CIRCUIT_BREAKER_THRESHOLD = 5; // 连续失败 5 次触发熔断
+const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1000; // 熔断后冷却 5 分钟
+
 const platformAdapters: Record<string, PlatformAdapter> = {
   'DeepSeek': new DeepSeekAdapter(),
   'Kimi': new KimiAdapter(),
@@ -84,6 +92,37 @@ async function releaseAccount(
   }
 }
 
+/** 检查平台是否处于熔断状态 */
+function isPlatformInCircuitBreaker(platform: string): boolean {
+  const stats = platformFailureStats[platform];
+  if (!stats) return false;
+  if (stats.consecutiveFailures < CIRCUIT_BREAKER_THRESHOLD) return false;
+  const elapsed = Date.now() - stats.lastFailureTime;
+  if (elapsed >= CIRCUIT_BREAKER_COOLDOWN_MS) {
+    // 冷却期过，重置计数，允许重试
+    stats.consecutiveFailures = 0;
+    return false;
+  }
+  return true;
+}
+
+/** 记录平台成功/失败，用于熔断判断 */
+function recordPlatformResult(platform: string, success: boolean): void {
+  if (!platformFailureStats[platform]) {
+    platformFailureStats[platform] = { consecutiveFailures: 0, lastFailureTime: 0 };
+  }
+  const stats = platformFailureStats[platform];
+  if (success) {
+    stats.consecutiveFailures = 0;
+  } else {
+    stats.consecutiveFailures++;
+    stats.lastFailureTime = Date.now();
+    if (stats.consecutiveFailures === CIRCUIT_BREAKER_THRESHOLD) {
+      logger.warn(`[熔断器] 平台 ${platform} 连续失败 ${CIRCUIT_BREAKER_THRESHOLD} 次，触发熔断，冷却 ${CIRCUIT_BREAKER_COOLDOWN_MS / 60000} 分钟`);
+    }
+  }
+}
+
 /** 将数组按 size 分块 */
 function chunk<T>(arr: T[], size: number): T[][] {
   const result: T[][] = [];
@@ -91,6 +130,30 @@ function chunk<T>(arr: T[], size: number): T[][] {
     result.push(arr.slice(i, i + size));
   }
   return result;
+}
+
+/** 启动 Chromium 的统一参数（内存优化） */
+function getChromiumLaunchArgs() {
+  return {
+    headless: true,
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--no-zygote',
+      '--disable-extensions',
+      '--disable-plugins',
+      '--disable-notifications',
+      '--disable-background-networking',
+      '--disable-sync',
+      '--disable-translate',
+      '--disable-default-apps',
+      '--no-first-run',
+      '--memory-pressure-off',
+    ],
+  };
 }
 
 /** 执行单次查询（一个关键词在一个平台上） */
@@ -104,10 +167,17 @@ async function executeSingleQuery(
   adapter: PlatformAdapter,
   workerId: string
 ): Promise<{ success: boolean; brandMatched: boolean }> {
+  // 熔断检查：连续失败的平台跳过
+  if (isPlatformInCircuitBreaker(platform)) {
+    logger.warn(`[熔断] 平台 ${platform} 处于熔断状态，跳过: ${keyword.substring(0, 20)}`);
+    return { success: false, brandMatched: false };
+  }
+
   // 从账号池借用账号
   const account = await acquireAccount(platform);
   if (!account) {
     logger.warn(`无可用账号: ${platform}/${keyword.substring(0, 20)}`);
+    recordPlatformResult(platform, false);
     return { success: false, brandMatched: false };
   }
 
@@ -134,6 +204,7 @@ async function executeSingleQuery(
     if (!isLoggedIn) {
       logger.warn(`登录态失效: ${platform}/${keyword.substring(0, 20)}`);
       await releaseAccount(account.authId, 'failed', '登录态失效');
+      recordPlatformResult(platform, false);
       return { success: false, brandMatched: false };
     }
 
@@ -164,6 +235,7 @@ async function executeSingleQuery(
     }
 
     await releaseAccount(account.authId, 'success');
+    recordPlatformResult(platform, true);
     return { success: true, brandMatched };
   } catch (e: any) {
     // 判断是否风控（多维度检测）
@@ -210,9 +282,14 @@ async function executeSingleQuery(
     // detail 传入命中的风控关键词或错误消息，云端据此判断是否标记 banned/offline
     const detail = detectedKeyword || (isRateLimited ? errMsg.substring(0, 200) : errMsg.substring(0, 200));
     await releaseAccount(account.authId, finalResult, detail);
+    recordPlatformResult(platform, false);
     logger.error(`查询失败: ${platform}/${keyword.substring(0, 30)} - ${e.message}${pageRiskDetected ? ' [检测到页面风控提示]' : ''}`);
     return { success: false, brandMatched: false };
   } finally {
+    // 显式关闭 page 再关闭 context，避免 page 泄漏
+    if (page) {
+      try { await page.close(); } catch {}
+    }
     if (context) {
       try { await context.close(); } catch {}
     }
@@ -221,7 +298,8 @@ async function executeSingleQuery(
 
 export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTaskResult> {
   const { taskId, queueId, userId, keywordType, keywords, platforms, concurrency, workerId } = params;
-  const maxConcurrency = concurrency || 8;
+  // 并发数钳制：不超过硬上限
+  const maxConcurrency = Math.min(concurrency || MAX_CONCURRENCY_HARD_LIMIT, MAX_CONCURRENCY_HARD_LIMIT);
 
   logger.info(`开始执行任务 ${taskId}: ${keywords.length}个关键词 × ${platforms.length}个平台 = ${keywords.length * platforms.length}次查询, 并发=${maxConcurrency}`);
 
@@ -230,14 +308,10 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
   let aborted = false;
 
   // 启动一个共享 browser
-  let browser = await chromium.launch({
-    headless: true,
-    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-  });
+  let browser = await chromium.launch(getChromiumLaunchArgs());
 
   // 每 N 个批次重启 browser，防止内存泄漏导致 Page crashed
-  const BROWSER_RESTART_INTERVAL = 50;
+  const BROWSER_RESTART_INTERVAL = 15;
   let batchSinceRestart = 0;
 
   try {
@@ -258,8 +332,8 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
     logger.info(`共 ${allQueries.length} 次查询，分 ${batches.length} 批执行`);
 
     for (let i = 0; i < batches.length; i++) {
-      // 检查中断请求
-      if (i > 0 && i % 5 === 0) {
+      // 每批都检查中断请求（原每 5 批一次太慢）
+      if (i > 0) {
         const isAborted = await checkAbortRequested(queueId);
         if (isAborted) {
           logger.warn(`任务 ${taskId} 被请求中断，停止执行（已完成 ${i}/${batches.length} 批）`);
@@ -272,11 +346,7 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
       if (batchSinceRestart >= BROWSER_RESTART_INTERVAL) {
         logger.info(`定期重启 browser 防止内存泄漏 (已完成 ${i}/${batches.length} 批)`);
         try { await browser.close(); } catch {}
-        browser = await chromium.launch({
-          headless: true,
-          executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-        });
+        browser = await chromium.launch(getChromiumLaunchArgs());
         batchSinceRestart = 0;
       }
 
@@ -294,6 +364,8 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
         if (r.status === 'fulfilled' && r.value.success) {
           totalRecords++;
           if (r.value.brandMatched) brandMatched++;
+        } else if (r.status === 'rejected') {
+          logger.error(`批次 ${i + 1} 中有 promise rejected: ${r.reason?.message || r.reason}`);
         }
       }
 

@@ -332,6 +332,12 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_query_time ON real_collect_record(query_time DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_brand_matched ON real_collect_record(brand_matched) WHERE brand_matched = true`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_task ON real_collect_record(task_id)`);
+    // 复合索引：优化 getKeywordSearchRank 中的 UNION ALL 查询（user_id + brand_matched + query_time 排序）
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_user_brand_time ON real_collect_record(user_id, brand_matched, query_time DESC)`);
+    // 联系方式过滤索引：优化 getPlatformRatio 中 has_contact 过滤
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_user_contact ON real_collect_record(user_id, has_contact) WHERE has_contact = true`);
+    // create_time 索引：优化 cleanOldRealCollectRecords 按时间清理
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_create_time ON real_collect_record(create_time DESC)`);
 
     // 静态页存储表
     await client.query(`
@@ -343,6 +349,8 @@ export async function migrate() {
         CONSTRAINT fk_rsp_record FOREIGN KEY (record_id) REFERENCES real_collect_record(id) ON DELETE CASCADE
       )
     `);
+    // record_id 索引：优化 CASCADE 删除时的查找
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rsp_record_id ON real_collect_static_page(record_id)`);
 
     // 平台凭据表
     await client.query(`

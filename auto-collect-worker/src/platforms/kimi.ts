@@ -13,24 +13,12 @@ export class KimiAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
-    try {
-      // Kimi 的分享按钮通常在对话完成后出现
-      const shareBtn = await page.$('button:has-text("分享"), [class*="share"]:not([class*="share-text"])');
-      if (shareBtn) {
-        await shareBtn.click();
-        await page.waitForTimeout(1500);
-        // 尝试从弹窗中获取链接
-        const linkEl = await page.$('input[readonly], [class*="share-link"], [class*="link-input"]');
-        if (linkEl) {
-          const val = await linkEl.inputValue().catch(() => null);
-          if (val) return val;
-          const text = await linkEl.textContent();
-          if (text && text.startsWith('http')) return text.trim();
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
+    // Kimi: 分享按钮在对话完成后出现，点击后弹出分享对话框
+    const url = await this.extractShareLinkFromDialog(
+      page,
+      'button:has-text("分享"), [class*="share"]:not([class*="share-text"]), [data-testid*="share"], [aria-label*="分享"]',
+      '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
+    );
+    return url || this.getCurrentPageShareUrl(page);
   }
 }

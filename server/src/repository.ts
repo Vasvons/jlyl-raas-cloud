@@ -1245,14 +1245,18 @@ export async function resetRunningQueueOnRestart(): Promise<number> {
 export async function isTaskRoundComplete(taskId: number): Promise<boolean> {
   const result = await query(
     `WITH task_round AS (
-       SELECT id, round_start_time FROM real_collect_task WHERE id = $1
+       SELECT id, round_no FROM real_collect_task WHERE id = $1
      )
      SELECT
        COUNT(*) FILTER (WHERE q.status IN ('pending', 'running')) as unfinished,
        COUNT(*) as total
      FROM real_collect_queue q, task_round tr
      WHERE q.task_id = $1
-       AND q.create_time >= COALESCE(tr.round_start_time, '1970-01-01'::timestamp)`,
+       AND (
+         (tr.round_no > 0 AND q.round_no = tr.round_no)
+         OR
+         (tr.round_no = 0 AND q.round_no = 0)
+       )`,
     [taskId]
   );
   const row = result.rows[0] || {};
@@ -1338,7 +1342,7 @@ export async function cleanOversizedPendingShards(): Promise<number[]> {
      FROM real_collect_queue q
      JOIN real_collect_task t ON q.task_id = t.id
      WHERE q.status = 'pending'
-       AND json_array_length(q.keywords) > COALESCE(t.shard_size, 50)`
+       AND jsonb_array_length(q.keywords::jsonb) > COALESCE(t.shard_size, 50)`
   );
 
   if (result.rows.length === 0) return [];
@@ -2309,7 +2313,7 @@ export async function getPlatformAuthById(id: number) {
  * 到达每日查询量（last_query_count >= daily_limit）的账号当天不再借用，次日 0 点重置计数
  */
 export async function acquirePlatformAccount(platform: string): Promise<{ id: number; storageState: string } | null> {
-  // 只借用 normal 状态、未过期、未超日限额的账号（最久未使用优先）
+  // 只借用 normal 状态、status=active、未过期、未超日限额的账号（最久未使用优先）
   const result = await query(
     `UPDATE platform_auth 
      SET last_used_at = NOW(), last_query_count = last_query_count + 1
@@ -2317,6 +2321,7 @@ export async function acquirePlatformAccount(platform: string): Promise<{ id: nu
        SELECT id FROM platform_auth 
        WHERE platform = $1 
          AND health_status = 'normal'
+         AND status = 'active'
          AND (expires_at IS NULL OR expires_at > NOW())
          AND last_query_count < daily_limit
        ORDER BY last_used_at ASC NULLS FIRST
@@ -2333,8 +2338,8 @@ export async function acquirePlatformAccount(platform: string): Promise<{ id: nu
 /** 归还账号（根据查询结果更新账号状态）
  * 新设计：取消自动降健康度，只在明确识别到平台封禁或登录掉线时才改状态
  * - success: 仅更新使用时间，不动状态
- * - failed: 登录态失效 → 标记 offline；其他失败不改状态（避免误降级）
- * - rate_limited: 明确检测到封禁类关键词 → 标记 banned；普通风控提示不改状态
+ * - failed: 登录态失效 → 标记 offline；其他失败不改状态（避免误降级），并回退 last_query_count
+ * - rate_limited: 明确检测到封禁类关键词 → 标记 banned；普通风控提示不改状态，并回退 last_query_count
  */
 export async function releasePlatformAccount(
   authId: number,
@@ -2362,8 +2367,14 @@ export async function releasePlatformAccount(
          WHERE id = $1`,
         [authId]
       );
+    } else {
+      // 普通风控提示（验证码、频率限制等）不改状态，账号继续可用
+      // 回退 last_query_count，因为这次查询未成功消耗
+      await query(
+        `UPDATE platform_auth SET last_query_count = GREATEST(last_query_count - 1, 0), updated_at = NOW() WHERE id = $1`,
+        [authId]
+      );
     }
-    // 普通风控提示（验证码、频率限制等）不改状态，账号继续可用
   } else {
     // failed：只有登录态失效才标记 offline，其他失败不改状态
     const isLoginExpired = detail ? (
@@ -2383,8 +2394,14 @@ export async function releasePlatformAccount(
          WHERE id = $1`,
         [authId]
       );
+    } else {
+      // 其他失败（Page crashed、超时、选择器未找到等）不改状态，账号继续可用
+      // 回退 last_query_count，因为这次查询未成功消耗
+      await query(
+        `UPDATE platform_auth SET last_query_count = GREATEST(last_query_count - 1, 0), updated_at = NOW() WHERE id = $1`,
+        [authId]
+      );
     }
-    // 其他失败（Page crashed、超时、选择器未找到等）不改状态，账号继续可用
   }
 }
 
@@ -2512,6 +2529,25 @@ export async function getWorkerLogs(params: {
 export async function cleanOldWorkerLogs(daysToKeep: number = 7): Promise<void> {
   const safeDays = Math.max(1, Math.min(365, Math.floor(daysToKeep)));
   await query(`DELETE FROM worker_log WHERE create_time < NOW() - make_interval(days => $1)`, [safeDays]);
+}
+
+/**
+ * 清理过期的真实查询记录（防止 real_collect_record 无限膨胀）
+ * 策略：保留最近 N 天的记录，更早的记录连同静态页一起删除（CASCADE）
+ * 注意：只删除非当前轮次的记录，避免删除正在使用的数据
+ */
+export async function cleanOldRealCollectRecords(daysToKeep: number = 30): Promise<number> {
+  const safeDays = Math.max(7, Math.min(365, Math.floor(daysToKeep)));
+  const result = await query(
+    `DELETE FROM real_collect_record
+     WHERE create_time < NOW() - make_interval(days => $1)
+       AND task_id NOT IN (
+         SELECT DISTINCT task_id FROM real_collect_queue
+         WHERE status IN ('pending', 'processing')
+       )`,
+    [safeDays]
+  );
+  return result.rowCount || 0;
 }
 
 // ============ 队列压力监控 ============

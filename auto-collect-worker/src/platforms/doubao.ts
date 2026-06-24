@@ -13,22 +13,11 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
-    try {
-      const shareBtn = await page.$('[class*="share"], [class*="Share"], button:has-text("分享"), [data-testid*="share"]');
-      if (shareBtn) {
-        await shareBtn.click();
-        await page.waitForTimeout(1500);
-        const linkInput = await page.$('input[class*="share"], input[class*="link"], [class*="share-url"], input[readonly]');
-        if (linkInput) {
-          const url = await linkInput.inputValue();
-          if (url && url.startsWith('http')) return url;
-        }
-        const clipText = await page.evaluate(() => navigator.clipboard?.readText?.() || '').catch(() => '');
-        if (clipText && clipText.startsWith('http')) return clipText;
-      }
-      return null;
-    } catch {
-      return null;
-    }
+    const url = await this.extractShareLinkFromDialog(
+      page,
+      '[class*="share"], [class*="Share"], button:has-text("分享"), [data-testid*="share"], [aria-label*="分享"]',
+      '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
+    );
+    return url || this.getCurrentPageShareUrl(page);
   }
 }

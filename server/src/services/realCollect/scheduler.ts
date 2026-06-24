@@ -13,6 +13,7 @@ import {
   resetDailyAuthCounters,
   getAuthsForRenewal,
   cleanOldWorkerLogs,
+  cleanOldRealCollectRecords,
   resetRunningQueueOnRestart,
   getTasksNeedingNewRound,
   isTaskRoundComplete,
@@ -85,44 +86,57 @@ async function startNewRoundForTask(task: any): Promise<void> {
 
 /**
  * 循环检查：检测已完成的轮次，触发AEO分析并启动下一轮
+ * 加 isRunning 保护防止重叠执行导致重复入队
  */
+let checkCompletedRunning = false;
 async function checkCompletedRounds(): Promise<void> {
+  if (checkCompletedRunning) {
+    console.log('[RealCollect] 上一次 checkCompletedRounds 仍在执行，跳过本次');
+    return;
+  }
+  checkCompletedRunning = true;
   try {
     // 获取所有 active 任务
     const tasks = await getDueRealCollectTasks();
 
     for (const task of tasks) {
-      // 检查当前轮次是否完成
-      const isComplete = await isTaskRoundComplete(task.id);
-      if (!isComplete) continue;
-
-      // 轮次完成，触发AEO分析
       try {
-        const roundStartTime = await getTaskRoundStartTime(task.id);
-        if (roundStartTime) {
-          console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 第 ${task.round_no} 轮完成，触发AEO分析`);
-          // 标记任务为 success 状态并记录结束时间
-          await updateTaskRunStatus(task.id, { status: 'success', endTime: new Date() });
-          // 异步触发AEO分析，不阻塞下一轮入队
-          generateAeoFullReport(task.id, task.user_id, task.round_no, roundStartTime, new Date())
-            .then(reportId => {
-              if (reportId) {
-                console.log(`[RealCollect] 任务 ${task.id} AEO轮次报告已生成: reportId=${reportId}`);
-              }
-            })
-            .catch(e => {
-              console.error(`[RealCollect] 任务 ${task.id} AEO分析失败:`, e.message);
-            });
-        }
-      } catch (e: any) {
-        console.error(`[RealCollect] 任务 ${task.id} AEO触发失败:`, e.message);
-      }
+        // 检查当前轮次是否完成
+        const isComplete = await isTaskRoundComplete(task.id);
+        if (!isComplete) continue;
 
-      // 启动新一轮
-      await startNewRoundForTask(task);
+        // 轮次完成，触发AEO分析
+        try {
+          const roundStartTime = await getTaskRoundStartTime(task.id);
+          if (roundStartTime) {
+            console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 第 ${task.round_no} 轮完成，触发AEO分析`);
+            // 标记任务为 success 状态并记录结束时间
+            await updateTaskRunStatus(task.id, { status: 'success', endTime: new Date() });
+            // 异步触发AEO分析，不阻塞下一轮入队
+            generateAeoFullReport(task.id, task.user_id, task.round_no, roundStartTime, new Date())
+              .then(reportId => {
+                if (reportId) {
+                  console.log(`[RealCollect] 任务 ${task.id} AEO轮次报告已生成: reportId=${reportId}`);
+                }
+              })
+              .catch(e => {
+                console.error(`[RealCollect] 任务 ${task.id} AEO分析失败:`, e.message);
+              });
+          }
+        } catch (e: any) {
+          console.error(`[RealCollect] 任务 ${task.id} AEO触发失败:`, e.message);
+        }
+
+        // 启动新一轮
+        await startNewRoundForTask(task);
+      } catch (e: any) {
+        console.error(`[RealCollect] 任务 ${task.id} 轮次检查失败:`, e.message);
+      }
     }
   } catch (e: any) {
     console.error('[RealCollect] 循环检查失败:', e.message);
+  } finally {
+    checkCompletedRunning = false;
   }
 }
 
@@ -192,13 +206,17 @@ export async function startRealCollectScheduler(): Promise<void> {
     }
   });
 
-  // 5. 每天凌晨 4 点清理 7 天前的日志
+  // 5. 每天凌晨 4 点清理 7 天前的日志和 30 天前的真实查询记录
   cron.schedule('0 4 * * *', async () => {
     try {
       await cleanOldWorkerLogs(7);
       console.log('[RealCollect] 已清理7天前的worker日志');
+      const deletedCount = await cleanOldRealCollectRecords(30);
+      if (deletedCount > 0) {
+        console.log(`[RealCollect] 已清理30天前的真实查询记录 ${deletedCount} 条`);
+      }
     } catch (e: any) {
-      console.error('[RealCollect] 日志清理失败:', e.message);
+      console.error('[RealCollect] 日志/记录清理失败:', e.message);
     }
   });
 

@@ -17,6 +17,11 @@ services:
     # 限制内存 512M
     mem_limit: 512m
     memswap_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     # PostgreSQL 内存参数优化
     command: >
       postgres
@@ -59,6 +64,11 @@ services:
     ports:
       - "127.0.0.1:3002:3002"
     mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "30m"
+        max-file: "3"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3002/health || exit 1"]
       interval: 15s
@@ -84,6 +94,17 @@ services:
     ports:
       - "127.0.0.1:3011:3011"
     mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3011/ || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
       - jlyl-cloud-network
 
@@ -100,9 +121,24 @@ services:
     environment:
       WORKER_PORT: 3003
       SERVER_URL: http://server:3002
+      MAX_CONCURRENCY: "4"
+      SHM_SIZE: "512m"
     ports:
       - "127.0.0.1:3003:3003"
-    mem_limit: 1g
+    mem_limit: 2g
+    memswap_limit: 2g
+    shm_size: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3003/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     networks:
       - jlyl-cloud-network
 

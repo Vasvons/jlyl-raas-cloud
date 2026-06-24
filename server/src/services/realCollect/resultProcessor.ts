@@ -1,7 +1,5 @@
 /**
- * 结果处理器：接收Worker回写的原始结果，做品牌词包含检查，生成静态页，入库
- * 
- * 简化版：只检查 content 是否包含品牌词，不做复杂识别（联系方式识别留给 AEO 阶段）
+ * 结果处理器：接收Worker回写的原始结果，做品牌词+联系方式识别，生成静态页，入库
  */
 import {
   insertRealCollectRecord,
@@ -9,6 +7,7 @@ import {
   getBrandKeywords,
   updateRecordStaticPageId
 } from '../../repository';
+import { recognizeContent } from './recognizer';
 
 export interface WorkerResult {
   taskId: number;
@@ -56,11 +55,9 @@ export async function processWorkerResult(result: WorkerResult): Promise<void> {
   // 获取用户品牌词
   const brandKeywords = await getBrandKeywords(result.userId);
 
-  // 纯代码品牌词包含检查
-  const matchedBrands = brandKeywords.filter(brand =>
-    result.content.toLowerCase().includes(brand.toLowerCase())
-  );
-  const brandMatched = matchedBrands.length > 0;
+  // 使用 recognizer 做品牌词+联系方式联合识别
+  // recognizer 只在品牌词附近 ±300 字符窗口内识别联系方式，避免误识别
+  const recognizeResult = recognizeContent(result.content, brandKeywords);
 
   // 先插入 record 获取 id
   const recordId = await insertRealCollectRecord({
@@ -69,10 +66,10 @@ export async function processWorkerResult(result: WorkerResult): Promise<void> {
     keyword: result.keyword,
     keywordType: result.keywordType,
     platform: result.platform,
-    brandMatched,
-    matchedBrands,
-    hasContact: false,
-    contacts: null,
+    brandMatched: recognizeResult.brandMatched,
+    matchedBrands: recognizeResult.matchedBrands,
+    hasContact: recognizeResult.hasContact,
+    contacts: recognizeResult.contacts,
     shareUrl: result.shareUrl,
     staticPageId: null,
     rawContent: result.content,

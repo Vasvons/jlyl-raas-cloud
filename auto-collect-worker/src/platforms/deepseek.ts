@@ -13,21 +13,13 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'sign_in';
 
   async extractShareLink(page: Page): Promise<string | null> {
-    try {
-      // 尝试点击分享按钮
-      const shareBtn = await page.$('[class*="share"], button:has-text("分享")');
-      if (shareBtn) {
-        await shareBtn.click();
-        await page.waitForTimeout(1000);
-        // 尝试获取分享链接
-        const linkInput = await page.$('input[class*="share"], [class*="share-url"]');
-        if (linkInput) {
-          return await linkInput.inputValue();
-        }
-      }
-      return null;
-    } catch {
-      return null;
-    }
+    // DeepSeek: 分享按钮在消息操作栏，点击后弹出对话框
+    const url = await this.extractShareLinkFromDialog(
+      page,
+      '[class*="share"], button:has-text("分享"), [data-testid*="share"], [aria-label*="分享"]',
+      '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
+    );
+    // DeepSeek 发送消息后 URL 会变为 /chat/<conversation_id>，本身就是分享链接
+    return url || this.getCurrentPageShareUrl(page);
   }
 }
