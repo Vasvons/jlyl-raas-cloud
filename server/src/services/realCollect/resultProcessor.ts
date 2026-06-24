@@ -51,7 +51,14 @@ function generateStaticHtml(keyword: string, platform: string, content: string, 
 </html>`;
 }
 
-export async function processWorkerResult(result: WorkerResult): Promise<void> {
+export interface ProcessResult {
+  brandMatched: boolean;
+  matchedBrands: string[];
+  hasContact: boolean;
+  recordId: number;
+}
+
+export async function processWorkerResult(result: WorkerResult): Promise<ProcessResult> {
   // 获取用户品牌词
   const brandKeywords = await getBrandKeywords(result.userId);
 
@@ -83,4 +90,11 @@ export async function processWorkerResult(result: WorkerResult): Promise<void> {
     const staticPageId = await insertStaticPage(recordId, html);
     await updateRecordStaticPageId(recordId, staticPageId);
   }
+
+  return {
+    brandMatched: recognizeResult.brandMatched,
+    matchedBrands: recognizeResult.matchedBrands,
+    hasContact: recognizeResult.hasContact,
+    recordId
+  };
 }

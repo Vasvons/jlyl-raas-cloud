@@ -3,6 +3,13 @@ import * as logger from './logger';
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 
+export interface ReportResult {
+  brandMatched: boolean;
+  matchedBrands: string[];
+  hasContact: boolean;
+  recordId: number;
+}
+
 export async function reportResult(result: {
   taskId: number;
   userId: string;
@@ -14,15 +21,28 @@ export async function reportResult(result: {
   shareUrl: string | null;
   supportsShare: boolean;
   workerId: string;
-}): Promise<void> {
+}): Promise<ReportResult | null> {
   try {
-    await axios.post(`${SERVER_URL}/real-collect/results/worker/report`, {
+    const resp = await axios.post(`${SERVER_URL}/real-collect/results/worker/report`, {
       ...result,
       queryTime: new Date().toISOString()
     }, {
       timeout: 30000
     });
-    logger.info(`[Reporter] 结果回写成功: ${result.platform}/${result.keyword.substring(0, 20)}`);
+
+    // 解析云端返回的品牌识别结果
+    const data = resp.data?.data;
+    if (data && data.brandMatched) {
+      const brands = data.matchedBrands || [];
+      const contact = data.hasContact ? ' [含联系方式]' : '';
+      logger.info(`[品牌命中] ${result.platform}/${result.keyword.substring(0, 30)} 命中品牌: ${brands.join(', ')}${contact} recordId=${data.recordId}`);
+    } else if (data) {
+      logger.info(`[未命中品牌] ${result.platform}/${result.keyword.substring(0, 30)} 内容长度=${result.content.length} recordId=${data.recordId}`);
+    } else {
+      logger.info(`[Reporter] 结果回写成功(无识别结果): ${result.platform}/${result.keyword.substring(0, 20)}`);
+    }
+
+    return data || null;
   } catch (e: any) {
     logger.error(`[Reporter] 结果回写失败: ${e.message}`);
     throw e;

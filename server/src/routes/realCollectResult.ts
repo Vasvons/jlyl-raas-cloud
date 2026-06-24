@@ -31,8 +31,18 @@ router.get('/:id/page', async (req, res) => {
 // 公开接口：Worker回写结果(不需要鉴权，由内部调用)
 router.post('/worker/report', async (req, res) => {
   try {
-    await processWorkerResult(req.body);
-    res.json({ code: 200, message: 'ok' });
+    const processResult = await processWorkerResult(req.body);
+    // 返回品牌识别结果，让 Worker 端日志能区分是否识别到品牌
+    res.json({
+      code: 200,
+      message: 'ok',
+      data: {
+        brandMatched: processResult.brandMatched,
+        matchedBrands: processResult.matchedBrands,
+        hasContact: processResult.hasContact,
+        recordId: processResult.recordId
+      }
+    });
   } catch (e: any) {
     console.error('[RealCollect] Worker结果回写失败:', e.message);
     res.status(500).json({ code: 500, message: e.message });

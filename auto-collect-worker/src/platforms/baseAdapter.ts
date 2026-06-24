@@ -54,47 +54,87 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
   async query(page: Page, keyword: string): Promise<QueryResult> {
     // 导航到聊天页（新对话）
-    await page.goto(this.chatUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    await page.waitForTimeout(2000); // 等待页面渲染完成
+    // 使用 networkidle 等待 SPA 页面 JS 渲染完成（比 domcontentloaded 更可靠）
+    try {
+      await page.goto(this.chatUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    } catch {
+      // networkidle 超时（部分平台长连接不会 idle），降级为 domcontentloaded
+      await page.goto(this.chatUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    }
+    await page.waitForTimeout(3000); // 等待 SPA 渲染完成
 
-    // 等待输入框出现（增加超时到20秒，兼容慢加载页面）
+    // 等待输入框出现（带重试机制）
     let activeSelector = this.inputSelector;
     let inputFound = false;
-    try {
-      await page.waitForSelector(this.inputSelector, { timeout: 20000, state: 'visible' });
-      inputFound = true;
-    } catch {
-      // 主选择器超时，尝试通用回退选择器
-      const fallbackSelectors = [
-        'textarea',
-        'div[contenteditable="true"]',
-        '#chat-input',
-        '.chat-input',
-        '[class*="chat-input"]',
-        '[class*="input-area"] textarea',
-        '[role="textbox"]',
-      ];
-      for (const fallback of fallbackSelectors) {
-        if (fallback === this.inputSelector) continue; // 跳过已尝试的主选择器
+
+    // 第一轮：主选择器 + 回退选择器
+    const fallbackSelectors = [
+      this.inputSelector,
+      'textarea',
+      'div[contenteditable="true"]',
+      '#chat-input',
+      '.chat-input',
+      '[class*="chat-input"]',
+      '[class*="input-area"] textarea',
+      '[class*="input-area"] [contenteditable="true"]',
+      '[role="textbox"]',
+      '[class*="editor"]',
+      '[class*="prompt"] textarea',
+      '[class*="prompt"] [contenteditable="true"]',
+      'form textarea',
+      'form [contenteditable="true"]',
+    ];
+
+    for (const selector of fallbackSelectors) {
+      try {
+        await page.waitForSelector(selector, { timeout: 5000, state: 'visible' });
+        activeSelector = selector;
+        inputFound = true;
+        if (selector !== this.inputSelector) {
+          console.log(`[${this.platformName}] 主选择器超时，使用回退选择器: ${selector}`);
+        }
+        break;
+      } catch {
+        // 继续尝试下一个
+      }
+    }
+
+    // 第二轮：如果还没找到，等待5秒后重试一次（部分 SPA 需要更长时间渲染）
+    if (!inputFound) {
+      console.log(`[${this.platformName}] 第一轮选择器全部超时，等待5秒后重试...`);
+      await page.waitForTimeout(5000);
+      for (const selector of fallbackSelectors) {
         try {
-          await page.waitForSelector(fallback, { timeout: 5000, state: 'visible' });
-          activeSelector = fallback;
+          await page.waitForSelector(selector, { timeout: 3000, state: 'visible' });
+          activeSelector = selector;
           inputFound = true;
-          console.log(`[${this.platformName}] 主选择器超时，使用回退选择器: ${fallback}`);
+          console.log(`[${this.platformName}] 第二轮重试找到选择器: ${selector}`);
           break;
         } catch {
-          // 继续尝试下一个
+          // 继续
         }
       }
     }
 
     if (!inputFound) {
-      throw new Error(`输入框未找到: 主选择器(${this.inputSelector})及所有回退选择器均超时`);
+      // 输出页面 URL 和标题辅助排查
+      const url = page.url();
+      const title = await page.title().catch(() => '未知');
+      throw new Error(`输入框未找到: 主选择器(${this.inputSelector})及所有回退选择器均超时 (URL=${url}, title=${title})`);
     }
 
     // 清空输入框并填入关键词
-    await page.fill(activeSelector, '');
-    await page.fill(activeSelector, keyword);
+    // 部分平台 fill 失败（如 contenteditable），降级为 click + type
+    try {
+      await page.fill(activeSelector, '');
+      await page.fill(activeSelector, keyword);
+    } catch {
+      console.log(`[${this.platformName}] fill 失败，降级为 click+type`);
+      await page.click(activeSelector);
+      await page.keyboard.press('Control+A');
+      await page.keyboard.press('Delete');
+      await page.keyboard.type(keyword, { delay: 50 });
+    }
     await randomDelay(500, 1500);
 
     // 提交
