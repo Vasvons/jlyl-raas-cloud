@@ -24,7 +24,9 @@ export interface WorkerResult {
 }
 
 function generateStaticHtml(keyword: string, platform: string, content: string, htmlContent?: string): string {
-  const body = htmlContent || content.replace(/\n/g, '<br>');
+  // 优先使用 htmlContent（保留原始格式），否则用 content 并保留换行和空格
+  // 使用 <pre> 包裹纯文本，避免丢失格式和被截断
+  const body = htmlContent || `<pre style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: inherit;">${escapeHtml(content)}</pre>`;
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -32,11 +34,12 @@ function generateStaticHtml(keyword: string, platform: string, content: string, 
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${platform} - ${keyword}</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; color: #333; }
     .header { border-bottom: 2px solid #1890ff; padding-bottom: 12px; margin-bottom: 20px; }
     .platform { color: #1890ff; font-weight: bold; }
     .keyword { font-size: 18px; margin: 8px 0; }
     .content { background: #f9f9f9; padding: 16px; border-radius: 8px; }
+    .content pre { white-space: pre-wrap; word-wrap: break-word; max-height: none; overflow: visible; }
     .footer { margin-top: 20px; color: #999; font-size: 12px; text-align: center; }
   </style>
 </head>
@@ -46,9 +49,18 @@ function generateStaticHtml(keyword: string, platform: string, content: string, 
     <div class="keyword">查询: ${keyword}</div>
   </div>
   <div class="content">${body}</div>
-  <div class="footer">由聚量引力RaaS系统自动生成 · ${new Date().toLocaleString('zh-CN')}</div>
+  <div class="footer">内容来源：${platform} · ${new Date().toLocaleString('zh-CN')}</div>
 </body>
 </html>`;
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 export interface ProcessResult {

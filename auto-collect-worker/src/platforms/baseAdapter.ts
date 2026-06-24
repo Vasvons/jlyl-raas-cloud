@@ -282,12 +282,35 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   protected async getCurrentPageShareUrl(page: Page): Promise<string | null> {
     try {
       const url = page.url();
-      // URL 包含对话/会话标识且不是登录页/首页
-      if (url.includes('/c/') || url.includes('/chat/') || url.includes('/conversation')) {
-        if (!url.includes('login') && !url.includes('sign_in') && url.startsWith('http')) {
+      // 排除登录页/首页
+      if (!url.startsWith('http') || url.includes('login') || url.includes('sign_in')) {
+        return null;
+      }
+
+      // 匹配各种平台的对话 URL 模式：
+      // - /c/<id> (DeepSeek)
+      // - /chat/<id> (DeepSeek/豆包)
+      // - /conversation/<id> (Kimi)
+      // - /qianwen/<id> (通义千问)
+      // - /dialog/<id> (智谱)
+      // - /session/<id> (元宝)
+      // - 包含 conversationId/sessionId/chatId 参数
+      const conversationPatterns = [
+        /\/c\/[a-zA-Z0-9_-]{8,}/,           // /c/<id>
+        /\/chat\/[a-zA-Z0-9_-]{8,}/,        // /chat/<id>
+        /\/conversation\/[a-zA-Z0-9_-]{8,}/, // /conversation/<id>
+        /\/qianwen\/[a-zA-Z0-9_-]{8,}/,     // /qianwen/<id>
+        /\/dialog\/[a-zA-Z0-9_-]{8,}/,      // /dialog/<id>
+        /\/session\/[a-zA-Z0-9_-]{8,}/,     // /session/<id>
+        /[?&](?:conversationId|sessionId|chatId)=[a-zA-Z0-9_-]{8,}/, // 查询参数
+      ];
+
+      for (const pattern of conversationPatterns) {
+        if (pattern.test(url)) {
           return url;
         }
       }
+
       return null;
     } catch {
       return null;
