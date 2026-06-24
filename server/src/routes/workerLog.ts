@@ -54,15 +54,16 @@ router.get('/queue-pressure', internalAuth, async (req, res) => {
   try {
     const pressure = await getQueuePressure();
     // 根据pending+running数量推荐并发数
-    // 修复：原来pendingCount=0时降到2，但有running任务时应保持较高并发
+    // 重要：worker 容器内存仅 1g，并发数超过 8 会导致 Page crashed
+    // 最大并发数限制为 8，避免浏览器内存压力
     const totalActive = pressure.pendingCount + pressure.processingCount;
-    let recommendedConcurrency = 8;
-    if (pressure.pendingCount > 20) recommendedConcurrency = 16;
-    else if (pressure.pendingCount > 10) recommendedConcurrency = 12;
-    else if (pressure.pendingCount > 5) recommendedConcurrency = 8;
-    else if (pressure.pendingCount > 0) recommendedConcurrency = 6;
-    else if (totalActive > 0) recommendedConcurrency = 8; // 有running任务但无pending，保持8
-    else recommendedConcurrency = 4; // 队列空闲，保持4（不再降到2）
+    let recommendedConcurrency = 6;
+    if (pressure.pendingCount > 20) recommendedConcurrency = 8;
+    else if (pressure.pendingCount > 10) recommendedConcurrency = 8;
+    else if (pressure.pendingCount > 5) recommendedConcurrency = 6;
+    else if (pressure.pendingCount > 0) recommendedConcurrency = 4;
+    else if (totalActive > 0) recommendedConcurrency = 6; // 有running任务但无pending，保持6
+    else recommendedConcurrency = 4; // 队列空闲，保持4
     res.json({ code: 200, data: { ...pressure, recommendedConcurrency } });
   } catch (e: any) {
     res.json({ code: 500, message: e.message });

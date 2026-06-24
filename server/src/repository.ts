@@ -245,7 +245,7 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
          rcr.query_time,
          COALESCE(rcr.share_url, '/api/real-collect/results/' || rcr.id || '/page') AS url,
          rcr.create_time,
-         NULL::text AS zlgjc_url,
+         COALESCE(rcr.share_url, '/api/real-collect/results/' || rcr.id || '/page') AS zlgjc_url,
          CASE WHEN rcr.has_contact THEN 1 ELSE 0 END AS has_lxfs,
          'real' AS source
        FROM real_collect_record rcr
