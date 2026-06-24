@@ -7,6 +7,8 @@ export class WenxinAdapter extends BasePlatformAdapter {
   loginUrl = 'https://yiyan.baidu.com/';
   // 使用具体的聊天页 URL，避免被重定向到首页
   chatUrl = 'https://yiyan.baidu.com/chat';
+  // 文心一言主要支持图片分享，URL分享仅限artifact
+  // supportsShare=true 但 extractShareLink 只从当前URL提取，不点击分享按钮
   supportsShare = true;
   // 扩展选择器：覆盖文心一言可能的页面改版
   protected inputSelector = 'textarea, #chat-input, .chat-input textarea, [class*="chat-input"] textarea, div[contenteditable="true"], [class*="input-area"] textarea';
@@ -15,11 +17,8 @@ export class WenxinAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
-    const url = await this.extractShareLinkFromDialog(
-      page,
-      '[class*="share"], [class*="Share"], button:has-text("分享"), [data-testid*="share"], [aria-label*="分享"]',
-      '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
-    );
-    return url || this.getCurrentPageShareUrl(page);
+    // 文心一言主要支持图片分享，URL分享仅限artifact
+    // 只从当前URL提取（匹配 /chat/{id} 或 /artifactShare/{短码}），不点击分享按钮
+    return this.getCurrentPageShareUrl(page);
   }
 }

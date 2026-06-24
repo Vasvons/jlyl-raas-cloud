@@ -277,7 +277,17 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
   /**
    * 检查当前页面URL是否本身就是可分享的对话URL
-   * 部分平台（如DeepSeek）发送消息后URL会变为包含对话ID的链接
+   * 部分平台发送消息后URL会变为包含对话ID的链接，该链接即为分享链接
+   *
+   * 8个平台的对话/分享URL格式：
+   * - DeepSeek:  https://chat.deepseek.com/c/{id}  或 /chat/{id}
+   * - 豆包:      https://www.doubao.com/chat/{数字ID}（对话URL即分享URL）
+   * - 通义千问:  https://tongyi.aliyun.com/qianwen/{id} 或 /share?shareId={UUID}
+   * - 文心一言:  https://yiyan.baidu.com/chat/{id} 或 /artifactShare/{短码}
+   * - Kimi:      https://kimi.moonshot.cn/chats/{chatId} 或 /share/{shareId}
+   * - 智谱清言:  https://chatglm.cn/share/{8位短码}
+   * - 腾讯元宝:  https://yuanbao.tencent.com/chat/{id}
+   * - 纳米:      https://www.n.cn/share/{type}?id={shareId}
    */
   protected async getCurrentPageShareUrl(page: Page): Promise<string | null> {
     try {
@@ -287,22 +297,29 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         return null;
       }
 
-      // 匹配各种平台的对话 URL 模式：
-      // - /c/<id> (DeepSeek)
-      // - /chat/<id> (DeepSeek/豆包)
-      // - /conversation/<id> (Kimi)
-      // - /qianwen/<id> (通义千问)
-      // - /dialog/<id> (智谱)
-      // - /session/<id> (元宝)
-      // - 包含 conversationId/sessionId/chatId 参数
+      // 各平台的对话/分享 URL 模式
       const conversationPatterns = [
-        /\/c\/[a-zA-Z0-9_-]{8,}/,           // /c/<id>
-        /\/chat\/[a-zA-Z0-9_-]{8,}/,        // /chat/<id>
-        /\/conversation\/[a-zA-Z0-9_-]{8,}/, // /conversation/<id>
-        /\/qianwen\/[a-zA-Z0-9_-]{8,}/,     // /qianwen/<id>
-        /\/dialog\/[a-zA-Z0-9_-]{8,}/,      // /dialog/<id>
-        /\/session\/[a-zA-Z0-9_-]{8,}/,     // /session/<id>
-        /[?&](?:conversationId|sessionId|chatId)=[a-zA-Z0-9_-]{8,}/, // 查询参数
+        // DeepSeek: /c/{id} 或 /chat/{id}
+        /\/c\/[a-zA-Z0-9_-]{8,}/,
+        /\/chat\/[a-zA-Z0-9_-]{8,}/,
+        // 豆包: /chat/{数字ID}（对话URL即分享URL）
+        /\/chat\/\d{6,}/,
+        // 通义千问: /qianwen/{id} 或 /share?shareId={UUID}
+        /\/qianwen\/[a-zA-Z0-9_-]{8,}/,
+        /[?&]shareId=[a-zA-Z0-9-]{8,}/,
+        // 文心一言: /chat/{id} 或 /artifactShare/{短码}
+        /\/artifactShare\/[a-zA-Z0-9_-]{4,}/,
+        // Kimi: /chats/{chatId} 或 /share/{shareId}
+        /\/chats\/[a-zA-Z0-9_-]{8,}/,
+        /\/share\/[a-zA-Z0-9_-]{8,}/,
+        // 智谱清言: /share/{8位短码}
+        /\/share\/[a-zA-Z0-9_-]{4,}/,
+        // 腾讯元宝: /chat/{id}
+        // 已被上面的 /chat/{id} 覆盖
+        // 纳米: /share/{type}?id={shareId}
+        /\/share\/[a-zA-Z0-9_-]+\?id=[a-zA-Z0-9_-]{4,}/,
+        // 通用查询参数模式
+        /[?&](?:conversationId|sessionId|chatId)=[a-zA-Z0-9_-]{8,}/,
       ];
 
       for (const pattern of conversationPatterns) {

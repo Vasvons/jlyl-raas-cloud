@@ -6,6 +6,8 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
   platformName = '腾讯元宝';
   loginUrl = 'https://yuanbao.tencent.com/';
   chatUrl = 'https://yuanbao.tencent.com/chat/';
+  // 腾讯元宝主要支持图片分享，无明确的对话URL分享功能
+  // supportsShare=true 但 extractShareLink 只从当前URL提取，不点击分享按钮
   supportsShare = true;
   // 扩展选择器：覆盖腾讯元宝可能的页面改版
   protected inputSelector = 'textarea, .chat-input textarea, [class*="input-area"] textarea, div[contenteditable="true"], [role="textbox"]';
@@ -14,11 +16,8 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
-    const url = await this.extractShareLinkFromDialog(
-      page,
-      '[class*="share"], [class*="Share"], button:has-text("分享"), [data-testid*="share"], [aria-label*="分享"]',
-      '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
-    );
-    return url || this.getCurrentPageShareUrl(page);
+    // 腾讯元宝主要支持图片分享，无明确的对话URL分享功能
+    // 只从当前URL提取（匹配 /chat/{id}），不点击分享按钮
+    return this.getCurrentPageShareUrl(page);
   }
 }
