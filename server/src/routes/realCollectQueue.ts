@@ -8,7 +8,8 @@ import {
   checkQueueAbort,
   abortAllRunningTasks,
   getRunningQueueTask,
-  updateTaskRunStatus
+  updateTaskRunStatus,
+  updateQueueProgress
 } from '../repository';
 
 const router = Router();
@@ -64,6 +65,21 @@ router.get('/check-abort/:queueId', async (req, res) => {
     }
     const aborted = await checkQueueAbort(queueId);
     res.json({ code: 200, data: { aborted } });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// Worker更新分片处理进度（不需要鉴权，由Worker内部调用）
+// 记录已处理到的关键词索引，重启后从断点续查，避免从头重复消费
+router.post('/progress', async (req, res) => {
+  try {
+    const { queueId, lastKeywordIndex } = req.body;
+    if (!queueId) {
+      return res.status(400).json({ code: 400, message: '缺少queueId' });
+    }
+    await updateQueueProgress(queueId, lastKeywordIndex);
+    res.json({ code: 200, message: 'ok' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }

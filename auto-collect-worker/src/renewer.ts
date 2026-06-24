@@ -13,7 +13,7 @@ const PLATFORM_CHAT_URLS: Record<string, string> = {
   'DeepSeek': 'https://chat.deepseek.com/',
   'Kimi': 'https://kimi.moonshot.cn/chat',
   '豆包': 'https://www.doubao.com/chat/',
-  '通义千问': 'https://tongyi.aliyun.com/qianwen/',
+  '通义千问': 'https://www.qianwen.com/',
   '腾讯元宝': 'https://yuanbao.tencent.com/chat/',
   '文心一言': 'https://yiyan.baidu.com/',
   '纳米': 'https://www.n.cn/chat',

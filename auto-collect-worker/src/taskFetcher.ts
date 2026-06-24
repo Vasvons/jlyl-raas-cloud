@@ -42,6 +42,7 @@ export interface ExecuteTaskParams {
   platforms: string[];
   concurrency?: number;
   workerId: string;
+  lastKeywordIndex?: number; // 断点续查：从此索引之后开始处理（-1 表示从头开始）
 }
 
 export interface ExecuteTaskResult {
@@ -57,6 +58,15 @@ async function checkAbortRequested(queueId: number): Promise<boolean> {
     return resp.data?.code === 200 && resp.data?.data?.aborted === true;
   } catch {
     return false;
+  }
+}
+
+/** 更新分片处理进度（记录已处理到的关键词索引，重启后从断点续查） */
+async function updateProgress(queueId: number, lastKeywordIndex: number): Promise<void> {
+  try {
+    await axios.post(`${SERVER_URL}/real-collect/queue/progress`, { queueId, lastKeywordIndex }, { timeout: 5000 });
+  } catch {
+    // 进度更新失败不影响主流程
   }
 }
 
@@ -199,16 +209,7 @@ async function executeSingleQuery(
     });
     page = await context.newPage();
 
-    // 检查登录态
-    const isLoggedIn = await adapter.checkLoginStatus(page);
-    if (!isLoggedIn) {
-      logger.warn(`登录态失效: ${platform}/${keyword.substring(0, 20)}`);
-      await releaseAccount(account.authId, 'failed', '登录态失效');
-      recordPlatformResult(platform, false);
-      return { success: false, brandMatched: false };
-    }
-
-    // 执行查询
+    // 执行查询（query 方法内部已包含登录态检测，无需重复调用 checkLoginStatus）
     logger.info(`查询: ${platform}/${keyword.substring(0, 30)}`);
     const result = await adapter.query(page, keyword);
 
@@ -308,11 +309,25 @@ async function executeSingleQuery(
 }
 
 export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTaskResult> {
-  const { taskId, queueId, userId, keywordType, keywords, platforms, concurrency, workerId } = params;
+  const { taskId, queueId, userId, keywordType, keywords, platforms, concurrency, workerId, lastKeywordIndex } = params;
   // 并发数钳制：不超过硬上限
   const maxConcurrency = Math.min(concurrency || MAX_CONCURRENCY_HARD_LIMIT, MAX_CONCURRENCY_HARD_LIMIT);
 
-  logger.info(`开始执行任务 ${taskId}: ${keywords.length}个关键词 × ${platforms.length}个平台 = ${keywords.length * platforms.length}次查询, 并发=${maxConcurrency}`);
+  // 断点续查：从上次中断的位置继续处理
+  // lastKeywordIndex = -1 表示从头开始，= 5 表示前5个关键词已处理，从第6个开始
+  const startIndex = (lastKeywordIndex ?? -1) + 1;
+  const remainingKeywords = keywords.length - startIndex;
+
+  if (startIndex > 0) {
+    logger.info(`任务 ${taskId} 断点续查: 从第 ${startIndex + 1}/${keywords.length} 个关键词开始（跳过已处理的 ${startIndex} 个）`);
+  }
+
+  if (remainingKeywords <= 0) {
+    logger.info(`任务 ${taskId} 所有关键词已处理完毕，无需重复执行`);
+    return { totalRecords: 0, brandMatched: 0, aborted: false };
+  }
+
+  logger.info(`开始执行任务 ${taskId}: 剩余${remainingKeywords}/${keywords.length}个关键词 × ${platforms.length}个平台 = ${remainingKeywords * platforms.length}次查询, 并发=${maxConcurrency}`);
 
   let totalRecords = 0;
   let brandMatched = 0;
@@ -326,28 +341,18 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
   let batchSinceRestart = 0;
 
   try {
-    // 构建所有查询任务（关键词 × 平台的笛卡尔积）
-    const allQueries: { keyword: string; platform: string }[] = [];
-    for (const keyword of keywords) {
-      for (const platform of platforms) {
-        if (platformAdapters[platform]) {
-          allQueries.push({ keyword, platform });
-        } else {
-          logger.warn(`平台 ${platform} 无适配器，跳过`);
-        }
-      }
-    }
+    // 按关键词分组执行：每个关键词的所有平台并发查询
+    // 从断点位置开始遍历，跳过已处理的关键词
+    for (let kwOffset = 0; kwOffset < remainingKeywords; kwOffset++) {
+      const kwIdx = startIndex + kwOffset;
+      const keyword = keywords[kwIdx];
+      logger.info(`任务 ${taskId} 关键词 ${kwIdx + 1}/${keywords.length}: ${keyword.substring(0, 30)}`);
 
-    // 按并发数分批
-    const batches = chunk(allQueries, maxConcurrency);
-    logger.info(`共 ${allQueries.length} 次查询，分 ${batches.length} 批执行`);
-
-    for (let i = 0; i < batches.length; i++) {
-      // 每批都检查中断请求（原每 5 批一次太慢）
-      if (i > 0) {
+      // 检查中断请求
+      if (kwOffset > 0) {
         const isAborted = await checkAbortRequested(queueId);
         if (isAborted) {
-          logger.warn(`任务 ${taskId} 被请求中断，停止执行（已完成 ${i}/${batches.length} 批）`);
+          logger.warn(`任务 ${taskId} 被请求中断，停止执行（已完成 ${kwIdx}/${keywords.length} 个关键词）`);
           aborted = true;
           break;
         }
@@ -355,36 +360,56 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
 
       // 定期重启 browser 防止内存泄漏
       if (batchSinceRestart >= BROWSER_RESTART_INTERVAL) {
-        logger.info(`定期重启 browser 防止内存泄漏 (已完成 ${i}/${batches.length} 批)`);
+        logger.info(`定期重启 browser 防止内存泄漏 (已处理到 ${kwIdx + 1}/${keywords.length} 个关键词)`);
         try { await browser.close(); } catch {}
         browser = await chromium.launch(getChromiumLaunchArgs());
         batchSinceRestart = 0;
       }
 
-      const batch = batches[i];
-      logger.info(`任务 ${taskId} 批次 ${i + 1}/${batches.length} (${batch.length} 个并发查询)`);
-
-      // 并发执行本批
-      const promises = batch.map(({ keyword, platform }) => {
-        const adapter = platformAdapters[platform];
-        return executeSingleQuery(browser, taskId, userId, keywordType, keyword, platform, adapter, workerId);
-      });
-
-      const results = await Promise.allSettled(promises);
-      for (const r of results) {
-        if (r.status === 'fulfilled' && r.value.success) {
-          totalRecords++;
-          if (r.value.brandMatched) brandMatched++;
-        } else if (r.status === 'rejected') {
-          logger.error(`批次 ${i + 1} 中有 promise rejected: ${r.reason?.message || r.reason}`);
+      // 构建本关键词的所有平台查询任务
+      const platformQueries: { platform: string; adapter: PlatformAdapter }[] = [];
+      for (const platform of platforms) {
+        if (platformAdapters[platform]) {
+          platformQueries.push({ platform, adapter: platformAdapters[platform] });
+        } else {
+          logger.warn(`平台 ${platform} 无适配器，跳过`);
         }
       }
 
-      batchSinceRestart++;
+      // 按并发数分批执行本关键词的平台查询
+      const batches = chunk(platformQueries, maxConcurrency);
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        logger.info(`  关键词 "${keyword.substring(0, 20)}" 平台批次 ${i + 1}/${batches.length}: ${batch.map(b => b.platform).join(', ')}`);
 
-      // 批次间随机延迟（反爬）
-      if (i < batches.length - 1) {
-        await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1500));
+        const promises = batch.map(({ platform, adapter }) => {
+          return executeSingleQuery(browser, taskId, userId, keywordType, keyword, platform, adapter, workerId);
+        });
+
+        const results = await Promise.allSettled(promises);
+        for (const r of results) {
+          if (r.status === 'fulfilled' && r.value.success) {
+            totalRecords++;
+            if (r.value.brandMatched) brandMatched++;
+          } else if (r.status === 'rejected') {
+            logger.error(`关键词 "${keyword.substring(0, 20)}" 批次 ${i + 1} 中有 promise rejected: ${r.reason?.message || r.reason}`);
+          }
+        }
+
+        batchSinceRestart++;
+
+        // 批次间随机延迟（反爬）
+        if (i < batches.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1500));
+        }
+      }
+
+      // 每个关键词处理完毕后，更新进度（断点续查依据）
+      await updateProgress(queueId, kwIdx);
+
+      // 关键词间延迟（反爬）
+      if (kwOffset < remainingKeywords - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
       }
     }
   } finally {

@@ -445,6 +445,8 @@ export async function migrate() {
     // 添加round_no字段（标记分片所属轮次，用于精准统计当前轮次进度，避免跨轮次累计）
     await client.query(`ALTER TABLE real_collect_queue ADD COLUMN IF NOT EXISTS round_no INTEGER DEFAULT 0`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcq_task_round ON real_collect_queue(task_id, round_no)`);
+    // 添加 last_keyword_index 字段（记录分片已处理到的关键词索引，重启后从断点续查，避免从头重复消费）
+    await client.query(`ALTER TABLE real_collect_queue ADD COLUMN IF NOT EXISTS last_keyword_index INTEGER DEFAULT -1`);
 
     // Worker 运行日志表
     await client.query(`

@@ -1097,7 +1097,7 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
        LIMIT 1
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING id, task_id, user_id, keyword_type, platforms, keywords`,
+     RETURNING id, task_id, user_id, keyword_type, platforms, keywords, last_keyword_index`,
     [workerId]
   );
   if (result.rows.length === 0) return null;
@@ -1109,6 +1109,7 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
     keywordType: row.keyword_type,
     platforms: row.platforms,
     keywords: typeof row.keywords === 'string' ? JSON.parse(row.keywords) : row.keywords,
+    lastKeywordIndex: row.last_keyword_index ?? -1,
   };
 }
 
@@ -1119,6 +1120,14 @@ export async function completeQueueTask(queueId: number, recordCount: number, br
      SET status = $1, result_record_count = $2, result_brand_count = $3, error = $4, end_time = NOW()
      WHERE id = $5`,
     [error ? 'failed' : 'done', recordCount, brandCount, error || null, queueId]
+  );
+}
+
+// Worker更新分片处理进度（记录已处理到的关键词索引，重启后从断点续查）
+export async function updateQueueProgress(queueId: number, lastKeywordIndex: number): Promise<void> {
+  await query(
+    `UPDATE real_collect_queue SET last_keyword_index = $1 WHERE id = $2`,
+    [lastKeywordIndex, queueId]
   );
 }
 

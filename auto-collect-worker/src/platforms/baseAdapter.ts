@@ -282,7 +282,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    * 8个平台的对话/分享URL格式：
    * - DeepSeek:  https://chat.deepseek.com/c/{id}  或 /chat/{id}
    * - 豆包:      https://www.doubao.com/chat/{数字ID}（对话URL即分享URL）
-   * - 通义千问:  https://tongyi.aliyun.com/qianwen/{id} 或 /share?shareId={UUID}
+   * - 通义千问:  https://www.qianwen.com/chat/{id} 或 /share?shareId={UUID}
    * - 文心一言:  https://yiyan.baidu.com/chat/{id} 或 /artifactShare/{短码}
    * - Kimi:      https://kimi.moonshot.cn/chats/{chatId} 或 /share/{shareId}
    * - 智谱清言:  https://chatglm.cn/share/{8位短码}

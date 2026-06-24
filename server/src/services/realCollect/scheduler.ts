@@ -26,7 +26,7 @@ import { generateAeoFullReport } from '../aeo/analyzer';
 let schedulerStarted = false;
 let loopTimer: ReturnType<typeof setInterval> | null = null;
 
-/** 默认单个队列任务最大关键词数量 */
+/** 默认单个队列任务最大关键词数量（用户可在任务配置中自定义 shard_size） */
 const DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK = 50;
 
 /**

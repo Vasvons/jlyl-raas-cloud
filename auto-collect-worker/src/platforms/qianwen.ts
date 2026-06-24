@@ -4,8 +4,8 @@ import { BasePlatformAdapter } from './baseAdapter';
 /** 通义千问适配器 */
 export class QianwenAdapter extends BasePlatformAdapter {
   platformName = '通义千问';
-  loginUrl = 'https://tongyi.aliyun.com/qianwen';
-  chatUrl = 'https://tongyi.aliyun.com/qianwen/';
+  loginUrl = 'https://www.qianwen.com';
+  chatUrl = 'https://www.qianwen.com/';
   supportsShare = true;
   protected inputSelector = 'textarea, [contenteditable="true"], #chat-input, [class*="chat-input"] textarea, [class*="input-area"] textarea';
   protected responseSelector = '.answer-area, .markdown-body, [class*="answer"], [class*="response"], [class*="message-content"]';

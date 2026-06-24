@@ -71,7 +71,7 @@ async function pollAndExecute(): Promise<void> {
     }
 
     logger.setTaskId(task.taskId);
-    logger.info(`消费到任务 queueId=${task.queueId} taskId=${task.taskId} userId=${task.userId} keywords=${task.keywords?.length} platforms=${task.platforms?.length}`);
+    logger.info(`消费到任务 queueId=${task.queueId} taskId=${task.taskId} userId=${task.userId} keywords=${task.keywords?.length} platforms=${task.platforms?.length} resumeFrom=${task.lastKeywordIndex ?? -1}`);
 
     let recordCount = 0;
     let brandCount = 0;
@@ -89,6 +89,7 @@ async function pollAndExecute(): Promise<void> {
         platforms: task.platforms,
         concurrency,
         workerId: WORKER_ID,
+        lastKeywordIndex: task.lastKeywordIndex ?? -1,
       });
       recordCount = result.totalRecords;
       brandCount = result.brandMatched;
