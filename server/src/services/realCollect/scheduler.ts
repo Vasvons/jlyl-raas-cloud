@@ -18,6 +18,7 @@ import {
   isTaskRoundComplete,
   startNewRound,
   getTaskRoundStartTime,
+  cleanOversizedPendingShards,
 } from '../../repository';
 import { generateAeoFullReport } from '../aeo/analyzer';
 
@@ -40,7 +41,13 @@ async function recoverOnRestart(): Promise<void> {
       console.log(`[RealCollect] 重启恢复：${resetCount} 个中断的队列任务已重置为 pending`);
     }
 
-    // 2. 为无 pending 分片的 active 任务启动新一轮
+    // 2. 清理旧的、未分片的 pending 队列项（分片机制生效前入队的巨型队列项）
+    const affectedTaskIds = await cleanOversizedPendingShards();
+    if (affectedTaskIds.length > 0) {
+      console.log(`[RealCollect] 已清理过大的 pending 队列项，涉及任务: ${affectedTaskIds.join(', ')}`);
+    }
+
+    // 3. 为无 pending 分片的 active 任务启动新一轮
     const tasks = await getTasksNeedingNewRound();
     for (const task of tasks) {
       await startNewRoundForTask(task);

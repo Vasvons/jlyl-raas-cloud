@@ -1311,6 +1311,37 @@ export async function getTasksNeedingNewRound(): Promise<any[]> {
   return result.rows;
 }
 
+/**
+ * 清理旧的、未分片的 pending 队列项
+ * 分片机制生效前入队的队列项可能包含全部关键词（数万个），
+ * 会导致 Worker 内存爆炸和 Page crashed。
+ * 此函数删除 keywords 数量超过 shardSize 的 pending 队列项，返回受影响的 task_id 列表。
+ */
+export async function cleanOversizedPendingShards(): Promise<number[]> {
+  // 找出所有 pending 队列项中 keywords 数量超过对应任务 shardSize 的
+  const result = await query(
+    `SELECT q.id, q.task_id
+     FROM real_collect_queue q
+     JOIN real_collect_task t ON q.task_id = t.id
+     WHERE q.status = 'pending'
+       AND json_array_length(q.keywords) > COALESCE(t.shard_size, 50)`
+  );
+
+  if (result.rows.length === 0) return [];
+
+  const affectedTaskIds = [...new Set(result.rows.map((r: any) => r.task_id))];
+  const queueIds = result.rows.map((r: any) => r.id);
+
+  // 删除这些过大的队列项
+  await query(
+    `DELETE FROM real_collect_queue WHERE id = ANY($1::bigint[])`,
+    [queueIds]
+  );
+
+  console.log(`[RealCollect] 清理了 ${queueIds.length} 个过大的 pending 队列项，涉及 ${affectedTaskIds.length} 个任务`);
+  return affectedTaskIds;
+}
+
 // ============ AEO 轮次报告 ============
 
 /** 插入AEO轮次报告 */
