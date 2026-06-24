@@ -2260,13 +2260,15 @@ export async function savePlatformAuth(params: {
   );
   if (existing.rows.length > 0) {
     await query(
-      `UPDATE platform_auth 
-       SET storage_state = $1, expires_at = $2, status = 'active', 
-           health_score = 100, last_query_count = 0, cooldown_until = NULL,
+      `UPDATE platform_auth
+       SET storage_state = $1, expires_at = $2, status = 'active',
+           health_status = 'normal', last_query_count = 0, cooldown_until = NULL,
+           risk_level = 'none', risk_count = 0, risk_detected_at = NULL,
            avatar_url = COALESCE($4, avatar_url),
+           account_name = COALESCE(NULLIF($5, ''), account_name),
            updated_at = NOW()
        WHERE id = $3`,
-      [params.storageState, params.expiresAt || null, existing.rows[0].id, params.avatarUrl || null]
+      [params.storageState, params.expiresAt || null, existing.rows[0].id, params.avatarUrl || null, params.accountName || null]
     );
     return existing.rows[0].id;
   }

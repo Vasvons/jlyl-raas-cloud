@@ -149,7 +149,7 @@ export async function enqueueTaskNow(task: any): Promise<number> {
   // 启动新一轮（高优先级）
   const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
   const result = await startNewRound(task.id, keywords, shardSize, 1);
-  await updateTaskRunStatus(task.id, { status: 'queued' });
+  await updateTaskRunStatus(task.id, { status: 'running', startTime: new Date() });
   console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动触发第 ${result.roundNo} 轮: ${result.shardCount} 个分片, 高优先级`);
   return result.firstQueueId;
 }

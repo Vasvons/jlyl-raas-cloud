@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Table, Card, Button, Modal, Form, Input, Select, TimePicker, Tag, Space, message, Popconfirm, Checkbox, Row, Col } from 'antd';
+import { Table, Card, Button, Modal, Form, Input, Select, Tag, Space, message, Popconfirm, Checkbox, Row, Col } from 'antd';
 import { PlusOutlined, EditOutlined, PauseOutlined, CaretRightOutlined, ThunderboltOutlined, DeleteOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import api from '@/lib/api';
@@ -65,30 +65,18 @@ export default function RealCollectTask() {
     form.resetFields();
     form.setFieldsValue({
       keywordType: 0,
-      enqueueTime: dayjs('02:00', 'HH:mm'),
     });
     setModalVisible(true);
   };
 
   const handleEdit = (record: any) => {
     setEditingTask(record);
-    // 从cron表达式解析入队时间（cron格式: m h * * *）
-    let enqueueTime = dayjs('02:00', 'HH:mm');
-    if (record.cron_expr) {
-      const parts = record.cron_expr.split(' ');
-      if (parts.length >= 2) {
-        const minute = parseInt(parts[0]) || 0;
-        const hour = parseInt(parts[1]) || 2;
-        enqueueTime = dayjs().hour(hour).minute(minute);
-      }
-    }
     form.setFieldsValue({
       ...record,
       userId: record.user_id,
       taskName: record.task_name,
       keywordType: record.keyword_type,
       platforms: record.platforms,
-      enqueueTime,
     });
     setModalVisible(true);
   };
@@ -98,16 +86,12 @@ export default function RealCollectTask() {
       const values = await form.validateFields();
       setSubmitting(true);
 
-      // 队列模式：每天入队，入队时间转为cron表达式
-      const time = values.enqueueTime as dayjs.Dayjs;
-      const cronExpr = `${time.minute()} ${time.hour()} * * *`;
-
       const payload = {
         userId: values.userId,
         taskName: values.taskName,
         keywordType: values.keywordType,
         platforms: values.platforms,
-        cronExpr,
+        cronExpr: '0 0 * * *',
       };
 
       if (editingTask) {
@@ -169,18 +153,6 @@ export default function RealCollectTask() {
     }
   };
 
-  // 从cron表达式解析显示用的入队时间
-  const formatCronTime = (cronExpr: string) => {
-    if (!cronExpr) return '-';
-    const parts = cronExpr.split(' ');
-    if (parts.length >= 2) {
-      const minute = parts[0].padStart(2, '0');
-      const hour = parts[1].padStart(2, '0');
-      return `${hour}:${minute}`;
-    }
-    return cronExpr;
-  };
-
   const columns = [
     { title: '任务名称', dataIndex: 'task_name', key: 'task_name', width: 150 },
     {
@@ -194,10 +166,6 @@ export default function RealCollectTask() {
     {
       title: '平台', dataIndex: 'platforms', key: 'platforms', width: 200,
       render: (platforms: string[]) => platforms?.map(p => <Tag key={p}>{p}</Tag>)
-    },
-    {
-      title: '入队时间', dataIndex: 'cron_expr', key: 'cron_expr', width: 100,
-      render: (cronExpr: string) => `每天 ${formatCronTime(cronExpr)}`
     },
     {
       title: '上次执行', key: 'last_run', width: 200,
@@ -266,7 +234,7 @@ export default function RealCollectTask() {
         <div style={{ marginBottom: 16 }}>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>新建任务</Button>
           <span style={{ marginLeft: 12, color: '#999', fontSize: 13 }}>
-            队列模式：任务每天按设定时间自动入队，Worker自动消费执行
+            循环模式：任务24小时持续执行，上一轮100%完成后自动启动下一轮
           </span>
         </div>
         <Table
@@ -313,11 +281,8 @@ export default function RealCollectTask() {
               </Row>
             </Checkbox.Group>
           </Form.Item>
-          <Form.Item name="enqueueTime" label="每天入队时间" rules={[{ required: true, message: '请选择入队时间' }]}>
-            <TimePicker format="HH:mm" />
-          </Form.Item>
           <div style={{ color: '#999', fontSize: 12 }}>
-            说明：任务每天在设定的时间自动入队，Worker按队列顺序消费执行。
+            说明：任务启动后24小时循环执行，上一轮100%完成后自动启动下一轮。
           </div>
         </Form>
       </Modal>
