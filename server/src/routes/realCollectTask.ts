@@ -39,7 +39,8 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const { userId, taskName, keywordType, platforms, cronExpr, shardSize } = req.body;
-    if (!userId || !taskName || keywordType === undefined || !platforms || !cronExpr) {
+    // cronExpr 可选：循环模式下不传 cronExpr，任务24小时持续执行
+    if (!userId || !taskName || keywordType === undefined || !platforms) {
       return res.status(400).json({ code: 400, message: '缺少必要参数' });
     }
     const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize });

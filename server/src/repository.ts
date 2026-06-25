@@ -2073,13 +2073,15 @@ export async function createRealCollectTask(params: {
   taskName: string;
   keywordType: number;
   platforms: string[];
-  cronExpr: string;
+  cronExpr?: string;
   shardSize?: number;
 }): Promise<number> {
+  // cronExpr 可选：循环模式下不传，默认 '0 0 * * *' 保持兼容
+  const cronExpr = params.cronExpr || '0 0 * * *';
   const result = await query(
     `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status, shard_size)
      VALUES ($1, $2, $3, $4, $5, 'active', $6) RETURNING id`,
-    [params.userId, params.taskName, params.keywordType, params.platforms, params.cronExpr, params.shardSize || 50]
+    [params.userId, params.taskName, params.keywordType, params.platforms, cronExpr, params.shardSize || 50]
   );
   return result.rows[0].id;
 }
