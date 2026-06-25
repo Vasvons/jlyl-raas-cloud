@@ -89,32 +89,34 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     currentUrl = page.url();
     pageTitle = await page.title().catch(() => '');
 
-    // 检查1.5: 重定向检测——仅在严格场景下判定：当前 URL 路径为根 / 或空时
-    // 说明被重定向到营销首页且未进入 /chat 路径（afterNavigate 也未能跳转）
-    // 不再使用 startsWith 严格前缀匹配，避免 SPA 重写 URL 到 /conversation/xxx 等路径时误判
+    // 检查1.5: 重定向检测——非阻塞式警告
+    // 如果 chatUrl 含特定路径（如 /chat）但导航后 URL 路径为根 / 或空，
+    // 说明被重定向到营销首页。但不立即抛异常，而是记录警告并继续流程。
+    // 原因：很多平台首页本身就含聊天输入框（如 DeepSeek），即使被重定向也能正常查询。
+    // 如果账号真的未登录，后续"等待输入框"会失败，抛"输入框未找到"（属于"其他失败"，
+    // 不标记 offline），账号继续可用，下次重试。
+    // 这避免了"重定向到首页=登录态失效"的误判，同时不损失对真正未登录账号的容错。
     try {
       const chatUrlObj = new URL(this.chatUrl);
       const chatPath = chatUrlObj.pathname.replace(/\/+$/, ''); // 去掉末尾斜杠
       if (chatPath && chatPath !== '/') {
         const currentUrlObj = new URL(currentUrl);
         const currentPath = currentUrlObj.pathname.replace(/\/+$/, '');
-        // 只有当前路径为空或根 / 时才判定为被重定向到首页
-        // 这是 afterNavigate 执行后仍未跳转的明确场景
         if (currentPath === '' || currentPath === '/') {
-          throw new Error(`登录态失效: 页面被重定向到首页 (期望=${this.chatUrl}, 实际=${currentUrl}, title=${pageTitle})`);
+          // 记录警告但不抛异常，让流程继续到"等待输入框"
+          console.log(`[${this.platformName}] 警告: 页面被重定向到首页 (期望=${this.chatUrl}, 实际=${currentUrl}, title=${pageTitle})，继续尝试查找输入框`);
         }
       }
-    } catch (e: any) {
-      // 如果是登录态失效异常，继续抛出
-      if (e.message && e.message.includes('登录态失效')) throw e;
+    } catch {
       // URL 解析失败，继续其他检查
     }
 
-    // 检查2: 页面是否有明显的登录按钮（说明未登录，被重定向到营销/首页）
-    // 注意1：部分平台（如通义千问）的营销首页即使已登录也会显示"登录"按钮
-    // 注意2：如果 URL 路径已进入预期页面（非根 /），说明未被重定向，应跳过此检查
-    //   因为很多平台的 /chat 页面顶部导航本身就含"登录"按钮（作为通用元素），
-    //   这不代表账号未登录。只有被重定向到首页（URL 路径为根 /）时才需要此检查。
+    // 检查2: 页面是否有明显的登录按钮——非阻塞式警告
+    // 仅在 URL 路径为根 /（疑似被重定向到首页）时才执行检测
+    // 但不抛异常，改为记录警告并继续流程。原因：
+    // 1. 很多平台首页即使已登录也显示"登录"按钮（如通义千问）
+    // 2. 二次校验选择器可能不匹配某些平台的已登录标志，导致误判
+    // 3. 如果账号真的未登录，后续"等待输入框"会失败，抛"输入框未找到"（不标记 offline）
     let currentPathForCheck2 = '';
     try {
       currentPathForCheck2 = new URL(currentUrl).pathname.replace(/\/+$/, '');
@@ -123,7 +125,6 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     const isOnExpectedPage = currentPathForCheck2 !== '' && currentPathForCheck2 !== '/';
 
     if (!isOnExpectedPage) {
-      // 仅在 URL 路径为根 /（疑似被重定向到首页）时才执行登录按钮检测
       const hasLoginButton = await page.evaluate(() => {
         const loginTexts = ['登录', '登 录', 'Sign in', 'Sign In', 'Log in', 'Log In', '登录/注册'];
         const elements = Array.from(document.querySelectorAll('button, a, [role="button"]'));
@@ -137,24 +138,20 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       }).catch(() => false);
 
       if (hasLoginButton) {
-        // 二次校验：检查是否有已登录标志（用户头像、用户名、个人中心等）
-        // 如果存在已登录标志，说明账号实际已登录，只是营销首页仍显示登录按钮
+        // 二次校验：检查是否有已登录标志
         const hasLoggedInIndicator = await page.evaluate(() => {
-          // 已登录标志选择器：用户头像、用户名、个人中心、退出登录等
           const loggedInSelectors = [
             '[class*="avatar"]', '[class*="Avatar"]',
             '[class*="user-info"]', '[class*="userInfo"]', '[class*="user-menu"]', '[class*="userMenu"]',
             '[class*="nickname"]', '[class*="userName"]', '[class*="user-name"]',
             '[class*="account"]', '[class*="profile"]',
             'img[class*="avatar"]', 'img[class*="Avatar"]',
-            // 退出登录按钮的存在也说明已登录
             'button:has-text("退出")', 'a:has-text("退出")', 'button:has-text("登出")', 'a:has-text("登出")',
           ];
           for (const sel of loggedInSelectors) {
             try {
               const el = document.querySelector(sel);
               if (el) {
-                // 排除隐藏元素
                 const rect = el.getBoundingClientRect();
                 if (rect.width > 0 && rect.height > 0) {
                   return true;
@@ -164,7 +161,6 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
               // 继续
             }
           }
-          // 检查 localStorage/sessionStorage 中的登录态 token
           try {
             const tokens = ['token', 'Token', 'access_token', 'accessToken', 'userToken', 'userInfo', 'user_info', 'loginState', 'isLogin'];
             for (const key of tokens) {
@@ -179,9 +175,9 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         }).catch(() => false);
 
         if (!hasLoggedInIndicator) {
-          throw new Error(`登录态失效: 页面检测到登录按钮 (URL=${currentUrl}, title=${pageTitle})`);
+          // 记录警告但不抛异常，让流程继续到"等待输入框"
+          console.log(`[${this.platformName}] 警告: 页面检测到登录按钮但未找到已登录标志 (URL=${currentUrl}, title=${pageTitle})，继续尝试查找输入框`);
         }
-        // 已登录标志存在，继续执行（不抛异常）
       }
     }
 
