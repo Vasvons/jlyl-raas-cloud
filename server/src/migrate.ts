@@ -532,6 +532,25 @@ export async function migrate() {
     await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS renewal_fail_count INTEGER DEFAULT 0`);
     await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS last_renewal_attempt TIMESTAMP`);
 
+    // ============ platform_auth 登录态失败计数字段 ============
+    // 登录态失效不立即标记 offline，连续失败 N 次才标记，避免页面加载慢、SPA 路由未稳定、
+    // 选择器不匹配等误判导致账号被错误标记为 offline（需人工恢复，影响可用性）
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS offline_fail_count INTEGER DEFAULT 0`);
+
+    // 修复历史数据：将被误标记为 offline 但 storageState 仍可能有效的账号恢复为 active+normal
+    // （之前的单次判定逻辑可能误判，这里恢复让账号重新尝试）
+    const recoverOfflineResult = await client.query(
+      `UPDATE platform_auth
+       SET status = 'active', health_status = 'normal', offline_fail_count = 0,
+           risk_detected_at = NULL, updated_at = NOW()
+       WHERE status = 'expired' AND health_status = 'offline'
+       RETURNING id, platform`
+    );
+    if (recoverOfflineResult.rows.length > 0) {
+      console.log(`[Migrate] 恢复 ${recoverOfflineResult.rows.length} 个被误标记为 offline 的账号:`,
+        recoverOfflineResult.rows.map((r: any) => `${r.platform}#${r.id}`).join(', '));
+    }
+
     // 修复历史数据：将被续期器误标记为 expired 但 health_status 仍为 normal 的账号恢复为 active
     // （续期器单次失败就标记 expired 的旧逻辑已修复，这里恢复被误标的账号）
     const recoverResult = await client.query(

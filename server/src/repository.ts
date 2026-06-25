@@ -2415,9 +2415,9 @@ export async function releasePlatformAccount(
   detail?: string
 ): Promise<void> {
   if (result === 'success') {
-    // 成功：仅更新时间，不动状态
+    // 成功：仅更新时间，并清零 offline_fail_count（说明之前是误判，账号实际可用）
     await query(
-      `UPDATE platform_auth SET updated_at = NOW() WHERE id = $1`,
+      `UPDATE platform_auth SET updated_at = NOW(), offline_fail_count = 0 WHERE id = $1`,
       [authId]
     );
   } else if (result === 'rate_limited') {
@@ -2453,15 +2453,37 @@ export async function releasePlatformAccount(
       detail.includes('unauthorized')
     ) : false;
     if (isLoginExpired) {
-      await query(
+      // 引入失败计数：连续3次检测到登录态失效才标记 offline
+      // 单次失败可能是误判（页面加载慢、SPA 路由未稳定、选择器不匹配、网络抖动等）
+      // 这与 rate_limited 的"3次才标记 banned"逻辑一致，提高容错性
+      const failResult = await query(
         `UPDATE platform_auth
-         SET health_status = 'offline',
-             risk_detected_at = NOW(),
-             status = 'expired',
+         SET offline_fail_count = COALESCE(offline_fail_count, 0) + 1,
              updated_at = NOW()
-         WHERE id = $1`,
+         WHERE id = $1
+         RETURNING offline_fail_count`,
         [authId]
       );
+      const failCount = failResult.rows[0]?.offline_fail_count || 0;
+      if (failCount >= 3) {
+        await query(
+          `UPDATE platform_auth
+           SET health_status = 'offline',
+               risk_detected_at = NOW(),
+               status = 'expired',
+               updated_at = NOW()
+           WHERE id = $1`,
+          [authId]
+        );
+        console.log(`[PlatformAuth] 账号 ${authId} 连续 ${failCount} 次登录态失效，标记为 offline`);
+      } else {
+        // 未达阈值：回退 last_query_count，账号继续可用，等待下次重试
+        await query(
+          `UPDATE platform_auth SET last_query_count = GREATEST(last_query_count - 1, 0), updated_at = NOW() WHERE id = $1`,
+          [authId]
+        );
+        console.log(`[PlatformAuth] 账号 ${authId} 登录态失效 (第${failCount}/3次)，暂不标记 offline`);
+      }
     } else {
       // 其他失败（Page crashed、超时、选择器未找到等）不改状态，账号继续可用
       // 回退 last_query_count，因为这次查询未成功消耗
@@ -2482,6 +2504,8 @@ export async function resetAccountHealth(authId: number): Promise<void> {
          risk_count = 0,
          risk_detected_at = NULL,
          cooldown_until = NULL,
+         offline_fail_count = 0,
+         renewal_fail_count = 0,
          status = 'active',
          updated_at = NOW()
      WHERE id = $1`,
@@ -2495,11 +2519,14 @@ export async function deletePlatformAuth(id: number): Promise<void> {
 }
 
 /** 每日重置查询计数（凌晨 0 点执行）
- * 新设计：只重置 last_query_count，不自动恢复 banned/offline 状态（需人工处理）
+ * 新设计：只重置 last_query_count 和 offline_fail_count，不自动恢复 banned/offline 状态（需人工处理）
+ * 清零 offline_fail_count 是为了让被误判但未达3次阈值的账号次日重新计数
  */
 export async function resetDailyAuthCounters(): Promise<void> {
   // 重置查询计数
   await query(`UPDATE platform_auth SET last_query_count = 0 WHERE last_query_count > 0`);
+  // 清零 offline_fail_count（未达3次阈值的账号次日重新计数，避免长期累积导致误判）
+  await query(`UPDATE platform_auth SET offline_fail_count = 0 WHERE offline_fail_count > 0 AND health_status != 'offline'`);
   // banned/offline 状态需要人工恢复，不自动恢复
 }
 

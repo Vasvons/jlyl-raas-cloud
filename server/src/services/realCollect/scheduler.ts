@@ -52,15 +52,23 @@ async function recoverOnRestart(): Promise<void> {
     // 3. 恢复服务器重启时被误标记为 expired 的账号
     // 服务器/Worker 重启时，续期器可能正在执行续期，被中断后导致续期失败累加 renewal_fail_count
     // 连续3次失败会标记 expired，但实际账号可能仍然有效
-    // 重启时重置 renewal_fail_count，并将 health_status=normal 的 expired 账号恢复为 active
+    // 同时恢复被误标记为 offline 的账号（之前的单次判定逻辑可能误判，重启给一次重新尝试的机会）
+    // 重启时重置 renewal_fail_count / offline_fail_count，并将 health_status IN (normal, offline) 的 expired 账号恢复为 active
     const recoverAccountResult = await query(
       `UPDATE platform_auth
-       SET status = 'active', renewal_fail_count = 0, updated_at = NOW()
-       WHERE status = 'expired' AND health_status = 'normal'
-       RETURNING id, platform`
+       SET status = 'active',
+           health_status = 'normal',
+           renewal_fail_count = 0,
+           offline_fail_count = 0,
+           risk_detected_at = NULL,
+           updated_at = NOW()
+       WHERE status = 'expired' AND health_status IN ('normal', 'offline')
+       RETURNING id, platform, health_status`
     );
     if (recoverAccountResult.rows.length > 0) {
-      console.log(`[RealCollect] 重启恢复：${recoverAccountResult.rows.length} 个被误标记为 expired 的账号已恢复为 active`);
+      const offlineCount = recoverAccountResult.rows.filter((r: any) => r.health_status === 'offline').length;
+      const normalCount = recoverAccountResult.rows.length - offlineCount;
+      console.log(`[RealCollect] 重启恢复：${recoverAccountResult.rows.length} 个被误标记为 expired 的账号已恢复为 active${offlineCount > 0 ? ` (其中 ${offlineCount} 个原为 offline 状态，${normalCount} 个为 normal 状态)` : ''}`);
     }
 
     // 4. 为无 pending 分片的 active 任务启动新一轮

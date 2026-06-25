@@ -71,8 +71,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // ============ 登录状态检查 ============
     // 如果账号未登录/storageState 过期，页面会被重定向到登录页或营销首页
     // 此时不应继续等待输入框（必然超时），而是直接抛异常让上层标记账号 offline
-    const currentUrl = page.url();
-    const pageTitle = await page.title().catch(() => '');
+    let currentUrl = page.url();
+    let pageTitle = await page.title().catch(() => '');
 
     // 检查1: URL 是否包含登录关键词（被重定向到登录页）
     const urlLower = currentUrl.toLowerCase();
@@ -80,15 +80,27 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       throw new Error(`登录态失效: 页面被重定向到登录页 (URL=${currentUrl})`);
     }
 
-    // 检查1.5: 重定向检测——如果 chatUrl 包含特定路径（如 /chat）但导航后 URL 不包含该路径，
-    // 说明未登录被重定向到营销首页（DeepSeek/文心一言/通义千问等都会这样）
+    // 先执行 afterNavigate（让子类有机会点击"开始对话"等入口按钮进入 /chat 路径）
+    // 注意：必须在检查1.5（重定向检测）之前执行，否则像文心一言这样登录后停在首页、
+    // 需要点击"开始对话"按钮才能进入 /chat 路径的平台，会被检查1.5 误判为登录态失效
+    await this.afterNavigate(page);
+
+    // afterNavigate 后重新获取 URL 和标题（可能已经从首页跳转到 /chat）
+    currentUrl = page.url();
+    pageTitle = await page.title().catch(() => '');
+
+    // 检查1.5: 重定向检测——仅在严格场景下判定：当前 URL 路径为根 / 或空时
+    // 说明被重定向到营销首页且未进入 /chat 路径（afterNavigate 也未能跳转）
+    // 不再使用 startsWith 严格前缀匹配，避免 SPA 重写 URL 到 /conversation/xxx 等路径时误判
     try {
       const chatUrlObj = new URL(this.chatUrl);
-      const chatPath = chatUrlObj.pathname;
+      const chatPath = chatUrlObj.pathname.replace(/\/+$/, ''); // 去掉末尾斜杠
       if (chatPath && chatPath !== '/') {
         const currentUrlObj = new URL(currentUrl);
-        // 如果当前 URL 路径不包含 chatUrl 的路径，说明被重定向了
-        if (!currentUrlObj.pathname.startsWith(chatPath)) {
+        const currentPath = currentUrlObj.pathname.replace(/\/+$/, '');
+        // 只有当前路径为空或根 / 时才判定为被重定向到首页
+        // 这是 afterNavigate 执行后仍未跳转的明确场景
+        if (currentPath === '' || currentPath === '/') {
           throw new Error(`登录态失效: 页面被重定向到首页 (期望=${this.chatUrl}, 实际=${currentUrl}, title=${pageTitle})`);
         }
       }
@@ -160,9 +172,6 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       }
       // 已登录标志存在，继续执行（不抛异常）
     }
-
-    // 导航后特殊处理钩子（子类可重写，用于点击"开始对话"等入口按钮）
-    await this.afterNavigate(page);
 
     // 等待输入框出现（带重试机制）
     let activeSelector = this.inputSelector;
