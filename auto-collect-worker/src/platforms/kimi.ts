@@ -4,8 +4,10 @@ import { BasePlatformAdapter } from './baseAdapter';
 /** Kimi 适配器 */
 export class KimiAdapter extends BasePlatformAdapter {
   platformName = 'Kimi';
-  loginUrl = 'https://kimi.moonshot.cn/login';
-  chatUrl = 'https://kimi.moonshot.cn/chat';
+  loginUrl = 'https://www.kimi.com/login';
+  // Kimi 域名已从 kimi.moonshot.cn 迁移到 www.kimi.com
+  // 旧域名会被重定向到新域名根路径，导致重定向检测误判
+  chatUrl = 'https://www.kimi.com/chat';
   supportsShare = true;
   protected inputSelector = 'textarea';
   protected responseSelector = '.chat-content-item-assistant, [class*="assistant"]';

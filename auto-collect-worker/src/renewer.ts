@@ -11,7 +11,7 @@ const RENEWAL_CHECK_INTERVAL = 5 * 60 * 1000; // 每5分钟检查一次续期任
 // 平台 chatUrl 映射（用于续期访问）
 const PLATFORM_CHAT_URLS: Record<string, string> = {
   'DeepSeek': 'https://chat.deepseek.com/chat',
-  'Kimi': 'https://kimi.moonshot.cn/chat',
+  'Kimi': 'https://www.kimi.com/chat',
   '豆包': 'https://www.doubao.com/chat/',
   '通义千问': 'https://www.qianwen.com/chat',
   '腾讯元宝': 'https://yuanbao.tencent.com/chat/',

@@ -111,66 +111,78 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
 
     // 检查2: 页面是否有明显的登录按钮（说明未登录，被重定向到营销/首页）
-    // 注意：部分平台（如通义千问）的营销首页即使已登录也会显示"登录"按钮
-    // 因此需要二次校验：如果页面同时存在用户头像/用户名等已登录标志，则不判定为登录失效
-    const hasLoginButton = await page.evaluate(() => {
-      const loginTexts = ['登录', '登 录', 'Sign in', 'Sign In', 'Log in', 'Log In', '登录/注册'];
-      const elements = Array.from(document.querySelectorAll('button, a, [role="button"]'));
-      for (const el of elements) {
-        const text = (el.textContent || '').trim();
-        if (loginTexts.some(lt => text === lt || text.includes(lt))) {
-          return true;
-        }
-      }
-      return false;
-    }).catch(() => false);
+    // 注意1：部分平台（如通义千问）的营销首页即使已登录也会显示"登录"按钮
+    // 注意2：如果 URL 路径已进入预期页面（非根 /），说明未被重定向，应跳过此检查
+    //   因为很多平台的 /chat 页面顶部导航本身就含"登录"按钮（作为通用元素），
+    //   这不代表账号未登录。只有被重定向到首页（URL 路径为根 /）时才需要此检查。
+    let currentPathForCheck2 = '';
+    try {
+      currentPathForCheck2 = new URL(currentUrl).pathname.replace(/\/+$/, '');
+    } catch {}
 
-    if (hasLoginButton) {
-      // 二次校验：检查是否有已登录标志（用户头像、用户名、个人中心等）
-      // 如果存在已登录标志，说明账号实际已登录，只是营销首页仍显示登录按钮
-      const hasLoggedInIndicator = await page.evaluate(() => {
-        // 已登录标志选择器：用户头像、用户名、个人中心、退出登录等
-        const loggedInSelectors = [
-          '[class*="avatar"]', '[class*="Avatar"]',
-          '[class*="user-info"]', '[class*="userInfo"]', '[class*="user-menu"]', '[class*="userMenu"]',
-          '[class*="nickname"]', '[class*="userName"]', '[class*="user-name"]',
-          '[class*="account"]', '[class*="profile"]',
-          'img[class*="avatar"]', 'img[class*="Avatar"]',
-          // 退出登录按钮的存在也说明已登录
-          'button:has-text("退出")', 'a:has-text("退出")', 'button:has-text("登出")', 'a:has-text("登出")',
-        ];
-        for (const sel of loggedInSelectors) {
+    const isOnExpectedPage = currentPathForCheck2 !== '' && currentPathForCheck2 !== '/';
+
+    if (!isOnExpectedPage) {
+      // 仅在 URL 路径为根 /（疑似被重定向到首页）时才执行登录按钮检测
+      const hasLoginButton = await page.evaluate(() => {
+        const loginTexts = ['登录', '登 录', 'Sign in', 'Sign In', 'Log in', 'Log In', '登录/注册'];
+        const elements = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+        for (const el of elements) {
+          const text = (el.textContent || '').trim();
+          if (loginTexts.some(lt => text === lt || text.includes(lt))) {
+            return true;
+          }
+        }
+        return false;
+      }).catch(() => false);
+
+      if (hasLoginButton) {
+        // 二次校验：检查是否有已登录标志（用户头像、用户名、个人中心等）
+        // 如果存在已登录标志，说明账号实际已登录，只是营销首页仍显示登录按钮
+        const hasLoggedInIndicator = await page.evaluate(() => {
+          // 已登录标志选择器：用户头像、用户名、个人中心、退出登录等
+          const loggedInSelectors = [
+            '[class*="avatar"]', '[class*="Avatar"]',
+            '[class*="user-info"]', '[class*="userInfo"]', '[class*="user-menu"]', '[class*="userMenu"]',
+            '[class*="nickname"]', '[class*="userName"]', '[class*="user-name"]',
+            '[class*="account"]', '[class*="profile"]',
+            'img[class*="avatar"]', 'img[class*="Avatar"]',
+            // 退出登录按钮的存在也说明已登录
+            'button:has-text("退出")', 'a:has-text("退出")', 'button:has-text("登出")', 'a:has-text("登出")',
+          ];
+          for (const sel of loggedInSelectors) {
+            try {
+              const el = document.querySelector(sel);
+              if (el) {
+                // 排除隐藏元素
+                const rect = el.getBoundingClientRect();
+                if (rect.width > 0 && rect.height > 0) {
+                  return true;
+                }
+              }
+            } catch {
+              // 继续
+            }
+          }
+          // 检查 localStorage/sessionStorage 中的登录态 token
           try {
-            const el = document.querySelector(sel);
-            if (el) {
-              // 排除隐藏元素
-              const rect = el.getBoundingClientRect();
-              if (rect.width > 0 && rect.height > 0) {
+            const tokens = ['token', 'Token', 'access_token', 'accessToken', 'userToken', 'userInfo', 'user_info', 'loginState', 'isLogin'];
+            for (const key of tokens) {
+              if (localStorage.getItem(key) || sessionStorage.getItem(key)) {
                 return true;
               }
             }
           } catch {
             // 继续
           }
-        }
-        // 检查 localStorage/sessionStorage 中的登录态 token
-        try {
-          const tokens = ['token', 'Token', 'access_token', 'accessToken', 'userToken', 'userInfo', 'user_info', 'loginState', 'isLogin'];
-          for (const key of tokens) {
-            if (localStorage.getItem(key) || sessionStorage.getItem(key)) {
-              return true;
-            }
-          }
-        } catch {
-          // 继续
-        }
-        return false;
-      }).catch(() => false);
+          return false;
+        }).catch(() => false);
 
-      if (!hasLoggedInIndicator) {
-        throw new Error(`登录态失效: 页面检测到登录按钮 (URL=${currentUrl}, title=${pageTitle})`);
+        if (!hasLoggedInIndicator) {
+          throw new Error(`登录态失效: 页面检测到登录按钮 (URL=${currentUrl}, title=${pageTitle})`);
+        }
+        // 已登录标志存在，继续执行（不抛异常）
       }
-      // 已登录标志存在，继续执行（不抛异常）
     }
 
     // 等待输入框出现（带重试机制）

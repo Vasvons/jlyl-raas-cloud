@@ -26,17 +26,32 @@ export class WenxinAdapter extends BasePlatformAdapter {
   /** 文心一言导航后特殊处理：可能停在首页，需要点击"开始对话"或等待输入框渲染 */
   protected async afterNavigate(page: Page): Promise<void> {
     const currentUrl = page.url();
-    // 如果被重定向到首页（yiyan.baidu.com/ 末尾无 /chat），尝试点击"开始对话"按钮
+    // 如果被重定向到首页（yiyan.baidu.com/ 末尾无 /chat），尝试点击入口按钮进入聊天页
     if (currentUrl === 'https://yiyan.baidu.com/' || currentUrl === 'https://yiyan.baidu.com') {
-      // 尝试点击"开始对话"/"立即体验"/"开始使用"等入口按钮
+      // 扩展选择器：覆盖文心一言/ERNIE 首页各种可能的入口按钮
       const entrySelectors = [
+        // 文本按钮
         'button:has-text("开始对话")',
         'button:has-text("立即体验")',
         'button:has-text("开始使用")',
+        'button:has-text("新建对话")',
+        'button:has-text("开始聊天")',
         'a:has-text("开始对话")',
         'a:has-text("立即体验")',
+        'a:has-text("开始使用")',
+        'a:has-text("新建对话")',
+        'a:has-text("开始聊天")',
+        // class/属性选择器
         '[class*="start"]',
         '[class*="entry"]',
+        '[class*="new-chat"]',
+        '[class*="newChat"]',
+        '[class*="create-chat"]',
+        '[class*="createChat"]',
+        // ERNIE 首页常见的"开始体验"大按钮
+        '[class*="hero"] [class*="button"]',
+        '[class*="banner"] [class*="button"]',
+        '[class*="welcome"] [class*="button"]',
       ];
       for (const sel of entrySelectors) {
         try {
@@ -44,10 +59,23 @@ export class WenxinAdapter extends BasePlatformAdapter {
           if (btn) {
             await btn.click({ timeout: 3000 }).catch(() => {});
             await page.waitForTimeout(2000);
-            break;
+            // 点击后检查 URL 是否已跳转到 /chat
+            const newUrl = page.url();
+            if (newUrl.includes('/chat')) break;
           }
         } catch {
           // 继续
+        }
+      }
+
+      // 如果点击入口按钮后仍未跳转，尝试直接导航到 /chat 路径
+      const postClickUrl = page.url();
+      if (!postClickUrl.includes('/chat')) {
+        try {
+          await page.goto('https://yiyan.baidu.com/chat', { waitUntil: 'domcontentloaded', timeout: 15000 });
+          await page.waitForTimeout(2000);
+        } catch {
+          // 导航失败，继续（后续检查会处理）
         }
       }
     }
