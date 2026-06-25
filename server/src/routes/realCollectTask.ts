@@ -7,6 +7,7 @@ import {
   getRealCollectTasks,
   getRealCollectTaskById,
   getTaskShardProgress,
+  resetTaskCurrentRound,
 } from '../repository';
 import { enqueueTaskNow } from '../services/realCollect/scheduler';
 
@@ -105,6 +106,27 @@ router.get('/:id/progress', async (req, res) => {
   try {
     const progress = await getTaskShardProgress(parseInt(req.params.id));
     res.json({ code: 200, data: progress });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 重置任务当前轮次
+// 删除当前轮次的所有分片，重置 round_no，调度器会自动用去重后的关键词启动新一轮
+// 用于修复分片数异常（如关键词重复入库导致分片数翻倍）的问题
+router.post('/:id/reset-round', async (req, res) => {
+  try {
+    const taskId = parseInt(req.params.id);
+    const task = await getRealCollectTaskById(taskId);
+    if (!task) {
+      return res.status(404).json({ code: 404, message: '任务不存在' });
+    }
+    const result = await resetTaskCurrentRound(taskId);
+    res.json({
+      code: 200,
+      message: `已重置第 ${result.roundNo} 轮，删除 ${result.deletedShards} 个分片，调度器将自动启动新一轮`,
+      data: result,
+    });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }

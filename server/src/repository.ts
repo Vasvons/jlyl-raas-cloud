@@ -2181,6 +2181,32 @@ export async function deleteRealCollectTask(id: number): Promise<void> {
   await query(`UPDATE real_collect_task SET status = 'deleted' WHERE id = $1`, [id]);
 }
 
+/**
+ * 重置任务当前轮次：删除当前轮次所有分片，重置 round_no 和 round_start_time
+ * 用于修复分片数异常（如关键词重复入库导致分片数翻倍）的问题
+ * 重置后调度器会在下一次 checkCompletedRounds 时自动启动新一轮（用去重后的关键词）
+ */
+export async function resetTaskCurrentRound(taskId: number): Promise<{ deletedShards: number; roundNo: number }> {
+  // 获取当前 round_no
+  const taskResult = await query(`SELECT round_no FROM real_collect_task WHERE id = $1`, [taskId]);
+  const currentRoundNo = taskResult.rows[0]?.round_no || 0;
+
+  // 删除当前轮次的所有分片（包括 pending/running/done/failed）
+  const deleteResult = await query(
+    `DELETE FROM real_collect_queue WHERE task_id = $1 AND round_no = $2 RETURNING id`,
+    [taskId, currentRoundNo]
+  );
+
+  // 重置任务的 round_no（减1，这样 startNewRoundForTask 会重新启动新一轮）
+  // 同时清空 round_start_time，让 getTaskShardProgress 不会查到旧数据
+  await query(
+    `UPDATE real_collect_task SET round_no = GREATEST(round_no - 1, 0), round_start_time = NULL WHERE id = $1`,
+    [taskId]
+  );
+
+  return { deletedShards: deleteResult.rowCount || 0, roundNo: currentRoundNo };
+}
+
 /** 获取真实查询任务列表 */
 export async function getRealCollectTasks(userId?: string): Promise<any[]> {
   const sql = `SELECT * FROM real_collect_task WHERE status != 'deleted' ${userId ? 'AND user_id = $1' : ''} ORDER BY create_time DESC`;
