@@ -21,7 +21,6 @@ import {
   startNewRound,
   getTaskRoundStartTime,
   cleanOversizedPendingShards,
-  resetTaskCurrentRound,
 } from '../../repository';
 import { generateAeoFullReport } from '../aeo/analyzer';
 
@@ -154,8 +153,10 @@ async function checkCompletedRounds(): Promise<void> {
     for (const task of tasks) {
       try {
         // 分片数不匹配检测：如果当前轮次的分片数 × shard_size 远大于实际关键词数，
-        // 说明分片入队时关键词有重复（已通过 DISTINCT 修复，但旧分片仍需纠正）
-        // 自动重置当前轮次，让调度器用去重后的关键词重新入队
+        // 说明分片入队时关键词有重复（已通过 DISTINCT 修复，但旧分片仍需手动纠正）
+        // 注意：不自动重置！自动重置会删除 running 分片，导致 Worker 执行无效分片
+        // 期间所有任务显示"队列中"（因为新分片都是 pending，Worker 还在执行被删除的旧分片）
+        // 改为只记录警告日志，用户通过 POST /:id/reset-round 手动重置
         try {
           const shardCountResult = await query(
             `SELECT COUNT(*) as cnt FROM real_collect_queue WHERE task_id = $1 AND round_no = $2`,
@@ -163,20 +164,13 @@ async function checkCompletedRounds(): Promise<void> {
           );
           const shardCount = parseInt(shardCountResult.rows[0]?.cnt || '0');
           if (shardCount > 0) {
-            // 获取去重后的关键词数
             const uniqueKeywords = task.keyword_type === 1
               ? await getBrandKeywords(task.user_id)
               : await getDistillateKeywords(task.user_id);
             const expectedShardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
             const expectedShardCount = Math.ceil(uniqueKeywords.length / expectedShardSize);
-            // 如果实际分片数比预期多 20% 以上，判定为不匹配，自动重置
             if (shardCount > expectedShardCount * 1.2) {
-              console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 分片数不匹配: 实际=${shardCount}, 预期=${expectedShardCount}（关键词${uniqueKeywords.length}个），自动重置当前轮次`);
-              const resetResult = await resetTaskCurrentRound(task.id);
-              console.log(`[RealCollect] 任务 ${task.id} 已重置: 删除 ${resetResult.deletedShards} 个分片，将启动新一轮`);
-              // 立即启动新一轮
-              await startNewRoundForTask(task);
-              continue;
+              console.warn(`[RealCollect] 任务 ${task.id} (${task.task_name}) 分片数不匹配: 实际=${shardCount}, 预期=${expectedShardCount}（关键词${uniqueKeywords.length}个），请手动调用 POST /real-collect/task/${task.id}/reset-round 重置`);
             }
           }
         } catch (e: any) {

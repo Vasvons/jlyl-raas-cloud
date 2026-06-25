@@ -2182,18 +2182,26 @@ export async function deleteRealCollectTask(id: number): Promise<void> {
 }
 
 /**
- * 重置任务当前轮次：删除当前轮次所有分片，重置 round_no 和 round_start_time
+ * 重置任务当前轮次：删除 pending/done/failed 分片，保留 running 分片
  * 用于修复分片数异常（如关键词重复入库导致分片数翻倍）的问题
- * 重置后调度器会在下一次 checkCompletedRounds 时自动启动新一轮（用去重后的关键词）
+ * 保留 running 分片是为了避免 Worker 执行被删除的分片（执行无效查询）
+ * Worker 执行完当前 running 分片后会自动 dequeue 新分片
  */
-export async function resetTaskCurrentRound(taskId: number): Promise<{ deletedShards: number; roundNo: number }> {
+export async function resetTaskCurrentRound(taskId: number): Promise<{ deletedShards: number; runningShardsKept: number; roundNo: number }> {
   // 获取当前 round_no
   const taskResult = await query(`SELECT round_no FROM real_collect_task WHERE id = $1`, [taskId]);
   const currentRoundNo = taskResult.rows[0]?.round_no || 0;
 
-  // 删除当前轮次的所有分片（包括 pending/running/done/failed）
+  // 统计 running 分片数（保留）
+  const runningResult = await query(
+    `SELECT COUNT(*) as cnt FROM real_collect_queue WHERE task_id = $1 AND round_no = $2 AND status = 'running'`,
+    [taskId, currentRoundNo]
+  );
+  const runningShardsKept = parseInt(runningResult.rows[0]?.cnt || '0');
+
+  // 只删除 pending/done/failed 分片，保留 running 分片
   const deleteResult = await query(
-    `DELETE FROM real_collect_queue WHERE task_id = $1 AND round_no = $2 RETURNING id`,
+    `DELETE FROM real_collect_queue WHERE task_id = $1 AND round_no = $2 AND status != 'running' RETURNING id`,
     [taskId, currentRoundNo]
   );
 
@@ -2204,7 +2212,7 @@ export async function resetTaskCurrentRound(taskId: number): Promise<{ deletedSh
     [taskId]
   );
 
-  return { deletedShards: deleteResult.rowCount || 0, roundNo: currentRoundNo };
+  return { deletedShards: deleteResult.rowCount || 0, runningShardsKept, roundNo: currentRoundNo };
 }
 
 /** 获取真实查询任务列表 */
