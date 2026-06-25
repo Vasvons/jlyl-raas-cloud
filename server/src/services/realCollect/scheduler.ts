@@ -77,6 +77,20 @@ async function recoverOnRestart(): Promise<void> {
       await startNewRoundForTask(task);
     }
     console.log(`[RealCollect] 重启恢复完成，${tasks.length} 个任务已启动新一轮`);
+
+    // 5. 修复 last_run_time：对于有 pending 分片但 last_run_time 为 NULL 的 active 任务，
+    // 更新 last_run_time 为 round_start_time（解决一直在执行的任务没有"上次执行"信息的问题）
+    await query(
+      `UPDATE real_collect_task
+       SET last_run_time = COALESCE(round_start_time, NOW()),
+           last_run_status = COALESCE(last_run_status, 'running')
+       WHERE status = 'active'
+         AND last_run_time IS NULL
+         AND EXISTS (
+           SELECT 1 FROM real_collect_queue q
+           WHERE q.task_id = real_collect_task.id AND q.status = 'pending'
+         )`
+    );
   } catch (e: any) {
     console.error('[RealCollect] 重启恢复失败:', e.message);
   }

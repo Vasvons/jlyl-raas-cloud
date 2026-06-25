@@ -1219,14 +1219,18 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   currentShardIndex: number; // 当前正在执行的分片序号（从1开始，0表示无正在执行的分片）
   currentKeywordIndex: number; // 当前分片已处理到的关键词索引（从0开始，-1表示未开始）
   currentShardKeywordCount: number; // 当前分片的关键词总数
+  brandHitCount: number; // 本轮命中品牌次数
+  totalRecords: number; // 本轮总查询记录数
+  brandHitRate: number; // 本轮命中率（百分比，0-100）
 }> {
   // 获取任务配置
   const taskResult = await query(
-    `SELECT shard_size, round_no FROM real_collect_task WHERE id = $1`,
+    `SELECT shard_size, round_no, round_start_time FROM real_collect_task WHERE id = $1`,
     [taskId]
   );
   const shardSize = taskResult.rows[0]?.shard_size || 50;
   const roundNo = taskResult.rows[0]?.round_no || 0;
+  const roundStartTime = taskResult.rows[0]?.round_start_time;
 
   // 统计当前轮次的队列分片状态
   // 用 round_no 精准过滤当前轮次（避免 round_start_time 为 NULL 时回退到 1970-01-01 导致跨轮次累计）
@@ -1272,6 +1276,42 @@ export async function getTaskShardProgress(taskId: number): Promise<{
     [taskId]
   );
 
+  // 查询本轮命中品牌次数和总查询记录数
+  // 从 real_collect_record 表统计，按 round_no 过滤当前轮次
+  let brandHitCount = 0;
+  let totalRecords = 0;
+  let brandHitRate = 0;
+  try {
+    const brandResult = await query(
+      `SELECT
+         COUNT(*) as total_records,
+         COUNT(*) FILTER (WHERE brand_matched = true) as brand_hits
+       FROM real_collect_record
+       WHERE task_id = $1 AND round_no = $2`,
+      [taskId, roundNo]
+    );
+    totalRecords = parseInt(brandResult.rows[0]?.total_records || '0');
+    brandHitCount = parseInt(brandResult.rows[0]?.brand_hits || '0');
+    brandHitRate = totalRecords > 0 ? Math.round((brandHitCount / totalRecords) * 1000) / 10 : 0;
+  } catch {
+    // real_collect_record 表可能没有 round_no 字段（旧数据），降级为按时间范围统计
+    try {
+      const brandResult = await query(
+        `SELECT
+           COUNT(*) as total_records,
+           COUNT(*) FILTER (WHERE brand_matched = true) as brand_hits
+         FROM real_collect_record
+         WHERE task_id = $1 AND create_time >= $2`,
+        [taskId, roundStartTime || new Date(0)]
+      );
+      totalRecords = parseInt(brandResult.rows[0]?.total_records || '0');
+      brandHitCount = parseInt(brandResult.rows[0]?.brand_hits || '0');
+      brandHitRate = totalRecords > 0 ? Math.round((brandHitCount / totalRecords) * 1000) / 10 : 0;
+    } catch {
+      // 表不存在或查询失败，返回0
+    }
+  }
+
   // 计算当前正在执行的分片序号（已完成分片数 + 1）
   const completedCount = parseInt(row.completed || '0');
   const runningShard = runningResult.rows[0];
@@ -1292,6 +1332,9 @@ export async function getTaskShardProgress(taskId: number): Promise<{
     currentShardIndex,
     currentKeywordIndex,
     currentShardKeywordCount,
+    brandHitCount,
+    totalRecords,
+    brandHitRate,
   };
 }
 
