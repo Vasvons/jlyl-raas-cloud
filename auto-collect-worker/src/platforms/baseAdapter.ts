@@ -80,6 +80,24 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       throw new Error(`登录态失效: 页面被重定向到登录页 (URL=${currentUrl})`);
     }
 
+    // 检查1.5: 重定向检测——如果 chatUrl 包含特定路径（如 /chat）但导航后 URL 不包含该路径，
+    // 说明未登录被重定向到营销首页（DeepSeek/文心一言/通义千问等都会这样）
+    try {
+      const chatUrlObj = new URL(this.chatUrl);
+      const chatPath = chatUrlObj.pathname;
+      if (chatPath && chatPath !== '/') {
+        const currentUrlObj = new URL(currentUrl);
+        // 如果当前 URL 路径不包含 chatUrl 的路径，说明被重定向了
+        if (!currentUrlObj.pathname.startsWith(chatPath)) {
+          throw new Error(`登录态失效: 页面被重定向到首页 (期望=${this.chatUrl}, 实际=${currentUrl}, title=${pageTitle})`);
+        }
+      }
+    } catch (e: any) {
+      // 如果是登录态失效异常，继续抛出
+      if (e.message && e.message.includes('登录态失效')) throw e;
+      // URL 解析失败，继续其他检查
+    }
+
     // 检查2: 页面是否有明显的登录按钮（说明未登录，被重定向到营销/首页）
     // 注意：部分平台（如通义千问）的营销首页即使已登录也会显示"登录"按钮
     // 因此需要二次校验：如果页面同时存在用户头像/用户名等已登录标志，则不判定为登录失效

@@ -10,12 +10,12 @@ const RENEWAL_CHECK_INTERVAL = 5 * 60 * 1000; // 每5分钟检查一次续期任
 
 // 平台 chatUrl 映射（用于续期访问）
 const PLATFORM_CHAT_URLS: Record<string, string> = {
-  'DeepSeek': 'https://chat.deepseek.com/',
+  'DeepSeek': 'https://chat.deepseek.com/chat',
   'Kimi': 'https://kimi.moonshot.cn/chat',
   '豆包': 'https://www.doubao.com/chat/',
-  '通义千问': 'https://www.qianwen.com/',
+  '通义千问': 'https://www.qianwen.com/chat',
   '腾讯元宝': 'https://yuanbao.tencent.com/chat/',
-  '文心一言': 'https://yiyan.baidu.com/',
+  '文心一言': 'https://yiyan.baidu.com/chat',
   '纳米': 'https://www.n.cn/chat',
   '智谱AI': 'https://chatglm.cn/chat/',
 };
@@ -118,6 +118,28 @@ async function performRenewal(): Promise<void> {
             } catch {
               // networkidle 超时，额外等待2秒
               await page.waitForTimeout(2000);
+            }
+
+            // 重定向检测：如果访问 /chat 后被重定向到首页，说明登录态已失效
+            // 此时不应上报续期成功，否则会掩盖账号失效问题
+            const postNavUrl = page.url();
+            try {
+              const chatUrlObj = new URL(chatUrl);
+              const chatPath = chatUrlObj.pathname;
+              if (chatPath && chatPath !== '/') {
+                const currentUrlObj = new URL(postNavUrl);
+                if (!currentUrlObj.pathname.startsWith(chatPath)) {
+                  // 被重定向了，登录态已失效
+                  await axios.post(`${SERVER_URL}/platform-auth/renew/complete`, {
+                    id: auth.id,
+                    success: false,
+                  }, { timeout: 10000 }).catch(() => {});
+                  warn(`[Renewer] 账号 ${auth.id} (${platform}) 登录态失效: 被重定向到首页 (期望=${chatUrl}, 实际=${postNavUrl})`);
+                  continue;
+                }
+              }
+            } catch {
+              // URL 解析失败，继续
             }
 
             // 导出新的 storageState

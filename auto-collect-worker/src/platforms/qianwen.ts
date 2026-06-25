@@ -5,7 +5,7 @@ import { BasePlatformAdapter } from './baseAdapter';
 export class QianwenAdapter extends BasePlatformAdapter {
   platformName = '通义千问';
   loginUrl = 'https://www.qianwen.com';
-  chatUrl = 'https://www.qianwen.com/';
+  chatUrl = 'https://www.qianwen.com/chat';
   supportsShare = true;
   protected inputSelector = 'textarea, [contenteditable="true"], #chat-input, [class*="chat-input"] textarea, [class*="input-area"] textarea';
   protected responseSelector = '.answer-area, .markdown-body, [class*="answer"], [class*="response"], [class*="message-content"]';
