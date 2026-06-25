@@ -9,13 +9,16 @@ const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 const RENEWAL_CHECK_INTERVAL = 5 * 60 * 1000; // 每5分钟检查一次续期任务
 
 // 平台 chatUrl 映射（用于续期访问）
+// 参考 auth helper 软件的脚本：DeepSeek 和文心一言使用根域名而非 /chat 路径
+// DeepSeek: 导航到 /chat 会自动恢复旧对话，根域名不会
+// 文心一言: 导航到 /chat 会被重定向回首页，根域名直接显示聊天界面
 const PLATFORM_CHAT_URLS: Record<string, string> = {
-  'DeepSeek': 'https://chat.deepseek.com/chat',
+  'DeepSeek': 'https://chat.deepseek.com/',
   'Kimi': 'https://www.kimi.com/chat',
   '豆包': 'https://www.doubao.com/chat/',
   '通义千问': 'https://www.qianwen.com/chat',
   '腾讯元宝': 'https://yuanbao.tencent.com/chat/',
-  '文心一言': 'https://yiyan.baidu.com/chat',
+  '文心一言': 'https://yiyan.baidu.com/',
   '纳米': 'https://www.n.cn/chat',
   '智谱AI': 'https://chatglm.cn/chat/',
 };
@@ -123,6 +126,18 @@ async function performRenewal(): Promise<void> {
             // 重定向检测：如果访问 /chat 后被重定向到首页，说明登录态已失效
             // 此时不应上报续期成功，否则会掩盖账号失效问题
             const postNavUrl = page.url();
+
+            // 1. 登录页检测：如果 URL 包含 sign_in 或 login，说明被重定向到登录页
+            if (postNavUrl.includes('sign_in') || postNavUrl.includes('login')) {
+              await axios.post(`${SERVER_URL}/platform-auth/renew/complete`, {
+                id: auth.id,
+                success: false,
+              }, { timeout: 10000 }).catch(() => {});
+              warn(`[Renewer] 账号 ${auth.id} (${platform}) 登录态失效: 被重定向到登录页 (实际=${postNavUrl})`);
+              continue;
+            }
+
+            // 2. 路径重定向检测：如果 chatUrl 有特定路径但实际 URL 路径不匹配，说明被重定向
             try {
               const chatUrlObj = new URL(chatUrl);
               const chatPath = chatUrlObj.pathname;

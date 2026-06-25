@@ -1,149 +1,48 @@
 import { Page } from 'playwright';
 import { BasePlatformAdapter } from './baseAdapter';
 
-/** DeepSeek 适配器 */
+/** DeepSeek 适配器
+ *
+ * 参考 auth helper 软件的查询脚本：
+ * - 导航到根域名 https://chat.deepseek.com/（不是 /chat），避免 SPA 自动恢复旧对话
+ * - 输入框选择器使用 div[class] textarea（DeepSeek 使用 CSS Module 哈希类名如 _24fad49）
+ * - 响应选择器使用 .ds-markdown
+ * - 停止按钮使用 XPath //div[@class="ds-flex _0a3d93b"]
+ */
 export class DeepSeekAdapter extends BasePlatformAdapter {
   platformName = 'DeepSeek';
   loginUrl = 'https://chat.deepseek.com/sign_in';
-  // 使用 /chat 路径，避免访问根路径时显示营销页
-  chatUrl = 'https://chat.deepseek.com/chat';
+  // 使用根域名而非 /chat：避免 DeepSeek SPA 自动恢复上次对话（URL 变为 /a/chat/s/{id}）
+  // 导航到根域名时，SPA 会显示新的聊天界面，不会恢复旧对话
+  chatUrl = 'https://chat.deepseek.com/';
   supportsShare = true;
-  protected inputSelector = 'textarea, #chat-input, [class*="chat-input"] textarea, [class*="input-area"] textarea, div[contenteditable="true"], [role="textbox"]';
-  protected responseSelector = '.ds-message--content, [class*="message--content"], [class*="response"], [class*="answer"]';
-  protected stopButtonSelector = '.stop-button, [class*="stop"], [class*="Stop"]';
+  // 输入框选择器：参考 auth helper 的 ._24fad49 textarea
+  // DeepSeek 使用 CSS Module 哈希类名，无法精确匹配，用通配符 div[class] textarea
+  protected inputSelector = 'div[class] textarea, textarea, #chat-input, [class*="chat-input"] textarea, [class*="input-area"] textarea, div[contenteditable="true"], [role="textbox"]';
+  // 响应选择器：参考 auth helper 的 .ds-markdown
+  protected responseSelector = '.ds-markdown, .ds-message--content, [class*="message--content"], [class*="response"], [class*="answer"]';
+  // 停止按钮：参考 auth helper 的 //div[@class="ds-flex _0a3d93b"]
+  protected stopButtonSelector = 'div.ds-flex._0a3d93b, .stop-button, [class*="stop"], [class*="Stop"]';
   protected loginUrlPattern = 'sign_in';
 
-  /** DeepSeek 导航后特殊处理：
-   *  DeepSeek 访问 /chat 时会自动恢复上一次对话，URL 变为 /a/chat/s/{id}，
-   *  旧对话页面的输入框可能未正确加载，导致"输入框未找到"。
-   *  解决方案（按优先级）：
-   *    1. 通过 JS 在页面内查找并点击所有可能的"新建对话"按钮（绕过 isVisible 检查，因为按钮可能被折叠侧边栏隐藏）
-   *    2. 如果点击失败，清除 localStorage 中所有可能存储会话信息的键
-   *    3. 重新导航到 /chat（清除后不会自动恢复旧对话）
+  /** DeepSeek 导航后处理：
+   *  导航到根域名后，SPA 会自动渲染聊天界面。
+   *  不需要点击"新建对话"或处理自动恢复的旧对话。
+   *  只需等待页面完全渲染即可。
    */
   protected async afterNavigate(page: Page): Promise<void> {
+    // 等待 SPA 渲染完成（DeepSeek 是 React SPA，需要额外时间渲染输入框）
+    await page.waitForTimeout(2000);
+
+    // 如果被重定向到登录页，说明未登录（checkLoginStatus 会处理）
     const currentUrl = page.url();
-
-    // 情况1: URL 是 /a/chat/s/{id}（DeepSeek 自动恢复了上一次对话）
-    if (currentUrl.includes('/a/chat/s/')) {
-      console.log(`[DeepSeek] 检测到自动恢复的旧对话 ${currentUrl}，尝试创建新对话`);
-
-      // 策略1: 通过 JS 在页面内查找并点击所有可能的"新建对话"按钮
-      // 不依赖 isVisible（按钮可能被折叠侧边栏隐藏），直接强制 click
-      const clicked = await page.evaluate(() => {
-        // 文本匹配：优先级最高的"新建对话"按钮
-        const newChatTexts = ['新建对话', 'New Chat', 'New chat', '新对话', 'Start New Chat'];
-        const clickableSelectors = 'button, a, [role="button"], [class*="new-chat"], [class*="newChat"], [class*="create-chat"]';
-        const elements = Array.from(document.querySelectorAll(clickableSelectors));
-        for (const el of elements) {
-          const text = (el.textContent || '').trim();
-          if (newChatTexts.some(nt => text === nt || text.includes(nt))) {
-            (el as HTMLElement).click();
-            return true;
-          }
-        }
-        // class/属性匹配
-        const selElements = Array.from(document.querySelectorAll(
-          '[class*="new-chat"], [class*="newChat"], [class*="create-chat"], [aria-label*="new" i], [aria-label*="New"], [data-testid*="new-chat"]'
-        ));
-        for (const el of selElements) {
-          (el as HTMLElement).click();
-          return true;
-        }
-        return false;
-      }).catch(() => false);
-
-      if (clicked) {
-        await page.waitForTimeout(2500);
-        const afterClickUrl = page.url();
-        if (!afterClickUrl.includes('/a/chat/s/')) {
-          console.log(`[DeepSeek] 点击新建对话成功，新 URL=${afterClickUrl}`);
-          return;
-        }
-      }
-
-      // 策略2: 通过 SPA 路由跳转到 /chat
-      // DeepSeek 是 React SPA，可以通过 history.pushState + popstate 事件触发路由切换
-      const routed = await page.evaluate(() => {
-        try {
-          // 尝试通过 history API 切换到新对话路由
-          window.history.pushState({}, '', '/chat');
-          window.dispatchEvent(new PopStateEvent('popstate'));
-          return true;
-        } catch {
-          return false;
-        }
-      }).catch(() => false);
-
-      if (routed) {
-        await page.waitForTimeout(2500);
-        const afterRouteUrl = page.url();
-        if (!afterRouteUrl.includes('/a/chat/s/')) {
-          console.log(`[DeepSeek] SPA 路由跳转成功，新 URL=${afterRouteUrl}`);
-          return;
-        }
-      }
-
-      // 策略3: 清除 localStorage 中所有键，然后重新 goto /chat
-      // DeepSeek 通过 localStorage 保存上次对话ID，清除后不会自动恢复
-      console.log(`[DeepSeek] 点击和路由跳转均未生效，清除 localStorage 后重新导航`);
-      await page.evaluate(() => {
-        try {
-          // 清除所有可能的会话相关键
-          const keysToRemove: string[] = [];
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && (
-              key.toLowerCase().includes('chat') ||
-              key.toLowerCase().includes('conversation') ||
-              key.toLowerCase().includes('session') ||
-              key.toLowerCase().includes('last') ||
-              key.toLowerCase().includes('recent')
-            )) {
-              keysToRemove.push(key);
-            }
-          }
-          // 如果没找到明确的会话键，清除全部 localStorage（保守起见只清除会话相关的）
-          if (keysToRemove.length === 0) {
-            localStorage.clear();
-            console.log('[DeepSeek] localStorage 已全部清除');
-          } else {
-            keysToRemove.forEach(k => localStorage.removeItem(k));
-            console.log(`[DeepSeek] 已清除 ${keysToRemove.length} 个会话相关 localStorage 键: ${keysToRemove.join(', ')}`);
-          }
-        } catch {
-          // 继续
-        }
-      }).catch(() => {});
-
-      // 清除后重新导航到 /chat
-      try {
-        await page.goto('https://chat.deepseek.com/chat', { waitUntil: 'domcontentloaded', timeout: 20000 });
-        await page.waitForTimeout(3000);
-        const finalUrl = page.url();
-        console.log(`[DeepSeek] 清除 localStorage 后重新导航，最终 URL=${finalUrl}`);
-      } catch (e: any) {
-        console.log(`[DeepSeek] 重新导航失败: ${e.message}`);
-      }
+    if (currentUrl.includes('sign_in')) {
+      return;
     }
 
-    // 情况2: 被重定向到首页（chat.deepseek.com/ 末尾无 /chat）
-    // 此场景通常表示账号未登录或被强制跳到营销页
-    if (currentUrl === 'https://chat.deepseek.com/' || currentUrl === 'https://chat.deepseek.com') {
-      console.log(`[DeepSeek] 检测到被重定向到首页，尝试导航到 /chat`);
-      try {
-        await page.goto('https://chat.deepseek.com/chat', { waitUntil: 'domcontentloaded', timeout: 20000 });
-        await page.waitForTimeout(3000);
-        // 递归处理：如果导航后又被自动恢复到 /a/chat/s/，应用上面的逻辑
-        const newUrl = page.url();
-        if (newUrl.includes('/a/chat/s/')) {
-          // 递归调用一次（最多一层）
-          await this.afterNavigate(page);
-        }
-      } catch (e: any) {
-        console.log(`[DeepSeek] 从首页导航到 /chat 失败: ${e.message}`);
-      }
-    }
+    // 如果 URL 变为 /a/chat/s/{id}（SPA 自动恢复了旧对话），
+    // 旧对话页面也能正常输入，不需要强制创建新对话
+    // auth helper 软件也是直接在恢复的对话页面上输入，不点击"新建对话"
   }
 
   async extractShareLink(page: Page): Promise<string | null> {

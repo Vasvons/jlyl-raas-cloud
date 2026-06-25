@@ -186,15 +186,20 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     let inputFound = false;
 
     // 第一轮：主选择器 + 回退选择器
+    // 包含 Slate.js 编辑器选择器（文心一言等平台使用 data-slate-node="element"）
+    // 包含 CSS Module 哈希类名选择器（DeepSeek 等平台使用 _xxxxxx 类名）
     const fallbackSelectors = [
       this.inputSelector,
       'textarea',
       'div[contenteditable="true"]',
+      'div[data-slate-node="element"]',
+      '[data-slate-node="element"]',
       '#chat-input',
       '.chat-input',
       '[class*="chat-input"]',
       '[class*="input-area"] textarea',
       '[class*="input-area"] [contenteditable="true"]',
+      'div[class] textarea',
       '[role="textbox"]',
       '[class*="editor"]',
       '[class*="prompt"] textarea',
