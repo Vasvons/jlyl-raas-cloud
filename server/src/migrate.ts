@@ -213,6 +213,30 @@ export async function migrate() {
     }
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_userid_type ON zlgjc(userid, keyword_type)`);
 
+    // 增量迁移：为 zlgjc 表添加 UNIQUE 约束 (userid, value, keyword_type)
+    // 防止关键词重复入库导致分片数翻倍
+    // 必须先删除重复记录（每组 userid+value+keyword_type 只保留 id 最小的一条），否则 ALTER 会失败
+    try {
+      await client.query(`
+        DELETE FROM zlgjc
+        WHERE id IN (
+          SELECT id FROM (
+            SELECT id, ROW_NUMBER() OVER (PARTITION BY userid, value, keyword_type ORDER BY id ASC) as rn
+            FROM zlgjc
+          ) t WHERE rn > 1
+        )
+      `);
+      console.log('[Migrate] zlgjc 表重复记录已清理');
+    } catch (e: any) {
+      console.log('[Migrate] zlgjc 去重跳过:', e.message);
+    }
+    try {
+      await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_zlgjc_unique ON zlgjc(userid, value, keyword_type)`);
+      console.log('[Migrate] zlgjc UNIQUE 约束已创建');
+    } catch (e: any) {
+      console.log('[Migrate] zlgjc UNIQUE 约束创建跳过:', e.message);
+    }
+
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_zlgjcid_pt ON zlgjcurl(zlgjcid, pt)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_has_lxfs ON zlgjcurl(has_lxfs)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_user ON pp(user_id)`);

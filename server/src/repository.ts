@@ -397,11 +397,16 @@ export async function getZlgjcByUserId(userId: string, keywordType?: number) {
 }
 
 export async function insertZlgjc(item: any): Promise<number> {
+  // ON CONFLICT 去重：如果 (userid, value, keyword_type) 已存在则不插入
+  // 注意：此函数不传 keyword_type，走 DEFAULT 0（蒸馏词）
   const result = await query(
-    'INSERT INTO zlgjc (value, hxgjc, userid, lxfs) VALUES ($1, $2, $3, $4) RETURNING id',
+    `INSERT INTO zlgjc (value, hxgjc, userid, lxfs)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (userid, value, keyword_type) DO NOTHING
+     RETURNING id`,
     [item.value, item.hxgjc || '', item.userid || '', item.lxfs || '']
   );
-  return result.rows[0].id;
+  return result.rows[0]?.id || 0;
 }
 
 // ============ 蒸馏关键词跳转链接 ============
@@ -976,8 +981,11 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
     if (existing.has(keyword)) {
       duplicated++;
     } else {
+      // ON CONFLICT 双保险：即使应用层去重失败，数据库层也会拒绝重复
       await query(
-        'INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type) VALUES ($1, $2, $3, $4, $5)',
+        `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (userid, value, keyword_type) DO NOTHING`,
         [keyword, hxgjc, userId, '', keywordType]
       );
       existing.add(keyword);
@@ -1399,11 +1407,15 @@ export async function startNewRound(
     );
   }
 
-  // 分片入队
+  // 分片入队（切片前用 Set 去重，双保险防止 zlgjc 表重复入库导致关键词翻倍）
+  const uniqueKeywords = [...new Set(keywords.filter(k => k && k.trim()))];
+  if (uniqueKeywords.length < keywords.length) {
+    console.log(`[RealCollect] 任务 ${taskId} 关键词去重: ${keywords.length} → ${uniqueKeywords.length}（删除 ${keywords.length - uniqueKeywords.length} 条重复）`);
+  }
   const size = Math.max(1, shardSize);
   const shards: string[][] = [];
-  for (let i = 0; i < keywords.length; i += size) {
-    shards.push(keywords.slice(i, i + size));
+  for (let i = 0; i < uniqueKeywords.length; i += size) {
+    shards.push(uniqueKeywords.slice(i, i + size));
   }
 
   let firstQueueId = 0;
@@ -1964,12 +1976,26 @@ export async function bulkImportData(data: {
       let cnt = 0;
       for (const z of data.zlgjc) {
         const newUserId = userIdMap.get(String(z.userId || z.userid || '')) || String(z.userId || z.userid || '');
+        // ON CONFLICT 去重：如果 (userid, value, keyword_type) 已存在则不插入
         const insertResult = await client.query(
           `INSERT INTO zlgjc (value, userid, lxfs, hxgjc)
-           VALUES ($1, $2, $3, $4) RETURNING id`,
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (userid, value, keyword_type) DO NOTHING
+           RETURNING id`,
           [z.value || '', newUserId, z.lxfs || '', z.hxgjc || '']
         );
-        const newId = insertResult.rows[0].id;
+        const newId = insertResult.rows[0]?.id;
+        if (!newId) {
+          // 已存在（ON CONFLICT 触发），查询现有 id 用于 zlgjcurl 关联
+          const existing = await client.query(
+            `SELECT id FROM zlgjc WHERE userid = $1 AND value = $2 AND keyword_type = 0 LIMIT 1`,
+            [newUserId, z.value || '']
+          );
+          if (existing.rows[0]) {
+            if (z.id) zlgjcIdMap.set(z.id, existing.rows[0].id);
+          }
+          continue;
+        }
         if (z.id) {
           zlgjcIdMap.set(z.id, newId);
         }
@@ -2324,19 +2350,19 @@ export async function getDueRealCollectTasks(): Promise<any[]> {
   return result.rows;
 }
 
-/** 获取用户的品牌词库 */
+/** 获取用户的品牌词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */
 export async function getBrandKeywords(userId: string): Promise<string[]> {
   const result = await query(
-    `SELECT value FROM zlgjc WHERE userid = $1 AND keyword_type = 1`,
+    `SELECT DISTINCT value FROM zlgjc WHERE userid = $1 AND keyword_type = 1 AND value != ''`,
     [userId]
   );
   return result.rows.map((r: any) => r.value);
 }
 
-/** 获取用户的蒸馏词库 */
+/** 获取用户的蒸馏词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */
 export async function getDistillateKeywords(userId: string): Promise<string[]> {
   const result = await query(
-    `SELECT value FROM zlgjc WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL)`,
+    `SELECT DISTINCT value FROM zlgjc WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL) AND value != ''`,
     [userId]
   );
   return result.rows.map((r: any) => r.value);
@@ -2347,8 +2373,8 @@ export async function getDistillateKeywordsSharded(userId: string, shards: numbe
   const dayOfWeek = new Date().getDay(); // 0=周日
   const shardIndex = dayOfWeek % shards;
   const result = await query(
-    `SELECT value FROM zlgjc 
-     WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL)
+    `SELECT DISTINCT value FROM zlgjc
+     WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL) AND value != ''
        AND (id % $2) = $3
      ORDER BY id`,
     [userId, shards, shardIndex]

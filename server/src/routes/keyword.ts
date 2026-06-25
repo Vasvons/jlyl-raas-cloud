@@ -189,8 +189,11 @@ router.post('/zlgjc/add', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { userId, value, hxgjc, lxfs, keywordType } = req.body;
     if (!userId || !value) return res.json({ code: 400, message: '缺少参数' });
+    // ON CONFLICT 去重：如果 (userid, value, keyword_type) 已存在则不插入
     await query(
-      'INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type) VALUES ($1, $2, $3, $4, $5)',
+      `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (userid, value, keyword_type) DO NOTHING`,
       [value, hxgjc || value, userId, lxfs || '', keywordType || 0]
     );
     res.json({ code: 200, message: '添加成功' });
