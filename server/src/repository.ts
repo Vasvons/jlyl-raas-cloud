@@ -1277,39 +1277,38 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   );
 
   // 查询本轮命中品牌次数和总查询记录数
-  // 从 real_collect_record 表统计，按 round_no 过滤当前轮次
+  // real_collect_record 表没有 round_no 字段，改用 query_time >= round_start_time 过滤当前轮次
+  // 如果 round_start_time 为 NULL，统计该任务的所有记录
   let brandHitCount = 0;
   let totalRecords = 0;
   let brandHitRate = 0;
   try {
-    const brandResult = await query(
-      `SELECT
-         COUNT(*) as total_records,
-         COUNT(*) FILTER (WHERE brand_matched = true) as brand_hits
-       FROM real_collect_record
-       WHERE task_id = $1 AND round_no = $2`,
-      [taskId, roundNo]
-    );
-    totalRecords = parseInt(brandResult.rows[0]?.total_records || '0');
-    brandHitCount = parseInt(brandResult.rows[0]?.brand_hits || '0');
-    brandHitRate = totalRecords > 0 ? Math.round((brandHitCount / totalRecords) * 1000) / 10 : 0;
-  } catch {
-    // real_collect_record 表可能没有 round_no 字段（旧数据），降级为按时间范围统计
-    try {
-      const brandResult = await query(
+    let brandResult;
+    if (roundStartTime) {
+      brandResult = await query(
         `SELECT
            COUNT(*) as total_records,
            COUNT(*) FILTER (WHERE brand_matched = true) as brand_hits
          FROM real_collect_record
-         WHERE task_id = $1 AND create_time >= $2`,
-        [taskId, roundStartTime || new Date(0)]
+         WHERE task_id = $1 AND query_time >= $2`,
+        [taskId, roundStartTime]
       );
-      totalRecords = parseInt(brandResult.rows[0]?.total_records || '0');
-      brandHitCount = parseInt(brandResult.rows[0]?.brand_hits || '0');
-      brandHitRate = totalRecords > 0 ? Math.round((brandHitCount / totalRecords) * 1000) / 10 : 0;
-    } catch {
-      // 表不存在或查询失败，返回0
+    } else {
+      // round_start_time 为 NULL，统计该任务的所有记录
+      brandResult = await query(
+        `SELECT
+           COUNT(*) as total_records,
+           COUNT(*) FILTER (WHERE brand_matched = true) as brand_hits
+         FROM real_collect_record
+         WHERE task_id = $1`,
+        [taskId]
+      );
     }
+    totalRecords = parseInt(brandResult.rows[0]?.total_records || '0');
+    brandHitCount = parseInt(brandResult.rows[0]?.brand_hits || '0');
+    brandHitRate = totalRecords > 0 ? Math.round((brandHitCount / totalRecords) * 1000) / 10 : 0;
+  } catch {
+    // 表不存在或查询失败，返回0
   }
 
   // 计算当前正在执行的分片序号（已完成分片数 + 1）

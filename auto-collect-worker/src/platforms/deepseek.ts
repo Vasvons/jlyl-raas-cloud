@@ -13,12 +13,16 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
   protected stopButtonSelector = '.stop-button, [class*="stop"], [class*="Stop"]';
   protected loginUrlPattern = 'sign_in';
 
-  /** DeepSeek 导航后特殊处理：如果被重定向到首页，尝试点击入口按钮进入聊天页 */
+  /** DeepSeek 导航后特殊处理：
+   *  1. 如果被重定向到首页，尝试点击入口按钮进入聊天页
+   *  2. 如果 URL 是 /a/chat/s/{id}（DeepSeek 自动恢复上一次对话），点击"新建对话"创建新对话
+   *     因为恢复的旧对话页面可能输入框未正确加载，导致"输入框未找到"
+   */
   protected async afterNavigate(page: Page): Promise<void> {
     const currentUrl = page.url();
-    // 如果被重定向到首页（chat.deepseek.com/ 末尾无 /chat），尝试点击入口按钮
+
+    // 情况1: 被重定向到首页（chat.deepseek.com/ 末尾无 /chat）
     if (currentUrl === 'https://chat.deepseek.com/' || currentUrl === 'https://chat.deepseek.com') {
-      // DeepSeek 首页可能有"开始对话"按钮，或者直接有输入框
       const entrySelectors = [
         'button:has-text("开始对话")',
         'button:has-text("Start")',
@@ -52,6 +56,41 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
           await page.waitForTimeout(2000);
         } catch {
           // 导航失败，继续（后续检查会处理）
+        }
+      }
+    }
+
+    // 情况2: URL 是 /a/chat/s/{id}（DeepSeek 自动恢复了上一次对话）
+    // 此时需要点击"新建对话"按钮，创建新的空对话，确保输入框可用
+    if (currentUrl.includes('/a/chat/s/')) {
+      const newChatSelectors = [
+        // DeepSeek 侧边栏的"新建对话"按钮
+        '[class*="new-chat"]',
+        '[class*="newChat"]',
+        '[class*="create-chat"]',
+        'button:has-text("新建对话")',
+        'button:has-text("New Chat")',
+        'button:has-text("New chat")',
+        // 可能的图标按钮
+        '[aria-label*="new"]',
+        '[aria-label*="New"]',
+        '[data-testid*="new-chat"]',
+      ];
+      for (const sel of newChatSelectors) {
+        try {
+          const btn = await page.$(sel);
+          if (btn) {
+            const isVisible = await btn.isVisible().catch(() => false);
+            if (isVisible) {
+              await btn.click({ timeout: 3000 }).catch(() => {});
+              await page.waitForTimeout(2000);
+              // 点击后检查 URL 是否变化（新对话的 URL 通常是 /chat 或 /a/chat/）
+              const newUrl = page.url();
+              if (!newUrl.includes('/a/chat/s/')) break;
+            }
+          }
+        } catch {
+          // 继续
         }
       }
     }

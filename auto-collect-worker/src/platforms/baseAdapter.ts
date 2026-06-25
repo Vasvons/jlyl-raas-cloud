@@ -388,9 +388,10 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
       // 各平台的对话/分享 URL 模式
       const conversationPatterns = [
-        // DeepSeek: /c/{id} 或 /chat/{id}
+        // DeepSeek: /c/{id} 或 /chat/{id} 或 /a/chat/s/{uuid}（新格式）
         /\/c\/[a-zA-Z0-9_-]{8,}/,
         /\/chat\/[a-zA-Z0-9_-]{8,}/,
+        /\/a\/chat\/s\/[a-zA-Z0-9_-]{8,}/,
         // 豆包: /chat/{数字ID}（对话URL即分享URL）
         /\/chat\/\d{6,}/,
         // 通义千问: /qianwen/{id} 或 /share?shareId={UUID}

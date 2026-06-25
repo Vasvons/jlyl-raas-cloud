@@ -43,6 +43,19 @@ async function recoverOnRestart(): Promise<void> {
       console.log(`[RealCollect] 重启恢复：${resetCount} 个中断的队列任务已重置为 pending`);
     }
 
+    // 1.5 同步 pending 分片的 round_no 为任务的当前 round_no
+    // 解决：重启后 startNewRoundForTask 可能更新了任务的 round_no，
+    // 但旧 pending 分片的 round_no 还是旧值，导致 getTaskShardProgress 查不到 running 分片
+    const syncResult = await query(
+      `UPDATE real_collect_queue q
+       SET round_no = t.round_no
+       FROM real_collect_task t
+       WHERE q.task_id = t.id AND q.status = 'pending' AND q.round_no != t.round_no`
+    );
+    if ((syncResult.rowCount || 0) > 0) {
+      console.log(`[RealCollect] 已同步 ${syncResult.rowCount} 个 pending 分片的 round_no`);
+    }
+
     // 2. 清理旧的、未分片的 pending 队列项（分片机制生效前入队的巨型队列项）
     const affectedTaskIds = await cleanOversizedPendingShards();
     if (affectedTaskIds.length > 0) {
