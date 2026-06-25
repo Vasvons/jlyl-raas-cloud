@@ -23,61 +23,127 @@ export class WenxinAdapter extends BasePlatformAdapter {
     return this.getCurrentPageShareUrl(page);
   }
 
-  /** 文心一言导航后特殊处理：可能停在首页，需要点击"开始对话"或等待输入框渲染 */
+  /** 文心一言导航后特殊处理：
+   *  chatUrl 配置为 /chat，但导航后常被重定向回首页 yiyan.baidu.com/，
+   *  因为文心一言的 ERNIE 首页会强制未登录或新会话用户先看营销页。
+   *  解决方案（按优先级）：
+   *    1. 通过 JS 在页面内查找并点击所有可能的入口按钮（绕过 isVisible 检查）
+   *    2. 通过 SPA 路由跳转到 /chat
+   *    3. 通过 window.location.href 强制跳转
+   *    4. 重新 page.goto('/chat')
+   */
   protected async afterNavigate(page: Page): Promise<void> {
     const currentUrl = page.url();
-    // 如果被重定向到首页（yiyan.baidu.com/ 末尾无 /chat），尝试点击入口按钮进入聊天页
-    if (currentUrl === 'https://yiyan.baidu.com/' || currentUrl === 'https://yiyan.baidu.com') {
-      // 扩展选择器：覆盖文心一言/ERNIE 首页各种可能的入口按钮
-      const entrySelectors = [
-        // 文本按钮
-        'button:has-text("开始对话")',
-        'button:has-text("立即体验")',
-        'button:has-text("开始使用")',
-        'button:has-text("新建对话")',
-        'button:has-text("开始聊天")',
-        'a:has-text("开始对话")',
-        'a:has-text("立即体验")',
-        'a:has-text("开始使用")',
-        'a:has-text("新建对话")',
-        'a:has-text("开始聊天")',
-        // class/属性选择器
-        '[class*="start"]',
-        '[class*="entry"]',
-        '[class*="new-chat"]',
-        '[class*="newChat"]',
-        '[class*="create-chat"]',
-        '[class*="createChat"]',
-        // ERNIE 首页常见的"开始体验"大按钮
-        '[class*="hero"] [class*="button"]',
-        '[class*="banner"] [class*="button"]',
-        '[class*="welcome"] [class*="button"]',
-      ];
-      for (const sel of entrySelectors) {
-        try {
-          const btn = await page.$(sel);
-          if (btn) {
-            await btn.click({ timeout: 3000 }).catch(() => {});
-            await page.waitForTimeout(2000);
-            // 点击后检查 URL 是否已跳转到 /chat
-            const newUrl = page.url();
-            if (newUrl.includes('/chat')) break;
-          }
-        } catch {
-          // 继续
-        }
-      }
 
-      // 如果点击入口按钮后仍未跳转，尝试直接导航到 /chat 路径
-      const postClickUrl = page.url();
-      if (!postClickUrl.includes('/chat')) {
-        try {
-          await page.goto('https://yiyan.baidu.com/chat', { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await page.waitForTimeout(2000);
-        } catch {
-          // 导航失败，继续（后续检查会处理）
+    // 仅在 URL 是首页时执行（/chat 已成功时不处理）
+    const isHomePage = currentUrl === 'https://yiyan.baidu.com/' ||
+                       currentUrl === 'https://yiyan.baidu.com' ||
+                       currentUrl.endsWith('yiyan.baidu.com');
+
+    if (!isHomePage) {
+      return;
+    }
+
+    console.log(`[文心一言] 检测到被重定向到首页 ${currentUrl}，尝试进入聊天页`);
+
+    // 策略1: 通过 JS 在页面内查找并点击所有可能的入口按钮
+    // 不依赖 isVisible，直接强制 click（按钮可能被遮挡或折叠）
+    const clicked = await page.evaluate(() => {
+      const entryTexts = ['开始对话', '立即体验', '开始使用', '新建对话', '开始聊天', '立即开始', '开始', '体验'];
+      const clickableSelectors = 'button, a, [role="button"], [class*="start"], [class*="entry"], [class*="new-chat"], [class*="newChat"], [class*="create-chat"], [class*="hero"] [class*="button"], [class*="banner"] [class*="button"], [class*="welcome"] [class*="button"]';
+      const elements = Array.from(document.querySelectorAll(clickableSelectors));
+      // 优先匹配明确的入口文本
+      for (const el of elements) {
+        const text = (el.textContent || '').trim();
+        if (entryTexts.some(nt => text === nt)) {
+          (el as HTMLElement).click();
+          return { clicked: true, text };
         }
       }
+      // 模糊匹配（包含）
+      for (const el of elements) {
+        const text = (el.textContent || '').trim();
+        if (entryTexts.some(nt => text.includes(nt) && text.length < 20)) {
+          (el as HTMLElement).click();
+          return { clicked: true, text };
+        }
+      }
+      // class/属性匹配
+      const selElements = Array.from(document.querySelectorAll(
+        '[class*="start"], [class*="entry"], [class*="new-chat"], [class*="newChat"], [class*="create-chat"], [href*="/chat"]'
+      ));
+      for (const el of selElements) {
+        (el as HTMLElement).click();
+        return { clicked: true, text: 'class-selector' };
+      }
+      return { clicked: false, text: '' };
+    }).catch(() => ({ clicked: false, text: '' }));
+
+    if (clicked?.clicked) {
+      await page.waitForTimeout(3000);
+      const afterClickUrl = page.url();
+      if (afterClickUrl.includes('/chat')) {
+        console.log(`[文心一言] 点击入口按钮成功（${clicked.text}），新 URL=${afterClickUrl}`);
+        return;
+      }
+    }
+
+    // 策略2: 通过 SPA 路由跳转到 /chat
+    // 文心一言是 React SPA，可以通过 history.pushState + popstate 事件触发路由切换
+    const routed = await page.evaluate(() => {
+      try {
+        window.history.pushState({}, '', '/chat');
+        window.dispatchEvent(new PopStateEvent('popstate'));
+        return true;
+      } catch {
+        return false;
+      }
+    }).catch(() => false);
+
+    if (routed) {
+      await page.waitForTimeout(3000);
+      const afterRouteUrl = page.url();
+      if (afterRouteUrl.includes('/chat')) {
+        console.log(`[文心一言] SPA 路由跳转成功，新 URL=${afterRouteUrl}`);
+        return;
+      }
+    }
+
+    // 策略3: 通过 window.location.href 强制跳转
+    // 这会触发完整页面加载，绕过 SPA 路由守卫
+    console.log(`[文心一言] 点击和 SPA 路由均未生效，通过 window.location.href 强制跳转`);
+    const jumped = await page.evaluate(() => {
+      try {
+        window.location.href = '/chat';
+        return true;
+      } catch {
+        return false;
+      }
+    }).catch(() => false);
+
+    if (jumped) {
+      // 等待页面加载
+      try {
+        await page.waitForLoadState('domcontentloaded', { timeout: 15000 });
+      } catch {
+        // 继续
+      }
+      await page.waitForTimeout(3000);
+      const afterJumpUrl = page.url();
+      console.log(`[文心一言] window.location.href 跳转后，URL=${afterJumpUrl}`);
+      if (afterJumpUrl.includes('/chat')) {
+        return;
+      }
+    }
+
+    // 策略4: 直接 page.goto('/chat')（兜底）
+    try {
+      await page.goto('https://yiyan.baidu.com/chat', { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(3000);
+      const finalUrl = page.url();
+      console.log(`[文心一言] 兜底 page.goto 后，最终 URL=${finalUrl}`);
+    } catch (e: any) {
+      console.log(`[文心一言] 兜底导航失败: ${e.message}`);
     }
   }
 }
