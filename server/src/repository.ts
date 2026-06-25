@@ -2634,8 +2634,9 @@ export async function getQueuePressure(): Promise<{ pendingCount: number; proces
 // ============ 账号续期 ============
 
 export async function getAuthsForRenewal(): Promise<any[]> {
-  // 获取所有活跃且超过7天未续期的账号，使用 FOR UPDATE SKIP LOCKED 防止并发竞态
+  // 获取所有活跃且超过1天未续期的账号，使用 FOR UPDATE SKIP LOCKED 防止并发竞态
   // 排除已 expired/banned/offline 的账号，只续期 active 且 health_status=normal 的
+  // 续期间隔从7天缩短为1天，确保 cookie 及时刷新，避免短期 cookie 过期导致显示"已过期"
   const result = await query(
     `UPDATE platform_auth
      SET updated_at = NOW()
@@ -2643,7 +2644,7 @@ export async function getAuthsForRenewal(): Promise<any[]> {
        SELECT id FROM platform_auth
        WHERE status = 'active'
          AND health_status = 'normal'
-         AND (last_renewal_attempt IS NULL OR last_renewal_attempt < NOW() - INTERVAL '7 days')
+         AND (last_renewal_attempt IS NULL OR last_renewal_attempt < NOW() - INTERVAL '1 day')
        ORDER BY last_renewal_attempt ASC NULLS FIRST
        LIMIT 50
        FOR UPDATE SKIP LOCKED

@@ -124,15 +124,18 @@ async function performRenewal(): Promise<void> {
             const newStorageState = await context.storageState();
             const newStorageStateStr = JSON.stringify(newStorageState);
 
-            // 计算新的过期时间（最早 cookie 的过期时间 + 7天，或默认30天后）
+            // 计算新的过期时间
+            // 取最晚过期的 cookie（只要有一个长期 cookie 有效，登录态就有效）
+            // 之前取最早 cookie 导致百度系短期统计 cookie 把过期时间拉到几小时，显示"已过期"
             let expiresAt: string | undefined;
             const validCookies = (newStorageState.cookies || []).filter((c: any) =>
               c.expires > 0 && c.expires > Date.now() / 1000
             );
             if (validCookies.length > 0) {
-              const minExpires = Math.min(...validCookies.map((c: any) => c.expires));
-              expiresAt = new Date(minExpires * 1000).toISOString();
+              const maxExpires = Math.max(...validCookies.map((c: any) => c.expires));
+              expiresAt = new Date(maxExpires * 1000).toISOString();
             } else {
+              // 所有 cookie 都是 session 类型（无 expires），默认30天后过期
               expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
             }
 
