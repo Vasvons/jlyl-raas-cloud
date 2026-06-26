@@ -188,11 +188,29 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
-    const url = await this.extractShareLinkFromDialog(
-      page,
-      '[class*="share"], button:has-text("分享"), [data-testid*="share"], [aria-label*="分享"]',
-      '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
-    );
-    return url || this.getCurrentPageShareUrl(page);
+    // DeepSeek 分享链接格式：https://chat.deepseek.com/a/chat/s/{uuid}
+    // 必须通过点击分享按钮获取，当前对话 URL 是私有的，不 fallback
+    const shareBtnSelectors = [
+      'button:has-text("分享")',
+      '[class*="share"]:not([class*="shared"])',
+      '[data-testid*="share"]',
+      '[aria-label*="分享"]',
+      '[class*="icon-share"]',
+    ];
+    const dialogSelectors = [
+      '[class*="share-dialog"]',
+      '[class*="share-modal"]',
+      '[role="dialog"]',
+      '[class*="popup"]',
+      '[class*="modal"]',
+    ];
+    for (const btnSel of shareBtnSelectors) {
+      for (const dlgSel of dialogSelectors) {
+        const url = await this.extractShareLinkFromDialog(page, btnSel, dlgSel);
+        if (url && url.includes('/share/') || url?.includes('/s/')) return url;
+      }
+    }
+    // 不 fallback 到 getCurrentPageShareUrl：当前对话 URL 是私有的，非登录用户看不到
+    return null;
   }
 }

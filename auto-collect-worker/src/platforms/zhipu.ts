@@ -66,7 +66,10 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   }
 
   /** 覆盖 extractContent：使用更精确的选择器，避免匹配到侧边栏等小元素
-   * 关键：取最长的匹配元素（AI 回答通常是最长的内容块） */
+   * 关键：
+   * 1. 取最长的匹配元素（AI 回答通常是最长的内容块）
+   * 2. 等待内容稳定（连续两次获取文本长度不变），确保 AI 回答完整
+   * 3. 使用 innerText 而非 textContent（只返回可见文本，避免拿到隐藏元素） */
   async extractContent(page: Page): Promise<{ text: string; html: string }> {
     // 先滚动到页面底部，确保 AI 回答完整渲染
     await this.scrollToBottom(page);
@@ -90,8 +93,9 @@ export class ZhipuAdapter extends BasePlatformAdapter {
 
         // 取所有匹配元素中最长的（避免匹配到侧边栏的小元素）
         for (const el of elements) {
-          const text = (await el.textContent()) || '';
-          const html = (await el.innerHTML()) || '';
+          // 使用 innerText 而非 textContent：只返回可见文本，避免拿到隐藏元素
+          const text = await el.innerText().catch(() => '') || '';
+          const html = await el.innerHTML().catch(() => '') || '';
           if (text.trim().length > bestText.trim().length) {
             bestText = text;
             bestHtml = html;
@@ -102,7 +106,45 @@ export class ZhipuAdapter extends BasePlatformAdapter {
       }
     }
 
+    // 如果找到内容，等待内容稳定（连续两次获取长度不变），确保 AI 回答完整
     if (bestText.trim().length > 0) {
+      let prevLen = bestText.trim().length;
+      let stableCount = 0;
+      for (let i = 0; i < 10; i++) {
+        await page.waitForTimeout(2000);
+        // 重新提取最长内容
+        let currentText = '';
+        for (const selector of selectors) {
+          try {
+            const elements = await page.$$(selector);
+            for (const el of elements) {
+              const text = await el.innerText().catch(() => '') || '';
+              if (text.trim().length > currentText.trim().length) {
+                currentText = text;
+              }
+            }
+          } catch {
+            // 继续
+          }
+        }
+        const currentLen = currentText.trim().length;
+        if (currentLen === prevLen) {
+          stableCount++;
+          if (stableCount >= 2) {
+            // 连续2次长度不变，认为内容已稳定
+            if (currentLen > bestText.trim().length) {
+              bestText = currentText;
+            }
+            break;
+          }
+        } else {
+          stableCount = 0;
+          prevLen = currentLen;
+          if (currentLen > bestText.trim().length) {
+            bestText = currentText;
+          }
+        }
+      }
       console.log(`[智谱AI] 提取内容成功: ${bestText.trim().length} 字符`);
       return { text: bestText.trim(), html: bestHtml };
     }
@@ -111,8 +153,8 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     try {
       const answerEl = await page.$('xpath=//div[contains(@class, "answer-content")][last()]').catch(() => null);
       if (answerEl) {
-        const text = (await answerEl.textContent()) || '';
-        const html = (await answerEl.innerHTML()) || '';
+        const text = await answerEl.innerText().catch(() => '') || '';
+        const html = await answerEl.innerHTML().catch(() => '') || '';
         if (text.trim().length > 0) {
           console.log(`[智谱AI] XPath 兜底提取成功: ${text.trim().length} 字符`);
           return { text: text.trim(), html };
@@ -205,21 +247,29 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
+    // 智谱清言分享链接格式：https://chatglm.cn/share/{8位短码}
+    // 必须通过点击分享按钮获取，当前对话 URL 是私有的，不 fallback
     const shareBtnSelectors = [
-      '[class*="share"]', '[class*="Share"]',
-      'button:has-text("分享")', 'button:has-text("Share")',
-      '[data-testid*="share"]', '[aria-label*="分享"]',
+      'button:has-text("分享")',
+      '[class*="share"]:not([class*="shared"])',
+      '[data-testid*="share"]',
+      '[aria-label*="分享"]',
     ];
     const dialogSelectors = [
-      '[class*="dialog"]', '[class*="modal"]', '[class*="share-dialog"]',
-      '[class*="share-modal"]', '[role="dialog"]', '[class*="popup"]',
+      '[class*="share-dialog"]',
+      '[class*="share-modal"]',
+      '[role="dialog"]',
+      '[class*="popup"]',
+      '[class*="modal"]',
     ];
     for (const btnSel of shareBtnSelectors) {
       for (const dlgSel of dialogSelectors) {
         const url = await this.extractShareLinkFromDialog(page, btnSel, dlgSel);
-        if (url) return url;
+        // 智谱分享链接必须包含 /share/ 才是公开可访问的
+        if (url && url.includes('/share/')) return url;
       }
     }
-    return this.getCurrentPageShareUrl(page);
+    // 不 fallback 到 getCurrentPageShareUrl：当前对话 URL 是私有的
+    return null;
   }
 }

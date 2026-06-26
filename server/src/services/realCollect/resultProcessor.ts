@@ -86,6 +86,13 @@ export async function processWorkerResult(result: WorkerResult): Promise<Process
   // recognizer 只在品牌词附近 ±300 字符窗口内识别联系方式，避免误识别
   const recognizeResult = recognizeContent(result.content, brandKeywords);
 
+  // 只保存有价值的记录：品牌命中 或 有联系方式
+  // 既未命中品牌也没有联系方式的记录对用户无用，不保存（避免污染 GEO 报告）
+  if (!recognizeResult.brandMatched && !recognizeResult.hasContact) {
+    console.log(`[resultProcessor] 跳过无价值记录: ${result.platform}/${result.keyword.substring(0, 30)} 未命中品牌且无联系方式`);
+    return null;
+  }
+
   // 先插入 record 获取 id
   const recordId = await insertRealCollectRecord({
     taskId: result.taskId,

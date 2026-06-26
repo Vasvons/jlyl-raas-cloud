@@ -17,15 +17,14 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
 
   async extractShareLink(page: Page): Promise<string | null> {
     // 腾讯元宝分享链接策略：
-    // 1. 点击分享按钮，从弹窗提取链接（如果有URL分享功能）
-    // 2. 从当前页面URL提取（/chat/{id} 格式，但可能是私有对话）
-    // 3. 如果都失败，返回 null，由云端生成静态页
+    // 1. 点击分享按钮，从弹窗提取链接
+    // 2. 如果都失败，返回 null，由云端生成静态页
+    // 注意：不 fallback 到当前页面 URL，因为 /chat/{id} 是私有对话URL
 
     const shareBtnSelectors = [
-      '[class*="share"]',
-      '[class*="Share"]',
       'button:has-text("分享")',
       'button:has-text("Share")',
+      '[class*="share"]:not([class*="shared"])',
       '[data-testid*="share"]',
       '[aria-label*="分享"]',
       '[class*="operation"] [class*="share"]',
@@ -34,14 +33,13 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       '[class*="bubble"] [class*="share"]',
     ];
     const dialogSelectors = [
-      '[class*="dialog"]',
-      '[class*="modal"]',
       '[class*="share-dialog"]',
       '[class*="share-modal"]',
-      '[role="dialog"]',
-      '[class*="popup"]',
       '[class*="share-popup"]',
       '[class*="share-content"]',
+      '[role="dialog"]',
+      '[class*="popup"]',
+      '[class*="modal"]',
     ];
 
     // 策略1: 点击分享按钮，从弹窗提取链接
@@ -58,7 +56,6 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       if (copyBtn) {
         await copyBtn.click({ timeout: 3000 }).catch(() => {});
         await page.waitForTimeout(1000);
-        // 重新从弹窗提取
         for (const dlgSel of dialogSelectors) {
           const url = await this.extractShareLinkFromDialog(page, '[class*="share"]', dlgSel);
           if (url) return url;
@@ -68,13 +65,7 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       // 继续
     }
 
-    // 策略3: 从当前页面URL提取（/chat/{id} 格式）
-    // 注意：腾讯元宝的 /chat/{id} 可能是私有对话URL，非登录用户看不到内容
-    // 但如果用户已登录，应该能看到，所以仍然尝试
-    const currentUrl = await this.getCurrentPageShareUrl(page);
-    if (currentUrl) return currentUrl;
-
-    // 所有策略失败，返回 null，由云端生成静态页
+    // 不 fallback 到 getCurrentPageShareUrl：/chat/{id} 是私有对话URL
     return null;
   }
 }

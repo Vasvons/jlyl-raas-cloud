@@ -24,11 +24,27 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
-    const url = await this.extractShareLinkFromDialog(
-      page,
-      '[class*="share"], [class*="Share"], button:has-text("分享"), [data-testid*="share"], [aria-label*="分享"]',
-      '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
-    );
-    return url || this.getCurrentPageShareUrl(page);
+    // 豆包分享链接必须通过点击分享按钮获取
+    // 不 fallback 到 getCurrentPageShareUrl：对话 URL 是私有的
+    const shareBtnSelectors = [
+      'button:has-text("分享")',
+      '[class*="share"]:not([class*="shared"])',
+      '[data-testid*="share"]',
+      '[aria-label*="分享"]',
+    ];
+    const dialogSelectors = [
+      '[class*="share-dialog"]',
+      '[class*="share-modal"]',
+      '[role="dialog"]',
+      '[class*="popup"]',
+      '[class*="modal"]',
+    ];
+    for (const btnSel of shareBtnSelectors) {
+      for (const dlgSel of dialogSelectors) {
+        const url = await this.extractShareLinkFromDialog(page, btnSel, dlgSel);
+        if (url) return url;
+      }
+    }
+    return null;
   }
 }
