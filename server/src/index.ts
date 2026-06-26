@@ -229,7 +229,7 @@ app.use('/real-collect/queue', realCollectQueueRoutes);
 app.use('/platform-auth', platformAuthRoutes);
 app.use('/real-collect/logs', workerLogRoutes);
 app.use('/aeo', aeoRoutes);
-app.use('/api/content', contentRoutes);
+app.use('/content', contentRoutes);
 
 // 错误处理
 app.use((err: any, req: any, res: any, next: any) => {
