@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authMiddleware, adminMiddleware } from '../auth';
+import { query } from '../db';
 import {
   getRealCollectRecords,
   getRealCollectRecordById,
@@ -66,6 +67,86 @@ router.post('/worker/report', async (req, res) => {
 
 // 以下接口需要管理员权限
 router.use(authMiddleware, adminMiddleware);
+
+// 手动触发清理无效记录（preview=true 只统计不删除，confirm=true 执行删除）
+// 清理标准：raw_content < 200 字符，或包含营销页/导航特征文案
+router.post('/cleanup-invalid', async (req, res) => {
+  try {
+    const confirm = req.body.confirm === true;
+
+    const statsResult = await query(`
+      SELECT
+        COUNT(*) as total_to_delete,
+        COUNT(*) FILTER (WHERE COALESCE(LENGTH(raw_content), 0) < 200) as short_content,
+        COUNT(*) FILTER (WHERE raw_content LIKE '%登录%' AND raw_content LIKE '%注册%') as marketing_nav,
+        COUNT(*) FILTER (WHERE raw_content LIKE '%开始对话%' OR raw_content LIKE '%开始使用%' OR raw_content LIKE '%免费体验%' OR raw_content LIKE '%立即开通%') as marketing_cta,
+        COUNT(*) FILTER (WHERE raw_content LIKE '%全部对话%' OR raw_content LIKE '%历史记录%' OR raw_content LIKE '%清空对话%') as sidebar_nav,
+        COUNT(*) as total_remaining
+      FROM real_collect_record
+      WHERE COALESCE(LENGTH(raw_content), 0) < 200
+         OR (raw_content LIKE '%登录%' AND raw_content LIKE '%注册%')
+         OR raw_content LIKE '%开始对话%'
+         OR raw_content LIKE '%开始使用%'
+         OR raw_content LIKE '%免费体验%'
+         OR raw_content LIKE '%立即开通%'
+         OR raw_content LIKE '%全部对话%'
+         OR raw_content LIKE '%历史记录%'
+         OR raw_content LIKE '%清空对话%'
+    `);
+    const stats = statsResult.rows[0];
+
+    const totalRemainingResult = await query(`SELECT COUNT(*) as total FROM real_collect_record`);
+    const totalBefore = parseInt(totalRemainingResult.rows[0].total);
+
+    if (!confirm) {
+      return res.json({
+        code: 200,
+        data: {
+          totalBefore: totalBefore,
+          totalToDelete: parseInt(stats.total_to_delete),
+          breakdown: {
+            shortContent: parseInt(stats.short_content),
+            marketingNav: parseInt(stats.marketing_nav),
+            marketingCta: parseInt(stats.marketing_cta),
+            sidebarNav: parseInt(stats.sidebar_nav),
+          },
+          totalAfter: totalBefore - parseInt(stats.total_to_delete),
+          message: '预览模式，未执行删除。传入 confirm=true 执行删除。'
+        }
+      });
+    }
+
+    const deleteResult = await query(`
+      DELETE FROM real_collect_record
+      WHERE COALESCE(LENGTH(raw_content), 0) < 200
+         OR (raw_content LIKE '%登录%' AND raw_content LIKE '%注册%')
+         OR raw_content LIKE '%开始对话%'
+         OR raw_content LIKE '%开始使用%'
+         OR raw_content LIKE '%免费体验%'
+         OR raw_content LIKE '%立即开通%'
+         OR raw_content LIKE '%全部对话%'
+         OR raw_content LIKE '%历史记录%'
+         OR raw_content LIKE '%清空对话%'
+    `);
+    const deleted = deleteResult.rowCount || 0;
+
+    const totalAfterResult = await query(`SELECT COUNT(*) as total FROM real_collect_record`);
+    const totalAfter = parseInt(totalAfterResult.rows[0].total);
+
+    console.log(`[Cleanup] 手动清理完成: 删除 ${deleted} 条, 剩余 ${totalAfter} 条`);
+    res.json({
+      code: 200,
+      data: {
+        deleted: deleted,
+        totalBefore: totalBefore,
+        totalAfter: totalAfter,
+      }
+    });
+  } catch (e: any) {
+    console.error('[Cleanup] 清理失败:', e.message);
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {

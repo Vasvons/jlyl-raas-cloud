@@ -647,6 +647,61 @@ export async function migrate() {
       );
     }
 
+    // ============ 一次性清理 v2：更激进的脏数据清理 ============
+    // v1 清理标准太窄，漏掉了 static_page_id 存在但内容是营销页的情况
+    // v2 清理标准：
+    //   1. raw_content < 200 字符（真实 AI 回答通常 200+ 字符）
+    //   2. raw_content 同时包含"登录"和"注册"（营销/导航页面特征）
+    //   3. raw_content 包含"开始对话"/"开始使用"/"免费体验"/"立即开通"（营销 CTA 按钮文案）
+    //   4. raw_content 包含"全部对话"/"历史记录"/"清空对话"（侧边栏导航文案）
+    const cleanupV2Check = await client.query(
+      `SELECT 1 FROM migrations_cleanup_log WHERE cleanup_name = 'cleanup_invalid_real_collect_records_v2'`
+    );
+    if (cleanupV2Check.rows.length === 0) {
+      console.log('[Migrate] 执行 v2 清理: 删除营销页/短内容的 real_collect_record 记录...');
+
+      const statsV2 = await client.query(`
+        SELECT
+          COUNT(*) as total_to_delete,
+          COUNT(*) FILTER (WHERE COALESCE(LENGTH(raw_content), 0) < 200) as short_content,
+          COUNT(*) FILTER (WHERE raw_content LIKE '%登录%' AND raw_content LIKE '%注册%') as marketing_nav,
+          COUNT(*) FILTER (WHERE raw_content LIKE '%开始对话%' OR raw_content LIKE '%开始使用%' OR raw_content LIKE '%免费体验%' OR raw_content LIKE '%立即开通%') as marketing_cta,
+          COUNT(*) FILTER (WHERE raw_content LIKE '%全部对话%' OR raw_content LIKE '%历史记录%' OR raw_content LIKE '%清空对话%') as sidebar_nav
+        FROM real_collect_record
+        WHERE COALESCE(LENGTH(raw_content), 0) < 200
+           OR (raw_content LIKE '%登录%' AND raw_content LIKE '%注册%')
+           OR raw_content LIKE '%开始对话%'
+           OR raw_content LIKE '%开始使用%'
+           OR raw_content LIKE '%免费体验%'
+           OR raw_content LIKE '%立即开通%'
+           OR raw_content LIKE '%全部对话%'
+           OR raw_content LIKE '%历史记录%'
+           OR raw_content LIKE '%清空对话%'
+      `);
+      const stats = statsV2.rows[0];
+      console.log(`[Migrate] v2 清理统计: 总计 ${stats.total_to_delete} 条 (短内容: ${stats.short_content}, 营销导航: ${stats.marketing_nav}, CTA: ${stats.marketing_cta}, 侧边栏: ${stats.sidebar_nav})`);
+
+      const deleteV2 = await client.query(`
+        DELETE FROM real_collect_record
+        WHERE COALESCE(LENGTH(raw_content), 0) < 200
+           OR (raw_content LIKE '%登录%' AND raw_content LIKE '%注册%')
+           OR raw_content LIKE '%开始对话%'
+           OR raw_content LIKE '%开始使用%'
+           OR raw_content LIKE '%免费体验%'
+           OR raw_content LIKE '%立即开通%'
+           OR raw_content LIKE '%全部对话%'
+           OR raw_content LIKE '%历史记录%'
+           OR raw_content LIKE '%清空对话%'
+      `);
+      const rowsV2 = deleteV2.rowCount || 0;
+      console.log(`[Migrate] v2 清理完成: 实际删除 ${rowsV2} 条记录`);
+
+      await client.query(
+        `INSERT INTO migrations_cleanup_log (cleanup_name, rows_affected) VALUES ('cleanup_invalid_real_collect_records_v2', $1)`,
+        [rowsV2]
+      );
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
