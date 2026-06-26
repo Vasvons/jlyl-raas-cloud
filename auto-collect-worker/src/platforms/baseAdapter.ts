@@ -260,8 +260,53 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
     await randomDelay(500, 1500);
 
-    // 提交
-    await page.press(activeSelector, 'Enter');
+    // 提交查询
+    // 关键修复：用 page.keyboard.press('Enter') 而非 page.press(selector, 'Enter')
+    // page.press(selector, 'Enter') 在某些平台（如豆包、元宝）不能触发发送，
+    // 因为 fill 后焦点可能不在目标元素上，或 contenteditable 元素的 Enter 行为不同。
+    // page.keyboard.press('Enter') 直接对当前焦点元素按键，与 DeepSeek 适配器一致。
+    // 备用：Enter 后检查是否出现 AI 回答容器，若未出现则尝试点击发送按钮。
+    const urlBeforeSubmit = page.url();
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(2000);
+
+    // 检查 Enter 是否成功发送查询（URL 变化或出现回答容器）
+    const urlAfterSubmit = page.url();
+    let querySent = urlAfterSubmit !== urlBeforeSubmit;
+    if (!querySent && this.responseSelector) {
+      // 检查是否出现了 AI 回答容器（即使内容还没生成）
+      try {
+        const hasResponseContainer = await page.$(this.responseSelector).catch(() => null);
+        if (hasResponseContainer) querySent = true;
+      } catch {}
+    }
+
+    if (!querySent) {
+      // Enter 可能没发送成功，尝试点击发送按钮
+      console.log(`[${this.platformName}] Enter 未触发查询发送 (URL未变化=${urlBeforeSubmit}→${urlAfterSubmit})，尝试点击发送按钮`);
+      const sendBtnSelectors = [
+        'button[data-testid*="send"]', 'button[aria-label*="发送"]', 'button[aria-label*="Send"]',
+        'button:has-text("发送")', '[class*="send-btn"]', '[class*="sendBtn"]',
+        '[class*="submit"]', '[data-testid*="send"]',
+        // 豆包: div.send-btn-wrapper button
+        '.send-btn-wrapper button', 'div[class*="send-btn"] button',
+      ];
+      for (const btnSel of sendBtnSelectors) {
+        try {
+          const btn = await page.$(btnSel);
+          if (btn) {
+            await btn.click({ timeout: 2000 }).catch(() => {});
+            console.log(`[${this.platformName}] 点击发送按钮成功: ${btnSel}`);
+            querySent = true;
+            break;
+          }
+        } catch {}
+      }
+    }
+
+    if (!querySent) {
+      console.log(`[${this.platformName}] 警告: 无法确认查询是否发送，继续等待 AI 回答`);
+    }
 
     // 等待 AI 回答完成
     await this.waitForResponse(page);
@@ -471,33 +516,24 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
 
     try {
-      // 关键修复：持续轮询等待 AI 回答内容出现并稳定
-      // 之前的问题：waitForSelector(宽泛选择器) 立即匹配到侧边栏等静态元素，
-      // 此时 AI 回答容器还没生成，page.$$() 返回的元素 innerText 全为空，
-      // bestText 为空时跳过稳定检测直接返回空 → 内容长度=0
-      //
-      // 新策略：轮询循环（最多30次 × 2秒 = 60秒），
-      //   - 每轮遍历所有匹配元素取最长 innerText
-      //   - bestText 长度 >= 30（有意义的内容）后进入稳定检测
-      //   - 连续2次长度不变认为回答完成，返回
-      //   - 这样即使 waitForResponse 提前返回（stopButtonSelector 宽泛匹配），
-      //     也能持续等待 AI 回答实际生成
+      // 持续轮询等待 AI 回答内容出现并稳定
+      // 轮询循环（最多30次 × 2秒 = 60秒）
       let bestText = '';
       let bestHtml = '';
       let prevLen = 0;
       let stableCount = 0;
       let hasMeaningfulContent = false;
+      let lastElementCount = 0;
 
       for (let i = 0; i < 30; i++) {
-        // 滚动触发懒加载（AI 回答可能需要滚动才渲染完整）
         await this.scrollToBottom(page);
 
         // 遍历所有匹配元素，取最长的可见文本
         let currentText = '';
         let currentHtml = '';
         const elements = await page.$$(this.responseSelector);
+        lastElementCount = elements.length;
         for (const el of elements) {
-          // innerText 只返回可见文本，避免拿到 display:none 的隐藏元素
           const text = await el.innerText().catch(() => '') || '';
           if (text.trim().length > currentText.trim().length) {
             currentText = text;
@@ -511,12 +547,15 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           bestHtml = currentHtml;
         }
 
-        // 内容长度 >= 30 才算有意义的 AI 回答（过滤侧边栏短文本）
+        // 诊断日志：前3轮和每10轮输出一次，帮助定位问题
+        if (i < 3 || i % 10 === 9) {
+          console.log(`[${this.platformName}] extractContent 轮询#${i + 1}: 匹配${lastElementCount}个元素, 当前最长=${currentLen}字符, 历史最长=${bestText.trim().length}字符`);
+        }
+
         if (currentLen >= 30) {
           hasMeaningfulContent = true;
           if (currentLen === prevLen) {
             stableCount++;
-            // 连续2次长度不变，认为 AI 回答已稳定完成
             if (stableCount >= 2) {
               console.log(`[${this.platformName}] 提取内容成功: ${bestText.trim().length} 字符 (轮询第${i + 1}轮稳定)`);
               return { text: bestText.trim(), html: bestHtml };
@@ -530,19 +569,64 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         await page.waitForTimeout(2000);
       }
 
-      // 轮询结束，如果有有意义的内容就返回（可能是稳定检测未达标但已有内容）
+      // 轮询结束，如果有有意义的内容就返回
       if (hasMeaningfulContent && bestText.trim().length >= 30) {
         console.log(`[${this.platformName}] 提取内容成功(轮询超时): ${bestText.trim().length} 字符`);
         return { text: bestText.trim(), html: bestHtml };
       }
 
-      console.log(`[${this.platformName}] 提取内容失败: 轮询60秒后仍无有意义内容 (最长=${bestText.trim().length}字符)`);
+      // ============ 通用兜底策略 ============
+      // responseSelector 轮询失败（匹配0个元素或全为空），说明平台改版导致选择器失效
+      // 用 page.evaluate 在浏览器上下文查找页面上最长的可见文本块
+      // 排除侧边栏/导航/页脚等无关元素，只取有意义的 AI 回答内容
+      console.log(`[${this.platformName}] responseSelector 轮询失败(匹配${lastElementCount}个元素, 最长=${bestText.trim().length}字符)，尝试通用兜底`);
+      const fallbackResult = await page.evaluate(() => {
+        // 排除的元素选择器（侧边栏/导航/页脚/操作栏等）
+        const excludeSelectors = [
+          'nav', 'header', 'footer', 'aside',
+          '[class*="sidebar"]', '[class*="Sidebar"]',
+          '[class*="nav"]', '[class*="Nav"]',
+          '[class*="menu"]', '[class*="Menu"]',
+          '[class*="header"]', '[class*="Header"]',
+          '[class*="footer"]', '[class*="Footer"]',
+          '[class*="toolbar"]', '[class*="Toolbar"]',
+          '[class*="operation"]', '[class*="action"]',
+        ];
+        const excludeSet = new Set<Element>();
+        for (const sel of excludeSelectors) {
+          document.querySelectorAll(sel).forEach(el => {
+            excludeSet.add(el);
+            // 同时排除其所有子元素
+            el.querySelectorAll('*').forEach(child => excludeSet.add(child));
+          });
+        }
+
+        // 查找所有 div/section/article/p，取最长的可见文本
+        const candidates = Array.from(document.querySelectorAll('div, section, article, p, [class*="markdown"]'));
+        let bestFallbackText = '';
+        let bestFallbackHtml = '';
+        for (const el of candidates) {
+          // 跳过被排除的元素
+          if (excludeSet.has(el)) continue;
+          // 用 innerText 只取可见文本
+          const t = ((el as HTMLElement).innerText || '').trim();
+          // 只取长度 >= 50 的文本块（过滤短文本）
+          if (t.length > bestFallbackText.length && t.length >= 50) {
+            bestFallbackText = t;
+            bestFallbackHtml = (el as HTMLElement).innerHTML || '';
+          }
+        }
+        return { text: bestFallbackText, html: bestFallbackHtml };
+      }).catch(() => ({ text: '', html: '' }));
+
+      if (fallbackResult.text.trim().length >= 50) {
+        console.log(`[${this.platformName}] 通用兜底提取成功: ${fallbackResult.text.trim().length} 字符`);
+        return { text: fallbackResult.text.trim(), html: fallbackResult.html };
+      }
+
+      console.log(`[${this.platformName}] 提取内容失败: 轮询和兜底均无内容 (选择器=${this.responseSelector.substring(0, 80)}...)`);
     } catch (e) {
       console.error(`[${this.platformName}] 提取内容失败:`, (e as Error).message);
-      // 不再兜底拿 document.body.textContent：整页文本会包含侧边栏/导航/页脚等无关内容，
-      // 这些内容可能恰好包含品牌词，导致 recognizeContent 误识别为 brand_matched=true，
-      // 进而生成"假命中"记录污染 GEO 报告的搜索详情。
-      // 改为返回空内容，让 resultProcessor 跳过保存 record。
       return { text: '', html: '' };
     }
     return { text: '', html: '' };
