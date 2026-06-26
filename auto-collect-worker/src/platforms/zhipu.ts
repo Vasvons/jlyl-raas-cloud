@@ -1,15 +1,26 @@
 import { Page } from 'playwright';
 import { BasePlatformAdapter } from './baseAdapter';
 
-/** 智谱AI适配器 */
+/** 智谱AI适配器
+ *
+ * 参考 auth helper 软件的查询脚本：
+ * - URL：https://chatglm.cn/（根域名）
+ * - 输入框：.input-box-inner textarea
+ * - 响应选择器：.answer-content .flex1
+ * - 停止按钮：div.enter.is-main-chat.searching
+ */
 export class ZhipuAdapter extends BasePlatformAdapter {
   platformName = '智谱AI';
   loginUrl = 'https://chatglm.cn/';
-  chatUrl = 'https://chatglm.cn/chat/';
+  chatUrl = 'https://chatglm.cn/';
   supportsShare = true;
-  protected inputSelector = 'textarea';
-  protected responseSelector = '.markdown-body, [class*="message"], [class*="answer"]';
-  protected stopButtonSelector = '[class*="stop"], .stop-btn';
+  // 输入框：参考 auth helper 的 .input-box-inner textarea
+  protected inputSelector = '.input-box-inner textarea, textarea, [class*="input-box"] textarea, [class*="chat-input"] textarea';
+  // 响应选择器：参考 auth helper 的 .answer-content .flex1
+  // 之前用 [class*="message"] 匹配到了错误的小元素（如侧边栏标签），导致内容长度只有12
+  protected responseSelector = '.answer-content .flex1, .answer-content, [class*="answer-content"], .markdown-body';
+  // 停止按钮：参考 auth helper 的 div.enter.is-main-chat.searching
+  protected stopButtonSelector = 'div.enter.is-main-chat.searching, [class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {

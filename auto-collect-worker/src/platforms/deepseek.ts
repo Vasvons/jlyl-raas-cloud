@@ -29,8 +29,8 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
 
   /** DeepSeek 导航后处理：
    *  1. 等待 SPA 渲染完成
-   *  2. 快速检测输入框是否存在（3秒超时）
-   *  3. 如果找不到输入框（可能遇到了"Into the Unknown"营销页），降级导航到 /chat
+   *  2. 快速检测输入框是否存在（必须是可见的，避免匹配到营销页的隐藏textarea）
+   *  3. 如果找不到可见输入框（可能遇到了"Into the Unknown"营销页），降级导航到 /chat
    *  4. /chat 会自动恢复旧对话（URL 变为 /a/chat/s/{id}），但旧对话也能正常输入
    */
   protected async afterNavigate(page: Page): Promise<void> {
@@ -44,16 +44,18 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
 
     const title = await page.title().catch(() => '');
 
-    // 快速检测输入框是否存在（3秒超时，比 baseAdapter 的 5 秒更快）
-    const hasInput = await page.$(this.inputSelector).catch(() => null);
+    // 快速检测"可见的"输入框是否存在
+    // 注意：不能用 page.$（不检查可见性，会匹配到营销页的隐藏textarea）
+    // 必须用 waitForSelector(state: 'visible') 或 page.$ + isVisible() 检查
+    const hasVisibleInput = await this.hasVisibleInput(page);
 
-    if (hasInput) {
-      // 根域名正常找到输入框，无需降级
+    if (hasVisibleInput) {
+      // 根域名正常找到可见输入框，无需降级
       return;
     }
 
-    // 根域名找不到输入框，可能遇到了营销页（如 "DeepSeek - Into the Unknown"）
-    console.log(`[DeepSeek] 根域名未找到输入框 (title=${title})，降级导航到 /chat`);
+    // 根域名找不到可见输入框，可能遇到了营销页（如 "DeepSeek - Into the Unknown"）
+    console.log(`[DeepSeek] 根域名未找到可见输入框 (title=${title})，降级导航到 /chat`);
 
     try {
       await page.goto('https://chat.deepseek.com/chat', { waitUntil: 'domcontentloaded', timeout: 20000 });
@@ -65,14 +67,26 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
       const newTitle = await page.title().catch(() => '');
       console.log(`[DeepSeek] 降级到 /chat 后: URL=${newUrl}, title=${newTitle}`);
 
-      // 如果 /chat 也找不到输入框，尝试点击"新建对话"按钮
-      const hasInputAfterFallback = await page.$(this.inputSelector).catch(() => null);
-      if (!hasInputAfterFallback && newUrl.includes('/a/chat/s/')) {
-        console.log(`[DeepSeek] /chat 恢复了旧对话但未找到输入框，尝试点击"新建对话"`);
+      // 如果 /chat 也找不到可见输入框，尝试点击"新建对话"按钮
+      const hasVisibleInputAfterFallback = await this.hasVisibleInput(page);
+      if (!hasVisibleInputAfterFallback && newUrl.includes('/a/chat/s/')) {
+        console.log(`[DeepSeek] /chat 恢复了旧对话但未找到可见输入框，尝试点击"新建对话"`);
         await this.tryClickNewChat(page);
       }
     } catch (e: any) {
       console.log(`[DeepSeek] 降级导航到 /chat 失败: ${e.message}`);
+    }
+  }
+
+  /** 检测页面是否存在可见的输入框（避免匹配到隐藏的textarea） */
+  private async hasVisibleInput(page: Page): Promise<boolean> {
+    try {
+      // 用 waitForSelector state: 'visible' 检测，超时2秒
+      // 这比 page.$ 更准确，因为 page.$ 不检查可见性
+      await page.waitForSelector(this.inputSelector, { timeout: 2000, state: 'visible' });
+      return true;
+    } catch {
+      return false;
     }
   }
 

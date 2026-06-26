@@ -488,7 +488,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       try {
         const text = await page.evaluate(() => document.body.textContent || '');
         if (text.trim().length > 0) {
-          return { text: text.trim().substring(0, 10000), html: `<div>${text}</div>` };
+          // 不截断，保留完整内容（之前 substring(0, 10000) 导致豆包内容始终是10000）
+          return { text: text.trim(), html: `<div>${text}</div>` };
         }
       } catch {}
     }
