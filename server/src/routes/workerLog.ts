@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { insertWorkerLog, getWorkerLogs, getQueuePressure } from '../repository';
+import { insertWorkerLog, insertWorkerLogs, getWorkerLogs, getQueuePressure } from '../repository';
 
 const router = Router();
 
@@ -31,6 +31,29 @@ router.post('/report', internalAuth, async (req, res) => {
       message: String(message).substring(0, 2000),
     });
     res.json({ code: 200, message: 'ok' });
+  } catch (e: any) {
+    res.json({ code: 500, message: e.message });
+  }
+});
+
+// Worker 批量上报日志（内部调用，需要密钥）
+// 单次最多200条，用一条 SQL 批量插入，大幅减少高频上报时的请求量和数据库压力
+router.post('/report-batch', internalAuth, async (req, res) => {
+  try {
+    const logs = req.body.logs;
+    if (!Array.isArray(logs) || logs.length === 0) {
+      return res.json({ code: 400, message: '缺少 logs 数组' });
+    }
+    const limited = logs.slice(0, 200).filter((e: any) => e && e.workerId && e.message);
+    if (limited.length > 0) {
+      await insertWorkerLogs(limited.map((e: any) => ({
+        workerId: String(e.workerId),
+        taskId: e.taskId ? Number(e.taskId) : undefined,
+        level: e.level || 'info',
+        message: e.message,
+      })));
+    }
+    res.json({ code: 200, message: 'ok', count: limited.length });
   } catch (e: any) {
     res.json({ code: 500, message: e.message });
   }

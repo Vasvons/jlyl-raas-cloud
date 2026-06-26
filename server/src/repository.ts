@@ -2727,6 +2727,27 @@ export async function insertWorkerLog(params: {
   );
 }
 
+/** 批量插入 worker 日志（单次 SQL，减少高频上报时的数据库压力） */
+export async function insertWorkerLogs(entries: Array<{
+  workerId: string;
+  taskId?: number;
+  level: string;
+  message: string;
+}>): Promise<void> {
+  if (entries.length === 0) return;
+  const values: string[] = [];
+  const args: any[] = [];
+  let idx = 1;
+  for (const e of entries) {
+    values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+    args.push(e.workerId, e.taskId || null, e.level || 'info', String(e.message).substring(0, 2000));
+  }
+  await query(
+    `INSERT INTO worker_log (worker_id, task_id, level, message) VALUES ${values.join(', ')}`,
+    args
+  );
+}
+
 export async function getWorkerLogs(params: {
   taskId?: number;
   limit?: number;

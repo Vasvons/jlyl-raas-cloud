@@ -1,9 +1,23 @@
-feat: 优化关键词配置/任务/监测/用户管理页面并修复任务bug
+fix: 严格对齐 auth helper 脚本修复 DeepSeek 输入框和智谱内容长度问题
 
-- 关键词配置：生成器改一排布局，Tabs分蒸馏/品牌，词库Tabs分页
-- 品牌关键词生成器：A品牌词自动readOnly，B核心词自动获取
-- 任务页面：修复编辑按钮崩溃(dayjs转换)，权重列改并排
-- 任务页面：修复暂停按钮失败(updateTask动态字段)，新增复制按钮
-- 监测页面：去任务数卡片，改名收录记录/收录趋势，隐藏按钮，下载图片
-- 用户管理：Tab分页管理员/客户，不同表单字段
-- 后端：zlgjc表新增keyword_type列，新增任务复制接口
+通过反编译 auth helper 的 .pyc 脚本获取完整查询流程：
+
+DeepSeek（输入框未找到）：
+- auth helper 流程：navigate → wait_for_url → fill → click-class 深度思考 → click-class 智能搜索 → fill → Enter
+- 关键：auth helper 直接 fill ._24fad49 textarea，不需要点击"新建对话"等入口按钮
+- 之前的问题：chatUrl 用根域名，afterNavigate 中尝试点击入口按钮反而干扰了页面
+- 修复：
+  1. 输入框选择器首位改为 ._24fad49 textarea（CSS Module 哈希类名）
+  2. afterNavigate 改为激活"深度思考"和"智能搜索"模式（通过 XPath 点击 span 的父 div）
+  3. 响应选择器改为 .ds-markdown
+  4. 移除之前的降级导航和点击"新建对话"逻辑
+
+智谱AI（内容长度只有3）：
+- auth helper 流程：navigate → click close-btn → click 联网 → click 推理 → fill → Enter → while → text
+- 关键：必须点击"联网"按钮激活联网搜索模式，否则AI不搜索直接返回简短答案
+- 之前的问题：用 CSS selector + evaluate 查找 span，可能匹配不到或点击未生效
+- 修复：
+  1. 关闭弹窗改为 XPath //button[@class="close-btn"]（与 auth helper 完全一致）
+  2. 点击"联网"改为 XPath //span[text()="联网"]（与 auth helper 完全一致）
+  3. 新增点击"推理"按钮（auth helper 中也有这步，is_try=1 可选）
+  4. 检查父元素 class 是否包含 active/selected 避免重复点击取消激活

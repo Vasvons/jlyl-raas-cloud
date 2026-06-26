@@ -33,10 +33,8 @@ async function flush(): Promise<void> {
   if (logBuffer.length === 0) return;
   const batch = logBuffer.splice(0, logBuffer.length);
   try {
-    // 逐条上报（云端接口是单条），但用 Promise.all 并发
-    await Promise.all(batch.map(entry =>
-      axios.post(`${SERVER_URL}/real-collect/logs/report`, entry, { timeout: 5000 }).catch(() => {})
-    ));
+    // 批量上报：单次 HTTP 请求发送所有日志（避免高频时每条日志一个请求压垮云端）
+    await axios.post(`${SERVER_URL}/real-collect/logs/report-batch`, { logs: batch }, { timeout: 5000 }).catch(() => {});
   } catch {
     // 静默忽略
   }
