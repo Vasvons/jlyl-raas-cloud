@@ -236,10 +236,12 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
 
   // ============ 查询总数（包含真实结果 + 生成结果）============
   // 排除末尾的 LIMIT/OFFSET 参数
+  // 同样过滤 raw_content 过短的脏数据（与列表查询保持一致）
   const countArgs = args.slice(0, -2);
+  const realWhereWithContent = realWhereClause + ' AND COALESCE(LENGTH(rcr.raw_content), 0) >= 30';
   const countResult = await query(
     `SELECT COUNT(*) as total FROM (
-       SELECT 1 FROM real_collect_record rcr WHERE ${realWhereClause}
+       SELECT 1 FROM real_collect_record rcr WHERE ${realWhereWithContent}
        UNION ALL
        SELECT 1 FROM keyword_search_rank k WHERE ${genWhereClause}
      ) combined`,
@@ -251,6 +253,11 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
   const listResult = await query(
     `SELECT * FROM (
        -- 真实查询结果（置顶展示）
+       -- url/zlgjc_url 规则：
+       --   1. 优先使用 share_url（支持分享的平台）
+       --   2. share_url 为空但有 static_page_id 时，使用静态页 URL
+       --   3. 两者都为空时返回 NULL，前端不展示"查看详情"跳转链接
+       --     （这避免了"未开始对话界面"被误识别为命中后生成错误跳转链接）
        SELECT
          rcr.id,
          rcr.keyword AS expanded_keyword,
@@ -258,13 +265,21 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
          rcr.platform,
          rcr.user_id,
          rcr.query_time,
-         COALESCE(rcr.share_url, '/api/real-collect/results/' || rcr.id || '/page') AS url,
+         COALESCE(rcr.share_url,
+           CASE WHEN rcr.static_page_id IS NOT NULL
+                THEN '/api/real-collect/results/' || rcr.id || '/page'
+                ELSE NULL END) AS url,
          rcr.create_time,
-         COALESCE(rcr.share_url, '/api/real-collect/results/' || rcr.id || '/page') AS zlgjc_url,
+         COALESCE(rcr.share_url,
+           CASE WHEN rcr.static_page_id IS NOT NULL
+                THEN '/api/real-collect/results/' || rcr.id || '/page'
+                ELSE NULL END) AS zlgjc_url,
          CASE WHEN rcr.has_contact THEN 1 ELSE 0 END AS has_lxfs,
          'real' AS source
        FROM real_collect_record rcr
        WHERE ${realWhereClause}
+         -- 过滤无效记录：raw_content 为空或过短（<30字符）的记录是 extractContent 兜底失败导致的脏数据
+         AND COALESCE(LENGTH(rcr.raw_content), 0) >= 30
 
        UNION ALL
 

@@ -14,7 +14,11 @@ import { BasePlatformAdapter } from './baseAdapter';
  * 8. text → .answer-content .flex1
  *
  * 关键：必须点击"联网"按钮，否则默认非联网模式，AI不搜索直接返回简短答案
- * 之前内容长度只有3/12个字符的原因就是没激活联网模式
+ * 之前内容长度只有3/12个字符的原因是没激活联网模式
+ *
+ * 重要：覆盖了 extractContent 和 waitForResponse 方法
+ * - extractContent: 使用更精确的选择器，避免匹配到侧边栏等小元素
+ * - waitForResponse: 使用 XPath 定位停止按钮，与 auth helper 一致
  */
 export class ZhipuAdapter extends BasePlatformAdapter {
   platformName = '智谱AI';
@@ -29,6 +33,99 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   protected stopButtonSelector = 'div.enter.is-main-chat.searching, [class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
 
+  /** 覆盖 waitForResponse：使用 XPath 精确匹配停止按钮，与 auth helper 一致 */
+  async waitForResponse(page: Page): Promise<void> {
+    // auth helper 用 while 循环检查 //div[@class="enter is-main-chat searching"] 是否存在
+    // 存在表示正在搜索，消失表示搜索完成
+    const stopButtonXPath = '//div[contains(@class, "enter") and contains(@class, "searching")]';
+
+    try {
+      // 1. 等待停止按钮出现（表示 AI 开始搜索）
+      await page.waitForSelector(`xpath=${stopButtonXPath}`, { timeout: 15000 });
+      console.log('[智谱AI] 检测到搜索开始，等待完成...');
+
+      // 2. 等待停止按钮消失（表示搜索完成）
+      // 最多等待 180 秒（联网搜索+推理模式可能较慢）
+      const maxWait = 180000;
+      const startTime = Date.now();
+      while (Date.now() - startTime < maxWait) {
+        const stillSearching = await page.$(`xpath=${stopButtonXPath}`).catch(() => null);
+        if (!stillSearching) {
+          console.log('[智谱AI] 搜索已完成');
+          break;
+        }
+        await page.waitForTimeout(2000);
+      }
+
+      // 3. 额外等待 3 秒确保最终内容渲染完成
+      await page.waitForTimeout(3000);
+    } catch (e: any) {
+      console.log(`[智谱AI] 停止按钮等待超时，额外等待15秒: ${e.message}`);
+      await page.waitForTimeout(15000);
+    }
+  }
+
+  /** 覆盖 extractContent：使用更精确的选择器，避免匹配到侧边栏等小元素
+   * 关键：取最长的匹配元素（AI 回答通常是最长的内容块） */
+  async extractContent(page: Page): Promise<{ text: string; html: string }> {
+    // 先滚动到页面底部，确保 AI 回答完整渲染
+    await this.scrollToBottom(page);
+
+    // 按优先级尝试多个选择器
+    const selectors = [
+      '.answer-content .flex1',           // auth helper 的选择器
+      '.answer-content .markdown-body',   // markdown 渲染容器
+      '[class*="answer-content"] [class*="markdown"]',
+      '[class*="message-content"] [class*="markdown"]',
+      '.markdown-body:not([class*="sidebar"]):not([class*="menu"])',
+    ];
+
+    let bestText = '';
+    let bestHtml = '';
+
+    for (const selector of selectors) {
+      try {
+        const elements = await page.$$(selector);
+        if (elements.length === 0) continue;
+
+        // 取所有匹配元素中最长的（避免匹配到侧边栏的小元素）
+        for (const el of elements) {
+          const text = (await el.textContent()) || '';
+          const html = (await el.innerHTML()) || '';
+          if (text.trim().length > bestText.trim().length) {
+            bestText = text;
+            bestHtml = html;
+          }
+        }
+      } catch {
+        // 继续
+      }
+    }
+
+    if (bestText.trim().length > 0) {
+      console.log(`[智谱AI] 提取内容成功: ${bestText.trim().length} 字符`);
+      return { text: bestText.trim(), html: bestHtml };
+    }
+
+    // 兜底：用 XPath 查找最后一个 AI 回答容器
+    try {
+      const answerEl = await page.$('xpath=//div[contains(@class, "answer-content")][last()]').catch(() => null);
+      if (answerEl) {
+        const text = (await answerEl.textContent()) || '';
+        const html = (await answerEl.innerHTML()) || '';
+        if (text.trim().length > 0) {
+          console.log(`[智谱AI] XPath 兜底提取成功: ${text.trim().length} 字符`);
+          return { text: text.trim(), html };
+        }
+      }
+    } catch {
+      // 继续
+    }
+
+    console.log('[智谱AI] 未能提取到内容');
+    return { text: '', html: '' };
+  }
+
   /** 智谱AI导航后处理：
    *  1. 关闭可能的弹窗（"我知道了"按钮等）
    *  2. 点击"联网"按钮，确保AI会联网搜索（否则返回简短答案）
@@ -38,7 +135,6 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     await page.waitForTimeout(2000);
 
     // 步骤1: 关闭弹窗（参考 auth helper 的 //button[@class="close-btn"]）
-    // 用 XPath 精确匹配（之前用 CSS selector 可能匹配不到）
     try {
       const closeBtn = await page.$('xpath=//button[@class="close-btn"]').catch(() => null);
       if (closeBtn) {
@@ -53,17 +149,14 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     // 步骤2: 点击"联网"按钮（参考 auth helper 的 //span[text()="联网"]）
     // 关键：必须点击"联网"激活联网搜索模式，否则AI不搜索直接返回简短答案
     try {
-      // 用 XPath 精确匹配 span 文本（与 auth helper 完全一致）
       const lianwangBtn = await page.$('xpath=//span[text()="联网"]').catch(() => null);
       if (lianwangBtn) {
-        // 检查父元素是否已激活（避免重复点击取消激活）
         const isAlreadyActive = await page.evaluate(() => {
           const span = document.evaluate(
             '//span[text()="联网"]', document, null,
             XPathResult.FIRST_ORDERED_NODE_TYPE, null
           ).singleNodeValue as HTMLElement | null;
           if (!span) return false;
-          // 检查父级元素的 class 是否包含 active/selected 等标识
           const parent = span.parentElement;
           if (!parent) return false;
           const cls = parent.className || '';
@@ -85,11 +178,9 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     }
 
     // 步骤3: 点击"推理"按钮（参考 auth helper 的 //span[text()="推理"]，is_try=1 可选）
-    // 推理模式可能不存在，忽略错误
     try {
       const tuiliBtn = await page.$('xpath=//span[text()="推理"]').catch(() => null);
       if (tuiliBtn) {
-        // 检查是否已激活
         const isAlreadyActive = await page.evaluate(() => {
           const span = document.evaluate(
             '//span[text()="推理"]', document, null,
@@ -114,7 +205,6 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
-    // 智谱清言分享链接格式：https://chatglm.cn/share/{8位短码}
     const shareBtnSelectors = [
       '[class*="share"]', '[class*="Share"]',
       'button:has-text("分享")', 'button:has-text("Share")',

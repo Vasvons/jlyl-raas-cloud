@@ -595,6 +595,58 @@ export async function migrate() {
     // 仅对蒸馏词库（keyword_type=0）生效
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS exclude_prefixes TEXT DEFAULT NULL`);
 
+    // ============ 一次性清理：删除 GEO 搜索详情中的脏数据 ============
+    // 问题：baseAdapter 的 extractContent 兜底逻辑曾用 document.body.textContent 拿整页文本，
+    // 导致营销页/导航内容被误识别为 brand_matched=true，生成错误的"查看详情"跳转链接。
+    // 清理策略：
+    //   1. raw_content 为空或过短（<30字符）的记录（明显无效）
+    //   2. share_url 和 static_page_id 都为空的记录（无法跳转到有效详情页）
+    // 用 migrations_cleanup_log 表记录已执行的清理，避免重复执行
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS migrations_cleanup_log (
+        id SERIAL PRIMARY KEY,
+        cleanup_name TEXT UNIQUE NOT NULL,
+        executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        rows_affected INTEGER
+      )
+    `);
+
+    // 检查是否已执行过该清理
+    const cleanupCheck = await client.query(
+      `SELECT 1 FROM migrations_cleanup_log WHERE cleanup_name = 'cleanup_invalid_real_collect_records_v1'`
+    );
+    if (cleanupCheck.rows.length === 0) {
+      console.log('[Migrate] 执行一次性清理: 删除无效的 real_collect_record 记录...');
+
+      // 先统计要删除的记录数
+      const statsResult = await client.query(`
+        SELECT
+          COUNT(*) as total_to_delete,
+          COUNT(*) FILTER (WHERE COALESCE(LENGTH(raw_content), 0) < 30) as short_content,
+          COUNT(*) FILTER (WHERE share_url IS NULL AND static_page_id IS NULL) as no_link
+        FROM real_collect_record
+        WHERE COALESCE(LENGTH(raw_content), 0) < 30
+           OR (share_url IS NULL AND static_page_id IS NULL)
+      `);
+      const stats = statsResult.rows[0];
+      console.log(`[Migrate] 清理统计: 总计删除 ${stats.total_to_delete} 条 (短内容: ${stats.short_content}, 无链接: ${stats.no_link})`);
+
+      // 执行删除（CASCADE 会自动删除关联的 static_page）
+      const deleteResult = await client.query(`
+        DELETE FROM real_collect_record
+        WHERE COALESCE(LENGTH(raw_content), 0) < 30
+           OR (share_url IS NULL AND static_page_id IS NULL)
+      `);
+      const rowsAffected = deleteResult.rowCount || 0;
+      console.log(`[Migrate] 清理完成: 实际删除 ${rowsAffected} 条记录`);
+
+      // 记录清理已执行
+      await client.query(
+        `INSERT INTO migrations_cleanup_log (cleanup_name, rows_affected) VALUES ('cleanup_invalid_real_collect_records_v1', $1)`,
+        [rowsAffected]
+      );
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

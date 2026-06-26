@@ -70,7 +70,15 @@ export interface ProcessResult {
   recordId: number;
 }
 
-export async function processWorkerResult(result: WorkerResult): Promise<ProcessResult> {
+export async function processWorkerResult(result: WorkerResult): Promise<ProcessResult | null> {
+  // 过滤无效内容：空内容或过短内容（<30字符）说明查询失败或 AI 未回答
+  // 这些内容如果保存会被误识别为 brand_matched=true（营销页中可能包含品牌词）
+  // 返回 null 让调用方跳过保存
+  if (!result.content || result.content.trim().length < 30) {
+    console.log(`[resultProcessor] 跳过无效内容: ${result.platform}/${result.keyword.substring(0, 30)} 内容长度=${result.content?.length || 0}`);
+    return null;
+  }
+
   // 获取用户品牌词
   const brandKeywords = await getBrandKeywords(result.userId);
 

@@ -32,6 +32,21 @@ router.get('/:id/page', async (req, res) => {
 router.post('/worker/report', async (req, res) => {
   try {
     const processResult = await processWorkerResult(req.body);
+    // 内容无效时 processResult 为 null（如内容过短、AI 未回答等）
+    if (!processResult) {
+      res.json({
+        code: 200,
+        message: 'ok',
+        data: {
+          brandMatched: false,
+          matchedBrands: [],
+          hasContact: false,
+          recordId: 0,
+          skipped: true,
+        }
+      });
+      return;
+    }
     // 返回品牌识别结果，让 Worker 端日志能区分是否识别到品牌
     res.json({
       code: 200,

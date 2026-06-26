@@ -484,14 +484,11 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       }
     } catch (e) {
       console.error(`[${this.platformName}] 提取内容失败:`, (e as Error).message);
-      // 兜底：尝试获取页面所有文本
-      try {
-        const text = await page.evaluate(() => document.body.textContent || '');
-        if (text.trim().length > 0) {
-          // 不截断，保留完整内容（之前 substring(0, 10000) 导致豆包内容始终是10000）
-          return { text: text.trim(), html: `<div>${text}</div>` };
-        }
-      } catch {}
+      // 不再兜底拿 document.body.textContent：整页文本会包含侧边栏/导航/页脚等无关内容，
+      // 这些内容可能恰好包含品牌词，导致 recognizeContent 误识别为 brand_matched=true，
+      // 进而生成"假命中"记录污染 GEO 报告的搜索详情。
+      // 改为返回空内容，让 resultProcessor 跳过保存 record。
+      return { text: '', html: '' };
     }
     return { text: '', html: '' };
   }
