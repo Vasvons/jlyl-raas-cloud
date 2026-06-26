@@ -8,12 +8,27 @@ import {
   getRealCollectTaskById,
   getTaskShardProgress,
   resetTaskCurrentRound,
+  getExcludePrefixOptions,
 } from '../repository';
 import { enqueueTaskNow } from '../services/realCollect/scheduler';
 
 const router = Router();
 
 router.use(authMiddleware, adminMiddleware);
+
+// 获取蒸馏词库可用的前缀屏蔽词选项（来源：kw_config 的 A 组词）
+router.get('/exclude-prefix-options', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    if (!userId) {
+      return res.json({ code: 400, message: '缺少 userId' });
+    }
+    const options = await getExcludePrefixOptions(userId);
+    res.json({ code: 200, data: options });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
 
 router.get('/', async (req, res) => {
   try {
