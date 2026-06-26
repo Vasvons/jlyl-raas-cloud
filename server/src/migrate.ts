@@ -591,6 +591,9 @@ export async function migrate() {
     // ============ real_collect_task 轮次号字段 ============
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS round_no INTEGER DEFAULT 0`);
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS round_start_time TIMESTAMP`);
+    // 前缀词屏蔽：存储 JSON 数组（如 ["公司","代办"]），查询时跳过以这些前缀开头的关键词
+    // 仅对蒸馏词库（keyword_type=0）生效
+    await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS exclude_prefixes TEXT DEFAULT NULL`);
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {

@@ -1412,10 +1412,32 @@ export async function startNewRound(
   if (uniqueKeywords.length < keywords.length) {
     console.log(`[RealCollect] 任务 ${taskId} 关键词去重: ${keywords.length} → ${uniqueKeywords.length}（删除 ${keywords.length - uniqueKeywords.length} 条重复）`);
   }
+
+  // 前缀词屏蔽：读取任务配置的 exclude_prefixes，过滤掉以这些前缀开头的关键词
+  // 仅对蒸馏词库（keyword_type=0）生效，用于跳过不需要查询的关键词
+  let filteredKeywords = uniqueKeywords;
+  const taskConfig = await query(`SELECT exclude_prefixes, keyword_type FROM real_collect_task WHERE id = $1`, [taskId]);
+  const excludePrefixesJson = taskConfig.rows[0]?.exclude_prefixes;
+  const taskKeywordType = taskConfig.rows[0]?.keyword_type;
+  if (excludePrefixesJson && taskKeywordType === 0) {
+    let prefixes: string[] = [];
+    try {
+      prefixes = JSON.parse(excludePrefixesJson).filter((p: string) => p && p.trim());
+    } catch {
+      prefixes = [];
+    }
+    if (prefixes.length > 0) {
+      filteredKeywords = uniqueKeywords.filter(kw => !prefixes.some(p => kw.startsWith(p)));
+      if (filteredKeywords.length < uniqueKeywords.length) {
+        console.log(`[RealCollect] 任务 ${taskId} 前缀屏蔽: ${uniqueKeywords.length} → ${filteredKeywords.length}（屏蔽前缀: [${prefixes.join(', ')}]，删除 ${uniqueKeywords.length - filteredKeywords.length} 条）`);
+      }
+    }
+  }
+
   const size = Math.max(1, shardSize);
   const shards: string[][] = [];
-  for (let i = 0; i < uniqueKeywords.length; i += size) {
-    shards.push(uniqueKeywords.slice(i, i + size));
+  for (let i = 0; i < filteredKeywords.length; i += size) {
+    shards.push(filteredKeywords.slice(i, i + size));
   }
 
   let firstQueueId = 0;
@@ -1437,7 +1459,7 @@ export async function startNewRound(
 export async function getTasksNeedingNewRound(): Promise<any[]> {
   // 找出 active 任务中，当前没有 pending 分片的
   const result = await query(
-    `SELECT t.id, t.user_id, t.task_name, t.keyword_type, t.platforms, t.shard_size, t.round_no
+    `SELECT t.id, t.user_id, t.task_name, t.keyword_type, t.platforms, t.shard_size, t.round_no, t.exclude_prefixes
      FROM real_collect_task t
      WHERE t.status = 'active'
        AND NOT EXISTS (
@@ -2143,13 +2165,18 @@ export async function createRealCollectTask(params: {
   platforms: string[];
   cronExpr?: string;
   shardSize?: number;
+  excludePrefixes?: string[];
 }): Promise<number> {
   // cronExpr 可选：循环模式下不传，默认 '0 0 * * *' 保持兼容
   const cronExpr = params.cronExpr || '0 0 * * *';
+  // excludePrefixes 存储为 JSON 字符串（仅蒸馏词库有效）
+  const excludePrefixesJson = (params.keywordType === 0 && params.excludePrefixes && params.excludePrefixes.length > 0)
+    ? JSON.stringify(params.excludePrefixes.filter(p => p && p.trim()))
+    : null;
   const result = await query(
-    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status, shard_size)
-     VALUES ($1, $2, $3, $4, $5, 'active', $6) RETURNING id`,
-    [params.userId, params.taskName, params.keywordType, params.platforms, cronExpr, params.shardSize || 50]
+    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status, shard_size, exclude_prefixes)
+     VALUES ($1, $2, $3, $4, $5, 'active', $6, $7) RETURNING id`,
+    [params.userId, params.taskName, params.keywordType, params.platforms, cronExpr, params.shardSize || 50, excludePrefixesJson]
   );
   return result.rows[0].id;
 }
@@ -2162,6 +2189,7 @@ export async function updateRealCollectTask(id: number, params: {
   cronExpr?: string;
   status?: string;
   shardSize?: number;
+  excludePrefixes?: string[];
 }): Promise<void> {
   const sets: string[] = [];
   const values: any[] = [id];
@@ -2172,6 +2200,14 @@ export async function updateRealCollectTask(id: number, params: {
   if (params.cronExpr !== undefined) { sets.push(`cron_expr = $${paramIdx++}`); values.push(params.cronExpr); }
   if (params.status !== undefined) { sets.push(`status = $${paramIdx++}`); values.push(params.status); }
   if (params.shardSize !== undefined) { sets.push(`shard_size = $${paramIdx++}`); values.push(params.shardSize); }
+  if (params.excludePrefixes !== undefined) {
+    // 仅蒸馏词库（keyword_type=0）保存前缀屏蔽，品牌词库清空
+    const kp = params.keywordType !== undefined ? params.keywordType : 0;
+    const filtered = params.excludePrefixes.filter(p => p && p.trim());
+    const json = (kp === 0 && filtered.length > 0) ? JSON.stringify(filtered) : null;
+    sets.push(`exclude_prefixes = $${paramIdx++}`);
+    values.push(json);
+  }
   sets.push(`update_time = CURRENT_TIMESTAMP`);
   await query(`UPDATE real_collect_task SET ${sets.join(', ')} WHERE id = $1`, values);
 }

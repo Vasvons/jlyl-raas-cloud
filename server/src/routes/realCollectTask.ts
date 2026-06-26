@@ -39,12 +39,12 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { userId, taskName, keywordType, platforms, cronExpr, shardSize } = req.body;
+    const { userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes } = req.body;
     // cronExpr 可选：循环模式下不传 cronExpr，任务24小时持续执行
     if (!userId || !taskName || keywordType === undefined || !platforms) {
       return res.status(400).json({ code: 400, message: '缺少必要参数' });
     }
-    const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize });
+    const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes });
     res.json({ code: 200, message: '创建成功', data: { id } });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -53,8 +53,8 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const { taskName, keywordType, platforms, cronExpr, shardSize } = req.body;
-    await updateRealCollectTask(parseInt(req.params.id), { taskName, keywordType, platforms, cronExpr, shardSize });
+    const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes } = req.body;
+    await updateRealCollectTask(parseInt(req.params.id), { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes });
     res.json({ code: 200, message: '更新成功' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
