@@ -260,53 +260,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
     await randomDelay(500, 1500);
 
-    // 提交查询
-    // 关键修复：用 page.keyboard.press('Enter') 而非 page.press(selector, 'Enter')
-    // page.press(selector, 'Enter') 在某些平台（如豆包、元宝）不能触发发送，
-    // 因为 fill 后焦点可能不在目标元素上，或 contenteditable 元素的 Enter 行为不同。
-    // page.keyboard.press('Enter') 直接对当前焦点元素按键，与 DeepSeek 适配器一致。
-    // 备用：Enter 后检查是否出现 AI 回答容器，若未出现则尝试点击发送按钮。
-    const urlBeforeSubmit = page.url();
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(2000);
-
-    // 检查 Enter 是否成功发送查询（URL 变化或出现回答容器）
-    const urlAfterSubmit = page.url();
-    let querySent = urlAfterSubmit !== urlBeforeSubmit;
-    if (!querySent && this.responseSelector) {
-      // 检查是否出现了 AI 回答容器（即使内容还没生成）
-      try {
-        const hasResponseContainer = await page.$(this.responseSelector).catch(() => null);
-        if (hasResponseContainer) querySent = true;
-      } catch {}
-    }
-
-    if (!querySent) {
-      // Enter 可能没发送成功，尝试点击发送按钮
-      console.log(`[${this.platformName}] Enter 未触发查询发送 (URL未变化=${urlBeforeSubmit}→${urlAfterSubmit})，尝试点击发送按钮`);
-      const sendBtnSelectors = [
-        'button[data-testid*="send"]', 'button[aria-label*="发送"]', 'button[aria-label*="Send"]',
-        'button:has-text("发送")', '[class*="send-btn"]', '[class*="sendBtn"]',
-        '[class*="submit"]', '[data-testid*="send"]',
-        // 豆包: div.send-btn-wrapper button
-        '.send-btn-wrapper button', 'div[class*="send-btn"] button',
-      ];
-      for (const btnSel of sendBtnSelectors) {
-        try {
-          const btn = await page.$(btnSel);
-          if (btn) {
-            await btn.click({ timeout: 2000 }).catch(() => {});
-            console.log(`[${this.platformName}] 点击发送按钮成功: ${btnSel}`);
-            querySent = true;
-            break;
-          }
-        } catch {}
-      }
-    }
-
-    if (!querySent) {
-      console.log(`[${this.platformName}] 警告: 无法确认查询是否发送，继续等待 AI 回答`);
-    }
+    // 提交
+    await page.press(activeSelector, 'Enter');
 
     // 等待 AI 回答完成
     await this.waitForResponse(page);
@@ -480,30 +435,32 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   }
 
   async extractContent(page: Page): Promise<{ text: string; html: string }> {
-    // 滚动到底部触发懒加载，确保 AI 回答完整渲染
+    // 滚动到底部触发懒加载，再滚动回顶部（确保所有内容渲染完成）
     await this.scrollToBottom(page);
 
     if (!this.responseSelector) {
-      // 无选择器时，尝试获取页面上最长的可见文本块
+      // 无选择器时，尝试获取页面上最后一段长文本
+      // 优先查找常见的 AI 回答容器，避免获取到侧边栏/导航等无关内容
       const text = await page.evaluate(() => {
+        // 1. 优先查找常见的 AI 回答容器
         const answerSelectors = [
           '[class*="answer"]', '[class*="response"]', '[class*="message"]',
-          '[class*="chat-content"]', '[class*="bubble"]', '[class*="content"]',
-          'article', 'main'
+          '[class*="chat-content"]', '[class*="bubble"]', '[class*="content"]'
         ];
-        let bestText = '';
         for (const sel of answerSelectors) {
           const els = Array.from(document.querySelectorAll(sel));
-          for (const el of els) {
-            const t = ((el as HTMLElement).innerText || '').trim();
-            if (t.length > bestText.length) bestText = t;
+          if (els.length > 0) {
+            // 取最后一个（最新的回答）
+            const lastEl = els[els.length - 1] as HTMLElement;
+            const t = (lastEl.textContent || '').trim();
+            if (t.length > 50) return t;
           }
-          if (bestText.length > 50) return bestText;
         }
+        // 2. 兜底：获取页面上最长的 div 文本
         const elements = Array.from(document.querySelectorAll('div, section, article'));
         let lastLongText = '';
         for (const el of elements) {
-          const t = ((el as HTMLElement).innerText || '').trim();
+          const t = (el.textContent || '').trim();
           if (t.length > lastLongText.length) lastLongText = t;
         }
         return lastLongText;
@@ -512,81 +469,39 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
 
     try {
-      // 轮询等待 AI 回答内容出现并稳定
-      // 策略：page.$$(responseSelector) 遍历所有匹配元素取最长 innerText
-      //       8秒稳定检测（连续4次长度不变）确保 AI 回答完整
-      //       scrollToBottom 不滚回顶部（避免 innerText 取不到视口外内容）
-      let bestText = '';
-      let bestHtml = '';
-      let prevLen = 0;
-      let stableCount = 0;
-      let hasMeaningfulContent = false;
-
-      // 诊断：首轮输出 responseSelector 帮助排查
-      console.log(`[${this.platformName}] extractContent 开始, responseSelector=${this.responseSelector.substring(0, 100)}`);
-
-      for (let i = 0; i < 30; i++) {
-        await this.scrollToBottom(page);
-
-        // 用 page.$$() 遍历所有匹配元素，取最长的 innerText
-        let currentText = '';
-        let currentHtml = '';
-        let elementCount = 0;
-        try {
-          const elements = await page.$$(this.responseSelector);
-          elementCount = elements.length;
-          for (const el of elements) {
-            const text = await el.innerText().catch(() => '') || '';
-            if (text.trim().length > currentText.trim().length) {
-              currentText = text;
-              currentHtml = await el.innerHTML().catch(() => '') || '';
-            }
-          }
-        } catch (e) {
-          // page.$$() 可能因选择器语法错误抛异常，记录但继续
-          if (i === 0) {
-            console.log(`[${this.platformName}] page.$$() 异常: ${(e as Error).message}`);
-          }
+      // 等待回答选择器出现
+      await page.waitForSelector(this.responseSelector, { timeout: 30000 });
+      // 再次滚动确保完整渲染
+      await this.scrollToBottom(page);
+      // 取最后一个匹配的元素（最新的回答）
+      const elements = await page.$$(this.responseSelector);
+      const lastEl = elements[elements.length - 1];
+      if (lastEl) {
+        const text = (await lastEl.textContent()) || '';
+        const html = (await lastEl.innerHTML()) || '';
+        if (text.trim().length > 0) {
+          console.log(`[${this.platformName}] 提取内容成功: ${text.trim().length} 字符`);
+          return { text: text.trim(), html };
         }
-
-        const currentLen = currentText.trim().length;
-        if (currentLen > bestText.trim().length) {
-          bestText = currentText;
-          bestHtml = currentHtml;
-        }
-
-        // 诊断日志：前5轮和每10轮输出详细信息
-        if (i < 5 || i % 10 === 9) {
-          console.log(`[${this.platformName}] 轮询#${i + 1}: 匹配${elementCount}个元素, 当前最长=${currentLen}字符, 历史最长=${bestText.trim().length}字符`);
-        }
-
-        if (currentLen >= 30) {
-          hasMeaningfulContent = true;
-          if (currentLen === prevLen) {
-            stableCount++;
-            if (stableCount >= 4) {
-              console.log(`[${this.platformName}] 提取内容成功: ${bestText.trim().length} 字符 (轮询第${i + 1}轮稳定)`);
-              return { text: bestText.trim(), html: bestHtml };
-            }
-          } else {
-            stableCount = 0;
-            prevLen = currentLen;
-          }
-        }
-
-        await page.waitForTimeout(2000);
       }
-
-      // 轮询结束，如果有有意义的内容就返回
-      if (hasMeaningfulContent && bestText.trim().length >= 30) {
-        console.log(`[${this.platformName}] 提取内容成功(轮询超时): ${bestText.trim().length} 字符`);
-        return { text: bestText.trim(), html: bestHtml };
-      }
-
-      console.log(`[${this.platformName}] 提取内容失败: 轮询60秒后仍无有意义内容 (最长=${bestText.trim().length}字符, responseSelector=${this.responseSelector.substring(0, 80)})`);
+      // 选择器匹配到元素但内容为空，走兜底
+      console.log(`[${this.platformName}] responseSelector 匹配到 ${elements.length} 个元素但内容为空，走兜底`);
     } catch (e) {
-      console.error(`[${this.platformName}] 提取内容失败:`, (e as Error).message);
-      return { text: '', html: '' };
+      console.log(`[${this.platformName}] responseSelector 等待超时: ${(e as Error).message}，走兜底`);
+    }
+
+    // 兜底：尝试获取页面所有文本（这是最初能正常工作的逻辑）
+    // 当 responseSelector 匹配不到或内容为空时，用 document.body.textContent
+    // 虽然会包含侧边栏等无关内容，但能确保拿到 AI 回答
+    // 截断到 10000 字符避免过长
+    try {
+      const text = await page.evaluate(() => document.body.textContent || '');
+      if (text.trim().length > 0) {
+        console.log(`[${this.platformName}] 兜底提取内容: ${text.trim().length} 字符 (截断到10000)`);
+        return { text: text.trim().substring(0, 10000), html: `<div>${text}</div>` };
+      }
+    } catch (e) {
+      console.error(`[${this.platformName}] 兜底提取失败:`, (e as Error).message);
     }
     return { text: '', html: '' };
   }
@@ -596,33 +511,23 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    */
   protected async scrollToBottom(page: Page): Promise<void> {
     try {
-      // 滚动聊天容器到底部（触发懒加载，确保 AI 回答完整渲染）
-      // 注意：不要滚回顶部！innerText 只返回视口内可见文本，
-      // 滚回顶部会导致 AI 回答移出视口，innerText 只取到部分内容（几百字符）。
-      await page.evaluate(() => {
-        // 1. 尝试滚动所有可能的聊天容器到底部
-        const scrollContainers: HTMLElement[] = [];
-        const selLists = [
-          '[class*="chat"]', '[class*="message"]', '[class*="conversation"]',
-          '[class*="dialog"]', 'main',
-        ];
-        for (const s of selLists) {
-          const els = document.querySelectorAll(s);
-          for (let i = 0; i < els.length; i++) {
-            const el = els[i] as HTMLElement;
-            if (el.scrollHeight > el.clientHeight) scrollContainers.push(el);
-          }
-        }
-
-        // 去重
-        const containerSet = new Set<HTMLElement>(scrollContainers);
-        containerSet.forEach(container => {
-          container.scrollTop = container.scrollHeight;
+      await page.evaluate(async () => {
+        await new Promise<void>((resolve) => {
+          let totalHeight = 0;
+          const distance = 200;
+          const timer = setInterval(() => {
+            const scrollHeight = document.body.scrollHeight;
+            window.scrollBy(0, distance);
+            totalHeight += distance;
+            if (totalHeight >= scrollHeight || totalHeight > 10000) {
+              clearInterval(timer);
+              resolve();
+            }
+          }, 100);
         });
-
-        // 2. 同时滚动 window 到底部（部分平台用 body 滚动）
-        window.scrollTo(0, document.body.scrollHeight);
-      }).catch(() => {});
+      });
+      // 滚动回顶部
+      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     } catch {
       // 滚动失败不影响主流程
     }

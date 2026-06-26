@@ -65,9 +65,66 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     }
   }
 
-  /** extractContent 不再覆盖，走 baseAdapter 的轮询+稳定检测+通用兜底
-   * 之前的覆盖实现稳定检测阈值太低（4秒），且选择器优先级遍历可能匹配到小元素。
-   * baseAdapter 的轮询逻辑（8秒稳定+通用兜底）更健壮。 */
+  /** 覆盖 extractContent：使用更精确的选择器，避免匹配到侧边栏等小元素
+   * 关键：取最长的匹配元素（AI 回答通常是最长的内容块） */
+  async extractContent(page: Page): Promise<{ text: string; html: string }> {
+    // 先滚动到页面底部，确保 AI 回答完整渲染
+    await this.scrollToBottom(page);
+
+    // 按优先级尝试多个选择器
+    const selectors = [
+      '.answer-content .flex1',           // auth helper 的选择器
+      '.answer-content .markdown-body',   // markdown 渲染容器
+      '[class*="answer-content"] [class*="markdown"]',
+      '[class*="message-content"] [class*="markdown"]',
+      '.markdown-body:not([class*="sidebar"]):not([class*="menu"])',
+    ];
+
+    let bestText = '';
+    let bestHtml = '';
+
+    for (const selector of selectors) {
+      try {
+        const elements = await page.$$(selector);
+        if (elements.length === 0) continue;
+
+        // 取所有匹配元素中最长的（避免匹配到侧边栏的小元素）
+        for (const el of elements) {
+          const text = (await el.textContent()) || '';
+          const html = (await el.innerHTML()) || '';
+          if (text.trim().length > bestText.trim().length) {
+            bestText = text;
+            bestHtml = html;
+          }
+        }
+      } catch {
+        // 继续
+      }
+    }
+
+    if (bestText.trim().length > 0) {
+      console.log(`[智谱AI] 提取内容成功: ${bestText.trim().length} 字符`);
+      return { text: bestText.trim(), html: bestHtml };
+    }
+
+    // 兜底：用 XPath 查找最后一个 AI 回答容器
+    try {
+      const answerEl = await page.$('xpath=//div[contains(@class, "answer-content")][last()]').catch(() => null);
+      if (answerEl) {
+        const text = (await answerEl.textContent()) || '';
+        const html = (await answerEl.innerHTML()) || '';
+        if (text.trim().length > 0) {
+          console.log(`[智谱AI] XPath 兜底提取成功: ${text.trim().length} 字符`);
+          return { text: text.trim(), html };
+        }
+      }
+    } catch {
+      // 继续
+    }
+
+    console.log('[智谱AI] 未能提取到内容');
+    return { text: '', html: '' };
+  }
 
   /** 智谱AI导航后处理：
    *  1. 关闭可能的弹窗（"我知道了"按钮等）
@@ -91,7 +148,6 @@ export class ZhipuAdapter extends BasePlatformAdapter {
 
     // 步骤2: 点击"联网"按钮（参考 auth helper 的 //span[text()="联网"]）
     // 关键：必须点击"联网"激活联网搜索模式，否则AI不搜索直接返回简短答案
-    // 之前内容长度只有3/12个字符的原因就是没激活联网模式
     try {
       const lianwangBtn = await page.$('xpath=//span[text()="联网"]').catch(() => null);
       if (lianwangBtn) {
@@ -110,40 +166,12 @@ export class ZhipuAdapter extends BasePlatformAdapter {
         if (!isAlreadyActive) {
           await lianwangBtn.click({ timeout: 2000 }).catch(() => {});
           await page.waitForTimeout(1000);
-          // 点击后重新检测是否真的激活了
-          const isNowActive = await page.evaluate(() => {
-            const span = document.evaluate(
-              '//span[text()="联网"]', document, null,
-              XPathResult.FIRST_ORDERED_NODE_TYPE, null
-            ).singleNodeValue as HTMLElement | null;
-            if (!span) return false;
-            const parent = span.parentElement;
-            if (!parent) return false;
-            const cls = parent.className || '';
-            return cls.includes('active') || cls.includes('selected') || cls.includes('checked');
-          }).catch(() => false);
-          if (isNowActive) {
-            console.log('[智谱AI] 已点击"联网"按钮并确认激活成功');
-          } else {
-            console.log('[智谱AI] 点击"联网"按钮后未检测到激活状态，可能需要二次点击');
-            // 二次点击尝试
-            await lianwangBtn.click({ timeout: 2000 }).catch(() => {});
-            await page.waitForTimeout(1000);
-            console.log('[智谱AI] 已二次点击"联网"按钮');
-          }
+          console.log('[智谱AI] 已点击"联网"按钮，激活联网搜索模式');
         } else {
           console.log('[智谱AI] "联网"按钮已激活，无需重复点击');
         }
       } else {
-        // 尝试更宽泛的查找：可能"联网"文字被包裹在其他元素中
-        const altBtn = await page.$('xpath=//*[contains(text(),"联网") and not(contains(text(),"断开"))]').catch(() => null);
-        if (altBtn) {
-          console.log('[智谱AI] 主选择器未找到"联网"按钮，尝试宽泛查找并点击');
-          await altBtn.click({ timeout: 2000 }).catch(() => {});
-          await page.waitForTimeout(1000);
-        } else {
-          console.log('[智谱AI] 警告: 未找到"联网"按钮，AI可能不会联网搜索，将返回简短答案');
-        }
+        console.log('[智谱AI] 未找到"联网"按钮（可能已激活或页面结构变化）');
       }
     } catch (e: any) {
       console.log(`[智谱AI] 点击"联网"按钮失败: ${e.message}`);
@@ -177,29 +205,21 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
-    // 智谱清言分享链接格式：https://chatglm.cn/share/{8位短码}
-    // 必须通过点击分享按钮获取，当前对话 URL 是私有的，不 fallback
     const shareBtnSelectors = [
-      'button:has-text("分享")',
-      '[class*="share"]:not([class*="shared"])',
-      '[data-testid*="share"]',
-      '[aria-label*="分享"]',
+      '[class*="share"]', '[class*="Share"]',
+      'button:has-text("分享")', 'button:has-text("Share")',
+      '[data-testid*="share"]', '[aria-label*="分享"]',
     ];
     const dialogSelectors = [
-      '[class*="share-dialog"]',
-      '[class*="share-modal"]',
-      '[role="dialog"]',
-      '[class*="popup"]',
-      '[class*="modal"]',
+      '[class*="dialog"]', '[class*="modal"]', '[class*="share-dialog"]',
+      '[class*="share-modal"]', '[role="dialog"]', '[class*="popup"]',
     ];
     for (const btnSel of shareBtnSelectors) {
       for (const dlgSel of dialogSelectors) {
         const url = await this.extractShareLinkFromDialog(page, btnSel, dlgSel);
-        // 智谱分享链接必须包含 /share/ 才是公开可访问的
-        if (url && url.includes('/share/')) return url;
+        if (url) return url;
       }
     }
-    // 不 fallback 到 getCurrentPageShareUrl：当前对话 URL 是私有的
-    return null;
+    return this.getCurrentPageShareUrl(page);
   }
 }
