@@ -125,11 +125,33 @@ jobs:
             done
 
             echo ">>> 停止所有服务..."
-            $DC down --remove-orphans || true
+            $DC down --remove-orphans 2>/dev/null || true
 
             # 强制清理可能残留的容器（避免容器名冲突）
-            echo ">>> 强制清理残留容器..."
-            docker rm -f jlyl-cloud-server jlyl-cloud-db jlyl-cloud-auto-collect-worker jlyl-cloud-web 2>/dev/null || true
+            # Docker daemon 重启后，容器可能需要多次尝试才能删除
+            echo ">>> 强制清理残留容器（带重试）..."
+            for rm_attempt in 1 2 3; do
+              # 先用 docker compose down 清理
+              $DC down --remove-orphans 2>/dev/null || true
+              # 再强制删除指定容器
+              docker rm -f jlyl-cloud-server jlyl-cloud-db jlyl-cloud-auto-collect-worker jlyl-cloud-web 2>/dev/null || true
+              # 用 ps -a 查询是否还有残留
+              remaining=$(docker ps -a --filter "name=jlyl-cloud-" --format '{{.Names}}' 2>/dev/null || echo "")
+              if [ -z "$remaining" ]; then
+                echo ">>> 残留容器已清理干净"
+                break
+              fi
+              echo ">>> 仍有残留容器: $remaining，重试 ($rm_attempt/3)..."
+              sleep 3
+            done
+
+            # 最终检查：如果仍有残留，用 docker ps -a -q 强制删除
+            final_remaining=$(docker ps -a --filter "name=jlyl-cloud-" --format '{{.Names}}' 2>/dev/null || echo "")
+            if [ -n "$final_remaining" ]; then
+              echo ">>> 警告：仍有残留容器，尝试用 ps -a -q 强制删除: $final_remaining"
+              docker ps -a --filter "name=jlyl-cloud-" -q | xargs -r docker rm -f 2>/dev/null || true
+              sleep 2
+            fi
 
             echo ">>> 启动数据库容器..."
             $DC up -d db
