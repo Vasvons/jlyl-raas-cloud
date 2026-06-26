@@ -71,6 +71,7 @@ router.use(authMiddleware, adminMiddleware);
 // 手动触发清理无效记录
 // mode: 'conservative' - raw_content < 200 或包含营销关键词（默认）
 // mode: 'aggressive' - 额外清理 content > 5000 字符（疑似整页文本）或 brand_matched=false 且有 static_page_id
+// mode: 'invalid_share' - 清理 share_url 是私有对话URL（非真正分享链接）的记录
 // mode: 'all' - 删除全部 real_collect_record（用户确认实际命中很少时可全清重跑）
 router.post('/cleanup-invalid', async (req, res) => {
   try {
@@ -83,6 +84,26 @@ router.post('/cleanup-invalid', async (req, res) => {
     if (mode === 'all') {
       whereClause = '1=1';
       description = '删除全部记录';
+    } else if (mode === 'invalid_share') {
+      // 清理 share_url 是私有对话URL的记录
+      // 真正的分享链接格式：
+      //   DeepSeek:  https://chat.deepseek.com/a/chat/s/{uuid}（含 /s/）
+      //   智谱:      https://chatglm.cn/share/{短码}（含 /share/）
+      //   Kimi:      https://www.kimi.com/share/{shareId}（含 /share/）
+      //   通义千问:  https://tongyi.aliyun.com/qianwen/share?shareId={UUID}（含 shareId=）
+      // 私有对话URL（需登录才能访问，非分享链接）：
+      //   DeepSeek:  https://chat.deepseek.com/c/{id} 或 /a/chat/{id}（不含 /s/）
+      //   豆包:      https://www.doubao.com/chat/{数字ID}（对话URL，非分享URL）
+      //   元宝:      https://yuanbao.tencent.com/chat/{id}（对话URL，非分享URL）
+      //   智谱:      https://chatglm.cn/chat/{id}（对话URL，非分享URL）
+      //   文心:      https://wenxin.baidu.com/chat/{id}（对话URL，非分享URL）
+      //   Kimi:      https://www.kimi.com/chat/{id}（对话URL，非分享URL）
+      whereClause = `share_url IS NOT NULL
+        AND share_url NOT LIKE '%/share/%'
+        AND share_url NOT LIKE '%/s/%'
+        AND share_url NOT LIKE '%shareId=%'
+        AND share_url NOT LIKE '%/artifactShare/%'`;
+      description = '清理私有对话URL（非真正分享链接）的记录';
     } else if (mode === 'aggressive') {
       // 激进模式：额外清理
       // 1. content > 5000 字符（真实 AI 回答一般不超过 5000，超过说明是整页文本）
