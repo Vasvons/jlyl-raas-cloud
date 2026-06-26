@@ -556,7 +556,10 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           hasMeaningfulContent = true;
           if (currentLen === prevLen) {
             stableCount++;
-            if (stableCount >= 2) {
+            // 稳定检测阈值从2提高到4（8秒不变才认为完成）
+            // 原因：AI流式输出时4秒内不变很常见（思考、网络抖动、长段落生成），
+            // 导致提前返回截断内容。8秒更可靠。
+            if (stableCount >= 4) {
               console.log(`[${this.platformName}] 提取内容成功: ${bestText.trim().length} 字符 (轮询第${i + 1}轮稳定)`);
               return { text: bestText.trim(), html: bestHtml };
             }
