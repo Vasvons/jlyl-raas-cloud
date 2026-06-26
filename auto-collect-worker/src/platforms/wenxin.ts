@@ -3,41 +3,39 @@ import { BasePlatformAdapter } from './baseAdapter';
 
 /** 文心一言适配器
  *
- * 参考 auth helper 软件的查询脚本：
- * - 优先导航到根域名 https://yiyan.baidu.com/（不是 /chat）
- * - 输入框使用 Slate.js 编辑器：div[data-slate-node="element"]（不是 textarea！）
- * - 停止按钮：.pause__ZJpNwrGC
- * - 响应选择器：#answer_text_id
+ * 2026年6月25日0时起，文心一言官网提问入口升级，迁移至百度文心网站。
+ * 原地址 yiyan.baidu.com 首页变为服务升级公告页，不再提供聊天功能。
  *
- * fallback 策略：
- * - 根域名有时不显示输入框（可能是账号未登录或首页渲染问题）
- * - 此时降级导航到 /chat，再尝试点击"开始对话"按钮
+ * 新地址：https://wenxin.baidu.com/
+ * 新页面特征：
+ * - 有"开启新对话"、"知识库"、"对话历史"等侧边栏
+ * - 有"深度思考"、"DS-V4 Pro"等模式选项
+ * - 未登录时显示"请登录"
  */
 export class WenxinAdapter extends BasePlatformAdapter {
   platformName = '文心一言';
-  loginUrl = 'https://yiyan.baidu.com/';
-  // 优先使用根域名：auth helper 软件也是导航到根域名
-  chatUrl = 'https://yiyan.baidu.com/';
+  loginUrl = 'https://wenxin.baidu.com/';
+  // 新地址：2026年6月25日迁移到 wenxin.baidu.com
+  chatUrl = 'https://wenxin.baidu.com/';
   supportsShare = true;
-  // 输入框选择器：参考 auth helper 的 //div[@data-slate-node="element"]
-  // 文心一言使用 Slate.js 富文本编辑器，不是普通 textarea
+  // 输入框选择器：新页面结构未知，使用通用选择器兼容多种情况
+  // 保留 Slate.js 编辑器选择器（旧版）+ 通用 textarea（新版）
   protected inputSelector = 'div[data-slate-node="element"], textarea, #chat-input, .chat-input textarea, [class*="chat-input"] textarea, div[contenteditable="true"], [class*="input-area"] textarea, [class*="prompt"] textarea, [class*="editor"] textarea, [class*="chat-input"] [contenteditable="true"], [class*="input-area"] [contenteditable="true"], [role="textbox"]';
-  // 响应选择器：参考 auth helper 的 //div[@id="answer_text_id"]
+  // 响应选择器：新页面结构未知，使用通用选择器
   protected responseSelector = '#answer_text_id, .answer, .markdown-body, [class*="answer"], [class*="chat-content"], [class*="response"], [class*="message-content"]';
-  // 停止按钮：参考 auth helper 的 .pause__ZJpNwrGC
+  // 停止按钮
   protected stopButtonSelector = '.pause__ZJpNwrGC, [class*="pause"], [class*="stop"], .stop-btn, [class*="Stop"]';
   protected loginUrlPattern = 'login';
 
   async extractShareLink(page: Page): Promise<string | null> {
-    // 文心一言主要支持图片分享，URL分享仅限artifact
     return this.getCurrentPageShareUrl(page);
   }
 
   /** 文心一言导航后处理：
+   *  新版页面（wenxin.baidu.com）的导航后处理：
    *  1. 等待 SPA 渲染完成
-   *  2. 快速检测"可见的"输入框是否存在（避免匹配到隐藏的textarea）
-   *  3. 如果找不到可见输入框，降级导航到 /chat
-   *  4. 如果 /chat 也找不到，尝试点击"开始对话"按钮
+   *  2. 快速检测"可见的"输入框是否存在
+   *  3. 如果找不到可见输入框，尝试点击"开启新对话"按钮
    */
   protected async afterNavigate(page: Page): Promise<void> {
     // 等待 SPA 渲染完成
@@ -49,33 +47,16 @@ export class WenxinAdapter extends BasePlatformAdapter {
     }
 
     // 快速检测"可见的"输入框是否存在
-    // 注意：不能用 page.$（不检查可见性，会匹配到首页搜索框等隐藏textarea）
     const hasVisibleInput = await this.hasVisibleInput(page);
 
     if (hasVisibleInput) {
-      // 根域名正常找到可见输入框，无需降级
+      // 找到可见输入框，无需额外操作
       return;
     }
 
-    // 根域名找不到可见输入框，降级导航到 /chat
-    console.log(`[文心一言] 根域名未找到可见输入框，降级导航到 /chat`);
-
-    try {
-      await page.goto('https://yiyan.baidu.com/chat', { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(3000);
-
-      const newUrl = page.url();
-      console.log(`[文心一言] 降级到 /chat 后: URL=${newUrl}`);
-
-      // 如果 /chat 也找不到可见输入框，尝试点击"开始对话"按钮
-      const hasVisibleInputAfterFallback = await this.hasVisibleInput(page);
-      if (!hasVisibleInputAfterFallback) {
-        console.log(`[文心一言] /chat 也未找到可见输入框，尝试点击入口按钮`);
-        await this.tryClickEntryButton(page);
-      }
-    } catch (e: any) {
-      console.log(`[文心一言] 降级导航到 /chat 失败: ${e.message}`);
-    }
+    // 找不到可见输入框，尝试点击"开启新对话"按钮（新版页面的入口按钮）
+    console.log(`[文心一言] 未找到可见输入框，尝试点击"开启新对话"按钮`);
+    await this.tryClickEntryButton(page);
   }
 
   /** 检测页面是否存在可见的输入框（避免匹配到隐藏的textarea） */
@@ -91,7 +72,8 @@ export class WenxinAdapter extends BasePlatformAdapter {
   /** 尝试点击入口按钮（通过 JS evaluate 绕过 isVisible 检查） */
   private async tryClickEntryButton(page: Page): Promise<void> {
     const clicked = await page.evaluate(() => {
-      const entryTexts = ['开始对话', '立即体验', '开始使用', '新建对话', '开始聊天', '立即开始'];
+      // 新版页面的入口按钮文本
+      const entryTexts = ['开启新对话', '开始对话', '立即体验', '开始使用', '新建对话', '开始聊天', '立即开始'];
       const elements = Array.from(document.querySelectorAll('button, a, [role="button"]'));
       // 优先精确匹配
       for (const el of elements) {

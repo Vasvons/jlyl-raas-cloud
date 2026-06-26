@@ -8,9 +8,13 @@ import { BasePlatformAdapter } from './baseAdapter';
  * - 输入框选择器使用 div[class] textarea（DeepSeek 使用 CSS Module 哈希类名如 _24fad49）
  * - 响应选择器使用 .ds-markdown
  *
- * fallback 策略：
- * - 根域名有时会显示营销页（title="DeepSeek - Into the Unknown"），找不到输入框
- * - 此时降级导航到 /chat（会自动恢复旧对话，但旧对话也能正常输入）
+ * 已知问题：
+ * - 根域名有时显示营销页（title="DeepSeek - Into the Unknown"），没有自动跳转到聊天界面
+ * - 这种情况下页面可能停留几分钟才跳转，导致"输入框未找到"超时
+ *
+ * 解决方案：
+ * - 导航到根域名后，如果 URL 没有自动跳转到 /chat 或 /a/chat/，主动导航到 /chat
+ * - /chat 会自动恢复旧对话（URL 变为 /a/chat/s/{id}），但旧对话也能正常输入
  */
 export class DeepSeekAdapter extends BasePlatformAdapter {
   platformName = 'DeepSeek';
@@ -29,60 +33,83 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
 
   /** DeepSeek 导航后处理：
    *  1. 等待 SPA 渲染完成
-   *  2. 快速检测输入框是否存在（必须是可见的，避免匹配到营销页的隐藏textarea）
-   *  3. 如果找不到可见输入框（可能遇到了"Into the Unknown"营销页），降级导航到 /chat
-   *  4. /chat 会自动恢复旧对话（URL 变为 /a/chat/s/{id}），但旧对话也能正常输入
+   *  2. 检查 URL 是否停留在根域名（没有自动跳转到 /chat 或 /a/chat/）
+   *  3. 如果停留在根域名（遇到了营销页），主动导航到 /chat
+   *  4. 如果 /chat 找不到可见输入框，尝试点击"新建对话"按钮
    */
   protected async afterNavigate(page: Page): Promise<void> {
-    // 等待 SPA 渲染完成
-    await page.waitForTimeout(2000);
+    // 等待 SPA 渲染完成（DeepSeek 是 React SPA，渲染需要时间）
+    await page.waitForTimeout(3000);
 
-    const currentUrl = page.url();
+    let currentUrl = page.url();
     if (currentUrl.includes('sign_in')) {
       return; // 未登录，交给 checkLoginStatus 处理
     }
 
     const title = await page.title().catch(() => '');
+    console.log(`[DeepSeek] 导航后: URL=${currentUrl}, title=${title}`);
 
-    // 快速检测"可见的"输入框是否存在
-    // 注意：不能用 page.$（不检查可见性，会匹配到营销页的隐藏textarea）
-    // 必须用 waitForSelector(state: 'visible') 或 page.$ + isVisible() 检查
-    const hasVisibleInput = await this.hasVisibleInput(page);
+    // 如果 URL 停留在根域名（没有自动跳转到 /chat 或 /a/chat/），
+    // 说明遇到了营销页（title 通常是 "DeepSeek - Into the Unknown"）
+    // 此时主动导航到 /chat 强制进入聊天界面
+    const isOnRoot = currentUrl === 'https://chat.deepseek.com/' ||
+                     currentUrl === 'https://chat.deepseek.com' ||
+                     currentUrl.endsWith('chat.deepseek.com/');
+    const hasChatPath = currentUrl.includes('/chat') || currentUrl.includes('/a/chat/');
 
-    if (hasVisibleInput) {
-      // 根域名正常找到可见输入框，无需降级
-      return;
+    if (isOnRoot && !hasChatPath) {
+      console.log(`[DeepSeek] URL 停留在根域名 (title=${title})，主动导航到 /chat`);
+      try {
+        await page.goto('https://chat.deepseek.com/chat', { waitUntil: 'domcontentloaded', timeout: 20000 });
+        await page.waitForTimeout(3000);
+
+        const newUrl = page.url();
+        const newTitle = await page.title().catch(() => '');
+        console.log(`[DeepSeek] 主动导航到 /chat 后: URL=${newUrl}, title=${newTitle}`);
+        currentUrl = newUrl;
+      } catch (e: any) {
+        console.log(`[DeepSeek] 主动导航到 /chat 失败: ${e.message}`);
+      }
     }
 
-    // 根域名找不到可见输入框，可能遇到了营销页（如 "DeepSeek - Into the Unknown"）
-    console.log(`[DeepSeek] 根域名未找到可见输入框 (title=${title})，降级导航到 /chat`);
+    // 检查是否有可见输入框
+    const hasVisibleInput = await this.hasVisibleInput(page);
 
-    try {
-      await page.goto('https://chat.deepseek.com/chat', { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(3000);
+    if (!hasVisibleInput) {
+      console.log(`[DeepSeek] 未找到可见输入框 (URL=${currentUrl})，尝试点击"新建对话"按钮`);
+      await this.tryClickNewChat(page);
 
-      // /chat 通常会自动恢复旧对话，URL 变为 /a/chat/s/{id}
-      // 旧对话页面也能正常输入，不需要强制创建新对话
-      const newUrl = page.url();
-      const newTitle = await page.title().catch(() => '');
-      console.log(`[DeepSeek] 降级到 /chat 后: URL=${newUrl}, title=${newTitle}`);
-
-      // 如果 /chat 也找不到可见输入框，尝试点击"新建对话"按钮
-      const hasVisibleInputAfterFallback = await this.hasVisibleInput(page);
-      if (!hasVisibleInputAfterFallback && newUrl.includes('/a/chat/s/')) {
-        console.log(`[DeepSeek] /chat 恢复了旧对话但未找到可见输入框，尝试点击"新建对话"`);
-        await this.tryClickNewChat(page);
+      // 再次检查
+      const hasInputAfterClick = await this.hasVisibleInput(page);
+      if (!hasInputAfterClick) {
+        // 最终诊断：输出页面信息辅助排查
+        const diagInfo = await page.evaluate(() => {
+          const textareas = Array.from(document.querySelectorAll('textarea'));
+          const inputs = Array.from(document.querySelectorAll('input'));
+          const contentEditables = Array.from(document.querySelectorAll('[contenteditable="true"]'));
+          return {
+            url: window.location.href,
+            title: document.title,
+            textareaCount: textareas.length,
+            textareaInfo: textareas.slice(0, 3).map(t => ({
+              placeholder: t.placeholder,
+              className: t.className.substring(0, 50),
+              visible: t.offsetWidth > 0 && t.offsetHeight > 0,
+              rect: { w: t.offsetWidth, h: t.offsetHeight }
+            })),
+            inputCount: inputs.length,
+            contentEditableCount: contentEditables.length,
+            bodyTextStart: (document.body.textContent || '').substring(0, 200)
+          };
+        }).catch(() => null);
+        console.log(`[DeepSeek] 诊断信息: ${JSON.stringify(diagInfo)}`);
       }
-    } catch (e: any) {
-      console.log(`[DeepSeek] 降级导航到 /chat 失败: ${e.message}`);
     }
   }
 
-  /** 检测页面是否存在可见的输入框（避免匹配到隐藏的textarea） */
+  /** 检测页面是否存在可见的输入框 */
   private async hasVisibleInput(page: Page): Promise<boolean> {
     try {
-      // 用 waitForSelector state: 'visible' 检测，超时2秒
-      // 这比 page.$ 更准确，因为 page.$ 不检查可见性
       await page.waitForSelector(this.inputSelector, { timeout: 2000, state: 'visible' });
       return true;
     } catch {
@@ -90,7 +117,7 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
     }
   }
 
-  /** 尝试点击"新建对话"按钮（通过 JS evaluate 绕过 isVisible 检查） */
+  /** 尝试点击"新建对话"按钮 */
   private async tryClickNewChat(page: Page): Promise<void> {
     const clicked = await page.evaluate(() => {
       const newChatTexts = ['新建对话', 'New Chat', 'New chat', '新对话'];
@@ -118,13 +145,11 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
-    // DeepSeek: 分享按钮在消息操作栏，点击后弹出对话框
     const url = await this.extractShareLinkFromDialog(
       page,
       '[class*="share"], button:has-text("分享"), [data-testid*="share"], [aria-label*="分享"]',
       '[class*="dialog"], [class*="modal"], [class*="share-dialog"], [class*="share-modal"], [role="dialog"], [class*="popup"]'
     );
-    // DeepSeek 发送消息后 URL 会变为 /chat/<conversation_id>，本身就是分享链接
     return url || this.getCurrentPageShareUrl(page);
   }
 }

@@ -9,18 +9,19 @@ const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 const RENEWAL_CHECK_INTERVAL = 5 * 60 * 1000; // 每5分钟检查一次续期任务
 
 // 平台 chatUrl 映射（用于续期访问）
-// 参考 auth helper 软件的脚本：DeepSeek 和文心一言使用根域名而非 /chat 路径
+// 参考 auth helper 软件的脚本：DeepSeek 和智谱AI使用根域名
+// 文心一言：2026年6月25日迁移到 wenxin.baidu.com（原 yiyan.baidu.com 已变为升级公告页）
 // DeepSeek: 导航到 /chat 会自动恢复旧对话，根域名不会
-// 文心一言: 导航到 /chat 会被重定向回首页，根域名直接显示聊天界面
+// 智谱AI: auth helper 使用根域名 https://chatglm.cn/
 const PLATFORM_CHAT_URLS: Record<string, string> = {
   'DeepSeek': 'https://chat.deepseek.com/',
   'Kimi': 'https://www.kimi.com/chat',
   '豆包': 'https://www.doubao.com/chat/',
   '通义千问': 'https://www.qianwen.com/chat',
   '腾讯元宝': 'https://yuanbao.tencent.com/chat/',
-  '文心一言': 'https://yiyan.baidu.com/',
+  '文心一言': 'https://wenxin.baidu.com/',
   '纳米': 'https://www.n.cn/chat',
-  '智谱AI': 'https://chatglm.cn/chat/',
+  '智谱AI': 'https://chatglm.cn/',
 };
 
 /**

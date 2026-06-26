@@ -5,9 +5,13 @@ import { BasePlatformAdapter } from './baseAdapter';
  *
  * 参考 auth helper 软件的查询脚本：
  * - URL：https://chatglm.cn/（根域名）
+ * - 流程：navigate → 关闭弹窗(close-btn) → 点击"联网" → fill textarea → Enter → 等待停止按钮消失 → 提取内容
  * - 输入框：.input-box-inner textarea
  * - 响应选择器：.answer-content .flex1
  * - 停止按钮：div.enter.is-main-chat.searching
+ *
+ * 关键：必须点击"联网"按钮，否则默认非联网模式，AI不搜索直接返回简短答案
+ * （这就是之前内容长度只有12个字符的原因）
  */
 export class ZhipuAdapter extends BasePlatformAdapter {
   platformName = '智谱AI';
@@ -17,11 +21,74 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   // 输入框：参考 auth helper 的 .input-box-inner textarea
   protected inputSelector = '.input-box-inner textarea, textarea, [class*="input-box"] textarea, [class*="chat-input"] textarea';
   // 响应选择器：参考 auth helper 的 .answer-content .flex1
-  // 之前用 [class*="message"] 匹配到了错误的小元素（如侧边栏标签），导致内容长度只有12
+  // 必须用 .answer-content .flex1 优先匹配（容器元素文本可能很短）
   protected responseSelector = '.answer-content .flex1, .answer-content, [class*="answer-content"], .markdown-body';
   // 停止按钮：参考 auth helper 的 div.enter.is-main-chat.searching
   protected stopButtonSelector = 'div.enter.is-main-chat.searching, [class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
+
+  /** 智谱AI导航后处理：
+   *  1. 关闭可能的弹窗（"我知道了"按钮等）
+   *  2. 点击"联网"按钮，确保AI会联网搜索（否则返回简短答案）
+   */
+  protected async afterNavigate(page: Page): Promise<void> {
+    await page.waitForTimeout(2000);
+
+    // 步骤1: 关闭弹窗（参考 auth helper 的 //button[@class="close-btn"]）
+    try {
+      const closeBtn = await page.$('button.close-btn, [class*="close-btn"], [aria-label*="关闭"]');
+      if (closeBtn) {
+        await closeBtn.click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(500);
+      }
+    } catch {
+      // 继续
+    }
+
+    // 步骤2: 点击"联网"按钮（参考 auth helper 的 //span[text()="联网"]）
+    // 这是关键步骤！默认是非联网模式，AI不搜索直接返回简短答案
+    try {
+      // 查找包含"联网"文本的可点击元素
+      const clicked = await page.evaluate(() => {
+        // 优先匹配 span 元素（auth helper 用的是 //span[text()="联网"]）
+        const spans = Array.from(document.querySelectorAll('span'));
+        for (const span of spans) {
+          if (span.textContent?.trim() === '联网') {
+            // 检查是否已经激活（有些平台激活后会有特殊样式）
+            const parent = span.closest('button, [role="button"], [class*="mode"], [class*="tab"]');
+            if (parent) {
+              // 检查是否已激活（避免重复点击取消激活）
+              const classList = parent.className || '';
+              const isSelected = classList.includes('active') ||
+                                classList.includes('selected') ||
+                                classList.includes('checked');
+              if (isSelected) return { clicked: false, reason: 'already_active' };
+            }
+            (span as HTMLElement).click();
+            return { clicked: true, reason: 'span' };
+          }
+        }
+        // 退而求其次：查找包含"联网"的按钮
+        const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+        for (const btn of buttons) {
+          if (btn.textContent?.trim() === '联网' || btn.textContent?.includes('联网')) {
+            (btn as HTMLElement).click();
+            return { clicked: true, reason: 'button' };
+          }
+        }
+        return { clicked: false, reason: 'not_found' };
+      }).catch(() => ({ clicked: false, reason: 'evaluate_failed' }));
+
+      if (clicked && (clicked as any).clicked) {
+        console.log(`[智谱AI] 已点击"联网"按钮 (${(clicked as any).reason})`);
+        await page.waitForTimeout(1000);
+      } else {
+        console.log(`[智谱AI] 未找到"联网"按钮或已激活 (${(clicked as any)?.reason})`);
+      }
+    } catch (e: any) {
+      console.log(`[智谱AI] 点击"联网"按钮失败: ${e.message}`);
+    }
+  }
 
   async extractShareLink(page: Page): Promise<string | null> {
     // 智谱清言分享链接格式：https://chatglm.cn/share/{8位短码}
