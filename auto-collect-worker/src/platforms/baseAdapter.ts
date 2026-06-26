@@ -471,72 +471,72 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
 
     try {
-      // 等待回答选择器出现
-      await page.waitForSelector(this.responseSelector, { timeout: 30000 });
-      // 再次滚动确保完整渲染
-      await this.scrollToBottom(page);
-
-      // 关键修复：遍历所有匹配元素，取"最长的可见文本"，而非"最后一个元素"
-      // 原因：responseSelector 多为宽泛子串匹配（如 [class*="answer"]），
-      // 会匹配到侧边栏/页脚/操作栏等空 div。取最后一个元素极易拿到空 div，
-      // 导致 textContent 返回空字符串，内容长度为 0。
-      // 改为遍历取最长 + innerText（只返回可见文本）可精准定位 AI 回答容器。
+      // 关键修复：持续轮询等待 AI 回答内容出现并稳定
+      // 之前的问题：waitForSelector(宽泛选择器) 立即匹配到侧边栏等静态元素，
+      // 此时 AI 回答容器还没生成，page.$$() 返回的元素 innerText 全为空，
+      // bestText 为空时跳过稳定检测直接返回空 → 内容长度=0
+      //
+      // 新策略：轮询循环（最多30次 × 2秒 = 60秒），
+      //   - 每轮遍历所有匹配元素取最长 innerText
+      //   - bestText 长度 >= 30（有意义的内容）后进入稳定检测
+      //   - 连续2次长度不变认为回答完成，返回
+      //   - 这样即使 waitForResponse 提前返回（stopButtonSelector 宽泛匹配），
+      //     也能持续等待 AI 回答实际生成
       let bestText = '';
       let bestHtml = '';
-      const elements = await page.$$(this.responseSelector);
-      for (const el of elements) {
-        // innerText 只返回可见文本，避免拿到 display:none 的隐藏元素
-        const text = await el.innerText().catch(() => '') || '';
-        if (text.trim().length > bestText.trim().length) {
-          bestText = text;
-          bestHtml = await el.innerHTML().catch(() => '') || '';
-        }
-      }
+      let prevLen = 0;
+      let stableCount = 0;
+      let hasMeaningfulContent = false;
 
-      // 内容稳定检测：AI 回答可能是流式输出，连续两次获取长度不变才算完整
-      // 避免在 AI 还在输出时提取到不完整内容（导致长度偏小或被截断）
-      if (bestText.trim().length > 0) {
-        let prevLen = bestText.trim().length;
-        let stableCount = 0;
-        for (let i = 0; i < 8; i++) {
-          await page.waitForTimeout(2000);
-          // 重新提取最长内容
-          let currentText = '';
-          let currentHtml = '';
-          const reElements = await page.$$(this.responseSelector);
-          for (const el of reElements) {
-            const text = await el.innerText().catch(() => '') || '';
-            if (text.trim().length > currentText.trim().length) {
-              currentText = text;
-              currentHtml = await el.innerHTML().catch(() => '') || '';
-            }
+      for (let i = 0; i < 30; i++) {
+        // 滚动触发懒加载（AI 回答可能需要滚动才渲染完整）
+        await this.scrollToBottom(page);
+
+        // 遍历所有匹配元素，取最长的可见文本
+        let currentText = '';
+        let currentHtml = '';
+        const elements = await page.$$(this.responseSelector);
+        for (const el of elements) {
+          // innerText 只返回可见文本，避免拿到 display:none 的隐藏元素
+          const text = await el.innerText().catch(() => '') || '';
+          if (text.trim().length > currentText.trim().length) {
+            currentText = text;
+            currentHtml = await el.innerHTML().catch(() => '') || '';
           }
-          const currentLen = currentText.trim().length;
+        }
+
+        const currentLen = currentText.trim().length;
+        if (currentLen > bestText.trim().length) {
+          bestText = currentText;
+          bestHtml = currentHtml;
+        }
+
+        // 内容长度 >= 30 才算有意义的 AI 回答（过滤侧边栏短文本）
+        if (currentLen >= 30) {
+          hasMeaningfulContent = true;
           if (currentLen === prevLen) {
             stableCount++;
+            // 连续2次长度不变，认为 AI 回答已稳定完成
             if (stableCount >= 2) {
-              // 连续2次长度不变，认为内容已稳定
-              if (currentLen > bestText.trim().length) {
-                bestText = currentText;
-                bestHtml = currentHtml;
-              }
-              break;
+              console.log(`[${this.platformName}] 提取内容成功: ${bestText.trim().length} 字符 (轮询第${i + 1}轮稳定)`);
+              return { text: bestText.trim(), html: bestHtml };
             }
           } else {
             stableCount = 0;
             prevLen = currentLen;
-            if (currentLen > bestText.trim().length) {
-              bestText = currentText;
-              bestHtml = currentHtml;
-            }
           }
         }
+
+        await page.waitForTimeout(2000);
       }
 
-      if (bestText.trim().length > 0) {
-        console.log(`[${this.platformName}] 提取内容成功: ${bestText.trim().length} 字符`);
+      // 轮询结束，如果有有意义的内容就返回（可能是稳定检测未达标但已有内容）
+      if (hasMeaningfulContent && bestText.trim().length >= 30) {
+        console.log(`[${this.platformName}] 提取内容成功(轮询超时): ${bestText.trim().length} 字符`);
         return { text: bestText.trim(), html: bestHtml };
       }
+
+      console.log(`[${this.platformName}] 提取内容失败: 轮询60秒后仍无有意义内容 (最长=${bestText.trim().length}字符)`);
     } catch (e) {
       console.error(`[${this.platformName}] 提取内容失败:`, (e as Error).message);
       // 不再兜底拿 document.body.textContent：整页文本会包含侧边栏/导航/页脚等无关内容，
