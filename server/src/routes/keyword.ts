@@ -110,10 +110,13 @@ router.post('/keywordsearchrank/generate', authMiddleware, adminMiddleware, asyn
 router.post('/keywordsearchrank/saveKwConfig', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { userId, configType, configJson } = req.body;
+    console.log('[saveKwConfig] 收到保存请求:', { userId, configType, configJsonKeys: configJson ? Object.keys(configJson) : null });
     await saveKwConfig(String(userId), configType, JSON.stringify(configJson));
+    console.log('[saveKwConfig] 保存成功, userId:', userId, 'configType:', configType);
     res.json({ code: 200 });
-  } catch (e) {
-    res.json({ code: 500, message: '服务器错误' });
+  } catch (e: any) {
+    console.error('[saveKwConfig] 保存失败:', e.message);
+    res.json({ code: 500, message: '服务器错误: ' + e.message });
   }
 });
 
@@ -121,10 +124,23 @@ router.get('/keywordsearchrank/getKwConfig', authMiddleware, adminMiddleware, as
   try {
     const userId = req.query.userId as string;
     const configType = req.query.configType as string;
+    console.log('[getKwConfig] 收到查询请求:', { userId, configType });
     const configJson = await getKwConfig(userId, configType);
+    console.log('[getKwConfig] 查询结果:', { userId, configType, found: !!configJson, preview: configJson ? configJson.substring(0, 100) : null });
     res.json({ code: 200, data: configJson ? JSON.parse(configJson) : null });
-  } catch (e) {
-    res.json({ code: 500, message: '服务器错误' });
+  } catch (e: any) {
+    console.error('[getKwConfig] 查询失败:', e.message);
+    res.json({ code: 500, message: '服务器错误: ' + e.message });
+  }
+});
+
+// 诊断端点（临时，排查词汇配置问题用，不需要认证，方便浏览器直接访问）
+router.get('/keywordsearchrank/debugKwConfig', async (req, res) => {
+  try {
+    const result = await query('SELECT id, user_id, config_type, length(config_json) as json_len, substring(config_json, 1, 200) as json_preview, update_time FROM kw_config ORDER BY id');
+    res.json({ code: 200, data: result.rows, count: result.rows.length });
+  } catch (e: any) {
+    res.json({ code: 500, message: e.message });
   }
 });
 
