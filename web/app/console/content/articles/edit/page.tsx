@@ -1,16 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Card, Row, Col, Input, Button, Tag, InputNumber, message, Spin, Statistic, Space } from 'antd';
+import { useEffect, useState, Suspense } from 'react';
+import { Card, Row, Col, Input, Button, Tag, message, Spin, Statistic, Space } from 'antd';
 import { ArrowLeftOutlined, SaveOutlined } from '@ant-design/icons';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import api from '@/lib/api';
 import TipTapEditor from '@/components/TipTapEditor';
 
-export default function ArticleEditPage({ params }: { params: { id: string } }) {
-  const articleId = Number(params.id);
-  const router = useRouter();
+function ArticleEditContent() {
+  const searchParams = useSearchParams();
+  const articleId = Number(searchParams.get('id'));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [title, setTitle] = useState('');
@@ -21,6 +21,10 @@ export default function ArticleEditPage({ params }: { params: { id: string } }) 
   const [tagInput, setTagInput] = useState('');
 
   useEffect(() => {
+    if (!articleId) {
+      setLoading(false);
+      return;
+    }
     api.get(`/content/articles/${articleId}`).then(res => {
       if (res.data?.code === 200) {
         const d = res.data.data;
@@ -61,6 +65,7 @@ export default function ArticleEditPage({ params }: { params: { id: string } }) 
     : '0.0';
 
   if (loading) return <Spin />;
+  if (!articleId) return <div>缺少文章ID参数</div>;
 
   return (
     <div>
@@ -93,5 +98,14 @@ export default function ArticleEditPage({ params }: { params: { id: string } }) 
         </Col>
       </Row>
     </div>
+  );
+}
+
+export default function ArticleEditPage() {
+  // useSearchParams 必须在 Suspense 边界内使用，否则会触发整个页面客户端渲染
+  return (
+    <Suspense fallback={<Spin />}>
+      <ArticleEditContent />
+    </Suspense>
   );
 }

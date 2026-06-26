@@ -61,7 +61,7 @@ export default function ArticlesPage() {
     {
       title: '操作', width: 200, render: (_: any, r: any) => (
         <Space>
-          <Link href={`/console/content/articles/${r.id}`}>
+          <Link href={`/console/content/articles/edit?id=${r.id}`}>
             <Button size="small" type="text" icon={<EditOutlined />} />
           </Link>
           <Button size="small" type="text" icon={<ThunderboltOutlined />} onClick={() => handleRegenerate(r.id)} />
