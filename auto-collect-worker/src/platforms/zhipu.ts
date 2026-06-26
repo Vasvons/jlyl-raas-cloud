@@ -3,15 +3,18 @@ import { BasePlatformAdapter } from './baseAdapter';
 
 /** 智谱AI适配器
  *
- * 参考 auth helper 软件的查询脚本：
- * - URL：https://chatglm.cn/（根域名）
- * - 流程：navigate → 关闭弹窗(close-btn) → 点击"联网" → fill textarea → Enter → 等待停止按钮消失 → 提取内容
- * - 输入框：.input-box-inner textarea
- * - 响应选择器：.answer-content .flex1
- * - 停止按钮：div.enter.is-main-chat.searching
+ * 参考 auth helper 软件的查询脚本（完整流程）：
+ * 1. navigate → https://chatglm.cn/
+ * 2. click → //button[@class="close-btn"] (is_try=1, is_exist=1)   ← 关闭弹窗
+ * 3. click → //span[text()="联网"]                                   ← 激活联网搜索
+ * 4. click → //span[text()="推理"] (is_try=1, is_exist=1)           ← 推理模式可能不存在
+ * 5. fill → .input-box-inner textarea
+ * 6. key → Enter
+ * 7. while → //div[@class="enter is-main-chat searching"] (is_exist=0)  ← 等待搜索完成
+ * 8. text → .answer-content .flex1
  *
  * 关键：必须点击"联网"按钮，否则默认非联网模式，AI不搜索直接返回简短答案
- * （这就是之前内容长度只有12个字符的原因）
+ * 之前内容长度只有3/12个字符的原因就是没激活联网模式
  */
 export class ZhipuAdapter extends BasePlatformAdapter {
   platformName = '智谱AI';
@@ -19,126 +22,114 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   chatUrl = 'https://chatglm.cn/';
   supportsShare = true;
   // 输入框：参考 auth helper 的 .input-box-inner textarea
-  protected inputSelector = '.input-box-inner textarea, textarea, [class*="input-box"] textarea, [class*="chat-input"] textarea';
+  protected inputSelector = '.input-box-inner textarea, [class*="input-box"] textarea, textarea';
   // 响应选择器：参考 auth helper 的 .answer-content .flex1
-  // 必须用 .answer-content .flex1 优先匹配（容器元素文本可能很短）
   protected responseSelector = '.answer-content .flex1, .answer-content, [class*="answer-content"], .markdown-body';
-  // 停止按钮：参考 auth helper 的 div.enter.is-main-chat.searching
+  // 停止按钮：参考 auth helper 的 //div[@class="enter is-main-chat searching"]
   protected stopButtonSelector = 'div.enter.is-main-chat.searching, [class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
 
   /** 智谱AI导航后处理：
    *  1. 关闭可能的弹窗（"我知道了"按钮等）
    *  2. 点击"联网"按钮，确保AI会联网搜索（否则返回简短答案）
+   *  3. 点击"推理"按钮（可能不存在，忽略错误）
    */
   protected async afterNavigate(page: Page): Promise<void> {
     await page.waitForTimeout(2000);
 
     // 步骤1: 关闭弹窗（参考 auth helper 的 //button[@class="close-btn"]）
+    // 用 XPath 精确匹配（之前用 CSS selector 可能匹配不到）
     try {
-      const closeBtn = await page.$('button.close-btn, [class*="close-btn"], [aria-label*="关闭"]');
+      const closeBtn = await page.$('xpath=//button[@class="close-btn"]').catch(() => null);
       if (closeBtn) {
         await closeBtn.click({ timeout: 2000 }).catch(() => {});
         await page.waitForTimeout(500);
+        console.log('[智谱AI] 已关闭弹窗');
       }
     } catch {
       // 继续
     }
 
     // 步骤2: 点击"联网"按钮（参考 auth helper 的 //span[text()="联网"]）
-    // 这是关键步骤！默认是非联网模式，AI不搜索直接返回简短答案
+    // 关键：必须点击"联网"激活联网搜索模式，否则AI不搜索直接返回简短答案
     try {
-      // 查找包含"联网"文本的可点击元素
-      const clicked = await page.evaluate(() => {
-        // 优先匹配 span 元素（auth helper 用的是 //span[text()="联网"]）
-        const spans = Array.from(document.querySelectorAll('span'));
-        for (const span of spans) {
-          if (span.textContent?.trim() === '联网') {
-            // 检查是否已经激活（有些平台激活后会有特殊样式）
-            const parent = span.closest('button, [role="button"], [class*="mode"], [class*="tab"]');
-            if (parent) {
-              // 检查是否已激活（避免重复点击取消激活）
-              const classList = parent.className || '';
-              const isSelected = classList.includes('active') ||
-                                classList.includes('selected') ||
-                                classList.includes('checked');
-              if (isSelected) return { clicked: false, reason: 'already_active' };
-            }
-            (span as HTMLElement).click();
-            return { clicked: true, reason: 'span' };
-          }
-        }
-        // 退而求其次：查找包含"联网"的按钮
-        const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
-        for (const btn of buttons) {
-          if (btn.textContent?.trim() === '联网' || btn.textContent?.includes('联网')) {
-            (btn as HTMLElement).click();
-            return { clicked: true, reason: 'button' };
-          }
-        }
-        return { clicked: false, reason: 'not_found' };
-      }).catch(() => ({ clicked: false, reason: 'evaluate_failed' }));
+      // 用 XPath 精确匹配 span 文本（与 auth helper 完全一致）
+      const lianwangBtn = await page.$('xpath=//span[text()="联网"]').catch(() => null);
+      if (lianwangBtn) {
+        // 检查父元素是否已激活（避免重复点击取消激活）
+        const isAlreadyActive = await page.evaluate(() => {
+          const span = document.evaluate(
+            '//span[text()="联网"]', document, null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE, null
+          ).singleNodeValue as HTMLElement | null;
+          if (!span) return false;
+          // 检查父级元素的 class 是否包含 active/selected 等标识
+          const parent = span.parentElement;
+          if (!parent) return false;
+          const cls = parent.className || '';
+          return cls.includes('active') || cls.includes('selected') || cls.includes('checked');
+        }).catch(() => false);
 
-      if (clicked && (clicked as any).clicked) {
-        console.log(`[智谱AI] 已点击"联网"按钮 (${(clicked as any).reason})`);
-        await page.waitForTimeout(1000);
+        if (!isAlreadyActive) {
+          await lianwangBtn.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(1000);
+          console.log('[智谱AI] 已点击"联网"按钮，激活联网搜索模式');
+        } else {
+          console.log('[智谱AI] "联网"按钮已激活，无需重复点击');
+        }
       } else {
-        console.log(`[智谱AI] 未找到"联网"按钮或已激活 (${(clicked as any)?.reason})`);
+        console.log('[智谱AI] 未找到"联网"按钮（可能已激活或页面结构变化）');
       }
     } catch (e: any) {
       console.log(`[智谱AI] 点击"联网"按钮失败: ${e.message}`);
+    }
+
+    // 步骤3: 点击"推理"按钮（参考 auth helper 的 //span[text()="推理"]，is_try=1 可选）
+    // 推理模式可能不存在，忽略错误
+    try {
+      const tuiliBtn = await page.$('xpath=//span[text()="推理"]').catch(() => null);
+      if (tuiliBtn) {
+        // 检查是否已激活
+        const isAlreadyActive = await page.evaluate(() => {
+          const span = document.evaluate(
+            '//span[text()="推理"]', document, null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE, null
+          ).singleNodeValue as HTMLElement | null;
+          if (!span) return false;
+          const parent = span.parentElement;
+          if (!parent) return false;
+          const cls = parent.className || '';
+          return cls.includes('active') || cls.includes('selected') || cls.includes('checked');
+        }).catch(() => false);
+
+        if (!isAlreadyActive) {
+          await tuiliBtn.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(500);
+          console.log('[智谱AI] 已点击"推理"按钮');
+        }
+      }
+    } catch {
+      // 推理按钮可选，忽略错误
     }
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
     // 智谱清言分享链接格式：https://chatglm.cn/share/{8位短码}
-    // 策略1: 点击分享按钮，从弹窗提取链接
     const shareBtnSelectors = [
-      '[class*="share"]',
-      '[class*="Share"]',
-      'button:has-text("分享")',
-      'button:has-text("Share")',
-      '[data-testid*="share"]',
-      '[aria-label*="分享"]',
-      '[class*="operation"] [class*="share"]',
-      '[class*="action"] [class*="share"]',
-      // 智谱可能在消息气泡上有分享图标
-      '[class*="message"] [class*="share"]',
-      '[class*="bubble"] [class*="share"]',
+      '[class*="share"]', '[class*="Share"]',
+      'button:has-text("分享")', 'button:has-text("Share")',
+      '[data-testid*="share"]', '[aria-label*="分享"]',
     ];
     const dialogSelectors = [
-      '[class*="dialog"]',
-      '[class*="modal"]',
-      '[class*="share-dialog"]',
-      '[class*="share-modal"]',
-      '[role="dialog"]',
-      '[class*="popup"]',
-      '[class*="share-popup"]',
-      '[class*="share-content"]',
+      '[class*="dialog"]', '[class*="modal"]', '[class*="share-dialog"]',
+      '[class*="share-modal"]', '[role="dialog"]', '[class*="popup"]',
     ];
-
     for (const btnSel of shareBtnSelectors) {
       for (const dlgSel of dialogSelectors) {
         const url = await this.extractShareLinkFromDialog(page, btnSel, dlgSel);
         if (url) return url;
       }
     }
-
-    // 策略2: 点击分享按钮后，可能弹出"复制链接"按钮，点击后再从URL提取
-    try {
-      const copyBtn = await page.$('button:has-text("复制链接"), button:has-text("复制"), [class*="copy"]');
-      if (copyBtn) {
-        await copyBtn.click({ timeout: 3000 }).catch(() => {});
-        await page.waitForTimeout(1000);
-      }
-    } catch {
-      // 继续
-    }
-
-    // 策略3: 从当前页面URL提取 /share/{短码} 格式
-    const currentUrl = await this.getCurrentPageShareUrl(page);
-    if (currentUrl) return currentUrl;
-
-    return null;
+    return this.getCurrentPageShareUrl(page);
   }
 }
