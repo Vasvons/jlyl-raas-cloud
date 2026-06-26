@@ -480,7 +480,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   }
 
   async extractContent(page: Page): Promise<{ text: string; html: string }> {
-    // 滚动到底部触发懒加载，再滚动回顶部（确保所有内容渲染完成）
+    // 滚动到底部触发懒加载，确保 AI 回答完整渲染
     await this.scrollToBottom(page);
 
     if (!this.responseSelector) {
@@ -497,8 +497,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         for (const sel of answerSelectors) {
           const els = Array.from(document.querySelectorAll(sel));
           for (const el of els) {
-            // 用 innerText 只取可见文本，避免拿到隐藏元素
-            const t = ((el as HTMLElement).innerText || '').trim();
+            // 用 textContent 而非 innerText（innerText 受视口影响）
+            const t = ((el as HTMLElement).textContent || '').trim();
             if (t.length > bestText.length) bestText = t;
           }
           if (bestText.length > 50) return bestText;
@@ -507,7 +507,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         const elements = Array.from(document.querySelectorAll('div, section, article'));
         let lastLongText = '';
         for (const el of elements) {
-          const t = ((el as HTMLElement).innerText || '').trim();
+          const t = ((el as HTMLElement).textContent || '').trim();
           if (t.length > lastLongText.length) lastLongText = t;
         }
         return lastLongText;
@@ -517,48 +517,103 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
     try {
       // 持续轮询等待 AI 回答内容出现并稳定
-      // 轮询循环（最多30次 × 2秒 = 60秒）
+      // 关键策略：用 page.evaluate 在浏览器上下文中一次性查找"最长的可见文本块"
+      // 而非用 page.$$(responseSelector) 遍历元素（后者会匹配嵌套子元素导致只取到部分内容）
+      //
+      // 之前"取最长匹配元素"的问题：
+      //   responseSelector 如 [class*="answer"] 会匹配父容器和子容器多个层级，
+      //   流式输出时某个子 <p> 的 innerText 可能暂时最长被当作 bestText，
+      //   导致只取到部分内容（几百字符）。
+      //
+      // 新策略：在浏览器内查找所有候选块级元素，排除侧边栏/导航等，
+      // 取 innerText 最长的一个。这个元素通常是包含完整 AI 回答的最外层容器。
       let bestText = '';
       let bestHtml = '';
       let prevLen = 0;
       let stableCount = 0;
       let hasMeaningfulContent = false;
-      let lastElementCount = 0;
 
       for (let i = 0; i < 30; i++) {
         await this.scrollToBottom(page);
 
-        // 遍历所有匹配元素，取最长的可见文本
-        let currentText = '';
-        let currentHtml = '';
-        const elements = await page.$$(this.responseSelector);
-        lastElementCount = elements.length;
-        for (const el of elements) {
-          const text = await el.innerText().catch(() => '') || '';
-          if (text.trim().length > currentText.trim().length) {
-            currentText = text;
-            currentHtml = await el.innerHTML().catch(() => '') || '';
+        // 在浏览器上下文中查找最长的可见文本块
+        const result = await page.evaluate((sel) => {
+          // 排除的元素选择器（侧边栏/导航/页脚/操作栏等）
+          const excludeSelectors = [
+            'nav', 'header', 'footer', 'aside',
+            '[class*="sidebar"]', '[class*="Sidebar"]',
+            '[class*="nav"]', '[class*="Nav"]',
+            '[class*="menu"]', '[class*="Menu"]',
+            '[class*="header"]', '[class*="Header"]',
+            '[class*="footer"]', '[class*="Footer"]',
+            '[class*="toolbar"]', '[class*="Toolbar"]',
+            '[class*="operation"]', '[class*="action"]',
+            // 排除输入框区域
+            '[class*="input"]', '[class*="Input"]',
+            '[contenteditable]', 'textarea', 'input',
+          ];
+          const excludeSet = new Set<Element>();
+          for (const ex of excludeSelectors) {
+            try { document.querySelectorAll(ex).forEach(el => {
+              excludeSet.add(el);
+              el.querySelectorAll('*').forEach(c => excludeSet.add(c));
+            }); } catch {}
           }
-        }
 
+          // 候选选择器：优先用 responseSelector，加上通用 markdown/answer 容器
+          const candidateSelectors = sel.split(',').map((s: string) => s.trim()).filter(Boolean);
+          candidateSelectors.push(
+            '[class*="markdown"]', '[class*="Markdown"]',
+            'article', 'main', '.chat-content', '[class*="chat-content"]'
+          );
+
+          let best = { text: '', html: '', selector: '' };
+          const seen = new Set<Element>();
+
+          for (const cs of candidateSelectors) {
+            try {
+              const els = Array.from(document.querySelectorAll(cs));
+              for (const el of els) {
+                if (excludeSet.has(el) || seen.has(el)) continue;
+                seen.add(el);
+                // 关键修复：用 textContent 而非 innerText
+                // innerText 只返回视口内可见文本，AI 回答超出视口时只取到部分内容（几百字符）
+                // textContent 返回所有文本（包括超出视口的部分），能拿到完整 AI 回答
+                // 排除侧边栏等隐藏元素已通过 excludeSet 处理
+                const t = ((el as HTMLElement).textContent || '').trim();
+                // 只考虑长度 >= 50 的文本块
+                if (t.length > best.text.length && t.length >= 50) {
+                  best = {
+                    text: t,
+                    html: (el as HTMLElement).innerHTML || '',
+                    selector: cs,
+                  };
+                }
+              }
+            } catch {}
+          }
+
+          return best;
+        }, this.responseSelector).catch(() => ({ text: '', html: '', selector: '' }));
+
+        const currentText = result.text || '';
+        const currentHtml = result.html || '';
         const currentLen = currentText.trim().length;
+
         if (currentLen > bestText.trim().length) {
           bestText = currentText;
           bestHtml = currentHtml;
         }
 
-        // 诊断日志：前3轮和每10轮输出一次，帮助定位问题
+        // 诊断日志：前3轮和每10轮输出一次
         if (i < 3 || i % 10 === 9) {
-          console.log(`[${this.platformName}] extractContent 轮询#${i + 1}: 匹配${lastElementCount}个元素, 当前最长=${currentLen}字符, 历史最长=${bestText.trim().length}字符`);
+          console.log(`[${this.platformName}] extractContent 轮询#${i + 1}: 当前最长=${currentLen}字符, 历史最长=${bestText.trim().length}字符`);
         }
 
         if (currentLen >= 30) {
           hasMeaningfulContent = true;
           if (currentLen === prevLen) {
             stableCount++;
-            // 稳定检测阈值从2提高到4（8秒不变才认为完成）
-            // 原因：AI流式输出时4秒内不变很常见（思考、网络抖动、长段落生成），
-            // 导致提前返回截断内容。8秒更可靠。
             if (stableCount >= 4) {
               console.log(`[${this.platformName}] 提取内容成功: ${bestText.trim().length} 字符 (轮询第${i + 1}轮稳定)`);
               return { text: bestText.trim(), html: bestHtml };
@@ -578,56 +633,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         return { text: bestText.trim(), html: bestHtml };
       }
 
-      // ============ 通用兜底策略 ============
-      // responseSelector 轮询失败（匹配0个元素或全为空），说明平台改版导致选择器失效
-      // 用 page.evaluate 在浏览器上下文查找页面上最长的可见文本块
-      // 排除侧边栏/导航/页脚等无关元素，只取有意义的 AI 回答内容
-      console.log(`[${this.platformName}] responseSelector 轮询失败(匹配${lastElementCount}个元素, 最长=${bestText.trim().length}字符)，尝试通用兜底`);
-      const fallbackResult = await page.evaluate(() => {
-        // 排除的元素选择器（侧边栏/导航/页脚/操作栏等）
-        const excludeSelectors = [
-          'nav', 'header', 'footer', 'aside',
-          '[class*="sidebar"]', '[class*="Sidebar"]',
-          '[class*="nav"]', '[class*="Nav"]',
-          '[class*="menu"]', '[class*="Menu"]',
-          '[class*="header"]', '[class*="Header"]',
-          '[class*="footer"]', '[class*="Footer"]',
-          '[class*="toolbar"]', '[class*="Toolbar"]',
-          '[class*="operation"]', '[class*="action"]',
-        ];
-        const excludeSet = new Set<Element>();
-        for (const sel of excludeSelectors) {
-          document.querySelectorAll(sel).forEach(el => {
-            excludeSet.add(el);
-            // 同时排除其所有子元素
-            el.querySelectorAll('*').forEach(child => excludeSet.add(child));
-          });
-        }
-
-        // 查找所有 div/section/article/p，取最长的可见文本
-        const candidates = Array.from(document.querySelectorAll('div, section, article, p, [class*="markdown"]'));
-        let bestFallbackText = '';
-        let bestFallbackHtml = '';
-        for (const el of candidates) {
-          // 跳过被排除的元素
-          if (excludeSet.has(el)) continue;
-          // 用 innerText 只取可见文本
-          const t = ((el as HTMLElement).innerText || '').trim();
-          // 只取长度 >= 50 的文本块（过滤短文本）
-          if (t.length > bestFallbackText.length && t.length >= 50) {
-            bestFallbackText = t;
-            bestFallbackHtml = (el as HTMLElement).innerHTML || '';
-          }
-        }
-        return { text: bestFallbackText, html: bestFallbackHtml };
-      }).catch(() => ({ text: '', html: '' }));
-
-      if (fallbackResult.text.trim().length >= 50) {
-        console.log(`[${this.platformName}] 通用兜底提取成功: ${fallbackResult.text.trim().length} 字符`);
-        return { text: fallbackResult.text.trim(), html: fallbackResult.html };
-      }
-
-      console.log(`[${this.platformName}] 提取内容失败: 轮询和兜底均无内容 (选择器=${this.responseSelector.substring(0, 80)}...)`);
+      console.log(`[${this.platformName}] 提取内容失败: 轮询60秒后仍无有意义内容 (最长=${bestText.trim().length}字符)`);
     } catch (e) {
       console.error(`[${this.platformName}] 提取内容失败:`, (e as Error).message);
       return { text: '', html: '' };
@@ -640,23 +646,33 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    */
   protected async scrollToBottom(page: Page): Promise<void> {
     try {
-      await page.evaluate(async () => {
-        await new Promise<void>((resolve) => {
-          let totalHeight = 0;
-          const distance = 200;
-          const timer = setInterval(() => {
-            const scrollHeight = document.body.scrollHeight;
-            window.scrollBy(0, distance);
-            totalHeight += distance;
-            if (totalHeight >= scrollHeight || totalHeight > 10000) {
-              clearInterval(timer);
-              resolve();
-            }
-          }, 100);
+      // 滚动聊天容器到底部（触发懒加载，确保 AI 回答完整渲染）
+      // 注意：不要滚回顶部！innerText 只返回视口内可见文本，
+      // 滚回顶部会导致 AI 回答移出视口，innerText 只取到部分内容（几百字符）。
+      await page.evaluate(() => {
+        // 1. 尝试滚动所有可能的聊天容器到底部
+        const scrollContainers: HTMLElement[] = [];
+        const selLists = [
+          '[class*="chat"]', '[class*="message"]', '[class*="conversation"]',
+          '[class*="dialog"]', 'main',
+        ];
+        for (const s of selLists) {
+          const els = document.querySelectorAll(s);
+          for (let i = 0; i < els.length; i++) {
+            const el = els[i] as HTMLElement;
+            if (el.scrollHeight > el.clientHeight) scrollContainers.push(el);
+          }
+        }
+
+        // 去重
+        const containerSet = new Set<HTMLElement>(scrollContainers);
+        containerSet.forEach(container => {
+          container.scrollTop = container.scrollHeight;
         });
-      });
-      // 滚动回顶部
-      await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
+
+        // 2. 同时滚动 window 到底部（部分平台用 body 滚动）
+        window.scrollTo(0, document.body.scrollHeight);
+      }).catch(() => {});
     } catch {
       // 滚动失败不影响主流程
     }
