@@ -702,6 +702,185 @@ export async function migrate() {
       );
     }
 
+    // ============ 内容中枢：7张新表 ============
+    // 1. AI模型配置（user_id IS NULL 表示平台共享KEY）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_model_config (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        platform VARCHAR(32) NOT NULL,
+        model_name VARCHAR(64) NOT NULL,
+        api_key_encrypted TEXT,
+        base_url VARCHAR(255) NOT NULL,
+        max_tokens INTEGER DEFAULT 4096,
+        temperature NUMERIC(3,2) DEFAULT 0.7,
+        is_active BOOLEAN DEFAULT true,
+        daily_quota INTEGER,
+        used_today INTEGER DEFAULT 0,
+        quota_reset_at TIMESTAMP,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, platform)
+      )
+    `);
+
+    // 2. 写作指令库
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS writing_instruction (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        category VARCHAR(32),
+        system_prompt TEXT NOT NULL,
+        user_prompt_template TEXT NOT NULL,
+        target_word_count INTEGER DEFAULT 1500,
+        include_faq BOOLEAN DEFAULT true,
+        include_comparison_table BOOLEAN DEFAULT true,
+        is_active BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // 3. 企业知识库
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS enterprise_knowledge (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) NOT NULL,
+        company_full_name VARCHAR(128) NOT NULL,
+        company_short_name VARCHAR(64),
+        city VARCHAR(64),
+        address VARCHAR(255),
+        industry VARCHAR(64),
+        founded_year INTEGER,
+        business_scope TEXT,
+        entity_triples JSONB,
+        intro_text TEXT,
+        cases_text TEXT,
+        is_active BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // 4. AI写作任务
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_writing_task (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) NOT NULL,
+        task_name VARCHAR(100),
+        keyword_ids INTEGER[],
+        instruction_id INTEGER REFERENCES writing_instruction(id),
+        knowledge_id INTEGER REFERENCES enterprise_knowledge(id),
+        model_config_id INTEGER REFERENCES ai_model_config(id),
+        status VARCHAR(16) DEFAULT 'pending',
+        total_count INTEGER DEFAULT 0,
+        completed_count INTEGER DEFAULT 0,
+        failed_count INTEGER DEFAULT 0,
+        error_msg TEXT,
+        started_at TIMESTAMP,
+        finished_at TIMESTAMP,
+        create_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // 5. 文章
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS article (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) NOT NULL,
+        task_id INTEGER REFERENCES ai_writing_task(id),
+        keyword_id INTEGER,
+        core_keyword VARCHAR(128) NOT NULL,
+        keyword_type SMALLINT DEFAULT 0,
+        title VARCHAR(255) NOT NULL,
+        content_html TEXT NOT NULL,
+        entity_triples JSONB,
+        target_platform VARCHAR(32),
+        word_count INTEGER,
+        status VARCHAR(16) DEFAULT 'draft',
+        cover_image_url TEXT,
+        tags TEXT[],
+        model_used VARCHAR(64),
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_article_user_keyword ON article(user_id, keyword_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_article_status ON article(status)`);
+
+    // 6. 发布步骤列表（阶段2用，阶段1先建表）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS publish_step_list (
+        id SERIAL PRIMARY KEY,
+        platform VARCHAR(32) NOT NULL,
+        version VARCHAR(16) NOT NULL,
+        step_list JSONB NOT NULL,
+        description TEXT,
+        is_active BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW(),
+        UNIQUE(platform, version)
+      )
+    `);
+
+    // 7. 发布任务+记录（阶段2用，阶段1先建表）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS publish_task (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) NOT NULL,
+        article_id INTEGER REFERENCES article(id) NOT NULL,
+        target_platforms TEXT[] NOT NULL,
+        scheduled_at TIMESTAMP,
+        status VARCHAR(16) DEFAULT 'pending',
+        total_count INTEGER DEFAULT 0,
+        completed_count INTEGER DEFAULT 0,
+        failed_count INTEGER DEFAULT 0,
+        create_time TIMESTAMP DEFAULT NOW(),
+        started_at TIMESTAMP,
+        finished_at TIMESTAMP
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS publish_record (
+        id SERIAL PRIMARY KEY,
+        task_id INTEGER REFERENCES publish_task(id) NOT NULL,
+        platform VARCHAR(32) NOT NULL,
+        platform_auth_id INTEGER REFERENCES platform_auth(id),
+        status VARCHAR(16) DEFAULT 'pending',
+        article_id_on_platform VARCHAR(128),
+        platform_url TEXT,
+        error_msg TEXT,
+        retry_count INTEGER DEFAULT 0,
+        started_at TIMESTAMP,
+        published_at TIMESTAMP,
+        create_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_publish_record_task ON publish_record(task_id)`);
+
+    // 8. platform_auth 新增 platform_type 字段
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS platform_type VARCHAR(16) DEFAULT 'query'`);
+
+    // 9. 插入7个平台的默认共享模型配置（user_id IS NULL）
+    const defaultModels = [
+      { platform: 'deepseek', model_name: 'deepseek-chat', base_url: 'https://api.deepseek.com/v1/chat/completions' },
+      { platform: 'doubao', model_name: 'doubao-pro-32k', base_url: 'https://ark.cn-beijing.volces.com/api/v3/chat/completions' },
+      { platform: 'hunyuan', model_name: 'hunyuan-pro', base_url: 'https://api.hunyuan.cloud.tencent.com/v1/chat/completions' },
+      { platform: 'qianwen', model_name: 'qwen-max', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' },
+      { platform: 'wenxin', model_name: 'ernie-bot-pro', base_url: 'https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/chat/completions' },
+      { platform: 'kimi', model_name: 'moonshot-v1-32k', base_url: 'https://api.moonshot.cn/v1/chat/completions' },
+      { platform: 'zhipu', model_name: 'glm-4', base_url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions' },
+    ];
+    for (const m of defaultModels) {
+      await client.query(`
+        INSERT INTO ai_model_config (user_id, platform, model_name, base_url, daily_quota, used_today)
+        VALUES (NULL, $1, $2, $3, 50, 0)
+        ON CONFLICT (user_id, platform) DO NOTHING
+      `, [m.platform, m.model_name, m.base_url]);
+    }
+
+    console.log('[Migrate] 内容中枢相关表创建/验证完成');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
