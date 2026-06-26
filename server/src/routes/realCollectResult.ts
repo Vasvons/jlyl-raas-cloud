@@ -68,22 +68,29 @@ router.post('/worker/report', async (req, res) => {
 // 以下接口需要管理员权限
 router.use(authMiddleware, adminMiddleware);
 
-// 手动触发清理无效记录（preview=true 只统计不删除，confirm=true 执行删除）
-// 清理标准：raw_content < 200 字符，或包含营销页/导航特征文案
+// 手动触发清理无效记录
+// mode: 'conservative' - raw_content < 200 或包含营销关键词（默认）
+// mode: 'aggressive' - 额外清理 content > 5000 字符（疑似整页文本）或 brand_matched=false 且有 static_page_id
+// mode: 'all' - 删除全部 real_collect_record（用户确认实际命中很少时可全清重跑）
 router.post('/cleanup-invalid', async (req, res) => {
   try {
+    const mode = req.body.mode || 'conservative';
     const confirm = req.body.confirm === true;
 
-    const statsResult = await query(`
-      SELECT
-        COUNT(*) as total_to_delete,
-        COUNT(*) FILTER (WHERE COALESCE(LENGTH(raw_content), 0) < 200) as short_content,
-        COUNT(*) FILTER (WHERE raw_content LIKE '%登录%' AND raw_content LIKE '%注册%') as marketing_nav,
-        COUNT(*) FILTER (WHERE raw_content LIKE '%开始对话%' OR raw_content LIKE '%开始使用%' OR raw_content LIKE '%免费体验%' OR raw_content LIKE '%立即开通%') as marketing_cta,
-        COUNT(*) FILTER (WHERE raw_content LIKE '%全部对话%' OR raw_content LIKE '%历史记录%' OR raw_content LIKE '%清空对话%') as sidebar_nav,
-        COUNT(*) as total_remaining
-      FROM real_collect_record
-      WHERE COALESCE(LENGTH(raw_content), 0) < 200
+    let whereClause = '';
+    let description = '';
+
+    if (mode === 'all') {
+      whereClause = '1=1';
+      description = '删除全部记录';
+    } else if (mode === 'aggressive') {
+      // 激进模式：额外清理
+      // 1. content > 5000 字符（真实 AI 回答一般不超过 5000，超过说明是整页文本）
+      // 2. brand_matched=false 且 has_contact=false 且 static_page_id IS NOT NULL
+      //    （非命中记录但有静态页，说明是营销页内容生成的静态页）
+      // 3. content > 2000 且 share_url IS NOT NULL 且 brand_matched=false
+      //    （有分享链接但未命中品牌，且内容过长，可能是空对话+整页文本）
+      whereClause = `COALESCE(LENGTH(raw_content), 0) < 200
          OR (raw_content LIKE '%登录%' AND raw_content LIKE '%注册%')
          OR raw_content LIKE '%开始对话%'
          OR raw_content LIKE '%开始使用%'
@@ -92,23 +99,52 @@ router.post('/cleanup-invalid', async (req, res) => {
          OR raw_content LIKE '%全部对话%'
          OR raw_content LIKE '%历史记录%'
          OR raw_content LIKE '%清空对话%'
+         OR COALESCE(LENGTH(raw_content), 0) > 5000
+         OR (brand_matched = false AND has_contact = false AND static_page_id IS NOT NULL)
+         OR (COALESCE(LENGTH(raw_content), 0) > 2000 AND share_url IS NOT NULL AND brand_matched = false)`;
+      description = '激进清理（短内容/营销关键词/超长内容/非命中静态页/非命中分享链接）';
+    } else {
+      // 保守模式
+      whereClause = `COALESCE(LENGTH(raw_content), 0) < 200
+         OR (raw_content LIKE '%登录%' AND raw_content LIKE '%注册%')
+         OR raw_content LIKE '%开始对话%'
+         OR raw_content LIKE '%开始使用%'
+         OR raw_content LIKE '%免费体验%'
+         OR raw_content LIKE '%立即开通%'
+         OR raw_content LIKE '%全部对话%'
+         OR raw_content LIKE '%历史记录%'
+         OR raw_content LIKE '%清空对话%'`;
+      description = '保守清理（短内容/营销关键词）';
+    }
+
+    const totalBeforeResult = await query(`SELECT COUNT(*) as total FROM real_collect_record`);
+    const totalBefore = parseInt(totalBeforeResult.rows[0].total);
+
+    const statsResult = await query(`
+      SELECT
+        COUNT(*) as total_to_delete,
+        COUNT(*) FILTER (WHERE COALESCE(LENGTH(raw_content), 0) < 200) as short_content,
+        COUNT(*) FILTER (WHERE COALESCE(LENGTH(raw_content), 0) > 5000) as long_content,
+        COUNT(*) FILTER (WHERE brand_matched = false AND has_contact = false AND static_page_id IS NOT NULL) as non_match_static,
+        COUNT(*) FILTER (WHERE COALESCE(LENGTH(raw_content), 0) > 2000 AND share_url IS NOT NULL AND brand_matched = false) as non_match_share
+      FROM real_collect_record
+      WHERE ${whereClause}
     `);
     const stats = statsResult.rows[0];
-
-    const totalRemainingResult = await query(`SELECT COUNT(*) as total FROM real_collect_record`);
-    const totalBefore = parseInt(totalRemainingResult.rows[0].total);
 
     if (!confirm) {
       return res.json({
         code: 200,
         data: {
+          mode: mode,
+          description: description,
           totalBefore: totalBefore,
           totalToDelete: parseInt(stats.total_to_delete),
           breakdown: {
             shortContent: parseInt(stats.short_content),
-            marketingNav: parseInt(stats.marketing_nav),
-            marketingCta: parseInt(stats.marketing_cta),
-            sidebarNav: parseInt(stats.sidebar_nav),
+            longContent: parseInt(stats.long_content),
+            nonMatchStatic: parseInt(stats.non_match_static),
+            nonMatchShare: parseInt(stats.non_match_share),
           },
           totalAfter: totalBefore - parseInt(stats.total_to_delete),
           message: '预览模式，未执行删除。传入 confirm=true 执行删除。'
@@ -116,27 +152,17 @@ router.post('/cleanup-invalid', async (req, res) => {
       });
     }
 
-    const deleteResult = await query(`
-      DELETE FROM real_collect_record
-      WHERE COALESCE(LENGTH(raw_content), 0) < 200
-         OR (raw_content LIKE '%登录%' AND raw_content LIKE '%注册%')
-         OR raw_content LIKE '%开始对话%'
-         OR raw_content LIKE '%开始使用%'
-         OR raw_content LIKE '%免费体验%'
-         OR raw_content LIKE '%立即开通%'
-         OR raw_content LIKE '%全部对话%'
-         OR raw_content LIKE '%历史记录%'
-         OR raw_content LIKE '%清空对话%'
-    `);
+    const deleteResult = await query(`DELETE FROM real_collect_record WHERE ${whereClause}`);
     const deleted = deleteResult.rowCount || 0;
 
     const totalAfterResult = await query(`SELECT COUNT(*) as total FROM real_collect_record`);
     const totalAfter = parseInt(totalAfterResult.rows[0].total);
 
-    console.log(`[Cleanup] 手动清理完成: 删除 ${deleted} 条, 剩余 ${totalAfter} 条`);
+    console.log(`[Cleanup] ${description}: 删除 ${deleted} 条, 剩余 ${totalAfter} 条`);
     res.json({
       code: 200,
       data: {
+        mode: mode,
         deleted: deleted,
         totalBefore: totalBefore,
         totalAfter: totalAfter,
