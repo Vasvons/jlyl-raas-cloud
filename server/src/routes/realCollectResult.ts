@@ -72,6 +72,7 @@ router.use(authMiddleware, adminMiddleware);
 // mode: 'conservative' - raw_content < 200 或包含营销关键词（默认）
 // mode: 'aggressive' - 额外清理 content > 5000 字符（疑似整页文本）或 brand_matched=false 且有 static_page_id
 // mode: 'invalid_share' - 清理 share_url 是私有对话URL（非真正分享链接）的记录
+// mode: 'non_match' - 清理既未命中品牌也无联系方式的记录（brand_matched=false AND has_contact=false）
 // mode: 'all' - 删除全部 real_collect_record（用户确认实际命中很少时可全清重跑）
 router.post('/cleanup-invalid', async (req, res) => {
   try {
@@ -84,6 +85,11 @@ router.post('/cleanup-invalid', async (req, res) => {
     if (mode === 'all') {
       whereClause = '1=1';
       description = '删除全部记录';
+    } else if (mode === 'non_match') {
+      // 清理既未命中品牌也无联系方式的记录
+      // 这些记录对用户无用，且 share_url 可能是空对话或静态页内容不完整
+      whereClause = `brand_matched = false AND has_contact = false`;
+      description = '清理非品牌命中且无联系方式的记录';
     } else if (mode === 'invalid_share') {
       // 清理 share_url 是私有对话URL的记录
       // 真正的分享链接格式：
