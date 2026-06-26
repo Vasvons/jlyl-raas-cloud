@@ -3046,3 +3046,368 @@ export async function checkAeoReportExists(taskId: number, reportDate: string): 
   );
   return result.rows.length > 0;
 }
+
+// ============ 内容中枢：AI模型配置 ============
+
+export async function getAiModelConfigs(userId: number): Promise<any[]> {
+  // 返回用户自有配置 + 平台共享配置（user_id IS NULL）
+  const result = await query(
+    `SELECT id, user_id, platform, model_name, base_url, max_tokens, temperature,
+            is_active, daily_quota, used_today, quota_reset_at, create_time, update_time
+     FROM ai_model_config
+     WHERE user_id = $1 OR user_id IS NULL
+     ORDER BY user_id NULLS LAST, platform`,
+    [userId]
+  );
+  return result.rows;
+}
+
+export async function getAiModelConfigById(id: number): Promise<any | null> {
+  const result = await query(
+    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at
+     FROM ai_model_config WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getActiveModelConfig(userId: number, platform: string): Promise<any | null> {
+  // 优先返回用户自有配置，其次返回共享配置
+  const result = await query(
+    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at
+     FROM ai_model_config
+     WHERE platform = $1 AND is_active = true
+       AND (user_id = $2 OR user_id IS NULL)
+     ORDER BY user_id NULLS LAST
+     LIMIT 1`,
+    [platform, userId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function createAiModelConfig(data: any): Promise<number> {
+  const result = await query(
+    `INSERT INTO ai_model_config (user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, daily_quota)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     RETURNING id`,
+    [data.user_id, data.platform, data.model_name, data.api_key_encrypted, data.base_url,
+     data.max_tokens || 4096, data.temperature || 0.7, data.is_active ?? true, data.daily_quota]
+  );
+  return result.rows[0].id;
+}
+
+export async function updateAiModelConfig(id: number, data: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  if (data.model_name !== undefined) { fields.push(`model_name = $${idx++}`); values.push(data.model_name); }
+  if (data.api_key_encrypted !== undefined) { fields.push(`api_key_encrypted = $${idx++}`); values.push(data.api_key_encrypted); }
+  if (data.base_url !== undefined) { fields.push(`base_url = $${idx++}`); values.push(data.base_url); }
+  if (data.max_tokens !== undefined) { fields.push(`max_tokens = $${idx++}`); values.push(data.max_tokens); }
+  if (data.temperature !== undefined) { fields.push(`temperature = $${idx++}`); values.push(data.temperature); }
+  if (data.is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(data.is_active); }
+  if (data.daily_quota !== undefined) { fields.push(`daily_quota = $${idx++}`); values.push(data.daily_quota); }
+  if (fields.length === 0) return;
+  fields.push(`update_time = NOW()`);
+  values.push(id);
+  await query(`UPDATE ai_model_config SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+}
+
+export async function deleteAiModelConfig(id: number): Promise<void> {
+  await query('DELETE FROM ai_model_config WHERE id = $1', [id]);
+}
+
+export async function incrementModelUsedCount(id: number): Promise<void> {
+  await query(
+    `UPDATE ai_model_config
+     SET used_today = used_today + 1,
+         quota_reset_at = CASE WHEN quota_reset_at IS NULL OR quota_reset_at < CURRENT_DATE
+                               THEN CURRENT_DATE + INTERVAL '1 day' ELSE quota_reset_at END
+     WHERE id = $1`,
+    [id]
+  );
+}
+
+export async function resetDailyQuotaIfNeeded(): Promise<void> {
+  // 重置已过期的共享KEY日额度（由定时任务调用）
+  await query(
+    `UPDATE ai_model_config
+     SET used_today = 0, quota_reset_at = CURRENT_DATE + INTERVAL '1 day'
+     WHERE user_id IS NULL AND quota_reset_at IS NOT NULL AND quota_reset_at < NOW()`
+  );
+}
+
+// ============ 内容中枢：写作指令 ============
+
+export async function getWritingInstructions(userId: number, category?: string): Promise<any[]> {
+  let sql = `SELECT * FROM writing_instruction WHERE user_id = $1 AND is_active = true`;
+  const params: any[] = [userId];
+  if (category) {
+    sql += ` AND category = $2`;
+    params.push(category);
+  }
+  sql += ` ORDER BY category, create_time DESC`;
+  const result = await query(sql, params);
+  return result.rows;
+}
+
+export async function getWritingInstructionById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM writing_instruction WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function createWritingInstruction(data: any): Promise<number> {
+  const result = await query(
+    `INSERT INTO writing_instruction (user_id, name, category, system_prompt, user_prompt_template,
+            target_word_count, include_faq, include_comparison_table, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+     RETURNING id`,
+    [data.user_id, data.name, data.category, data.system_prompt, data.user_prompt_template,
+     data.target_word_count || 1500, data.include_faq ?? true, data.include_comparison_table ?? true]
+  );
+  return result.rows[0].id;
+}
+
+export async function updateWritingInstruction(id: number, data: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of ['name', 'category', 'system_prompt', 'user_prompt_template', 'target_word_count', 'include_faq', 'include_comparison_table', 'is_active']) {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = $${idx++}`);
+      values.push(data[key]);
+    }
+  }
+  if (fields.length === 0) return;
+  fields.push(`update_time = NOW()`);
+  values.push(id);
+  await query(`UPDATE writing_instruction SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+}
+
+export async function deleteWritingInstruction(id: number): Promise<void> {
+  await query('UPDATE writing_instruction SET is_active = false WHERE id = $1', [id]);
+}
+
+// ============ 内容中枢：企业知识库 ============
+
+export async function getEnterpriseKnowledges(userId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM enterprise_knowledge WHERE user_id = $1 AND is_active = true ORDER BY create_time DESC`,
+    [userId]
+  );
+  return result.rows;
+}
+
+export async function getEnterpriseKnowledgeById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM enterprise_knowledge WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function createEnterpriseKnowledge(data: any): Promise<number> {
+  const result = await query(
+    `INSERT INTO enterprise_knowledge (user_id, company_full_name, company_short_name, city, address,
+            industry, founded_year, business_scope, entity_triples, intro_text, cases_text, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true)
+     RETURNING id`,
+    [data.user_id, data.company_full_name, data.company_short_name, data.city, data.address,
+     data.industry, data.founded_year, data.business_scope,
+     JSON.stringify(data.entity_triples || []), data.intro_text, data.cases_text]
+  );
+  return result.rows[0].id;
+}
+
+export async function updateEnterpriseKnowledge(id: number, data: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of ['company_full_name', 'company_short_name', 'city', 'address', 'industry', 'founded_year', 'business_scope', 'intro_text', 'cases_text']) {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = $${idx++}`);
+      values.push(data[key]);
+    }
+  }
+  if (data.entity_triples !== undefined) {
+    fields.push(`entity_triples = $${idx++}`);
+    values.push(JSON.stringify(data.entity_triples));
+  }
+  if (fields.length === 0) return;
+  fields.push(`update_time = NOW()`);
+  values.push(id);
+  await query(`UPDATE enterprise_knowledge SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+}
+
+export async function deleteEnterpriseKnowledge(id: number): Promise<void> {
+  await query('UPDATE enterprise_knowledge SET is_active = false WHERE id = $1', [id]);
+}
+
+// ============ 内容中枢：AI写作任务 ============
+
+export async function createWritingTask(data: any): Promise<number> {
+  const result = await query(
+    `INSERT INTO ai_writing_task (user_id, task_name, keyword_ids, instruction_id, knowledge_id,
+            model_config_id, status, total_count, started_at)
+     VALUES ($1, $2, $3, $4, $5, $6, 'processing', $7, NOW())
+     RETURNING id`,
+    [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
+     data.model_config_id, data.total_count]
+  );
+  return result.rows[0].id;
+}
+
+export async function getWritingTasks(userId: number, page: number = 1, pageSize: number = 20): Promise<{ list: any[]; total: number }> {
+  const offset = (page - 1) * pageSize;
+  const countResult = await query('SELECT COUNT(*) as total FROM ai_writing_task WHERE user_id = $1', [userId]);
+  const total = parseInt(countResult.rows[0].total);
+  const result = await query(
+    `SELECT t.*, i.name as instruction_name, k.company_short_name as knowledge_name
+     FROM ai_writing_task t
+     LEFT JOIN writing_instruction i ON t.instruction_id = i.id
+     LEFT JOIN enterprise_knowledge k ON t.knowledge_id = k.id
+     WHERE t.user_id = $1
+     ORDER BY t.create_time DESC
+     LIMIT $2 OFFSET $3`,
+    [userId, pageSize, offset]
+  );
+  return { list: result.rows, total };
+}
+
+export async function getWritingTaskById(id: number): Promise<any | null> {
+  const result = await query(
+    `SELECT t.*, i.name as instruction_name, i.system_prompt, i.user_prompt_template,
+            k.company_full_name, k.company_short_name, k.city, k.industry, k.business_scope,
+            k.entity_triples, k.intro_text, k.cases_text
+     FROM ai_writing_task t
+     LEFT JOIN writing_instruction i ON t.instruction_id = i.id
+     LEFT JOIN enterprise_knowledge k ON t.knowledge_id = k.id
+     WHERE t.id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function updateWritingTaskProgress(taskId: number, completedDelta: number, failedDelta: number): Promise<void> {
+  await query(
+    `UPDATE ai_writing_task
+     SET completed_count = completed_count + $2,
+         failed_count = failed_count + $3
+     WHERE id = $1`,
+    [taskId, completedDelta, failedDelta]
+  );
+}
+
+export async function completeWritingTask(taskId: number, status: 'completed' | 'partial' | 'failed', errorMsg?: string): Promise<void> {
+  await query(
+    `UPDATE ai_writing_task SET status = $2, error_msg = $3, finished_at = NOW() WHERE id = $1`,
+    [taskId, status, errorMsg || null]
+  );
+}
+
+export async function deleteWritingTask(taskId: number): Promise<void> {
+  // 删除任务关联的 draft 状态文章，然后删除任务
+  await query('DELETE FROM article WHERE task_id = $1 AND status = $2', [taskId, 'draft']);
+  await query('DELETE FROM ai_writing_task WHERE id = $1', [taskId]);
+}
+
+// ============ 内容中枢：文章 ============
+
+export async function getArticles(userId: number, filters: { keyword?: string; status?: string; page?: number; pageSize?: number }): Promise<{ list: any[]; total: number }> {
+  const page = filters.page || 1;
+  const pageSize = filters.pageSize || 20;
+  const offset = (page - 1) * pageSize;
+  const where: string[] = ['user_id = $1'];
+  const params: any[] = [userId];
+  let idx = 2;
+  if (filters.keyword) {
+    where.push(`(title ILIKE $${idx} OR core_keyword ILIKE $${idx})`);
+    params.push(`%${filters.keyword}%`);
+    idx++;
+  }
+  if (filters.status) {
+    where.push(`status = $${idx++}`);
+    params.push(filters.status);
+  }
+  const whereClause = where.join(' AND ');
+  const countResult = await query(`SELECT COUNT(*) as total FROM article WHERE ${whereClause}`, params);
+  const total = parseInt(countResult.rows[0].total);
+  params.push(pageSize, offset);
+  const result = await query(
+    `SELECT id, task_id, keyword_id, core_keyword, keyword_type, title, target_platform,
+            word_count, status, cover_image_url, tags, model_used, create_time, update_time
+     FROM article WHERE ${whereClause}
+     ORDER BY create_time DESC
+     LIMIT $${idx} OFFSET $${idx + 1}`,
+    params
+  );
+  return { list: result.rows, total };
+}
+
+export async function getArticleById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM article WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function createArticle(data: any): Promise<number> {
+  const result = await query(
+    `INSERT INTO article (user_id, task_id, keyword_id, core_keyword, keyword_type, title,
+            content_html, entity_triples, target_platform, word_count, status, tags, model_used)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     RETURNING id`,
+    [data.user_id, data.task_id, data.keyword_id, data.core_keyword, data.keyword_type || 0,
+     data.title, data.content_html, JSON.stringify(data.entity_triples || []),
+     data.target_platform, data.word_count, data.status || 'generated',
+     data.tags || [], data.model_used]
+  );
+  return result.rows[0].id;
+}
+
+export async function updateArticle(id: number, data: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of ['title', 'content_html', 'entity_triples', 'target_platform', 'word_count', 'status', 'cover_image_url', 'tags']) {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = $${idx++}`);
+      values.push(key === 'entity_triples' || key === 'tags' ? JSON.stringify(data[key]) : data[key]);
+    }
+  }
+  if (fields.length === 0) return;
+  fields.push(`update_time = NOW()`);
+  values.push(id);
+  await query(`UPDATE article SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+}
+
+export async function deleteArticle(id: number): Promise<void> {
+  await query('DELETE FROM article WHERE id = $1', [id]);
+}
+
+// ============ 内容中枢：关键词查询辅助 ============
+
+export async function getKeywordsByIds(ids: number[]): Promise<any[]> {
+  if (ids.length === 0) return [];
+  const result = await query(
+    `SELECT id, value, userid, keyword_type FROM zlgjc WHERE id = ANY($1::int[])`,
+    [ids]
+  );
+  return result.rows;
+}
+
+export async function getArticleCoverageStats(userId: string): Promise<{ total: number; covered: number }> {
+  // 蒸馏词库总词数 vs 已生成文章的词数
+  const totalResult = await query(
+    `SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1 AND keyword_type = 0`,
+    [userId]
+  );
+  const coveredResult = await query(
+    `SELECT COUNT(DISTINCT keyword_id) as covered
+     FROM article
+     WHERE user_id = $1 AND keyword_id IS NOT NULL AND keyword_type = 0`,
+    [userId]
+  );
+  return {
+    total: parseInt(totalResult.rows[0].total),
+    covered: parseInt(coveredResult.rows[0].covered),
+  };
+}
