@@ -1161,6 +1161,8 @@ export async function enqueueRealCollectTask(task: any, keywords: string[], prio
 
 // Worker从队列消费任务（原子操作，防止多Worker竞争）
 // 严格轮询策略：优先级高的先执行；同优先级内，选择"最近最少执行"的task的下一个分片
+// 重要：必须 JOIN real_collect_task 过滤 t.status='active'，否则暂停（status='paused'）
+// 的任务其 pending 分片仍会被消费，导致"暂停后日志依旧在更新"的问题。
 export async function dequeueRealCollectTask(workerId: string): Promise<any | null> {
   // 使用子查询找出"该task最近一次running/done的时间"最早的task，
   // 然后从该task的pending分片中取最早入队的一个
@@ -1181,7 +1183,9 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
              '1970-01-01'::timestamp
            ) as last_consumed
          FROM real_collect_queue q
+         INNER JOIN real_collect_task t ON t.id = q.task_id
          WHERE q.status = 'pending'
+           AND t.status = 'active'
        )
        SELECT r.id FROM ranked r
        ORDER BY r.priority DESC, r.last_consumed ASC, r.create_time ASC

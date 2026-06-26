@@ -439,7 +439,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     await this.scrollToBottom(page);
 
     if (!this.responseSelector) {
-      // 无选择器时，尝试获取页面上最后一段长文本
+      // 无选择器时，尝试获取页面上最长的可见文本块
       // 优先查找常见的 AI 回答容器，避免获取到侧边栏/导航等无关内容
       const text = await page.evaluate(() => {
         // 1. 优先查找常见的 AI 回答容器
@@ -448,20 +448,21 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           '[class*="chat-content"]', '[class*="chat-content"]',
           '[class*="bubble"]', '[class*="content"]', 'article', 'main'
         ];
+        let bestText = '';
         for (const sel of answerSelectors) {
           const els = Array.from(document.querySelectorAll(sel));
-          if (els.length > 0) {
-            // 取最后一个（最新的回答）
-            const lastEl = els[els.length - 1];
-            const t = (lastEl.textContent || '').trim();
-            if (t.length > 50) return t;
+          for (const el of els) {
+            // 用 innerText 只取可见文本，避免拿到隐藏元素
+            const t = ((el as HTMLElement).innerText || '').trim();
+            if (t.length > bestText.length) bestText = t;
           }
+          if (bestText.length > 50) return bestText;
         }
-        // 2. 兜底：获取页面上最长的 div 文本
+        // 2. 兜底：获取页面上最长的 div 可见文本
         const elements = Array.from(document.querySelectorAll('div, section, article'));
         let lastLongText = '';
         for (const el of elements) {
-          const t = (el.textContent || '').trim();
+          const t = ((el as HTMLElement).innerText || '').trim();
           if (t.length > lastLongText.length) lastLongText = t;
         }
         return lastLongText;
@@ -474,13 +475,67 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       await page.waitForSelector(this.responseSelector, { timeout: 30000 });
       // 再次滚动确保完整渲染
       await this.scrollToBottom(page);
-      // 取最后一个匹配的元素（最新的回答）
+
+      // 关键修复：遍历所有匹配元素，取"最长的可见文本"，而非"最后一个元素"
+      // 原因：responseSelector 多为宽泛子串匹配（如 [class*="answer"]），
+      // 会匹配到侧边栏/页脚/操作栏等空 div。取最后一个元素极易拿到空 div，
+      // 导致 textContent 返回空字符串，内容长度为 0。
+      // 改为遍历取最长 + innerText（只返回可见文本）可精准定位 AI 回答容器。
+      let bestText = '';
+      let bestHtml = '';
       const elements = await page.$$(this.responseSelector);
-      const lastEl = elements[elements.length - 1];
-      if (lastEl) {
-        const text = (await lastEl.textContent()) || '';
-        const html = (await lastEl.innerHTML()) || '';
-        return { text: text.trim(), html };
+      for (const el of elements) {
+        // innerText 只返回可见文本，避免拿到 display:none 的隐藏元素
+        const text = await el.innerText().catch(() => '') || '';
+        if (text.trim().length > bestText.trim().length) {
+          bestText = text;
+          bestHtml = await el.innerHTML().catch(() => '') || '';
+        }
+      }
+
+      // 内容稳定检测：AI 回答可能是流式输出，连续两次获取长度不变才算完整
+      // 避免在 AI 还在输出时提取到不完整内容（导致长度偏小或被截断）
+      if (bestText.trim().length > 0) {
+        let prevLen = bestText.trim().length;
+        let stableCount = 0;
+        for (let i = 0; i < 8; i++) {
+          await page.waitForTimeout(2000);
+          // 重新提取最长内容
+          let currentText = '';
+          let currentHtml = '';
+          const reElements = await page.$$(this.responseSelector);
+          for (const el of reElements) {
+            const text = await el.innerText().catch(() => '') || '';
+            if (text.trim().length > currentText.trim().length) {
+              currentText = text;
+              currentHtml = await el.innerHTML().catch(() => '') || '';
+            }
+          }
+          const currentLen = currentText.trim().length;
+          if (currentLen === prevLen) {
+            stableCount++;
+            if (stableCount >= 2) {
+              // 连续2次长度不变，认为内容已稳定
+              if (currentLen > bestText.trim().length) {
+                bestText = currentText;
+                bestHtml = currentHtml;
+              }
+              break;
+            }
+          } else {
+            stableCount = 0;
+            prevLen = currentLen;
+            if (currentLen > bestText.trim().length) {
+              bestText = currentText;
+              bestHtml = currentHtml;
+            }
+          }
+        }
+      }
+
+      if (bestText.trim().length > 0) {
+        console.log(`[${this.platformName}] 提取内容成功: ${bestText.trim().length} 字符`);
+        return { text: bestText.trim(), html: bestHtml };
       }
     } catch (e) {
       console.error(`[${this.platformName}] 提取内容失败:`, (e as Error).message);
