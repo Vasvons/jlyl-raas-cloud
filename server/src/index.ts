@@ -14,6 +14,7 @@ import realCollectQueueRoutes from './routes/realCollectQueue';
 import platformAuthRoutes from './routes/platformAuth';
 import workerLogRoutes from './routes/workerLog';
 import aeoRoutes from './routes/aeo';
+import contentRoutes from './routes/content';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
 
@@ -228,6 +229,7 @@ app.use('/real-collect/queue', realCollectQueueRoutes);
 app.use('/platform-auth', platformAuthRoutes);
 app.use('/real-collect/logs', workerLogRoutes);
 app.use('/aeo', aeoRoutes);
+app.use('/api/content', contentRoutes);
 
 // 错误处理
 app.use((err: any, req: any, res: any, next: any) => {
