@@ -8,7 +8,6 @@ import {
   LinkOutlined,
   ScheduleOutlined,
   DashboardOutlined,
-  FileTextOutlined,
 } from '@ant-design/icons';
 import './console.css';
 
@@ -18,7 +17,7 @@ const MENU_ITEMS = [
   { key: '/console/keywordsmaintain', label: '收录结果', icon: <LinkOutlined /> },
   { key: '/console/task', label: '收录查询', icon: <ScheduleOutlined /> },
   { key: '/console/monitor', label: '数据监测', icon: <DashboardOutlined /> },
-  { key: '/console/content', label: '内容中枢', icon: <FileTextOutlined /> },
+  // 内容中枢已在桌面端本地实现，不再部署到云端 web
 ];
 
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {

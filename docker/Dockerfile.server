@@ -21,6 +21,7 @@ RUN npm install
 # 复制源码并编译
 COPY server/tsconfig.json ./
 COPY server/src ./src
+COPY server/data ./data
 RUN npx tsc
 
 # 清理开发依赖，只保留生产依赖

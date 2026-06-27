@@ -3377,7 +3377,7 @@ export async function deleteWritingTask(taskId: number): Promise<void> {
 
 // ============ 内容中枢：文章 ============
 
-export async function getArticles(userId: number, filters: { keyword?: string; status?: string; page?: number; pageSize?: number }): Promise<{ list: any[]; total: number }> {
+export async function getArticles(userId: number, filters: { keyword?: string; status?: string; task_id?: number; page?: number; pageSize?: number }): Promise<{ list: any[]; total: number }> {
   const page = filters.page || 1;
   const pageSize = filters.pageSize || 20;
   const offset = (page - 1) * pageSize;
@@ -3392,6 +3392,10 @@ export async function getArticles(userId: number, filters: { keyword?: string; s
   if (filters.status) {
     where.push(`status = $${idx++}`);
     params.push(filters.status);
+  }
+  if (filters.task_id) {
+    where.push(`task_id = $${idx++}`);
+    params.push(filters.task_id);
   }
   const whereClause = where.join(' AND ');
   const countResult = await query(`SELECT COUNT(*) as total FROM article WHERE ${whereClause}`, params);

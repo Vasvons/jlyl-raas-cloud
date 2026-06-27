@@ -360,9 +360,11 @@ router.get('/writing-tasks/:id/articles', async (req: Request, res: Response) =>
 router.get('/articles', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
+    const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
     const result = await getArticles(userId, {
       keyword: req.query.keyword as string,
       status: req.query.status as string,
+      task_id: taskId,
       page: Number(req.query.page) || 1,
       pageSize: Number(req.query.pageSize) || 20,
     });

@@ -1,0 +1,23 @@
+{
+  "platform": "wy",
+  "version": "1.0.0",
+  "description": "网易号发布流程占位（待 Playwright codegen 录制补全）",
+  "is_placeholder": true,
+  "login_check_url": "https://mp.163.com",
+  "login_check_selector": "//div[contains(@class,'user-info')]",
+  "logout_keywords": ["登录", "请登录"],
+  "steps": [
+    {
+      "type": "navigate",
+      "value": "https://mp.163.com/dy/article/post",
+      "descript": "导航到网易号发布页（占位：该平台 step_list 待补全）",
+      "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "throw new Error('网易号 step_list 尚未实现，请联系开发人员通过 Playwright codegen 录制补全');",
+      "descript": "提示用户该平台尚未实现",
+      "timeout": 3000
+    }
+  ]
+}

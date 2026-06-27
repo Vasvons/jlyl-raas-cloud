@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { migrate } from './migrate';
+import { seedStepLists } from './services/content/stepListSeeder';
 import { startScheduler, getSchedulerStatus } from './scheduler';
 import authRoutes from './routes/auth';
 import dashboardRoutes from './routes/dashboard';
@@ -242,6 +243,11 @@ async function start() {
   try {
     // 执行数据库迁移
     await migrate();
+
+    // 导入发布 step_list 种子数据（幂等，仅缺失平台才导入）
+    await seedStepLists().catch(e => {
+      console.error('[Server] step_list 种子导入失败（不阻断启动）:', e.message);
+    });
 
     // 启动定时任务
     startScheduler();

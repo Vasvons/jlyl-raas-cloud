@@ -1,0 +1,23 @@
+{
+  "platform": "dy",
+  "version": "1.0.0",
+  "description": "抖音创作者中心发布流程占位（待 Playwright codegen 录制补全）",
+  "is_placeholder": true,
+  "login_check_url": "https://creator.douyin.com",
+  "login_check_selector": "//div[contains(@class,'user-info')]",
+  "logout_keywords": ["登录", "请登录"],
+  "steps": [
+    {
+      "type": "navigate",
+      "value": "https://creator.douyin.com/creator-micro/content/upload",
+      "descript": "导航到抖音创作者中心（占位：该平台 step_list 待补全，抖音以视频为主，图文发布需单独处理）",
+      "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "throw new Error('抖音 step_list 尚未实现，抖音以视频内容为主，图文发布请联系开发人员单独适配');",
+      "descript": "提示用户该平台尚未实现",
+      "timeout": 3000
+    }
+  ]
+}

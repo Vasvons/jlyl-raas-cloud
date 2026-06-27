@@ -1,0 +1,81 @@
+{
+  "platform": "js",
+  "version": "1.0.0",
+  "description": "简书文章发布流程：www.jianshu.com/writer#/articles/new",
+  "login_check_url": "https://www.jianshu.com/writer#/articles/new",
+  "login_check_selector": "//textarea[contains(@class,'title-input')] | //input[@placeholder='请输入文章标题']",
+  "logout_keywords": ["登录", "注册", "sign in"],
+  "steps": [
+    {
+      "type": "navigate",
+      "value": "https://www.jianshu.com/writer#/articles/new",
+      "descript": "导航到简书写作页",
+      "timeout": 30000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": "//textarea | //input[@placeholder='请输入文章标题']",
+      "descript": "等待标题输入框",
+      "timeout": 15000
+    },
+    {
+      "type": "fill",
+      "selector": "//textarea | //input[@placeholder='请输入文章标题']",
+      "value": "{title}",
+      "descript": "填写文章标题",
+      "timeout": 5000
+    },
+    {
+      "type": "click",
+      "selector": ".public-DraftEditor-content / //div[contains(@class,'public-DraftEditor-content')]",
+      "descript": "点击正文编辑区",
+      "timeout": 5000
+    },
+    {
+      "type": "content",
+      "selector": ".public-DraftEditor-content / //div[contains(@class,'public-DraftEditor-content')]",
+      "value": "{content}",
+      "descript": "粘贴正文",
+      "timeout": 10000
+    },
+    {
+      "type": "click",
+      "selector": "//button[contains(text(),'发布文章')] | //a[contains(text(),'发布文章')]",
+      "descript": "点击发布文章",
+      "timeout": 8000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": ".publish-popup / //div[contains(@class,'publish-popup')] | //input[@placeholder='请输入标签']",
+      "descript": "等待发布弹窗",
+      "timeout": 5000,
+      "is_try": true
+    },
+    {
+      "type": "tags",
+      "selector": "//input[@placeholder='请输入标签']",
+      "value": "{tags}",
+      "descript": "填入标签",
+      "timeout": 5000,
+      "is_try": true
+    },
+    {
+      "type": "click",
+      "selector": "//button[contains(text(),'确认发布')] | //button[contains(text(),'发布')][last()]",
+      "descript": "确认发布",
+      "timeout": 5000
+    },
+    {
+      "type": "wait_for_url",
+      "value": "jianshu.com/p/",
+      "descript": "等待跳转到文章详情",
+      "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "return window.location.href;",
+      "descript": "获取文章 URL",
+      "timeout": 3000
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "platform": "zh",
+  "version": "1.0.0",
+  "description": "知乎专栏发布流程：zhuanlan.zhihu.com/write",
+  "login_check_url": "https://zhuanlan.zhihu.com/write",
+  "login_check_selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
+  "logout_keywords": ["登录", "注册", "加入知乎"],
+  "steps": [
+    {
+      "type": "navigate",
+      "value": "https://zhuanlan.zhihu.com/write",
+      "descript": "导航到知乎专栏写作页",
+      "timeout": 30000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
+      "descript": "等待标题输入框",
+      "timeout": 15000
+    },
+    {
+      "type": "fill",
+      "selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
+      "value": "{title}",
+      "descript": "填写标题",
+      "timeout": 5000
+    },
+    {
+      "type": "click",
+      "selector": ".public-DraftEditor-content / //div[contains(@class,'public-DraftEditor-content')]",
+      "descript": "点击正文区",
+      "timeout": 5000
+    },
+    {
+      "type": "content",
+      "selector": ".public-DraftEditor-content / //div[contains(@class,'public-DraftEditor-content')]",
+      "value": "{content}",
+      "descript": "粘贴正文",
+      "timeout": 10000
+    },
+    {
+      "type": "click",
+      "selector": "//button[contains(text(),'发布')] | //button[contains(@class,'PublishPanel')]",
+      "descript": "点击发布按钮",
+      "timeout": 8000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": ".PublishPanel / //div[contains(@class,'PublishPanel')] | //input[@placeholder='选择话题']",
+      "descript": "等待发布面板",
+      "timeout": 5000,
+      "is_try": true
+    },
+    {
+      "type": "tags",
+      "selector": "//input[@placeholder='选择话题']",
+      "value": "{tags}",
+      "descript": "填入话题标签",
+      "timeout": 5000,
+      "is_try": true
+    },
+    {
+      "type": "click",
+      "selector": "//button[contains(text(),'确认并发布')] | //button[contains(text(),'发布')][last()]",
+      "descript": "确认发布",
+      "timeout": 5000
+    },
+    {
+      "type": "wait_for_url",
+      "value": "zhuanlan.zhihu.com/p/",
+      "descript": "等待跳转到专栏文章",
+      "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "return window.location.href;",
+      "descript": "获取文章 URL",
+      "timeout": 3000
+    }
+  ]
+}

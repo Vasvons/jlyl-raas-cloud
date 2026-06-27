@@ -1,0 +1,89 @@
+{
+  "platform": "csdn",
+  "version": "1.0.0",
+  "description": "CSDN 博客发布流程：editor.csdn.net/md?not_checkout=1",
+  "login_check_url": "https://editor.csdn.net/md?not_checkout=1",
+  "login_check_selector": "//div[contains(@class,'toolbar-main')] | //input[@id='articleTitle']",
+  "logout_keywords": ["登录", "sign in", "请登录"],
+  "steps": [
+    {
+      "type": "navigate",
+      "value": "https://editor.csdn.net/md?not_checkout=1",
+      "descript": "导航到 CSDN 写作页",
+      "timeout": 30000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": "#articleTitle",
+      "descript": "等待标题输入框出现",
+      "timeout": 15000
+    },
+    {
+      "type": "fill",
+      "selector": "#articleTitle",
+      "value": "{title}",
+      "descript": "填写文章标题",
+      "timeout": 5000
+    },
+    {
+      "type": "click",
+      "selector": ".editor_ace / //div[contains(@class,'editor_ace')]",
+      "descript": "点击编辑区获取焦点",
+      "timeout": 5000
+    },
+    {
+      "type": "content",
+      "selector": ".editor_ace / //div[contains(@class,'editor_ace')]",
+      "value": "{content}",
+      "descript": "粘贴文章正文（HTML→剪贴板→Ctrl+V）",
+      "timeout": 10000
+    },
+    {
+      "type": "click",
+      "selector": ".tags-box / //div[contains(@class,'tags-box')]",
+      "descript": "展开标签输入区",
+      "timeout": 5000,
+      "is_try": true
+    },
+    {
+      "type": "tags",
+      "selector": "#tagsInput / //input[@id='tagsInput']",
+      "value": "{tags}",
+      "descript": "逐个填入标签（回车确认每个）",
+      "timeout": 8000,
+      "is_try": true
+    },
+    {
+      "type": "click",
+      "selector": ".submit-btn / //button[contains(@class,'submit-btn')] | //button[contains(text(),'发布文章')]",
+      "descript": "点击发布文章按钮",
+      "timeout": 8000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": ".publish-popup / //div[contains(@class,'publish-popup')] | //button[contains(text(),'确认发布')]",
+      "descript": "等待发布弹窗（若有）",
+      "timeout": 5000,
+      "is_try": true
+    },
+    {
+      "type": "click",
+      "selector": "//button[contains(text(),'确认发布')] | //button[contains(text(),'确定')]",
+      "descript": "确认发布（如有弹窗）",
+      "timeout": 5000,
+      "is_try": true
+    },
+    {
+      "type": "wait_for_url",
+      "value": "https://blog.csdn.net/article/details/",
+      "descript": "等待跳转到文章详情页",
+      "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "return window.location.href;",
+      "descript": "获取发布后文章 URL",
+      "timeout": 3000
+    }
+  ]
+}

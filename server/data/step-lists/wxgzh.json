@@ -1,0 +1,23 @@
+{
+  "platform": "wxgzh",
+  "version": "1.0.0",
+  "description": "微信公众号发布流程占位（待 Playwright codegen 录制补全）",
+  "is_placeholder": true,
+  "login_check_url": "https://mp.weixin.qq.com",
+  "login_check_selector": "//div[contains(@class,'account_list')]",
+  "logout_keywords": ["登录", "请登录"],
+  "steps": [
+    {
+      "type": "navigate",
+      "value": "https://mp.weixin.qq.com",
+      "descript": "导航到微信公众平台（占位：该平台 step_list 待补全）",
+      "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "throw new Error('微信公众号 step_list 尚未实现，请联系开发人员通过 Playwright codegen 录制补全');",
+      "descript": "提示用户该平台尚未实现",
+      "timeout": 3000
+    }
+  ]
+}

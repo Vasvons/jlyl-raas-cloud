@@ -1,0 +1,23 @@
+{
+  "platform": "tt",
+  "version": "1.0.0",
+  "description": "今日头条发布流程占位（待 Playwright codegen 录制补全）",
+  "is_placeholder": true,
+  "login_check_url": "https://mp.toutiao.com",
+  "login_check_selector": "//div[contains(@class,'user-avatar')]",
+  "logout_keywords": ["登录", "请登录"],
+  "steps": [
+    {
+      "type": "navigate",
+      "value": "https://mp.toutiao.com/profile_v4/graphic/publish",
+      "descript": "导航到头条号发布页（占位：该平台 step_list 待补全）",
+      "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "throw new Error('今日头条 step_list 尚未实现，请联系开发人员通过 Playwright codegen 录制补全');",
+      "descript": "提示用户该平台尚未实现",
+      "timeout": 3000
+    }
+  ]
+}
