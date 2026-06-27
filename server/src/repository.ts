@@ -3140,6 +3140,50 @@ export async function resetDailyQuotaIfNeeded(): Promise<void> {
   );
 }
 
+// ============ 内容中枢：云接口配置（cloud_api_config） ============
+// 单行配置模式：每个 user_id 一行，9 个固定字段（参考 jlyl.net.cn/agent/api_set）
+
+const CLOUD_API_FIELDS = [
+  'aliyun_access_key',
+  'aliyun_access_secret',
+  'aliyun_oss_bucket',
+  'aliyun_oss_cdn',
+  'doubao_app_id',
+  'coze_key',
+  'coze_baowen_workflow_id',
+  'coze_parse_workflow_id',
+  'keyword_index_key',
+] as const;
+
+/** 获取当前用户的云接口配置（不存在则返回空对象） */
+export async function getCloudApiConfig(userId: number): Promise<any | null> {
+  const result = await query(
+    `SELECT id, user_id, ${CLOUD_API_FIELDS.join(', ')}, create_time, update_time
+     FROM cloud_api_config
+     WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows[0] || null;
+}
+
+/** 创建或更新云接口配置（upsert，按 user_id 唯一） */
+export async function upsertCloudApiConfig(userId: number, data: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [userId];
+  let idx = 2;
+  for (const f of CLOUD_API_FIELDS) {
+    fields.push(`${f} = $${idx++}`);
+    values.push(data[f] ?? '');
+  }
+  await query(
+    `INSERT INTO cloud_api_config (user_id, ${CLOUD_API_FIELDS.join(', ')})
+     VALUES ($1, ${CLOUD_API_FIELDS.map((_, i) => `$${i + 2}`).join(', ')})
+     ON CONFLICT (user_id)
+     DO UPDATE SET ${fields.join(', ')}, update_time = NOW()`,
+    values
+  );
+}
+
 // ============ 内容中枢：写作指令 ============
 
 export async function getWritingInstructions(userId: number, category?: string): Promise<any[]> {

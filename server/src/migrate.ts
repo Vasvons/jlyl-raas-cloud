@@ -875,6 +875,26 @@ export async function migrate() {
     await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS content_types JSONB DEFAULT '[]'`);
     await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS random_mode BOOLEAN DEFAULT FALSE`);
 
+    // 8.3 云接口配置表（参考 jlyl.net.cn/agent/api_set）
+    // 单行配置模式：每个 user_id 一行，存储 9 个固定字段（敏感字段加密）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cloud_api_config (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER UNIQUE,
+        aliyun_access_key TEXT DEFAULT '',
+        aliyun_access_secret TEXT DEFAULT '',
+        aliyun_oss_bucket TEXT DEFAULT '',
+        aliyun_oss_cdn TEXT DEFAULT '',
+        doubao_app_id TEXT DEFAULT '',
+        coze_key TEXT DEFAULT '',
+        coze_baowen_workflow_id TEXT DEFAULT '',
+        coze_parse_workflow_id TEXT DEFAULT '',
+        keyword_index_key TEXT DEFAULT '',
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // 9. 插入7个平台的默认共享模型配置（user_id IS NULL）
     const defaultModels = [
       { platform: 'deepseek', model_name: 'deepseek-chat', base_url: 'https://api.deepseek.com/v1/chat/completions' },

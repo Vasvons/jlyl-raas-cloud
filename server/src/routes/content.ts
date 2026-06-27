@@ -45,6 +45,9 @@ import {
   updatePublishAccountStatus,
   deletePublishAccount,
   getPublishAccountById,
+  // 云接口配置
+  getCloudApiConfig,
+  upsertCloudApiConfig,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection } from '../services/content/aiClient';
@@ -836,6 +839,29 @@ router.get('/keywords/brand', async (req: Request, res: Response) => {
       [String(customerId)]
     );
     res.json({ code: 200, data: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 云接口配置（cloud_api_config） ============
+// 单行配置：GET 获取当前用户配置；PUT 创建/更新配置
+
+router.get('/cloud-api', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const config = await getCloudApiConfig(userId);
+    res.json({ code: 200, data: config || {} });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.put('/cloud-api', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    await upsertCloudApiConfig(userId, req.body || {});
+    res.json({ code: 200 });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
