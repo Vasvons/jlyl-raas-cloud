@@ -311,16 +311,33 @@ router.get('/writing-tasks/:id', async (req: Request, res: Response) => {
 router.post('/writing-tasks', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { task_name, keyword_ids, instruction_id, knowledge_id, model_config_id } = req.body;
-    if (!keyword_ids || !Array.isArray(keyword_ids) || keyword_ids.length === 0) {
-      return res.status(400).json({ code: 400, message: 'keyword_ids 必填且非空' });
+    const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode } = req.body;
+
+    // 关键词来源优先级：
+    //   1. keyword_ids（显式传入，向后兼容）
+    //   2. keywords（字符串数组，前端手动输入，需转换为 keyword_ids）
+    //   3. 都没有 → 报错
+    let finalKeywordIds: number[] = [];
+    if (Array.isArray(keyword_ids) && keyword_ids.length > 0) {
+      finalKeywordIds = keyword_ids;
+    } else if (Array.isArray(keywords) && keywords.length > 0) {
+      // 按关键词文本查 ID（兼容前端无 ID 场景）
+      const { getKeywordIdsByValues } = await import('../repository');
+      finalKeywordIds = await getKeywordIdsByValues(userId, keywords);
     }
-    if (!instruction_id || !knowledge_id || !model_config_id) {
-      return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id/model_config_id 必填' });
+
+    if (finalKeywordIds.length === 0) {
+      return res.status(400).json({ code: 400, message: '关键词必填且非空' });
     }
+    if (!instruction_id || !knowledge_id) {
+      return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id 必填' });
+    }
+    // model_config_id 可选：未传时由 articleGenerator 自动取默认模型
     const taskId = await createWritingTask({
-      user_id: userId, task_name, keyword_ids, instruction_id, knowledge_id, model_config_id,
-      total_count: keyword_ids.length,
+      user_id: userId, task_name, keyword_ids: finalKeywordIds, instruction_id, knowledge_id,
+      model_config_id: model_config_id || null,
+      generation_mode: generation_mode || 'expert',
+      total_count: finalKeywordIds.length,
     });
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {

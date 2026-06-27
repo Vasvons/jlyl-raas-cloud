@@ -3072,6 +3072,34 @@ export async function getAiModelConfigById(id: number): Promise<any | null> {
   return result.rows[0] || null;
 }
 
+/**
+ * 获取用户的默认 AI 模型配置（用于写作任务自动选模型）
+ * 优先级：
+ *   1. 用户私有配置中 is_active=true 的最新一条
+ *   2. 平台共享配置（user_id IS NULL）中 is_active=true 的最新一条
+ */
+export async function getDefaultModelConfig(userId: number): Promise<any | null> {
+  // 先查用户私有配置
+  let result = await query(
+    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at
+     FROM ai_model_config
+     WHERE user_id = $1 AND is_active = true
+     ORDER BY create_time DESC LIMIT 1`,
+    [userId]
+  );
+  if (result.rows[0]) return result.rows[0];
+  // 降级：平台共享配置
+  result = await query(
+    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at
+     FROM ai_model_config
+     WHERE user_id IS NULL AND is_active = true
+     ORDER BY create_time DESC LIMIT 1`
+  );
+  return result.rows[0] || null;
+}
+
 export async function getActiveModelConfig(userId: number, platform: string): Promise<any | null> {
   // 优先返回用户自有配置，其次返回共享配置
   const result = await query(
@@ -3210,11 +3238,11 @@ export async function getWritingInstructionById(id: number): Promise<any | null>
 
 export async function createWritingInstruction(data: any): Promise<number> {
   const result = await query(
-    `INSERT INTO writing_instruction (user_id, name, category, system_prompt, user_prompt_template,
+    `INSERT INTO writing_instruction (user_id, name, category, article_prompt, title_prompt,
             target_word_count, include_faq, include_comparison_table, is_active, content_types, random_mode)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10)
      RETURNING id`,
-    [data.user_id, data.name, data.category, data.system_prompt, data.user_prompt_template,
+    [data.user_id, data.name, data.category, data.article_prompt || '', data.title_prompt || '',
      data.target_word_count || 1500, data.include_faq ?? true, data.include_comparison_table ?? true,
      JSON.stringify(data.content_types || []), data.random_mode ?? false]
   );
@@ -3225,7 +3253,7 @@ export async function updateWritingInstruction(id: number, data: any): Promise<v
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;
-  for (const key of ['name', 'category', 'system_prompt', 'user_prompt_template', 'target_word_count', 'include_faq', 'include_comparison_table', 'is_active', 'random_mode']) {
+  for (const key of ['name', 'category', 'article_prompt', 'title_prompt', 'target_word_count', 'include_faq', 'include_comparison_table', 'is_active', 'random_mode']) {
     if (data[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
       values.push(data[key]);
@@ -3311,11 +3339,11 @@ export async function deleteEnterpriseKnowledge(id: number): Promise<void> {
 export async function createWritingTask(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_writing_task (user_id, task_name, keyword_ids, instruction_id, knowledge_id,
-            model_config_id, status, total_count, started_at)
-     VALUES ($1, $2, $3, $4, $5, $6, 'processing', $7, NOW())
+            model_config_id, generation_mode, status, total_count, started_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', $8, NOW())
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
-     data.model_config_id, data.total_count]
+     data.model_config_id || null, data.generation_mode || 'expert', data.total_count]
   );
   return result.rows[0].id;
 }
@@ -3339,10 +3367,11 @@ export async function getWritingTasks(userId: number, page: number = 1, pageSize
 
 export async function getWritingTaskById(id: number): Promise<any | null> {
   const result = await query(
-    `SELECT t.*, i.name as instruction_name, i.system_prompt, i.user_prompt_template,
+    `SELECT t.*, i.name as instruction_name, i.article_prompt, i.title_prompt,
             i.category as instruction_category, i.content_types, i.random_mode,
             k.company_full_name, k.company_short_name, k.city, k.industry, k.business_scope,
-            k.entity_triples, k.intro_text, k.cases_text
+            k.entity_triples, k.intro_text, k.cases_text,
+            k.products_services, k.product_features, k.user_pain_points, k.trust_endorsement, k.other_info
      FROM ai_writing_task t
      LEFT JOIN writing_instruction i ON t.instruction_id = i.id
      LEFT JOIN enterprise_knowledge k ON t.knowledge_id = k.id
@@ -3460,6 +3489,34 @@ export async function getKeywordsByIds(ids: number[]): Promise<any[]> {
     [ids]
   );
   return result.rows;
+}
+
+/**
+ * 按关键词文本查询 ID（用于前端传入关键词字符串而非 ID 的场景）
+ * 查询用户的 zlgjc 表中匹配的蒸馏关键词和品牌关键词
+ */
+export async function getKeywordIdsByValues(userId: number, values: string[]): Promise<number[]> {
+  if (values.length === 0) return [];
+  const result = await query(
+    `SELECT id FROM zlgjc WHERE userid = $1 AND value = ANY($2::text[])`,
+    [String(userId), values]
+  );
+  return result.rows.map((r: any) => r.id);
+}
+
+/**
+ * 获取客户的所有关键词 ID（蒸馏关键词 + 品牌关键词）
+ * 用于新建写作任务时自动加载客户整个关键词库
+ */
+export async function getCustomerKeywordIds(customerId: number): Promise<{ ids: number[]; distilledCount: number; brandCount: number }> {
+  const result = await query(
+    `SELECT id, keyword_type FROM zlgjc WHERE userid = $1`,
+    [String(customerId)]
+  );
+  const ids = result.rows.map((r: any) => r.id);
+  const distilledCount = result.rows.filter((r: any) => r.keyword_type === 0).length;
+  const brandCount = result.rows.filter((r: any) => r.keyword_type === 1).length;
+  return { ids, distilledCount, brandCount };
 }
 
 export async function getArticleCoverageStats(userId: string): Promise<{ total: number; covered: number }> {

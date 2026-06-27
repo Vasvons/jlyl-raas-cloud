@@ -9,6 +9,12 @@ export interface EnterpriseInfo {
   intro_text?: string;
   cases_text?: string;
   entity_triples?: Array<{ subject: string; relation: string; object: string }>;
+  /** v1.2 新增 5 个自由文本字段 */
+  products_services?: string;
+  product_features?: string;
+  user_pain_points?: string;
+  trust_endorsement?: string;
+  other_info?: string;
 }
 
 /**
@@ -119,6 +125,11 @@ function formatEnterprise(info: EnterpriseInfo): string {
   if (info.industry) lines.push(`所属行业：${info.industry}`);
   if (info.founded_year) lines.push(`成立年份：${info.founded_year}`);
   if (info.business_scope) lines.push(`业务范围：\n${info.business_scope}`);
+  if (info.products_services) lines.push(`产品与服务：\n${info.products_services}`);
+  if (info.product_features) lines.push(`产品特点：\n${info.product_features}`);
+  if (info.user_pain_points) lines.push(`用户痛点：\n${info.user_pain_points}`);
+  if (info.trust_endorsement) lines.push(`信任背书：\n${info.trust_endorsement}`);
+  if (info.other_info) lines.push(`其他信息：\n${info.other_info}`);
   return lines.join('\n');
 }
 
@@ -133,12 +144,17 @@ function formatTriples(triples: Array<{ subject: string; relation: string; objec
 /**
  * 替换 prompt 模板中的占位符
  * 支持的占位符：
- *   {keyword}     - 核心关键词
- *   {enterprise}  - 企业基础信息
- *   {triples}     - 实体三元组
- *   {intro}       - 企业自由文本介绍
- *   {cases}       - 成功案例
- *   {word_count}  - 目标字数
+ *   {keyword}            - 核心关键词
+ *   {enterprise}         - 企业基础信息（含 v1.2 新增 5 个字段）
+ *   {triples}            - 实体三元组
+ *   {intro}              - 企业简介
+ *   {cases}              - 成功案例
+ *   {products_services}  - 产品与服务
+ *   {product_features}   - 产品特点
+ *   {user_pain_points}   - 用户痛点
+ *   {trust_endorsement}  - 信任背书
+ *   {other_info}         - 其他信息
+ *   {word_count}         - 目标字数
  */
 export function buildPrompt(template: string, context: {
   keyword: string;
@@ -151,6 +167,11 @@ export function buildPrompt(template: string, context: {
   result = result.replace(/\{triples\}/g, context.enterprise?.entity_triples ? formatTriples(context.enterprise.entity_triples) : '');
   result = result.replace(/\{intro\}/g, context.enterprise?.intro_text || '');
   result = result.replace(/\{cases\}/g, context.enterprise?.cases_text || '');
+  result = result.replace(/\{products_services\}/g, context.enterprise?.products_services || '');
+  result = result.replace(/\{product_features\}/g, context.enterprise?.product_features || '');
+  result = result.replace(/\{user_pain_points\}/g, context.enterprise?.user_pain_points || '');
+  result = result.replace(/\{trust_endorsement\}/g, context.enterprise?.trust_endorsement || '');
+  result = result.replace(/\{other_info\}/g, context.enterprise?.other_info || '');
   result = result.replace(/\{word_count\}/g, String(context.wordCount || 1500));
   return result;
 }

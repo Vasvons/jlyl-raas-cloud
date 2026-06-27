@@ -875,6 +875,20 @@ export async function migrate() {
     await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS content_types JSONB DEFAULT '[]'`);
     await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS random_mode BOOLEAN DEFAULT FALSE`);
 
+    // 8.2.1 写作指令字段重构：移除 system_prompt，新增 article_prompt + title_prompt
+    // 设计变更：系统提示词不需要单独存储，专家系统/扣子工作流本身即为系统提示词
+    // - article_prompt: 写文章的提示词（原 user_prompt_template）
+    // - title_prompt: 写标题的提示词（新增）
+    // 兼容策略：新增字段 + 数据迁移（user_prompt_template → article_prompt）+ 保留旧字段不删
+    await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS article_prompt TEXT DEFAULT ''`);
+    await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS title_prompt TEXT DEFAULT ''`);
+    // 数据迁移：将旧 user_prompt_template 的值复制到 article_prompt（仅 article_prompt 为空时）
+    await client.query(`UPDATE writing_instruction SET article_prompt = user_prompt_template WHERE article_prompt = '' AND user_prompt_template IS NOT NULL AND user_prompt_template != ''`);
+    // system_prompt 字段保留但不再使用（向后兼容，不删除）
+
+    // 8.2.2 写作任务表新增 generation_mode 字段（专家系统/扣子工作流双模式）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS generation_mode VARCHAR(16) DEFAULT 'expert'`);
+
     // 8.3 云接口配置表（参考 jlyl.net.cn/agent/api_set）
     // 单行配置模式：每个 user_id 一行，存储 9 个固定字段（敏感字段加密）
     await client.query(`
