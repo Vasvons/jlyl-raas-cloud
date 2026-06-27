@@ -205,13 +205,15 @@ router.post('/instructions', async (req: Request, res: Response) => {
     const customerId = req.body.customer_id
       ? Number(req.body.customer_id)
       : getUserId(req);
-    const { name, category, system_prompt, user_prompt_template, target_word_count, include_faq, include_comparison_table } = req.body;
+    const { name, category, system_prompt, user_prompt_template, target_word_count, include_faq, include_comparison_table, content_types, random_mode } = req.body;
     if (!name || !system_prompt || !user_prompt_template) {
       return res.status(400).json({ code: 400, message: 'name/system_prompt/user_prompt_template 必填' });
     }
     const id = await createWritingInstruction({
       user_id: customerId, name, category, system_prompt, user_prompt_template,
       target_word_count, include_faq, include_comparison_table,
+      content_types: Array.isArray(content_types) ? content_types : [],
+      random_mode: !!random_mode,
     });
     res.json({ code: 200, data: { id } });
   } catch (err: any) {

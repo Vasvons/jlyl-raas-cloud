@@ -12,6 +12,102 @@ export interface EnterpriseInfo {
 }
 
 /**
+ * 创作方向候选（多选，对应 writing_instruction.category 字段）
+ * 注：category 原为单选分层(认知层等)，现已升级为多选创作方向
+ */
+export const DIRECTION_OPTIONS = [
+  'brand_exposure',     // 品牌曝光
+  'product_seeding',    // 产品种草
+  'pain_point_solution',// 痛点解决
+  'industry_science',   // 行业科普
+  'case_showcase',      // 案例展示
+  'comparison_review',  // 对比评测
+  'trust_endorsement',  // 信任背书
+];
+
+/** 创作方向中文映射 */
+const DIRECTION_LABELS: Record<string, string> = {
+  brand_exposure: '品牌曝光',
+  product_seeding: '产品种草',
+  pain_point_solution: '痛点解决',
+  industry_science: '行业科普',
+  case_showcase: '案例展示',
+  comparison_review: '对比评测',
+  trust_endorsement: '信任背书',
+};
+
+/**
+ * 文案类型候选（多选，对应 writing_instruction.content_types 字段）
+ */
+export const CONTENT_TYPE_OPTIONS = [
+  'science',     // 科普文章
+  'review',      // 测评文章
+  'case_story',  // 案例故事
+  'qa',          // 问答文章
+  'comparison',  // 对比文章
+  'news',        // 资讯文章
+  'tutorial',    // 教程文章
+];
+
+/** 文案类型中文映射（含写作风格描述，注入 prompt） */
+const CONTENT_TYPE_META: Record<string, { label: string; style: string }> = {
+  science:    { label: '科普文章', style: '通俗易懂地解释概念，用类比和例子降低理解门槛，结构清晰' },
+  review:     { label: '测评文章', style: '客观评价产品/服务，列出优缺点，给出购买建议，数据支撑' },
+  case_story: { label: '案例故事', style: '以真实案例叙事，突出用户痛点和解决方案效果，情感共鸣' },
+  qa:         { label: '问答文章', style: '围绕用户常见疑问组织内容，逐条解答，结构化强' },
+  comparison: { label: '对比文章', style: '横向对比多款产品/方案，表格化展示差异，给出选择建议' },
+  news:       { label: '资讯文章', style: '时效性强，简洁报道行业动态或产品更新，倒金字塔结构' },
+  tutorial:   { label: '教程文章', style: '步骤化操作指南，可操作性强，含注意事项和常见问题' },
+};
+
+/**
+ * 构建方向×类型上下文（注入 system_prompt 开头）
+ * @param directions 创作方向数组（可为空）
+ * @param contentType 文案类型 key（单次生成只选1种）
+ * @returns 注入到 system_prompt 开头的上下文文本（空字符串表示不注入）
+ */
+export function buildDirectionContext(directions: string[], contentType: string): string {
+  const lines: string[] = [];
+
+  // 创作方向（可多个，组合表达意图）
+  if (directions && directions.length > 0) {
+    const labels = directions.map(d => DIRECTION_LABELS[d]).filter(Boolean);
+    if (labels.length > 0) {
+      lines.push(`【创作方向】${labels.join('、')}`);
+    }
+  }
+
+  // 文案类型（单次只选1种，含风格描述）
+  if (contentType && CONTENT_TYPE_META[contentType]) {
+    const meta = CONTENT_TYPE_META[contentType];
+    lines.push(`【文案类型】${meta.label}`);
+    lines.push(`【写作风格】${meta.style}`);
+  }
+
+  return lines.length > 0 ? lines.join('\n') + '\n\n' : '';
+}
+
+/**
+ * 从指令的 content_types 中随机选1种文案类型
+ * @param contentTypes 指令配置的文案类型数组
+ * @returns 随机选中的 contentType key，空数组返回空字符串
+ */
+export function pickRandomContentType(contentTypes: string[]): string {
+  if (!contentTypes || contentTypes.length === 0) return '';
+  return contentTypes[Math.floor(Math.random() * contentTypes.length)];
+}
+
+/**
+ * 从指令的 category 中随机选1种创作方向
+ * @param categories 指令配置的创作方向数组
+ * @returns 随机选中的方向 key，空数组返回空字符串
+ */
+export function pickRandomDirection(categories: string[]): string {
+  if (!categories || categories.length === 0) return '';
+  return categories[Math.floor(Math.random() * categories.length)];
+}
+
+/**
  * 组装企业基础信息文本（用于占位符替换）
  */
 function formatEnterprise(info: EnterpriseInfo): string {

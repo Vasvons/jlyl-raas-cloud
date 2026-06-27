@@ -868,6 +868,13 @@ export async function migrate() {
     await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS trust_endorsement TEXT`);
     await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS other_info TEXT`);
 
+    // 8.2 写作指令新增 创作方向(多选)/文案类型(多选)/随机模式 字段
+    // category 字段语义升级：原为单选分层(认知层等)，现改为多选创作方向(品牌曝光/产品种草等)
+    // content_types: JSON数组，存储文案类型（科普/测评/案例/问答/对比/资讯/教程）
+    // random_mode: 是否随机组合方向×类型生成不同风格文章
+    await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS content_types JSONB DEFAULT '[]'`);
+    await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS random_mode BOOLEAN DEFAULT FALSE`);
+
     // 9. 插入7个平台的默认共享模型配置（user_id IS NULL）
     const defaultModels = [
       { platform: 'deepseek', model_name: 'deepseek-chat', base_url: 'https://api.deepseek.com/v1/chat/completions' },

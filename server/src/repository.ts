@@ -3167,11 +3167,12 @@ export async function getWritingInstructionById(id: number): Promise<any | null>
 export async function createWritingInstruction(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO writing_instruction (user_id, name, category, system_prompt, user_prompt_template,
-            target_word_count, include_faq, include_comparison_table, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true)
+            target_word_count, include_faq, include_comparison_table, is_active, content_types, random_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10)
      RETURNING id`,
     [data.user_id, data.name, data.category, data.system_prompt, data.user_prompt_template,
-     data.target_word_count || 1500, data.include_faq ?? true, data.include_comparison_table ?? true]
+     data.target_word_count || 1500, data.include_faq ?? true, data.include_comparison_table ?? true,
+     JSON.stringify(data.content_types || []), data.random_mode ?? false]
   );
   return result.rows[0].id;
 }
@@ -3180,11 +3181,16 @@ export async function updateWritingInstruction(id: number, data: any): Promise<v
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;
-  for (const key of ['name', 'category', 'system_prompt', 'user_prompt_template', 'target_word_count', 'include_faq', 'include_comparison_table', 'is_active']) {
+  for (const key of ['name', 'category', 'system_prompt', 'user_prompt_template', 'target_word_count', 'include_faq', 'include_comparison_table', 'is_active', 'random_mode']) {
     if (data[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
       values.push(data[key]);
     }
+  }
+  // content_types 单独处理（JSONB）
+  if (data.content_types !== undefined) {
+    fields.push(`content_types = $${idx++}`);
+    values.push(JSON.stringify(data.content_types));
   }
   if (fields.length === 0) return;
   fields.push(`update_time = NOW()`);
@@ -3290,6 +3296,7 @@ export async function getWritingTasks(userId: number, page: number = 1, pageSize
 export async function getWritingTaskById(id: number): Promise<any | null> {
   const result = await query(
     `SELECT t.*, i.name as instruction_name, i.system_prompt, i.user_prompt_template,
+            i.category as instruction_category, i.content_types, i.random_mode,
             k.company_full_name, k.company_short_name, k.city, k.industry, k.business_scope,
             k.entity_triples, k.intro_text, k.cases_text
      FROM ai_writing_task t

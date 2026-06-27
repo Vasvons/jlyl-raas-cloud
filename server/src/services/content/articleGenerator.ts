@@ -1,5 +1,5 @@
 import { chatCompletion } from './aiClient';
-import { buildPrompt } from './promptBuilder';
+import { buildPrompt, buildDirectionContext, pickRandomContentType, pickRandomDirection } from './promptBuilder';
 import {
   getWritingTaskById,
   getKeywordsByIds,
@@ -10,6 +10,56 @@ import {
   incrementModelUsedCount,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
+
+/**
+ * 解析指令的 category（创作方向）字段
+ * 升级后 category 可能是数组(多选方向)、单字符串(旧数据)或 null
+ */
+function parseDirections(raw: any): string[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string' && raw) return [raw];
+  return [];
+}
+
+/**
+ * 解析指令的 content_types 字段
+ * 数据库 JSONB 类型可能返回数组或字符串
+ */
+function parseContentTypes(raw: any): string[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string' && raw) {
+    try { const p = JSON.parse(raw); return Array.isArray(p) ? p : []; } catch { return []; }
+  }
+  return [];
+}
+
+/**
+ * 根据指令配置生成 system_prompt 前置上下文
+ * - random_mode=true：每次随机选1种方向×1种类型
+ * - random_mode=false：用所有配置的方向 + 第1种类型
+ */
+function buildSystemPromptWithDirection(task: any): string {
+  const directions = parseDirections(task.instruction_category);
+  const contentTypes = parseContentTypes(task.content_types);
+  const isRandom = !!task.random_mode;
+
+  let selectedDirection: string[] = [];
+  let selectedType = '';
+
+  if (isRandom) {
+    // 随机模式：方向和类型各随机选1种（配置了才有）
+    const dir = pickRandomDirection(directions);
+    selectedDirection = dir ? [dir] : [];
+    selectedType = pickRandomContentType(contentTypes);
+  } else {
+    // 固定模式：所有方向 + 第1种类型
+    selectedDirection = directions;
+    selectedType = contentTypes[0] || '';
+  }
+
+  const ctx = buildDirectionContext(selectedDirection, selectedType);
+  return ctx + (task.system_prompt || '');
+}
 
 /**
  * 从AI响应中提取标题和正文HTML
@@ -101,8 +151,8 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
 
   for (const kw of keywords) {
     try {
-      // 组装 prompt
-      const systemPrompt = buildPrompt(task.system_prompt, {
+      // 组装 prompt（system_prompt 前置注入创作方向×文案类型上下文）
+      const systemPrompt = buildPrompt(buildSystemPromptWithDirection(task), {
         keyword: kw.value,
         enterprise: enterpriseInfo,
         wordCount: task.target_word_count,
@@ -199,7 +249,7 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     entity_triples: task.entity_triples || [],
   };
 
-  const systemPrompt = buildPrompt(task.system_prompt, {
+  const systemPrompt = buildPrompt(buildSystemPromptWithDirection(task), {
     keyword: article.core_keyword,
     enterprise: enterpriseInfo,
     wordCount: task.target_word_count,
