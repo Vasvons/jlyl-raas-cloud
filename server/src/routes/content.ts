@@ -26,6 +26,25 @@ import {
   updateArticle,
   deleteArticle,
   getArticleCoverageStats,
+  // 发布相关
+  getStepListByPlatform,
+  getAllStepLists,
+  upsertStepList,
+  createPublishTask,
+  getPublishTasks,
+  getPublishTaskById,
+  updatePublishTaskStatus,
+  cancelPublishTask,
+  getPendingPublishRecords,
+  updatePublishRecordResult,
+  markPublishRecordStarted,
+  getPublishRecordsByTask,
+  getPublishAccounts,
+  createPublishAccount,
+  updatePublishAccountStorageState,
+  updatePublishAccountStatus,
+  deletePublishAccount,
+  getPublishAccountById,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection } from '../services/content/aiClient';
@@ -39,6 +58,19 @@ router.use(authMiddleware);
 // 获取登录用户ID的辅助函数
 function getUserId(req: Request): number {
   return Number((req as any).user?.userId || (req as any).user?.id || 0);
+}
+
+/**
+ * 解析 customer_id 查询参数：
+ * - 传入 ?customer_id=N 时使用该值（管理员模式，查看指定客户的数据）
+ * - 未传时回退到当前登录用户 ID（客户自身模式）
+ */
+function getCustomerId(req: Request): number {
+  const raw = req.query.customer_id as string | undefined;
+  if (raw && !Number.isNaN(Number(raw))) {
+    return Number(raw);
+  }
+  return getUserId(req);
 }
 
 // ============ AI模型配置 ============
@@ -158,9 +190,9 @@ router.get('/instructions/categories', (req: Request, res: Response) => {
 
 router.get('/instructions', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    const customerId = getCustomerId(req);
     const category = req.query.category as string | undefined;
-    const list = await getWritingInstructions(userId, category);
+    const list = await getWritingInstructions(customerId, category);
     res.json({ code: 200, data: list });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -169,13 +201,16 @@ router.get('/instructions', async (req: Request, res: Response) => {
 
 router.post('/instructions', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // 支持显式指定 customer_id（管理员模式），否则用当前登录用户
+    const customerId = req.body.customer_id
+      ? Number(req.body.customer_id)
+      : getUserId(req);
     const { name, category, system_prompt, user_prompt_template, target_word_count, include_faq, include_comparison_table } = req.body;
     if (!name || !system_prompt || !user_prompt_template) {
       return res.status(400).json({ code: 400, message: 'name/system_prompt/user_prompt_template 必填' });
     }
     const id = await createWritingInstruction({
-      user_id: userId, name, category, system_prompt, user_prompt_template,
+      user_id: customerId, name, category, system_prompt, user_prompt_template,
       target_word_count, include_faq, include_comparison_table,
     });
     res.json({ code: 200, data: { id } });
@@ -206,8 +241,8 @@ router.delete('/instructions/:id', async (req: Request, res: Response) => {
 
 router.get('/knowledge', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
-    const list = await getEnterpriseKnowledges(userId);
+    const customerId = getCustomerId(req);
+    const list = await getEnterpriseKnowledges(customerId);
     res.json({ code: 200, data: list });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -216,8 +251,10 @@ router.get('/knowledge', async (req: Request, res: Response) => {
 
 router.post('/knowledge', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
-    const id = await createEnterpriseKnowledge({ ...req.body, user_id: userId });
+    const customerId = req.body.customer_id
+      ? Number(req.body.customer_id)
+      : getUserId(req);
+    const id = await createEnterpriseKnowledge({ ...req.body, user_id: customerId });
     res.json({ code: 200, data: { id } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -372,6 +409,35 @@ router.post('/articles/:id/regenerate', async (req: Request, res: Response) => {
   }
 });
 
+// 批量发布：为多篇文章创建发布任务（每篇一个 publish_task）
+// Body: { article_ids: number[], target_platforms: string[], scheduled_at?: string }
+router.post('/articles/batch-publish', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { article_ids, target_platforms, scheduled_at } = req.body;
+    if (!Array.isArray(article_ids) || article_ids.length === 0) {
+      return res.status(400).json({ code: 400, message: 'article_ids 必填且非空' });
+    }
+    if (!Array.isArray(target_platforms) || target_platforms.length === 0) {
+      return res.status(400).json({ code: 400, message: 'target_platforms 必填且非空' });
+    }
+    const scheduledDate = scheduled_at ? new Date(scheduled_at) : undefined;
+    const taskIds: number[] = [];
+    for (const articleId of article_ids) {
+      const taskId = await createPublishTask({
+        user_id: userId,
+        article_id: Number(articleId),
+        target_platforms,
+        scheduled_at: scheduledDate,
+      });
+      taskIds.push(taskId);
+    }
+    res.json({ code: 200, data: { task_ids: taskIds } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 router.put('/articles/:id/status', async (req: Request, res: Response) => {
   try {
     const { status } = req.body;
@@ -397,6 +463,377 @@ router.get('/dashboard/stats', async (req: Request, res: Response) => {
         coverage: stats,
       },
     });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 发布：12 个自媒体平台清单 ============
+
+const PUBLISH_PLATFORMS = [
+  { platform: 'bjh', name: '百家号', loginUrl: 'https://passport.baidu.com/v2/?login' },
+  { platform: 'csdn', name: 'CSDN', loginUrl: 'https://passport.csdn.net/login' },
+  { platform: 'js', name: '简书', loginUrl: 'https://www.jianshu.com/sign_in' },
+  { platform: 'zh', name: '知乎', loginUrl: 'https://www.zhihu.com/signin' },
+  { platform: 'xhs', name: '小红书', loginUrl: 'https://www.xiaohongshu.com' },
+  { platform: 'qeh', name: '企鹅号', loginUrl: 'https://om.qq.com/userAuth/index' },
+  { platform: 'sohu', name: '搜狐号', loginUrl: 'https://mp.sohu.com/mp/login' },
+  { platform: 'tt', name: '今日头条', loginUrl: 'https://sso.toutiao.com/login' },
+  { platform: 'wxgzh', name: '微信公众号', loginUrl: 'https://mp.weixin.qq.com/' },
+  { platform: 'wy', name: '网易号', loginUrl: 'https://mp.163.com/login' },
+  { platform: 'bili', name: 'B站', loginUrl: 'https://passport.bilibili.com/login' },
+  { platform: 'dy', name: '抖音', loginUrl: 'https://www.douyin.com/login' },
+];
+
+router.get('/publish/platforms', (req: Request, res: Response) => {
+  res.json({ code: 200, data: PUBLISH_PLATFORMS });
+});
+
+// ============ 发布：step_list 管理 ============
+
+router.get('/publish/step-lists', async (req: Request, res: Response) => {
+  try {
+    const list = await getAllStepLists();
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.get('/publish/step-lists/:platform', async (req: Request, res: Response) => {
+  try {
+    const data = await getStepListByPlatform(req.params.platform);
+    if (!data) {
+      return res.status(404).json({ code: 404, message: `平台 ${req.params.platform} 暂无 step_list 配置` });
+    }
+    res.json({ code: 200, data });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.put('/publish/step-lists/:platform', async (req: Request, res: Response) => {
+  try {
+    const { version, step_list, description } = req.body;
+    if (!version || !step_list) {
+      return res.status(400).json({ code: 400, message: 'version 和 step_list 必填' });
+    }
+    const id = await upsertStepList(req.params.platform, version, step_list, description);
+    res.json({ code: 200, data: { id } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 发布：任务管理 ============
+
+router.get('/publish/tasks', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const page = Number(req.query.page) || 1;
+    const pageSize = Number(req.query.pageSize) || 20;
+    const data = await getPublishTasks(userId, page, pageSize);
+    res.json({ code: 200, data });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.get('/publish/tasks/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const task = await getPublishTaskById(id);
+    if (!task) {
+      return res.status(404).json({ code: 404, message: '任务不存在' });
+    }
+    const records = await getPublishRecordsByTask(id);
+    res.json({ code: 200, data: { ...task, records } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.post('/publish/tasks/:id/cancel', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    await cancelPublishTask(id);
+    res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 桌面端 Worker 拉取待发布记录（dequeue：拉取 + 标记 started + 附带 step_list）
+router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 2, 8);
+    const records = await getPendingPublishRecords(limit);
+    // 为每条记录附加 step_list，并标记为 started（processing）
+    const enriched = await Promise.all(records.map(async (r: any) => {
+      try {
+        const stepList = await getStepListByPlatform(r.platform);
+        await markPublishRecordStarted(r.id);
+        return {
+          record_id: r.id,
+          task_id: r.task_id,
+          platform: r.platform,
+          platform_auth_id: r.platform_auth_id,
+          account_name: r.account_name,
+          account_storage_state: r.account_storage_state,
+          article: {
+            id: r.article_id,
+            title: r.article_title,
+            content_html: r.article_content,
+            tags: r.article_tags ? (typeof r.article_tags === 'string' ? JSON.parse(r.article_tags) : r.article_tags) : [],
+            cover_image_url: r.article_cover,
+          },
+          scheduled_at: r.scheduled_at,
+          step_list: stepList ? {
+            platform: stepList.platform,
+            version: stepList.version,
+            login_check_url: stepList.step_list?.login_check_url,
+            login_check_selector: stepList.step_list?.login_check_selector,
+            logout_keywords: stepList.step_list?.logout_keywords,
+            steps: stepList.step_list?.steps || [],
+            is_placeholder: stepList.step_list?.is_placeholder || false,
+          } : null,
+        };
+      } catch (e: any) {
+        console.error(`[Publish] record ${r.id} enrich 失败:`, e.message);
+        return null;
+      }
+    }));
+    const valid = enriched.filter(Boolean);
+    res.json({ code: 200, data: valid });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 桌面端回写发布结果（单条 record）
+router.post('/publish/records/:id/result', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { status, article_id_on_platform, platform_url, error_msg, account_health } = req.body;
+    if (!['success', 'failed', 'login_expired', 'banned'].includes(status)) {
+      return res.status(400).json({ code: 400, message: 'status 取值非法' });
+    }
+
+    // 1. 更新 record 结果
+    await updatePublishRecordResult(id, { status, article_id_on_platform, platform_url, error_msg });
+
+    // 2. 查询 record 所属 task，更新 task 进度
+    const recordResult = await query('SELECT task_id, platform_auth_id FROM publish_record WHERE id = $1', [id]);
+    if (recordResult.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: 'record 不存在' });
+    }
+    const { task_id, platform_auth_id } = recordResult.rows[0];
+    const completedDelta = status === 'success' ? 1 : 0;
+    const failedDelta = status === 'success' ? 0 : 1;
+    await updatePublishTaskStatus(task_id, 'processing', completedDelta, failedDelta);
+
+    // 3. 重新查询 task 总体状态，更新最终状态
+    const taskResult = await query('SELECT total_count, completed_count, failed_count FROM publish_task WHERE id = $1', [task_id]);
+    if (taskResult.rows.length > 0) {
+      const t = taskResult.rows[0];
+      const done = Number(t.completed_count) + Number(t.failed_count);
+      if (done >= Number(t.total_count)) {
+        const finalStatus = Number(t.failed_count) === 0 ? 'completed'
+          : Number(t.completed_count) === 0 ? 'failed'
+          : 'partial';
+        await updatePublishTaskStatus(task_id, finalStatus, 0, 0);
+      }
+    }
+
+    // 4. 账号健康度联动：login_expired → offline，banned → banned
+    if (platform_auth_id && account_health) {
+      if (account_health === 'offline') {
+        await updatePublishAccountStatus(platform_auth_id, 'expired', 'offline');
+      } else if (account_health === 'banned') {
+        await updatePublishAccountStatus(platform_auth_id, 'expired', 'banned');
+      }
+    }
+
+    res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 自媒体账号管理 ============
+
+router.get('/publish-accounts', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const poolType = (req.query.pool_type as string) || 'all';
+    const customerId = req.query.customer_id ? Number(req.query.customer_id) : undefined;
+    const list = await getPublishAccounts(
+      userId,
+      poolType as 'public' | 'private' | 'all',
+      customerId,
+    );
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.post('/publish-accounts', async (req: Request, res: Response) => {
+  try {
+    const { platform, account_name, storage_state, avatar_url, pool_type, customer_id } = req.body;
+    if (!platform || !account_name || !storage_state) {
+      return res.status(400).json({ code: 400, message: 'platform, account_name, storage_state 必填' });
+    }
+    // 公共池：user_id = null；私有池：user_id = customer_id
+    const userId = pool_type === 'public' ? null : (customer_id ? Number(customer_id) : getUserId(req));
+    const id = await createPublishAccount({
+      user_id: userId,
+      platform,
+      account_name,
+      storage_state,
+      avatar_url,
+    });
+    res.json({ code: 200, data: { id } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { storage_state, status, health_status } = req.body;
+    if (storage_state) {
+      await updatePublishAccountStorageState(id, storage_state);
+    }
+    if (status && health_status) {
+      await updatePublishAccountStatus(id, status, health_status);
+    }
+    res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.delete('/publish-accounts/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    await deletePublishAccount(id);
+    res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.get('/publish-accounts/:id/health', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const account = await getPublishAccountById(id);
+    if (!account) {
+      return res.status(404).json({ code: 404, message: '账号不存在' });
+    }
+    // 最近 7 天发布成功率统计
+    const statsResult = await query(
+      `SELECT
+         COUNT(*) FILTER (WHERE pr.status = 'success') as success_count,
+         COUNT(*) FILTER (WHERE pr.status = 'failed') as failed_count,
+         COUNT(*) FILTER (WHERE pr.status IN ('success', 'failed')) as total_count,
+         MAX(pr.published_at) as last_publish_time
+       FROM publish_record pr
+       WHERE pr.platform_auth_id = $1
+         AND pr.create_time >= NOW() - INTERVAL '7 days'`,
+      [id]
+    );
+    const stats = statsResult.rows[0];
+    const total = Number(stats.total_count);
+    const successRate = total > 0 ? Number(stats.success_count) / total : null;
+    res.json({
+      code: 200,
+      data: {
+        account_id: id,
+        status: account.status,
+        health_status: account.health_status,
+        success_rate_7d: successRate,
+        total_count_7d: total,
+        last_publish_time: stats.last_publish_time,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 桌面端检测登录态后回传结果（不直接检测，由桌面端用 Playwright 执行）
+router.post('/publish-accounts/:id/check-login', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { is_logged_in, storage_state } = req.body;
+    if (typeof is_logged_in !== 'boolean') {
+      return res.status(400).json({ code: 400, message: 'is_logged_in 必填（boolean）' });
+    }
+    if (is_logged_in) {
+      // 登录态有效，刷新 storage_state 并恢复
+      if (storage_state) {
+        await updatePublishAccountStorageState(id, storage_state);
+      } else {
+        await updatePublishAccountStatus(id, 'active', 'normal');
+      }
+    } else {
+      // 登录态失效，标记 offline
+      await updatePublishAccountStatus(id, 'expired', 'offline');
+    }
+    res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 客户列表（用于管理员选择客户） ============
+
+router.get('/customers', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT id, username, phone, email, level, create_time
+       FROM users
+       ORDER BY id ASC`,
+    );
+    res.json({ code: 200, data: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 关键词库（按客户过滤） ============
+
+// 蒸馏关键词库（zlgjc 表，userid 字段关联客户）
+router.get('/keywords/distilled', async (req: Request, res: Response) => {
+  try {
+    const customerId = getCustomerId(req);
+    const result = await query(
+      `SELECT id, value, hxgjc, create_time
+       FROM zlgjc
+       WHERE userid = $1
+       ORDER BY create_time DESC`,
+      [String(customerId)]
+    );
+    res.json({ code: 200, data: result.rows });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 品牌关键词库（pp 表，user_id 字段关联客户）
+router.get('/keywords/brand', async (req: Request, res: Response) => {
+  try {
+    const customerId = getCustomerId(req);
+    const result = await query(
+      `SELECT id, pp
+       FROM pp
+       WHERE user_id = $1
+       ORDER BY id ASC`,
+      [String(customerId)]
+    );
+    res.json({ code: 200, data: result.rows });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

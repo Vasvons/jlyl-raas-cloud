@@ -861,6 +861,13 @@ export async function migrate() {
     // 8. platform_auth 新增 platform_type 字段
     await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS platform_type VARCHAR(16) DEFAULT 'query'`);
 
+    // 8.1 企业知识库新增 5 个自由文本字段（产品服务/产品特点/用户痛点/信任背书/其他信息）
+    await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS products_services TEXT`);
+    await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS product_features TEXT`);
+    await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS user_pain_points TEXT`);
+    await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS trust_endorsement TEXT`);
+    await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS other_info TEXT`);
+
     // 9. 插入7个平台的默认共享模型配置（user_id IS NULL）
     const defaultModels = [
       { platform: 'deepseek', model_name: 'deepseek-chat', base_url: 'https://api.deepseek.com/v1/chat/completions' },

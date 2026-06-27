@@ -3154,6 +3154,11 @@ export async function getWritingInstructions(userId: number, category?: string):
   return result.rows;
 }
 
+/** 获取指定客户名下的写作指令（管理员模式：customerId 由前端传入） */
+export async function getWritingInstructionsByCustomer(customerId: number, category?: string): Promise<any[]> {
+  return getWritingInstructions(customerId, category);
+}
+
 export async function getWritingInstructionById(id: number): Promise<any | null> {
   const result = await query('SELECT * FROM writing_instruction WHERE id = $1', [id]);
   return result.rows[0] || null;
@@ -3201,6 +3206,11 @@ export async function getEnterpriseKnowledges(userId: number): Promise<any[]> {
   return result.rows;
 }
 
+/** 获取指定客户名下的企业知识库（管理员模式） */
+export async function getEnterpriseKnowledgesByCustomer(customerId: number): Promise<any[]> {
+  return getEnterpriseKnowledges(customerId);
+}
+
 export async function getEnterpriseKnowledgeById(id: number): Promise<any | null> {
   const result = await query('SELECT * FROM enterprise_knowledge WHERE id = $1', [id]);
   return result.rows[0] || null;
@@ -3209,12 +3219,15 @@ export async function getEnterpriseKnowledgeById(id: number): Promise<any | null
 export async function createEnterpriseKnowledge(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO enterprise_knowledge (user_id, company_full_name, company_short_name, city, address,
-            industry, founded_year, business_scope, entity_triples, intro_text, cases_text, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true)
+            industry, founded_year, business_scope, entity_triples, intro_text, cases_text,
+            products_services, product_features, user_pain_points, trust_endorsement, other_info, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true)
      RETURNING id`,
     [data.user_id, data.company_full_name, data.company_short_name, data.city, data.address,
      data.industry, data.founded_year, data.business_scope,
-     JSON.stringify(data.entity_triples || []), data.intro_text, data.cases_text]
+     JSON.stringify(data.entity_triples || []), data.intro_text, data.cases_text,
+     data.products_services, data.product_features, data.user_pain_points,
+     data.trust_endorsement, data.other_info]
   );
   return result.rows[0].id;
 }
@@ -3223,7 +3236,7 @@ export async function updateEnterpriseKnowledge(id: number, data: any): Promise<
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;
-  for (const key of ['company_full_name', 'company_short_name', 'city', 'address', 'industry', 'founded_year', 'business_scope', 'intro_text', 'cases_text']) {
+  for (const key of ['company_full_name', 'company_short_name', 'city', 'address', 'industry', 'founded_year', 'business_scope', 'intro_text', 'cases_text', 'products_services', 'product_features', 'user_pain_points', 'trust_endorsement', 'other_info']) {
     if (data[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
       values.push(data[key]);
@@ -3411,3 +3424,323 @@ export async function getArticleCoverageStats(userId: string): Promise<{ total: 
     covered: parseInt(coveredResult.rows[0].covered),
   };
 }
+
+// ============ 内容中枢：发布 step_list ============
+
+export async function getStepListByPlatform(platform: string): Promise<any | null> {
+  const result = await query(
+    `SELECT * FROM publish_step_list
+     WHERE platform = $1 AND is_active = true
+     ORDER BY create_time DESC LIMIT 1`,
+    [platform]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getAllStepLists(): Promise<any[]> {
+  const result = await query(
+    `SELECT DISTINCT ON (platform) platform, id, version, step_list, description, is_active, create_time
+     FROM publish_step_list
+     WHERE is_active = true
+     ORDER BY platform, create_time DESC`
+  );
+  return result.rows;
+}
+
+export async function upsertStepList(
+  platform: string,
+  version: string,
+  stepList: any,
+  description?: string
+): Promise<number> {
+  const result = await query(
+    `INSERT INTO publish_step_list (platform, version, step_list, description, is_active)
+     VALUES ($1, $2, $3, $4, true)
+     ON CONFLICT (platform, version) DO UPDATE
+       SET step_list = EXCLUDED.step_list,
+           description = EXCLUDED.description,
+           is_active = true
+     RETURNING id`,
+    [platform, version, JSON.stringify(stepList), description || null]
+  );
+  return result.rows[0].id;
+}
+
+// ============ 内容中枢：publish_task ============
+
+export async function createPublishTask(data: {
+  user_id: number;
+  article_id: number;
+  target_platforms: string[];
+  scheduled_at?: Date;
+}): Promise<number> {
+  return withTransaction(async (client: PoolClient) => {
+    // 1. 创建任务
+    const taskResult = await client.query(
+      `INSERT INTO publish_task (user_id, article_id, target_platforms, scheduled_at, status, total_count)
+       VALUES ($1, $2, $3, $4, 'pending', $5)
+       RETURNING id`,
+      [data.user_id, data.article_id, data.target_platforms, data.scheduled_at || null, data.target_platforms.length]
+    );
+    const taskId = taskResult.rows[0].id;
+
+    // 2. 为每个平台分配一个发布型账号（platform_type IN ('publish','both') 且 status='active' 且 health_status='normal'）
+    //    若无可用账号，platform_auth_id 设为 NULL，由桌面端 Worker 跳过并标记失败
+    for (const platform of data.target_platforms) {
+      const authResult = await client.query(
+        `SELECT id FROM platform_auth
+         WHERE platform = $1
+           AND platform_type IN ('publish', 'both')
+           AND status = 'active'
+           AND health_status = 'normal'
+         ORDER BY last_used_at ASC NULLS FIRST
+         LIMIT 1`,
+        [platform]
+      );
+      const authId = authResult.rows[0]?.id || null;
+      await client.query(
+        `INSERT INTO publish_record (task_id, platform, platform_auth_id, status)
+         VALUES ($1, $2, $3, 'pending')`,
+        [taskId, platform, authId]
+      );
+    }
+    return taskId;
+  });
+}
+
+export async function getPublishTasks(
+  userId: number,
+  page = 1,
+  pageSize = 20
+): Promise<{ list: any[]; total: number }> {
+  const offset = (page - 1) * pageSize;
+  const totalResult = await query(
+    `SELECT COUNT(*) as total FROM publish_task WHERE user_id = $1`,
+    [userId]
+  );
+  const result = await query(
+    `SELECT pt.*,
+            a.title as article_title,
+            a.core_keyword as article_keyword
+     FROM publish_task pt
+     LEFT JOIN article a ON a.id = pt.article_id
+     WHERE pt.user_id = $1
+     ORDER BY pt.create_time DESC
+     LIMIT $2 OFFSET $3`,
+    [userId, pageSize, offset]
+  );
+  return {
+    list: result.rows,
+    total: parseInt(totalResult.rows[0].total),
+  };
+}
+
+export async function getPublishTaskById(id: number): Promise<any | null> {
+  const result = await query(
+    `SELECT pt.*,
+            a.title as article_title,
+            a.core_keyword as article_keyword,
+            a.content_html as article_content
+     FROM publish_task pt
+     LEFT JOIN article a ON a.id = pt.article_id
+     WHERE pt.id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function updatePublishTaskStatus(
+  id: number,
+  status: string,
+  completedDelta = 0,
+  failedDelta = 0
+): Promise<void> {
+  await query(
+    `UPDATE publish_task
+     SET status = $2,
+         completed_count = completed_count + $3,
+         failed_count = failed_count + $4,
+         started_at = CASE WHEN $2 = 'processing' AND started_at IS NULL THEN NOW() ELSE started_at END,
+         finished_at = CASE WHEN $2 IN ('completed', 'failed', 'partial') THEN NOW() ELSE finished_at END
+     WHERE id = $1`,
+    [id, status, completedDelta, failedDelta]
+  );
+}
+
+export async function cancelPublishTask(id: number): Promise<void> {
+  // 把 pending 状态的 record 标记为 failed（error_msg='用户取消'），并更新 task 状态
+  await query(
+    `UPDATE publish_record
+     SET status = 'failed', error_msg = COALESCE(error_msg, '用户取消')
+     WHERE task_id = $1 AND status = 'pending'`,
+    [id]
+  );
+  await query(
+    `UPDATE publish_task
+     SET status = CASE
+       WHEN completed_count >= total_count THEN 'completed'
+       WHEN completed_count > 0 THEN 'partial'
+       ELSE 'failed'
+     END,
+     finished_at = NOW()
+     WHERE id = $1`,
+    [id]
+  );
+}
+
+// ============ 内容中枢：publish_record ============
+
+export async function getPendingPublishRecords(limit: number): Promise<any[]> {
+  // 拉取 pending 且 platform_auth_id 非空（无账号的直接跳过）
+  // 同平台串行：用 DISTINCT ON 限制每个 platform 只取 1 条最早的 pending
+  const result = await query(
+    `SELECT DISTINCT ON (pr.platform)
+            pr.id, pr.task_id, pr.platform, pr.platform_auth_id,
+            pt.article_id, pt.user_id, pt.scheduled_at,
+            a.title as article_title,
+            a.content_html as article_content,
+            a.tags as article_tags,
+            a.cover_image_url as article_cover,
+            pa.storage_state as account_storage_state,
+            pa.account_name as account_name
+     FROM publish_record pr
+     JOIN publish_task pt ON pt.id = pr.task_id
+     LEFT JOIN article a ON a.id = pt.article_id
+     LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
+     WHERE pr.status = 'pending'
+       AND pr.platform_auth_id IS NOT NULL
+       AND pt.status IN ('pending', 'processing')
+       AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
+     ORDER BY pr.platform, pr.create_time ASC
+     LIMIT $1`,
+    [limit]
+  );
+  return result.rows;
+}
+
+export async function updatePublishRecordResult(
+  id: number,
+  result: { status: string; article_id_on_platform?: string; platform_url?: string; error_msg?: string }
+): Promise<void> {
+  await query(
+    `UPDATE publish_record
+     SET status = $2,
+         article_id_on_platform = $3,
+         platform_url = $4,
+         error_msg = $5,
+         published_at = CASE WHEN $2 = 'success' THEN NOW() ELSE published_at END,
+         started_at = CASE WHEN started_at IS NULL THEN NOW() ELSE started_at END
+     WHERE id = $1`,
+    [id, result.status, result.article_id_on_platform || null, result.platform_url || null, result.error_msg || null]
+  );
+}
+
+export async function markPublishRecordStarted(id: number): Promise<void> {
+  await query(
+    `UPDATE publish_record SET started_at = NOW() WHERE id = $1 AND started_at IS NULL`,
+    [id]
+  );
+}
+
+export async function getPublishRecordsByTask(taskId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT pr.*,
+            pa.account_name,
+            pa.avatar_url
+     FROM publish_record pr
+     LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
+     WHERE pr.task_id = $1
+     ORDER BY pr.id ASC`,
+    [taskId]
+  );
+  return result.rows;
+}
+
+// ============ 内容中枢：发布型账号管理（platform_auth 改造） ============
+
+/**
+ * 获取发布型账号列表
+ * @param userId 当前登录用户 ID
+ * @param poolType 'public'=公共池(user_id IS NULL), 'private'=私有池(user_id = customerId), 'all'=全部
+ * @param customerId 当 poolType='private' 时指定客户 ID
+ */
+export async function getPublishAccounts(
+  userId: number,
+  poolType: 'public' | 'private' | 'all' = 'all',
+  customerId?: number,
+): Promise<any[]> {
+  let sql = `SELECT id, user_id, platform, account_name, avatar_url,
+            status, health_status, last_used_at,
+            platform_type, created_at, updated_at,
+            expires_at
+     FROM platform_auth
+     WHERE platform_type IN ('publish', 'both')`;
+  const params: any[] = [];
+  if (poolType === 'public') {
+    sql += ` AND user_id IS NULL`;
+  } else if (poolType === 'private') {
+    if (customerId == null) {
+      // 未指定客户时返回所有私有账号（user_id IS NOT NULL）
+      sql += ` AND user_id IS NOT NULL`;
+    } else {
+      sql += ` AND user_id = $1`;
+      params.push(String(customerId));
+    }
+  }
+  sql += ` ORDER BY platform ASC, created_at DESC`;
+  const result = await query(sql, params);
+  return result.rows;
+}
+
+export async function createPublishAccount(data: {
+  user_id: number | null;
+  platform: string;
+  account_name: string;
+  storage_state: any;
+  avatar_url?: string;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, avatar_url, platform_type, status, health_status)
+     VALUES ($1, $2, $3, $4, $5, 'publish', 'active', 'normal')
+     RETURNING id`,
+    [data.user_id == null ? null : String(data.user_id), data.platform, data.account_name, JSON.stringify(data.storage_state), data.avatar_url || null]
+  );
+  return result.rows[0].id;
+}
+
+export async function updatePublishAccountStorageState(id: number, storageState: any): Promise<void> {
+  await query(
+    `UPDATE platform_auth
+     SET storage_state = $2,
+         status = 'active',
+         health_status = 'normal',
+         offline_fail_count = 0,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [id, JSON.stringify(storageState)]
+  );
+}
+
+export async function updatePublishAccountStatus(id: number, status: 'active' | 'expired', healthStatus: 'normal' | 'banned' | 'offline'): Promise<void> {
+  await query(
+    `UPDATE platform_auth
+     SET status = $2,
+         health_status = $3,
+         updated_at = NOW()
+     WHERE id = $1`,
+    [id, status, healthStatus]
+  );
+}
+
+export async function deletePublishAccount(id: number): Promise<void> {
+  await query(`DELETE FROM platform_auth WHERE id = $1`, [id]);
+}
+
+export async function getPublishAccountById(id: number): Promise<any | null> {
+  const result = await query(
+    `SELECT * FROM platform_auth WHERE id = $1 AND platform_type IN ('publish', 'both')`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
