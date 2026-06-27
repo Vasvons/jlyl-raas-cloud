@@ -1,5 +1,6 @@
 import { Page } from 'playwright';
 import { BasePlatformAdapter } from './baseAdapter';
+import { smartFindClickableElement, smartFindLongestContent } from '../indexedInteractor';
 
 /** 智谱AI适配器
  *
@@ -103,11 +104,23 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     }
 
     if (bestText.trim().length > 0) {
+      // 内容过短检测：如果提取到的内容 < 50 字符，可能是 loading 占位符或未激活联网的简短回答
+      // 历史问题：未激活联网时 AI 返回的内容长度只有 3 字符
+      if (bestText.trim().length < 50) {
+        console.log(`[智谱AI] 提取内容过短 (${bestText.trim().length} 字符)，启用 smartFindLongestContent 兜底扫描...`);
+        const smartResult = await smartFindLongestContent(page, 50);
+        if (smartResult && smartResult.text.length > bestText.trim().length) {
+          console.log(`[智谱AI] smartFindLongestContent 兜底成功: ${smartResult.text.length} 字符`);
+          return { text: smartResult.text, html: smartResult.html };
+        }
+        // smartFind 也找不到更长内容，返回原内容（可能是 AI 真的返回简短答案）
+        console.log(`[智谱AI] smartFindLongestContent 未找到更长内容，返回原内容 (${bestText.trim().length} 字符)`);
+      }
       console.log(`[智谱AI] 提取内容成功: ${bestText.trim().length} 字符`);
       return { text: bestText.trim(), html: bestHtml };
     }
 
-    // 兜底：用 XPath 查找最后一个 AI 回答容器
+    // 兜底1：用 XPath 查找最后一个 AI 回答容器
     try {
       const answerEl = await page.$('xpath=//div[contains(@class, "answer-content")][last()]').catch(() => null);
       if (answerEl) {
@@ -117,6 +130,17 @@ export class ZhipuAdapter extends BasePlatformAdapter {
           console.log(`[智谱AI] XPath 兜底提取成功: ${text.trim().length} 字符`);
           return { text: text.trim(), html };
         }
+      }
+    } catch {
+      // 继续
+    }
+
+    // 兜底2：smartFindLongestContent 扫描页面所有长文本元素
+    try {
+      const smartResult = await smartFindLongestContent(page, 50);
+      if (smartResult) {
+        console.log(`[智谱AI] smartFindLongestContent 兜底成功: ${smartResult.text.length} 字符`);
+        return { text: smartResult.text, html: smartResult.html };
       }
     } catch {
       // 继续
@@ -148,8 +172,14 @@ export class ZhipuAdapter extends BasePlatformAdapter {
 
     // 步骤2: 点击"联网"按钮（参考 auth helper 的 //span[text()="联网"]）
     // 关键：必须点击"联网"激活联网搜索模式，否则AI不搜索直接返回简短答案
+    // 历史问题：未激活联网时 AI 返回的内容长度只有 3-12 字符
     try {
-      const lianwangBtn = await page.$('xpath=//span[text()="联网"]').catch(() => null);
+      let lianwangBtn = await page.$('xpath=//span[text()="联网"]').catch(() => null);
+      if (!lianwangBtn) {
+        // smartFind 兜底：按文本模糊查找（覆盖 span 文本结构变化）
+        console.log('[智谱AI] XPath 找不到"联网"按钮，启用 smartFindClickableElement 兜底...');
+        lianwangBtn = await smartFindClickableElement(page, '联网');
+      }
       if (lianwangBtn) {
         const isAlreadyActive = await page.evaluate(() => {
           const span = document.evaluate(
@@ -166,12 +196,28 @@ export class ZhipuAdapter extends BasePlatformAdapter {
         if (!isAlreadyActive) {
           await lianwangBtn.click({ timeout: 2000 }).catch(() => {});
           await page.waitForTimeout(1000);
-          console.log('[智谱AI] 已点击"联网"按钮，激活联网搜索模式');
+          // 二次验证：点击后再次检查是否激活
+          const nowActive = await page.evaluate(() => {
+            const span = document.evaluate(
+              '//span[text()="联网"]', document, null,
+              XPathResult.FIRST_ORDERED_NODE_TYPE, null
+            ).singleNodeValue as HTMLElement | null;
+            if (!span) return false;
+            const parent = span.parentElement;
+            if (!parent) return false;
+            const cls = parent.className || '';
+            return cls.includes('active') || cls.includes('selected') || cls.includes('checked');
+          }).catch(() => false);
+          if (nowActive) {
+            console.log('[智谱AI] 已点击"联网"按钮，激活联网搜索模式');
+          } else {
+            console.log('[智谱AI] 点击"联网"按钮但未检测到激活状态，可能已默认激活');
+          }
         } else {
           console.log('[智谱AI] "联网"按钮已激活，无需重复点击');
         }
       } else {
-        console.log('[智谱AI] 未找到"联网"按钮（可能已激活或页面结构变化）');
+        console.log('[智谱AI] smartFind 也找不到"联网"按钮（可能已激活或页面结构变化）');
       }
     } catch (e: any) {
       console.log(`[智谱AI] 点击"联网"按钮失败: ${e.message}`);
@@ -179,7 +225,10 @@ export class ZhipuAdapter extends BasePlatformAdapter {
 
     // 步骤3: 点击"推理"按钮（参考 auth helper 的 //span[text()="推理"]，is_try=1 可选）
     try {
-      const tuiliBtn = await page.$('xpath=//span[text()="推理"]').catch(() => null);
+      let tuiliBtn = await page.$('xpath=//span[text()="推理"]').catch(() => null);
+      if (!tuiliBtn) {
+        tuiliBtn = await smartFindClickableElement(page, '推理');
+      }
       if (tuiliBtn) {
         const isAlreadyActive = await page.evaluate(() => {
           const span = document.evaluate(

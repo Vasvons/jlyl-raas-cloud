@@ -1,6 +1,7 @@
 import { Page } from 'playwright';
 import { BasePlatformAdapter } from './baseAdapter';
 import { QueryResult, randomDelay } from './base';
+import { smartFindInputElement, smartFindClickableElement } from '../indexedInteractor';
 
 /** DeepSeek 适配器
  *
@@ -82,9 +83,31 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
     }
 
     if (!inputFound) {
+      // 第三轮兜底：用 indexedInteractor 的 smartFindInputElement 扫描页面所有可见可交互元素
+      // 解决 DeepSeek 偶发 textarea 不可见但页面有其他可输入元素的问题
+      console.log('[DeepSeek] locator 策略全部失败，启用 smartFindInputElement 兜底扫描...');
+      try {
+        const smartEl = await smartFindInputElement(page);
+        if (smartEl) {
+          console.log('[DeepSeek] smartFindInputElement 找到可输入元素，使用 click+type 输入');
+          await this.activateModes(page);
+          await smartEl.click({ timeout: 5000 }).catch(() => {});
+          await page.keyboard.press('Control+A');
+          await page.keyboard.press('Delete');
+          await page.keyboard.type(keyword, { delay: 50 });
+          await randomDelay(500, 1500);
+          await page.keyboard.press('Enter');
+          return await this.extractResult(page);
+        }
+      } catch (e: any) {
+        console.log(`[DeepSeek] smartFindInputElement 兜底失败: ${e.message}`);
+      }
+    }
+
+    if (!inputFound) {
       const url = page.url();
       const title = await page.title().catch(() => '未知');
-      throw new Error(`输入框未找到: textarea 和 contenteditable 均不可见 (URL=${url}, title=${title})`);
+      throw new Error(`输入框未找到: textarea/contenteditable/smartFind 均失败 (URL=${url}, title=${title})`);
     }
 
     // 步骤4: 激活"深度思考"和"智能搜索"模式
@@ -142,7 +165,11 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
   private async activateModes(page: Page): Promise<void> {
     // 激活"深度思考"
     try {
-      const deepThinkBtn = await page.$('xpath=//span[text()="深度思考"]/parent::div').catch(() => null);
+      let deepThinkBtn = await page.$('xpath=//span[text()="深度思考"]/parent::div').catch(() => null);
+      if (!deepThinkBtn) {
+        // smartFind 兜底：按文本模糊查找
+        deepThinkBtn = await smartFindClickableElement(page, '深度思考');
+      }
       if (deepThinkBtn) {
         const isSelected = await page.evaluate(() => {
           const span = document.evaluate(
@@ -165,7 +192,10 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
 
     // 激活"智能搜索"（联网搜索）
     try {
-      const searchBtn = await page.$('xpath=//span[text()="智能搜索"]/parent::div').catch(() => null);
+      let searchBtn = await page.$('xpath=//span[text()="智能搜索"]/parent::div').catch(() => null);
+      if (!searchBtn) {
+        searchBtn = await smartFindClickableElement(page, '智能搜索');
+      }
       if (searchBtn) {
         const isSelected = await page.evaluate(() => {
           const span = document.evaluate(

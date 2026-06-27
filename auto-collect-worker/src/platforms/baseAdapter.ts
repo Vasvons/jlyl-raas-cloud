@@ -1,5 +1,6 @@
 import { Page } from 'playwright';
 import { PlatformAdapter, PlatformCredentials, QueryResult, randomDelay } from './base';
+import { smartFindInputElement } from '../indexedInteractor';
 
 /**
  * 通用平台适配器基类实现
@@ -236,6 +237,37 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         } catch {
           // 继续
         }
+      }
+    }
+
+    // 第三轮：用 indexedInteractor 的 smartFindInputElement 兜底扫描页面所有可见可交互元素
+    // 解决 DeepSeek/通义千问等平台偶发 textarea 不可见但页面有其他可输入元素的问题
+    if (!inputFound) {
+      console.log(`[${this.platformName}] 两轮选择器全部失败，启用 smartFindInputElement 兜底扫描...`);
+      try {
+        const smartEl = await smartFindInputElement(page);
+        if (smartEl) {
+          console.log(`[${this.platformName}] smartFindInputElement 找到可输入元素，使用 click+type 输入`);
+          await smartEl.click({ timeout: 5000 }).catch(() => {});
+          await page.keyboard.press('Control+A');
+          await page.keyboard.press('Delete');
+          await page.keyboard.type(keyword, { delay: 50 });
+          await randomDelay(500, 1500);
+          await page.keyboard.press('Enter');
+          // 等待 AI 回答完成
+          await this.waitForResponse(page);
+          // 提取内容
+          const { text, html } = await this.extractContent(page);
+          const shareUrl = await this.extractShareLink(page);
+          return {
+            content: text,
+            shareUrl,
+            htmlContent: html,
+            supportsShare: this.supportsShare,
+          };
+        }
+      } catch (e: any) {
+        console.log(`[${this.platformName}] smartFindInputElement 兜底失败: ${e.message}`);
       }
     }
 
