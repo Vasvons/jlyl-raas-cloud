@@ -3410,6 +3410,111 @@ export async function deleteAgentProfile(id: number): Promise<void> {
   await query('DELETE FROM agent_profile WHERE id = $1', [id]);
 }
 
+// ============ 代理池管理（Phase 2：借鉴 BrowserAct 代理系统设计） ============
+
+/** 创建代理 */
+export async function createProxy(data: {
+  user_id: string;
+  name: string;
+  provider?: string;
+  proxy_type?: string;
+  region?: string;
+  endpoint: string;
+  username?: string;
+  password?: string;
+  is_active?: boolean;
+  remark?: string;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO proxy_pool (user_id, name, provider, proxy_type, region, endpoint, username, password, is_active, remark)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     RETURNING id`,
+    [
+      data.user_id, data.name, data.provider || 'custom', data.proxy_type || 'static',
+      data.region || '', data.endpoint, data.username || '', data.password || '',
+      data.is_active !== false, data.remark || '',
+    ]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新代理 */
+export async function updateProxy(id: number, data: {
+  name?: string;
+  provider?: string;
+  proxy_type?: string;
+  region?: string;
+  endpoint?: string;
+  username?: string;
+  password?: string;
+  is_active?: boolean;
+  remark?: string;
+}): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  if (data.name !== undefined) { fields.push(`name = $${idx++}`); values.push(data.name); }
+  if (data.provider !== undefined) { fields.push(`provider = $${idx++}`); values.push(data.provider); }
+  if (data.proxy_type !== undefined) { fields.push(`proxy_type = $${idx++}`); values.push(data.proxy_type); }
+  if (data.region !== undefined) { fields.push(`region = $${idx++}`); values.push(data.region); }
+  if (data.endpoint !== undefined) { fields.push(`endpoint = $${idx++}`); values.push(data.endpoint); }
+  if (data.username !== undefined) { fields.push(`username = $${idx++}`); values.push(data.username); }
+  if (data.password !== undefined) { fields.push(`password = $${idx++}`); values.push(data.password); }
+  if (data.is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(data.is_active); }
+  if (data.remark !== undefined) { fields.push(`remark = $${idx++}`); values.push(data.remark); }
+  if (fields.length === 0) return;
+  fields.push(`updated_at = NOW()`);
+  values.push(id);
+  await query(`UPDATE proxy_pool SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+}
+
+/** 获取用户的代理列表（不返回 password 明文，列表展示用） */
+export async function getProxies(userId: string): Promise<any[]> {
+  const result = await query(
+    `SELECT id, user_id, name, provider, proxy_type, region, endpoint, username,
+            is_active, last_check_at, last_check_ok, last_check_latency,
+            total_used_count, remark, created_at, updated_at
+     FROM proxy_pool
+     WHERE user_id = $1
+     ORDER BY created_at DESC`,
+    [userId]
+  );
+  return result.rows;
+}
+
+/** 获取单个代理详情（含 password，供 Worker 使用） */
+export async function getProxyById(id: number): Promise<any | null> {
+  const result = await query(
+    `SELECT * FROM proxy_pool WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+/** 删除代理（同时清除 platform_auth 中的引用） */
+export async function deleteProxy(id: number): Promise<void> {
+  // 先清除 platform_auth 中的 proxy_id 引用
+  await query(`UPDATE platform_auth SET proxy_id = NULL WHERE proxy_id = $1`, [id]);
+  await query('DELETE FROM proxy_pool WHERE id = $1', [id]);
+}
+
+/** 更新代理健康检查结果 */
+export async function updateProxyHealthCheck(
+  id: number,
+  ok: boolean,
+  latency: number
+): Promise<void> {
+  await query(
+    `UPDATE proxy_pool SET last_check_at = NOW(), last_check_ok = $1, last_check_latency = $2 WHERE id = $3`,
+    [ok, latency, id]
+  );
+}
+
+/** 递增代理使用计数 */
+export async function incrementProxyUsedCount(id: number): Promise<void> {
+  await query(`UPDATE proxy_pool SET total_used_count = total_used_count + 1 WHERE id = $1`, [id]);
+}
+
 // ============ 内容中枢：AI写作任务 ============
 
 export async function createWritingTask(data: any): Promise<number> {
@@ -3863,25 +3968,26 @@ export async function getPublishAccounts(
   poolType: 'public' | 'private' | 'all' = 'all',
   customerId?: number,
 ): Promise<any[]> {
-  let sql = `SELECT id, user_id, platform, account_name, avatar_url,
-            status, health_status, last_used_at,
-            platform_type, created_at, updated_at,
-            expires_at
-     FROM platform_auth
-     WHERE platform_type IN ('publish', 'both')`;
+  let sql = `SELECT pa.id, pa.user_id, pa.platform, pa.account_name, pa.avatar_url,
+            pa.status, pa.health_status, pa.last_used_at,
+            pa.platform_type, pa.created_at, pa.updated_at,
+            pa.expires_at, pa.proxy_id, pp.name AS proxy_name
+     FROM platform_auth pa
+     LEFT JOIN proxy_pool pp ON pa.proxy_id = pp.id
+     WHERE pa.platform_type IN ('publish', 'both')`;
   const params: any[] = [];
   if (poolType === 'public') {
-    sql += ` AND user_id IS NULL`;
+    sql += ` AND pa.user_id IS NULL`;
   } else if (poolType === 'private') {
     if (customerId == null) {
       // 未指定客户时返回所有私有账号（user_id IS NOT NULL）
-      sql += ` AND user_id IS NOT NULL`;
+      sql += ` AND pa.user_id IS NOT NULL`;
     } else {
-      sql += ` AND user_id = $1`;
+      sql += ` AND pa.user_id = $1`;
       params.push(String(customerId));
     }
   }
-  sql += ` ORDER BY platform ASC, created_at DESC`;
+  sql += ` ORDER BY pa.platform ASC, pa.created_at DESC`;
   const result = await query(sql, params);
   return result.rows;
 }

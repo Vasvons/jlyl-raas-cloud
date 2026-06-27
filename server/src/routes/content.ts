@@ -53,6 +53,14 @@ import {
   getAgentProfiles,
   getAgentProfileById,
   deleteAgentProfile,
+  // 代理池管理
+  createProxy,
+  updateProxy,
+  getProxies,
+  getProxyById,
+  deleteProxy,
+  updateProxyHealthCheck,
+  incrementProxyUsedCount,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection } from '../services/content/aiClient';
@@ -344,6 +352,139 @@ router.delete('/agent-profiles/:id', async (req: Request, res: Response) => {
     res.status(500).json({ code: 500, message: err.message });
   }
 });
+
+// ============ 代理池管理（Phase 2：借鉴 BrowserAct 代理系统设计） ============
+
+/** 创建代理 */
+router.post('/proxies', async (req: Request, res: Response) => {
+  try {
+    const userId = String(getUserId(req));
+    const { name, provider, proxy_type, region, endpoint, username, password, is_active, remark } = req.body;
+    if (!name || !endpoint) {
+      res.status(400).json({ code: 400, message: 'name 和 endpoint 必填' });
+      return;
+    }
+    // 密码加密存储（复用 ai_model_config 的加密逻辑）
+    const encryptedPassword = password ? encrypt(password) : '';
+    const id = await createProxy({
+      user_id: userId, name, provider, proxy_type, region, endpoint,
+      username, password: encryptedPassword, is_active, remark,
+    });
+    res.json({ code: 200, data: { id } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 获取代理列表 */
+router.get('/proxies', async (req: Request, res: Response) => {
+  try {
+    const userId = String(getUserId(req));
+    const list = await getProxies(userId);
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 获取单个代理详情 */
+router.get('/proxies/:id', async (req: Request, res: Response) => {
+  try {
+    const proxy = await getProxyById(Number(req.params.id));
+    if (!proxy) {
+      res.status(404).json({ code: 404, message: '代理不存在' });
+      return;
+    }
+    // 解密密码返回给调用方（Worker 调用时需要明文）
+    if (proxy.password) {
+      try { proxy.password = decrypt(proxy.password); } catch {}
+    }
+    res.json({ code: 200, data: proxy });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 更新代理 */
+router.put('/proxies/:id', async (req: Request, res: Response) => {
+  try {
+    const { name, provider, proxy_type, region, endpoint, username, password, is_active, remark } = req.body;
+    const updateData: any = { name, provider, proxy_type, region, endpoint, username, is_active, remark };
+    // 密码非空时才更新（避免空值覆盖）
+    if (password) {
+      updateData.password = encrypt(password);
+    }
+    await updateProxy(Number(req.params.id), updateData);
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 删除代理 */
+router.delete('/proxies/:id', async (req: Request, res: Response) => {
+  try {
+    await deleteProxy(Number(req.params.id));
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 代理健康检查（简单 TCP 连通性测试） */
+router.post('/proxies/:id/check', async (req: Request, res: Response) => {
+  try {
+    const proxy = await getProxyById(Number(req.params.id));
+    if (!proxy) {
+      res.status(404).json({ code: 404, message: '代理不存在' });
+      return;
+    }
+    // 解密密码
+    let password = proxy.password;
+    try { if (password) password = decrypt(password); } catch {}
+
+    const startTime = Date.now();
+    const ok = await testProxyConnectivity(proxy.endpoint, proxy.username, password);
+    const latency = Date.now() - startTime;
+
+    await updateProxyHealthCheck(proxy.id, ok, latency);
+    res.json({ code: 200, data: { ok, latency_ms: latency } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * 简单代理连通性测试：通过代理访问 httpbin.org/ip
+ */
+async function testProxyConnectivity(endpoint: string, username: string, password: string): Promise<boolean> {
+  try {
+    const net = await import('net');
+    const url = new URL(`http://${endpoint}`);
+    const host = url.hostname;
+    const port = parseInt(url.port || '80', 10);
+
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(5000);
+      socket.on('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.on('timeout', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.on('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+      socket.connect(port, host);
+    });
+  } catch {
+    return false;
+  }
+}
 
 // ============ AI写作任务 ============
 
@@ -655,11 +796,43 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 2, 8);
     const records = await getPendingPublishRecords(limit);
-    // 为每条记录附加 step_list，并标记为 started（processing）
+    // 为每条记录附加 step_list + account_proxy，并标记为 started（processing）
     const enriched = await Promise.all(records.map(async (r: any) => {
       try {
         const stepList = await getStepListByPlatform(r.platform);
         await markPublishRecordStarted(r.id);
+
+        // 查询账号绑定的代理信息（Phase 2：代理池）
+        let accountProxy: any = null;
+        if (r.platform_auth_id) {
+          const proxyResult = await query(
+            `SELECT pp.id, pp.name, pp.endpoint, pp.username, pp.password, pp.region, pp.proxy_type
+             FROM platform_auth pa
+             LEFT JOIN proxy_pool pp ON pa.proxy_id = pp.id
+             WHERE pa.id = $1 AND pa.proxy_id IS NOT NULL`,
+            [r.platform_auth_id]
+          );
+          if (proxyResult.rows.length > 0 && proxyResult.rows[0].id) {
+            const proxyRow = proxyResult.rows[0];
+            // 解密密码
+            let password = proxyRow.password;
+            try { if (password) password = decrypt(password); } catch {}
+            accountProxy = {
+              id: proxyRow.id,
+              name: proxyRow.name,
+              endpoint: proxyRow.endpoint,
+              username: proxyRow.username,
+              password,
+              region: proxyRow.region,
+              proxy_type: proxyRow.proxy_type,
+            };
+            // 递增代理使用计数（异步执行，不阻塞 dequeue）
+            incrementProxyUsedCount(proxyRow.id).catch((e) => {
+              console.error('[Publish] incrementProxyUsedCount 失败:', e?.message);
+            });
+          }
+        }
+
         return {
           record_id: r.id,
           task_id: r.task_id,
@@ -667,6 +840,7 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
           platform_auth_id: r.platform_auth_id,
           account_name: r.account_name,
           account_storage_state: r.account_storage_state,
+          account_proxy: accountProxy,
           article: {
             id: r.article_id,
             title: r.article_title,
@@ -767,7 +941,7 @@ router.get('/publish-accounts', async (req: Request, res: Response) => {
 
 router.post('/publish-accounts', async (req: Request, res: Response) => {
   try {
-    const { platform, account_name, storage_state, avatar_url, pool_type, customer_id } = req.body;
+    const { platform, account_name, storage_state, avatar_url, pool_type, customer_id, proxy_id } = req.body;
     if (!platform || !account_name || !storage_state) {
       return res.status(400).json({ code: 400, message: 'platform, account_name, storage_state 必填' });
     }
@@ -780,6 +954,10 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
       storage_state,
       avatar_url,
     });
+    // 绑定代理（可选）
+    if (proxy_id) {
+      await query('UPDATE platform_auth SET proxy_id = $1 WHERE id = $2', [proxy_id, id]);
+    }
     res.json({ code: 200, data: { id } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -789,12 +967,16 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
 router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { storage_state, status, health_status } = req.body;
+    const { storage_state, status, health_status, proxy_id } = req.body;
     if (storage_state) {
       await updatePublishAccountStorageState(id, storage_state);
     }
     if (status && health_status) {
       await updatePublishAccountStatus(id, status, health_status);
+    }
+    // 更新代理绑定（支持 null 解绑）
+    if (proxy_id !== undefined) {
+      await query('UPDATE platform_auth SET proxy_id = $1 WHERE id = $2', [proxy_id || null, id]);
     }
     res.json({ code: 200, data: { ok: true } });
   } catch (err: any) {

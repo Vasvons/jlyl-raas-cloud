@@ -425,6 +425,37 @@ export async function migrate() {
     // 增量迁移：添加 avatar_url 字段（用于账号列表显示头像）
     await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS avatar_url TEXT`);
 
+    // ============ 代理池表（Phase 2：借鉴 BrowserAct 代理系统设计） ============
+    // 用于账号 IP 隔离：每个 platform_auth 账号可绑定一个 proxy_pool 记录
+    // 支持动态/静态/自定义三种代理类型，对接快代理/芝麻代理等服务商
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS proxy_pool (
+        id SERIAL PRIMARY KEY,
+        user_id TEXT,
+        name VARCHAR(100) NOT NULL,
+        provider VARCHAR(32) DEFAULT 'custom',
+        proxy_type VARCHAR(16) DEFAULT 'static',
+        region VARCHAR(32) DEFAULT '',
+        endpoint VARCHAR(255) NOT NULL,
+        username VARCHAR(128) DEFAULT '',
+        password TEXT DEFAULT '',
+        is_active BOOLEAN DEFAULT TRUE,
+        last_check_at TIMESTAMP,
+        last_check_ok BOOLEAN,
+        last_check_latency INTEGER,
+        total_used_count INTEGER DEFAULT 0,
+        remark TEXT DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_proxy_user ON proxy_pool(user_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_proxy_active ON proxy_pool(is_active)`);
+
+    // platform_auth 表新增 proxy_id 字段（关联 proxy_pool）
+    // NULL = 不使用代理 / 数字 = 指定代理
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS proxy_id INTEGER REFERENCES proxy_pool(id)`);
+
     console.log('[Migrate] 真实收录查询相关表创建/验证完成');
 
     // 关键词生成器配置表（持久化词汇配置，替代localStorage）

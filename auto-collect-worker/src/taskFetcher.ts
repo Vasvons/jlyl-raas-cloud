@@ -7,7 +7,7 @@ import { YuanbaoAdapter } from './platforms/yuanbao';
 import { WenxinAdapter } from './platforms/wenxin';
 import { NanoAdapter } from './platforms/nano';
 import { ZhipuAdapter } from './platforms/zhipu';
-import { PlatformAdapter, getRandomUA } from './platforms/base';
+import { PlatformAdapter, getRandomContextIdentity } from './platforms/base';
 import { reportResult } from './resultReporter';
 import * as logger from './logger';
 import axios from 'axios';
@@ -204,8 +204,7 @@ async function executeSingleQuery(
 
     context = await browser.newContext({
       storageState,
-      userAgent: getRandomUA(),
-      viewport: { width: 1280, height: 800 },
+      ...getRandomContextIdentity(),
     });
     page = await context.newPage();
 

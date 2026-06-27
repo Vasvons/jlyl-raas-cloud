@@ -54,8 +54,38 @@ export function getRandomUA(): string {
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
   ];
   return uas[Math.floor(Math.random() * uas.length)];
+}
+
+/**
+ * 隐私模式：返回一组随机 viewport + locale + timezoneId，
+ * 让每次 newContext 都是"全新随机身份"，降低被识别为自动化的概率。
+ * 仅用于巡检 Worker（查询 AI 平台），与桌面端 fingerprintManager 是两套独立实现。
+ */
+export function getRandomContextIdentity(): {
+  userAgent: string;
+  viewport: { width: number; height: number };
+  locale: string;
+  timezoneId: string;
+} {
+  const viewports = [
+    { width: 1280, height: 800 },
+    { width: 1366, height: 768 },
+    { width: 1440, height: 900 },
+    { width: 1536, height: 864 },
+    { width: 1600, height: 900 },
+  ];
+  const locales = ['zh-CN', 'zh-CN', 'zh-CN', 'zh-TW', 'en-US'];
+  const timezones = ['Asia/Shanghai', 'Asia/Shanghai', 'Asia/Shanghai', 'Asia/Chongqing'];
+  return {
+    userAgent: getRandomUA(),
+    viewport: viewports[Math.floor(Math.random() * viewports.length)],
+    locale: locales[Math.floor(Math.random() * locales.length)],
+    timezoneId: timezones[Math.floor(Math.random() * timezones.length)],
+  };
 }
 
 /** 随机延迟（毫秒） */
