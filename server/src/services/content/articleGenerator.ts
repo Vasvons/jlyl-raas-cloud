@@ -113,6 +113,28 @@ function buildEnterpriseInfo(task: any) {
 }
 
 /**
+ * 从 agent_profile 构建系统消息（system message）
+ * 把专家角色的 systemPrompt + 启用的技能内容拼成 system message
+ * 用于注入到 chatCompletion 调用，让大模型"成为"这个专家
+ *
+ * @param task 已联表查询 agent_profile 的任务对象（含 agent_system_prompt, agent_skills_content）
+ * @returns system message 字符串，若角色未配置则返回空字符串
+ */
+function buildSystemMessageFromAgentProfile(task: any): string {
+  const systemPrompt: string = task.agent_system_prompt || '';
+  const skillsContent: string = task.agent_skills_content || '';
+
+  const parts: string[] = [];
+  if (systemPrompt.trim()) {
+    parts.push(systemPrompt.trim());
+  }
+  if (skillsContent.trim()) {
+    parts.push(skillsContent.trim());
+  }
+  return parts.join('\n\n');
+}
+
+/**
  * 解析模型配置并解密 API-KEY
  * 优先使用 task.model_config_id（向后兼容），否则取用户默认模型
  */
@@ -212,14 +234,21 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
           wordCount: task.target_word_count,
         });
 
+        // 构建系统消息：若任务绑定了专家智能体(agent_profile)，注入其 systemPrompt + 技能内容
+        const systemContent = buildSystemMessageFromAgentProfile(task);
+        const messages: { role: 'system' | 'user'; content: string }[] = systemContent
+          ? [
+              { role: 'system', content: systemContent },
+              { role: 'user', content: articlePrompt },
+            ]
+          : [{ role: 'user', content: articlePrompt }];
+
         // 调AI生成文章正文
         const articleResult = await chatCompletion({
           baseUrl: modelConfig.base_url,
           apiKey,
           model: modelConfig.model_name,
-          messages: [
-            { role: 'user', content: articlePrompt },
-          ],
+          messages,
           temperature: Number(modelConfig.temperature) || 0.7,
           maxTokens: modelConfig.max_tokens || 4096,
           timeout: 120000,
@@ -232,13 +261,17 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
             enterprise: enterpriseInfo,
             wordCount: task.target_word_count,
           });
+          const titleMessages: { role: 'system' | 'user'; content: string }[] = systemContent
+            ? [
+                { role: 'system', content: systemContent },
+                { role: 'user', content: titlePrompt },
+              ]
+            : [{ role: 'user', content: titlePrompt }];
           const titleResult = await chatCompletion({
             baseUrl: modelConfig.base_url,
             apiKey,
             model: modelConfig.model_name,
-            messages: [
-              { role: 'user', content: titlePrompt },
-            ],
+            messages: titleMessages,
             temperature: Number(modelConfig.temperature) || 0.7,
             maxTokens: 200,
             timeout: 30000,
@@ -357,13 +390,20 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     wordCount: task.target_word_count,
   });
 
+  // 构建系统消息：若任务绑定了专家智能体，注入其 systemPrompt + 技能内容
+  const systemContent = buildSystemMessageFromAgentProfile(task);
+  const messages: { role: 'system' | 'user'; content: string }[] = systemContent
+    ? [
+        { role: 'system', content: systemContent },
+        { role: 'user', content: articlePrompt },
+      ]
+    : [{ role: 'user', content: articlePrompt }];
+
   const articleResult = await chatCompletion({
     baseUrl: modelConfig.base_url,
     apiKey,
     model: modelConfig.model_name,
-    messages: [
-      { role: 'user', content: articlePrompt },
-    ],
+    messages,
     temperature: Number(modelConfig.temperature) || 0.7,
     maxTokens: modelConfig.max_tokens || 4096,
     timeout: 120000,
@@ -376,11 +416,17 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
       enterprise: enterpriseInfo,
       wordCount: task.target_word_count,
     });
+    const titleMessages: { role: 'system' | 'user'; content: string }[] = systemContent
+      ? [
+          { role: 'system', content: systemContent },
+          { role: 'user', content: titlePrompt },
+        ]
+      : [{ role: 'user', content: titlePrompt }];
     const titleResult = await chatCompletion({
       baseUrl: modelConfig.base_url,
       apiKey,
       model: modelConfig.model_name,
-      messages: [{ role: 'user', content: titlePrompt }],
+      messages: titleMessages,
       temperature: Number(modelConfig.temperature) || 0.7,
       maxTokens: 200,
       timeout: 30000,

@@ -3334,16 +3334,93 @@ export async function deleteEnterpriseKnowledge(id: number): Promise<void> {
   await query('UPDATE enterprise_knowledge SET is_active = false WHERE id = $1', [id]);
 }
 
+// ============ 内容中枢：智能体角色同步（agent_profile） ============
+
+/**
+ * 同步（upsert）智能体角色配置到云端
+ * 桌面端 AGENT 人事部保存角色时调用，把 systemPrompt + 技能内容同步到云端
+ * 用于内容中枢写作任务复用专家智能体
+ */
+export async function upsertAgentProfile(data: {
+  user_id: number;
+  role_id: string;
+  name: string;
+  description?: string;
+  department_id?: string;
+  department_name?: string;
+  system_prompt?: string;
+  skills_content?: string;
+  skills_count?: number;
+  provider?: string;
+  model_name?: string;
+  is_active?: boolean;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO agent_profile (user_id, role_id, name, description, department_id, department_name,
+            system_prompt, skills_content, skills_count, provider, model_name, is_active, last_sync_time)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+     ON CONFLICT (user_id, role_id) DO UPDATE SET
+       name = EXCLUDED.name,
+       description = EXCLUDED.description,
+       department_id = EXCLUDED.department_id,
+       department_name = EXCLUDED.department_name,
+       system_prompt = EXCLUDED.system_prompt,
+       skills_content = EXCLUDED.skills_content,
+       skills_count = EXCLUDED.skills_count,
+       provider = EXCLUDED.provider,
+       model_name = EXCLUDED.model_name,
+       is_active = EXCLUDED.is_active,
+       last_sync_time = NOW(),
+       update_time = NOW()
+     RETURNING id`,
+    [
+      data.user_id, data.role_id, data.name, data.description || '', data.department_id || '',
+      data.department_name || '', data.system_prompt || '', data.skills_content || '',
+      data.skills_count || 0, data.provider || '', data.model_name || '',
+      data.is_active !== false,
+    ]
+  );
+  return result.rows[0].id;
+}
+
+/** 获取用户的智能体角色列表（不返回 skills_content 大字段，列表展示用） */
+export async function getAgentProfiles(userId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT id, user_id, role_id, name, description, department_id, department_name,
+            skills_count, provider, model_name, is_active, last_sync_time, create_time, update_time
+     FROM agent_profile
+     WHERE user_id = $1
+     ORDER BY update_time DESC`,
+    [userId]
+  );
+  return result.rows;
+}
+
+/** 获取单个智能体角色详情（含 system_prompt + skills_content 完整字段） */
+export async function getAgentProfileById(id: number): Promise<any | null> {
+  const result = await query(
+    `SELECT * FROM agent_profile WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+/** 删除智能体角色同步记录 */
+export async function deleteAgentProfile(id: number): Promise<void> {
+  await query('DELETE FROM agent_profile WHERE id = $1', [id]);
+}
+
 // ============ 内容中枢：AI写作任务 ============
 
 export async function createWritingTask(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_writing_task (user_id, task_name, keyword_ids, instruction_id, knowledge_id,
-            model_config_id, generation_mode, status, total_count, started_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, 'processing', $8, NOW())
+            model_config_id, generation_mode, agent_profile_id, status, total_count, started_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW())
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
-     data.model_config_id || null, data.generation_mode || 'expert', data.total_count]
+     data.model_config_id || null, data.generation_mode || 'expert', data.agent_profile_id || null,
+     data.total_count]
   );
   return result.rows[0].id;
 }
@@ -3353,10 +3430,12 @@ export async function getWritingTasks(userId: number, page: number = 1, pageSize
   const countResult = await query('SELECT COUNT(*) as total FROM ai_writing_task WHERE user_id = $1', [userId]);
   const total = parseInt(countResult.rows[0].total);
   const result = await query(
-    `SELECT t.*, i.name as instruction_name, k.company_short_name as knowledge_name
+    `SELECT t.*, i.name as instruction_name, k.company_short_name as knowledge_name,
+            ap.name as agent_profile_name
      FROM ai_writing_task t
      LEFT JOIN writing_instruction i ON t.instruction_id = i.id
      LEFT JOIN enterprise_knowledge k ON t.knowledge_id = k.id
+     LEFT JOIN agent_profile ap ON t.agent_profile_id = ap.id
      WHERE t.user_id = $1
      ORDER BY t.create_time DESC
      LIMIT $2 OFFSET $3`,
@@ -3371,10 +3450,13 @@ export async function getWritingTaskById(id: number): Promise<any | null> {
             i.category as instruction_category, i.content_types, i.random_mode,
             k.company_full_name, k.company_short_name, k.city, k.industry, k.business_scope,
             k.entity_triples, k.intro_text, k.cases_text,
-            k.products_services, k.product_features, k.user_pain_points, k.trust_endorsement, k.other_info
+            k.products_services, k.product_features, k.user_pain_points, k.trust_endorsement, k.other_info,
+            ap.system_prompt as agent_system_prompt, ap.skills_content as agent_skills_content,
+            ap.name as agent_profile_name
      FROM ai_writing_task t
      LEFT JOIN writing_instruction i ON t.instruction_id = i.id
      LEFT JOIN enterprise_knowledge k ON t.knowledge_id = k.id
+     LEFT JOIN agent_profile ap ON t.agent_profile_id = ap.id
      WHERE t.id = $1`,
     [id]
   );

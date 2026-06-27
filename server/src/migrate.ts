@@ -909,6 +909,36 @@ export async function migrate() {
       )
     `);
 
+    // 8.4 智能体角色同步表（agent_profile）
+    // 用于内容中枢写作任务复用 AGENT 人事部中配置的专家智能体
+    // 桌面端在保存角色时同步 systemPrompt + 启用的技能内容到云端
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_profile (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        role_id VARCHAR(64) NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        description TEXT DEFAULT '',
+        department_id VARCHAR(64) DEFAULT '',
+        department_name VARCHAR(100) DEFAULT '',
+        system_prompt TEXT DEFAULT '',
+        skills_content TEXT DEFAULT '',
+        skills_count INTEGER DEFAULT 0,
+        provider VARCHAR(32) DEFAULT '',
+        model_name VARCHAR(100) DEFAULT '',
+        is_active BOOLEAN DEFAULT TRUE,
+        last_sync_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, role_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_agent_profile_user ON agent_profile(user_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_agent_profile_role ON agent_profile(role_id)`);
+
+    // 8.5 写作任务表新增 agent_profile_id 字段（关联专家智能体）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS agent_profile_id INTEGER REFERENCES agent_profile(id)`);
+
     // 9. 插入7个平台的默认共享模型配置（user_id IS NULL）
     const defaultModels = [
       { platform: 'deepseek', model_name: 'deepseek-chat', base_url: 'https://api.deepseek.com/v1/chat/completions' },

@@ -48,6 +48,11 @@ import {
   // 云接口配置
   getCloudApiConfig,
   upsertCloudApiConfig,
+  // 智能体角色同步
+  upsertAgentProfile,
+  getAgentProfiles,
+  getAgentProfileById,
+  deleteAgentProfile,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection } from '../services/content/aiClient';
@@ -284,6 +289,62 @@ router.delete('/knowledge/:id', async (req: Request, res: Response) => {
   }
 });
 
+// ============ 智能体角色同步（agent_profile） ============
+// 桌面端 AGENT 人事部保存角色时同步到云端，供内容中枢写作任务复用
+
+/**
+ * 同步单个智能体角色到云端（upsert）
+ * 桌面端保存角色后调用此接口，把 systemPrompt + 启用的技能内容同步过来
+ */
+router.post('/agent-profiles/sync', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { role_id, name, description, department_id, department_name, system_prompt, skills_content, skills_count, provider, model_name, is_active } = req.body;
+    if (!role_id || !name) {
+      return res.status(400).json({ code: 400, message: 'role_id/name 必填' });
+    }
+    const id = await upsertAgentProfile({
+      user_id: userId, role_id, name, description, department_id, department_name,
+      system_prompt, skills_content, skills_count, provider, model_name, is_active,
+    });
+    res.json({ code: 200, data: { id } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 获取当前用户的智能体角色列表（列表展示，不含 skills_content 大字段） */
+router.get('/agent-profiles', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const list = await getAgentProfiles(userId);
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 获取单个智能体角色详情（含完整 system_prompt + skills_content） */
+router.get('/agent-profiles/:id', async (req: Request, res: Response) => {
+  try {
+    const profile = await getAgentProfileById(Number(req.params.id));
+    if (!profile) return res.status(404).json({ code: 404, message: '角色不存在' });
+    res.json({ code: 200, data: profile });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 删除智能体角色同步记录 */
+router.delete('/agent-profiles/:id', async (req: Request, res: Response) => {
+  try {
+    await deleteAgentProfile(Number(req.params.id));
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 // ============ AI写作任务 ============
 
 router.get('/writing-tasks', async (req: Request, res: Response) => {
@@ -311,7 +372,7 @@ router.get('/writing-tasks/:id', async (req: Request, res: Response) => {
 router.post('/writing-tasks', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode } = req.body;
+    const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id } = req.body;
 
     // 关键词来源优先级：
     //   1. keyword_ids（显式传入，向后兼容）
@@ -333,10 +394,12 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
       return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id 必填' });
     }
     // model_config_id 可选：未传时由 articleGenerator 自动取默认模型
+    // agent_profile_id 可选：指定专家智能体角色（systemPrompt+skills 注入 system message）
     const taskId = await createWritingTask({
       user_id: userId, task_name, keyword_ids: finalKeywordIds, instruction_id, knowledge_id,
       model_config_id: model_config_id || null,
       generation_mode: generation_mode || 'expert',
+      agent_profile_id: agent_profile_id || null,
       total_count: finalKeywordIds.length,
     });
     // 异步执行任务（不阻塞响应）
