@@ -1,4 +1,5 @@
 import { query, withTransaction, PoolClient } from './db';
+import { encrypt, decrypt } from './utils/crypto';
 
 // ============ 用户管理 ============
 
@@ -2363,15 +2364,17 @@ export async function insertRealCollectRecord(params: {
   rawContent: string;
   queryTime: Date;
   workerId: string;
+  source?: 'api' | 'crawler';
 }): Promise<number> {
   const result = await query(
-    `INSERT INTO real_collect_record 
-     (task_id, user_id, keyword, keyword_type, platform, brand_matched, matched_brands, 
-      has_contact, contacts, share_url, static_page_id, raw_content, query_time, worker_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+    `INSERT INTO real_collect_record
+     (task_id, user_id, keyword, keyword_type, platform, brand_matched, matched_brands,
+      has_contact, contacts, share_url, static_page_id, raw_content, query_time, worker_id, source)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
     [params.taskId, params.userId, params.keyword, params.keywordType, params.platform,
      params.brandMatched, params.matchedBrands, params.hasContact, JSON.stringify(params.contacts),
-     params.shareUrl, params.staticPageId, params.rawContent, params.queryTime, params.workerId]
+     params.shareUrl, params.staticPageId, params.rawContent, params.queryTime, params.workerId,
+     params.source || 'crawler']
   );
   return result.rows[0].id;
 }
@@ -3085,7 +3088,8 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
   // 返回用户自有配置 + 平台共享配置（user_id IS NULL）
   const result = await query(
     `SELECT id, user_id, platform, model_name, base_url, max_tokens, temperature,
-            is_active, daily_quota, used_today, quota_reset_at, create_time, update_time
+            is_active, daily_quota, used_today, quota_reset_at, use_for_collect,
+            create_time, update_time
      FROM ai_model_config
      WHERE user_id = $1 OR user_id IS NULL
      ORDER BY user_id NULLS LAST, platform`,
@@ -3150,11 +3154,12 @@ export async function getActiveModelConfig(userId: number, platform: string): Pr
 export async function createAiModelConfig(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_model_config (user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            max_tokens, temperature, is_active, daily_quota, use_for_collect)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING id`,
     [data.user_id, data.platform, data.model_name, data.api_key_encrypted, data.base_url,
-     data.max_tokens || 4096, data.temperature || 0.7, data.is_active ?? true, data.daily_quota]
+     data.max_tokens || 4096, data.temperature || 0.7, data.is_active ?? true, data.daily_quota,
+     data.use_for_collect ?? false]
   );
   return result.rows[0].id;
 }
@@ -3170,6 +3175,7 @@ export async function updateAiModelConfig(id: number, data: any): Promise<void> 
   if (data.temperature !== undefined) { fields.push(`temperature = $${idx++}`); values.push(data.temperature); }
   if (data.is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(data.is_active); }
   if (data.daily_quota !== undefined) { fields.push(`daily_quota = $${idx++}`); values.push(data.daily_quota); }
+  if (data.use_for_collect !== undefined) { fields.push(`use_for_collect = $${idx++}`); values.push(data.use_for_collect); }
   if (fields.length === 0) return;
   fields.push(`update_time = NOW()`);
   values.push(id);
@@ -3178,6 +3184,72 @@ export async function updateAiModelConfig(id: number, data: any): Promise<void> 
 
 export async function deleteAiModelConfig(id: number): Promise<void> {
   await query('DELETE FROM ai_model_config WHERE id = $1', [id]);
+}
+
+/**
+ * 巡检平台名 → ai_model_config.platform 映射
+ * 巡检 Worker 用的平台名（如 'DeepSeek'、'豆包'）与 ai_model_config 表的 platform 字段（如 'deepseek'、'doubao'）不一致
+ */
+const COLLECT_PLATFORM_TO_MODEL_PLATFORM: Record<string, string> = {
+  'DeepSeek': 'deepseek',
+  '豆包': 'doubao',
+  '腾讯元宝': 'hunyuan',
+  '通义千问': 'qianwen',
+  '文心一言': 'wenxin',
+  'Kimi': 'kimi',
+  '智谱AI': 'zhipu',
+  // 纳米（360）暂无官方 API，走爬虫兜底
+};
+
+/**
+ * 获取巡检用的 API 配置（v1.4：Worker 用 API 替代爬虫）
+ *
+ * 查询条件：
+ *   - platform 映射后 = ai_model_config.platform
+ *   - use_for_collect = TRUE（用户在「生文模型配置」Tab 勾选了"用于巡检"）
+ *   - is_active = TRUE
+ *   - api_key_encrypted 非空（必须配置了 API KEY）
+ *   - 优先用户私有配置，其次共享配置
+ *
+ * 返回解密后的 api_key + base_url + model_name
+ */
+export async function getApiConfigForCollect(collectPlatform: string): Promise<{
+  baseUrl: string;
+  apiKey: string;
+  modelName: string;
+} | null> {
+  const modelPlatform = COLLECT_PLATFORM_TO_MODEL_PLATFORM[collectPlatform];
+  if (!modelPlatform) {
+    // 该巡检平台没有对应的 API 模型（如纳米/360），返回 null 让 Worker 走爬虫
+    return null;
+  }
+
+  const result = await query(
+    `SELECT model_name, api_key_encrypted, base_url, max_tokens, temperature
+     FROM ai_model_config
+     WHERE platform = $1 AND use_for_collect = TRUE AND is_active = TRUE
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+     ORDER BY user_id NULLS LAST
+     LIMIT 1`,
+    [modelPlatform]
+  );
+  if (result.rows.length === 0) return null;
+
+  const row = result.rows[0];
+  let apiKey = '';
+  try {
+    apiKey = decrypt(row.api_key_encrypted);
+  } catch {
+    console.error(`[getApiConfigForCollect] api_key 解密失败: platform=${modelPlatform}`);
+    return null;
+  }
+  if (!apiKey) return null;
+
+  return {
+    baseUrl: row.base_url,
+    apiKey,
+    modelName: row.model_name,
+  };
 }
 
 export async function incrementModelUsedCount(id: number): Promise<void> {

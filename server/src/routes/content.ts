@@ -125,7 +125,7 @@ router.get('/models', async (req: Request, res: Response) => {
 router.post('/models', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { platform, model_name, api_key, base_url, max_tokens, temperature, is_active, daily_quota } = req.body;
+    const { platform, model_name, api_key, base_url, max_tokens, temperature, is_active, daily_quota, use_for_collect } = req.body;
     if (!platform || !model_name || !base_url) {
       return res.status(400).json({ code: 400, message: 'platform/model_name/base_url 必填' });
     }
@@ -139,6 +139,7 @@ router.post('/models', async (req: Request, res: Response) => {
       temperature,
       is_active,
       daily_quota,
+      use_for_collect,
     });
     res.json({ code: 200, data: { id } });
   } catch (err: any) {

@@ -9,6 +9,7 @@ import { NanoAdapter } from './platforms/nano';
 import { ZhipuAdapter } from './platforms/zhipu';
 import { PlatformAdapter } from './platforms/base';
 import { reportResult } from './resultReporter';
+import { getApiConfig, queryByApi } from './apiAdapter';
 import * as logger from './logger';
 import axios from 'axios';
 // 隐身浏览器组件（v1.3+）
@@ -236,6 +237,42 @@ async function executeSingleQuery(
     return { success: false, brandMatched: false };
   }
 
+  // ============ v1.4: 优先用大模型 API 查询（完整内容、无封号风险）============
+  // 该平台在「生文模型配置」勾选了"用于巡检"且配置了 API KEY 时，走 API 模式
+  // API 失败时降级到爬虫模式（借用账号 + 隐身浏览器）
+  try {
+    const apiConfig = await getApiConfig(platform);
+    if (apiConfig) {
+      logger.info(`[API] 查询: ${platform}/${keyword.substring(0, 30)}`);
+      const apiResult = await queryByApi(apiConfig, keyword);
+      // 回写结果（source='api'，shareUrl=null 由云端生成静态页）
+      try {
+        await reportResult({
+          taskId,
+          userId,
+          keyword,
+          keywordType,
+          platform,
+          content: apiResult.content,
+          htmlContent: apiResult.htmlContent,
+          shareUrl: apiResult.shareUrl,
+          supportsShare: apiResult.supportsShare,
+          workerId,
+          source: 'api',
+        });
+      } catch (reportErr: any) {
+        logger.error(`[API] 结果上报失败 ${platform}/${keyword.substring(0, 30)}: ${reportErr.message}`);
+      }
+      recordPlatformResult(platform, true);
+      logger.info(`[API] 查询成功 ${platform}/${keyword.substring(0, 30)} 内容长度=${apiResult.content.length}`);
+      return { success: true, brandMatched: false };
+    }
+  } catch (e: any) {
+    // API 调用失败（KEY 失效、限流、网络等），降级到爬虫模式
+    logger.warn(`[API] 调用失败，降级爬虫: ${platform}/${keyword.substring(0, 30)} - ${e.message}`);
+  }
+
+  // ============ 爬虫模式（兜底）============
   // 从账号池借用账号
   const account = await acquireAccount(platform);
   if (!account) {
@@ -299,6 +336,7 @@ async function executeSingleQuery(
         shareUrl: result.shareUrl,
         supportsShare: result.supportsShare,
         workerId,
+        source: 'crawler',
       });
     } catch (reportErr: any) {
       logger.error(`结果上报失败 ${platform}/${keyword.substring(0, 30)}: ${reportErr.message}`);

@@ -21,6 +21,8 @@ export async function reportResult(result: {
   shareUrl: string | null;
   supportsShare: boolean;
   workerId: string;
+  /** 查询来源：api（大模型 API）/ crawler（爬虫） */
+  source?: 'api' | 'crawler';
 }): Promise<ReportResult | null> {
   try {
     const resp = await axios.post(`${SERVER_URL}/real-collect/results/worker/report`, {

@@ -21,6 +21,8 @@ export interface WorkerResult {
   queryTime: Date;
   workerId: string;
   supportsShare: boolean;
+  /** 查询来源：api（调用大模型 API）/ crawler（爬虫） */
+  source?: 'api' | 'crawler';
 }
 
 function generateStaticHtml(keyword: string, platform: string, content: string, htmlContent?: string): string {
@@ -108,7 +110,8 @@ export async function processWorkerResult(result: WorkerResult): Promise<Process
     staticPageId: null,
     rawContent: result.content,
     queryTime: result.queryTime,
-    workerId: result.workerId
+    workerId: result.workerId,
+    source: result.source,
   });
 
   // 不支持分享的平台或没有分享链接的，生成静态页

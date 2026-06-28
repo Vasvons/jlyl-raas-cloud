@@ -970,6 +970,13 @@ export async function migrate() {
     // 8.5 写作任务表新增 agent_profile_id 字段（关联专家智能体）
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS agent_profile_id INTEGER REFERENCES agent_profile(id)`);
 
+    // 8.6 ai_model_config 新增 use_for_collect 字段（v1.4：巡检 Worker 用 API 替代爬虫）
+    // true = 该平台模型同时用于智能巡检（worker 优先调用 API，失败降级爬虫）
+    await client.query(`ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_collect BOOLEAN DEFAULT FALSE`);
+
+    // 8.7 real_collect_record 新增 source 字段（标记查询来源：api / crawler）
+    await client.query(`ALTER TABLE real_collect_record ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'crawler'`);
+
     // 9. 插入7个平台的默认共享模型配置（user_id IS NULL）
     const defaultModels = [
       { platform: 'deepseek', model_name: 'deepseek-chat', base_url: 'https://api.deepseek.com/v1/chat/completions' },

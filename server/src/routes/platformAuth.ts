@@ -14,11 +14,28 @@ import {
   acquirePlatformAccount,
   releasePlatformAccount,
   resetAccountHealth,
+  getApiConfigForCollect,
 } from '../repository';
 
 const router = Router();
 
 // Worker 调用的内部接口（无鉴权，通过内网访问）
+// 获取巡检平台对应的 API 模型配置（v1.4：Worker 用 API 替代爬虫）
+// GET /platform-auth/api-config/:platform
+// 返回 { code: 200, data: { baseUrl, apiKey, modelName } } 或 { code: 404 }（无配置时走爬虫）
+router.get('/api-config/:platform', async (req, res) => {
+  try {
+    const platform = decodeURIComponent(req.params.platform);
+    const config = await getApiConfigForCollect(platform);
+    if (!config) {
+      return res.json({ code: 404, message: '该平台未配置巡检 API' });
+    }
+    res.json({ code: 200, data: config });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
 // 借用账号
 router.post('/acquire', async (req, res) => {
   try {
