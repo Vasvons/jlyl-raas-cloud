@@ -3251,26 +3251,43 @@ export async function getApiConfigForCollect(collectPlatform: string): Promise<{
     return null;
   }
 
-  // ⚠️ v1.4.1 修复：加 update_time DESC，确保取到用户最近保存的那条记录
-  //   （数据库可能存在同一 platform 的多条历史记录，旧的 SQL 只按 user_id 排序，
-  //    可能取到旧记录，导致巡检用的 model_name/api_key 不是用户最近配置的）
+  // ⚠️ v1.4.4 修复：用户反馈"关闭用于巡检后仍调 API"
+  //   根因：数据库中存在同一 platform 的多条历史记录，旧的 use_for_collect=TRUE 记录
+  //   可能被选中（即使最新记录已改为 FALSE）。
+  //   修复：用 DISTINCT ON (platform) + ORDER BY update_time DESC 确保取最新一条记录，
+  //   再判断该记录的 use_for_collect 是否为 TRUE。
+  //
+  //   旧 SQL 直接 WHERE use_for_collect = TRUE 会命中所有历史 TRUE 记录，
+  //   新 SQL 先取最新一条，再在应用层判断 use_for_collect。
   const result = await query(
-    `SELECT model_name, api_key_encrypted, base_url, max_tokens, temperature, web_search
+    `SELECT id, user_id, model_name, api_key_encrypted, base_url, max_tokens, temperature, web_search, use_for_collect, update_time
      FROM ai_model_config
-     WHERE platform = $1 AND use_for_collect = TRUE
+     WHERE platform = $1
        AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
-     ORDER BY (user_id IS NULL) ASC, update_time DESC, id DESC
+     ORDER BY update_time DESC, id DESC
      LIMIT 1`,
     [modelPlatform]
   );
-  if (result.rows.length === 0) return null;
+  if (result.rows.length === 0) {
+    console.log(`[getApiConfigForCollect] ${collectPlatform} -> ${modelPlatform}: 无配置（走爬虫）`);
+    return null;
+  }
 
   const row = result.rows[0];
+  console.log(`[getApiConfigForCollect] ${collectPlatform} -> ${modelPlatform}: 选中记录 id=${row.id} use_for_collect=${row.use_for_collect} update_time=${row.update_time}`);
+
+  // v1.4.4：取最新记录后，再判断 use_for_collect 开关
+  // 这样即使数据库中有旧的 TRUE 记录，只要最新记录是 FALSE，就走爬虫
+  if (!row.use_for_collect) {
+    console.log(`[getApiConfigForCollect] ${collectPlatform}: 最新记录 use_for_collect=FALSE，走爬虫`);
+    return null;
+  }
+
   let apiKey = '';
   try {
     apiKey = decrypt(row.api_key_encrypted);
   } catch {
-    console.error(`[getApiConfigForCollect] api_key 解密失败: platform=${modelPlatform}`);
+    console.error(`[getApiConfigForCollect] api_key 解密失败: platform=${modelPlatform} id=${row.id}`);
     return null;
   }
   if (!apiKey) return null;
