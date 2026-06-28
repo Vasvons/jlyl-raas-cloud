@@ -72,8 +72,15 @@ const router = Router();
 router.use(authMiddleware);
 
 // 获取登录用户ID的辅助函数
+// 注意：登录时 generateToken({ id: user.id, ... }) 用的字段名是 'id'，不是 'userId'
+// 这里优先读 id 字段，避免 userId 为 undefined 时回退到 0
 function getUserId(req: Request): number {
-  return Number((req as any).user?.userId || (req as any).user?.id || 0);
+  const user = (req as any).user;
+  const userId = Number(user?.id ?? user?.userId ?? 0);
+  if (userId === 0) {
+    console.warn('[getUserId] 警告：userId=0，可能 token 解析失败。user payload:', JSON.stringify(user));
+  }
+  return userId;
 }
 
 /**
