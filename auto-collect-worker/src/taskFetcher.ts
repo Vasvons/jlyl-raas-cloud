@@ -156,21 +156,25 @@ function chunk<T>(arr: T[], size: number): T[][] {
  *
  * 关键改进（DeepSeek 被封的根因修复）：
  * 1. 使用 30+ 反检测 args（含 --disable-blink-features=AutomationControlled）
- * 2. 默认 headless: 'new'（Chrome 新 headless 模式，过检测能力大幅提升）
+ * 2. headless: true（boolean）+ args 加 --headless=new 启用 Chrome 新 headless 模式
  * 3. stealth.min.js + appLayerInjectionScript 覆盖 navigator.webdriver=false
  * 4. 指纹伪造脚本覆盖 WebGL/Canvas/Platform
  *
- * 依赖：Playwright >= 1.42（支持 headless: 'new' 字符串模式）
- *      系统 Chromium >= 109（支持 --headless=new 参数）
- *      Alpine 3.18+ 的 chromium 包已满足此要求
+ * 重要：Playwright 的 headless 参数只接受 boolean，不接受字符串 'new'（这是 Puppeteer 语法）。
+ *      要启用 Chrome 新 headless 模式，必须通过 args 传 --headless=new 给 chromium 二进制。
+ *      参考：https://playwright.dev/docs/api/class-browsertype#browser-type-launch
  */
 function getChromiumLaunchArgs() {
   const useHeadless = shouldUseHeadless();
+  const args = getAntiDetectionArgs();
+  if (useHeadless) {
+    // 通过 args 启用 Chrome 新 headless 模式（Playwright headless: true 只是开关，具体模式由 chromium 二进制决定）
+    args.push('--headless=new');
+  }
   return {
-    // Chrome 新 headless 模式（与旧 headless: true 完全不同，几乎与有头浏览器一致）
-    headless: useHeadless ? ('new' as any) : false,
+    headless: useHeadless, // boolean，不是 'new' 字符串
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-    args: getAntiDetectionArgs(),
+    args,
   };
 }
 

@@ -126,10 +126,13 @@ export function getAntiDetectionArgs(): string[] {
 }
 
 /**
- * 是否启用 Chrome 新 headless 模式（headless: 'new'）
+ * 是否启用 Chrome 新 headless 模式
  *
- * 旧 headless: true 模式有大量自动化特征（HeadlessChrome UA、缺 Chrome.runtime 等）
- * 新 headless: 'new' 模式与有头浏览器几乎一致，过检测能力大幅提升
+ * 旧 headless 模式有大量自动化特征（HeadlessChrome UA、缺 Chrome.runtime 等）
+ * 新 headless 模式（通过 args 传 --headless=new）与有头浏览器几乎一致，过检测能力大幅提升
+ *
+ * 注意：Playwright 的 headless 参数只接受 boolean，不接受字符串 'new'（这是 Puppeteer 语法）。
+ *      要启用新 headless 模式，headless 传 true，同时在 args 中加 --headless=new。
  *
  * 默认 true（巡检 Worker 在 Docker 内运行，必须有头less）
  * 可通过 STEALTH_HEADLESS=false 环境变量切换到有头模式（用于调试）
