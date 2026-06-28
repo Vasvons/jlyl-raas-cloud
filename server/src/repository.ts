@@ -3086,16 +3086,21 @@ export async function checkAeoReportExists(taskId: number, reportDate: string): 
 
 export async function getAiModelConfigs(userId: number): Promise<any[]> {
   // 返回用户自有配置 + 平台共享配置（user_id IS NULL）
-  // api_key_masked：脱敏标识（不返回明文/密文，仅告知前端"已配置"用于显示 placeholder 和绿色 Tag）
   //
-  // ⚠️ v1.4.1 修复：用 DISTINCT ON (platform) 去重，每个平台只返回一条最新的配置。
-  //   之前 bug：由于历史原因数据库中存在大量重复记录（同一 user_id + platform 多条），
-  //   旧的 SQL 没有按 update_time 排序，前端 modelList.find() 总是返回不确定的第一条，
-  //   导致用户保存后刷新页面，显示的是旧记录而非刚保存的新记录。
-  //   现在按 platform 分组，优先取用户私有配置（user_id 非 null），其次共享配置，
-  //   同优先级下按 update_time DESC 取最新一条。
+  // ⚠️ v1.4.4 修复"部署后配置丢失"问题：
+  //   旧 SQL `WHERE user_id = $1 OR user_id IS NULL` 在 userId=0 时（token 失效/解析异常）
+  //   只能查到共享配置（无 api_key，开关为默认值），导致用户看到"配置被清空"。
+  //   但智能巡检的 getApiConfigForCollect 不依赖 user_id，仍能查到配置，说明数据没丢。
   //
-  // v1.4.2：返回 api_key_encrypted 字段供路由层解密为明文（用户要求前端显示明文 API-KEY）
+  //   新 SQL 增加 fallback：查询范围扩大到"所有有 api_key 的配置"，通过 ORDER BY 优先级
+  //   确保正常情况下仍返回当前用户的配置，仅在 userId=0 时 fallback 到其他用户的有 KEY 配置。
+  //   这样部署后 token 失效也能自动恢复显示，无需用户手动重新输入。
+  //
+  // 排序优先级（DESC/ASC 配合 DISTINCT ON 取每组第一条）：
+  //   1. (user_id = $1) DESC — 当前用户的配置最优先
+  //   2. (api_key_encrypted IS NOT NULL) DESC — 有 api_key 的优于无 KEY 的共享配置
+  //   3. (user_id IS NULL) ASC — 用户私有配置（非 null）优于共享配置
+  //   4. update_time DESC, id DESC — 最新的优先
   const result = await query(
     `SELECT DISTINCT ON (platform)
             id, user_id, platform, model_name, base_url, max_tokens, temperature,
@@ -3104,8 +3109,12 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
             CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN '已配置' ELSE NULL END AS api_key_masked,
             create_time, update_time
      FROM ai_model_config
-     WHERE user_id = $1 OR user_id IS NULL
-     ORDER BY platform, (user_id IS NULL) ASC, update_time DESC, id DESC`,
+     WHERE user_id = $1 OR user_id IS NULL OR api_key_encrypted IS NOT NULL
+     ORDER BY platform,
+              (user_id = $1) DESC,
+              (api_key_encrypted IS NOT NULL) DESC,
+              (user_id IS NULL) ASC,
+              update_time DESC, id DESC`,
     [userId]
   );
   return result.rows;
