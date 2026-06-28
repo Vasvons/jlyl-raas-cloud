@@ -243,14 +243,13 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
             ]
           : [{ role: 'user', content: articlePrompt }];
 
-        // 调AI生成文章正文
+        // 调AI生成文章正文（不限制 max_tokens，让大模型用默认值输出完整内容）
         const articleResult = await chatCompletion({
           baseUrl: modelConfig.base_url,
           apiKey,
           model: modelConfig.model_name,
           messages,
           temperature: Number(modelConfig.temperature) || 0.7,
-          maxTokens: modelConfig.max_tokens || 4096,
           timeout: 120000,
         });
 

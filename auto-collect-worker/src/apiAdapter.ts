@@ -65,31 +65,28 @@ export async function getApiConfig(platform: string): Promise<ApiConfig | null> 
  * @returns 完整内容（无截断）
  */
 export async function queryByApi(config: ApiConfig, keyword: string): Promise<ApiQueryResult> {
-  const response = await axios.post(
-    config.baseUrl,
-    {
-      model: config.modelName,
-      messages: [
-        {
-          role: 'user',
-          // 直接把关键词作为问题发给大模型
-          // 巡检的目的是看大模型如何回答用户关于品牌/产品的问题
-          content: keyword,
-        },
-      ],
-      temperature: 0.7,
-      max_tokens: 4096,
-      // 部分平台支持 stream=false 显式指定（默认就是 false）
-      stream: false,
-    },
-    {
-      headers: {
-        'Authorization': `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
+  const body: any = {
+    model: config.modelName,
+    messages: [
+      {
+        role: 'user',
+        // 直接把关键词作为问题发给大模型
+        // 巡检的目的是看大模型如何回答用户关于品牌/产品的问题
+        content: keyword,
       },
-      timeout: 120000, // 2 分钟，大模型生成长内容可能需要时间
-    }
-  );
+    ],
+    temperature: 0.7,
+    // 不传 max_tokens，让大模型用默认值输出完整内容（不限制长度）
+    stream: false,
+  };
+
+  const response = await axios.post(config.baseUrl, body, {
+    headers: {
+      'Authorization': `Bearer ${config.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 120000, // 2 分钟，大模型生成长内容可能需要时间
+  });
 
   const content = (response.data as any)?.choices?.[0]?.message?.content || '';
   if (!content) {
