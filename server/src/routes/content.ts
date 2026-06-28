@@ -177,29 +177,32 @@ router.post('/models/:id/test', async (req: Request, res: Response) => {
     const config = await getAiModelConfigById(Number(req.params.id));
     if (!config) return res.status(404).json({ code: 404, message: '配置不存在' });
 
-    // 1. 未配置 API-KEY：提示用户去配置
-    if (!config.api_key_encrypted) {
-      return res.json({ code: 200, data: { success: false, message: '未配置 API-KEY，请先在表单中填写并保存' } });
-    }
-
-    // 2. 解密失败：KEY 在数据库中存在但无法解密（加密密钥变更或数据损坏）
+    // 优先使用请求体中传入的 api_key（支持"先填后测"工作流，不依赖保存是否成功）
+    // 其次使用数据库中已加密的 api_key
     let apiKey = '';
-    try {
-      apiKey = decrypt(config.api_key_encrypted);
-    } catch {
-      return res.json({ code: 200, data: { success: false, message: 'API-KEY 解密失败（数据库中的密文已损坏），请重新输入并保存' } });
+    const bodyApiKey = req.body?.api_key;
+    if (bodyApiKey && typeof bodyApiKey === 'string' && bodyApiKey.trim()) {
+      apiKey = bodyApiKey.trim();
+    } else if (config.api_key_encrypted) {
+      try {
+        apiKey = decrypt(config.api_key_encrypted);
+      } catch {
+        return res.json({ code: 200, data: { success: false, message: 'API-KEY 解密失败（数据库中的密文已损坏），请重新输入并保存' } });
+      }
     }
 
-    // 3. 解密后为空：极少见，可能保存时传了空字符串
     if (!apiKey) {
-      return res.json({ code: 200, data: { success: false, message: '已保存的 API-KEY 为空，请重新输入并保存' } });
+      return res.json({ code: 200, data: { success: false, message: '未配置 API-KEY，请先在表单中填写' } });
     }
 
-    // 4. 调用大模型 API 测试连通性（KEY 无效/过期/限额等错误由 testModelConnection 返回详细信息）
+    // model_name 和 base_url 也支持请求体覆盖（测试当前表单值，不依赖已保存的配置）
+    const modelName = req.body?.model_name?.trim() || config.model_name;
+    const baseUrl = req.body?.base_url?.trim() || config.base_url;
+
     const result = await testModelConnection({
-      baseUrl: config.base_url,
+      baseUrl,
       apiKey,
-      model: config.model_name,
+      model: modelName,
       messages: [],
     });
     res.json({ code: 200, data: result });
