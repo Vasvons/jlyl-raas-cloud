@@ -3094,10 +3094,13 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
   //   导致用户保存后刷新页面，显示的是旧记录而非刚保存的新记录。
   //   现在按 platform 分组，优先取用户私有配置（user_id 非 null），其次共享配置，
   //   同优先级下按 update_time DESC 取最新一条。
+  //
+  // v1.4.2：返回 api_key_encrypted 字段供路由层解密为明文（用户要求前端显示明文 API-KEY）
   const result = await query(
     `SELECT DISTINCT ON (platform)
             id, user_id, platform, model_name, base_url, max_tokens, temperature,
             is_active, daily_quota, used_today, quota_reset_at, use_for_collect, web_search,
+            api_key_encrypted,
             CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN '已配置' ELSE NULL END AS api_key_masked,
             create_time, update_time
      FROM ai_model_config

@@ -109,13 +109,26 @@ router.get('/models', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const configs = await getAiModelConfigs(userId);
-    // 脱敏：不返回 api_key_encrypted，返回 is_shared 标识
-    const result = configs.map(c => ({
-      ...c,
-      api_key_masked: c.user_id === null ? null : '已配置', // 用户自有配置显示"已配置"
-      is_shared: c.user_id === null,
-      api_key_encrypted: undefined,
-    }));
+    // v1.4.2：用户要求前端显示明文 API-KEY
+    // - 用户私有配置（user_id 非 null）：解密返回明文 api_key
+    // - 平台共享配置（user_id 为 null）：不返回明文（避免泄露共享 KEY）
+    const result = configs.map(c => {
+      let apiKeyPlaintext = '';
+      if (c.user_id !== null && c.api_key_encrypted) {
+        try {
+          apiKeyPlaintext = decrypt(c.api_key_encrypted);
+        } catch {
+          apiKeyPlaintext = '';
+        }
+      }
+      return {
+        ...c,
+        api_key: apiKeyPlaintext, // 明文 API-KEY（仅用户私有配置）
+        api_key_masked: c.user_id === null ? null : '已配置',
+        is_shared: c.user_id === null,
+        api_key_encrypted: undefined, // 不返回加密密文
+      };
+    });
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
