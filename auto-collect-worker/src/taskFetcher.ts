@@ -156,21 +156,19 @@ function chunk<T>(arr: T[], size: number): T[][] {
  *
  * 关键改进（DeepSeek 被封的根因修复）：
  * 1. 使用 30+ 反检测 args（含 --disable-blink-features=AutomationControlled）
- * 2. stealth.min.js + appLayerInjectionScript 覆盖 navigator.webdriver=false
- * 3. 指纹伪造脚本覆盖 WebGL/Canvas/Platform
+ * 2. 默认 headless: 'new'（Chrome 新 headless 模式，过检测能力大幅提升）
+ * 3. stealth.min.js + appLayerInjectionScript 覆盖 navigator.webdriver=false
+ * 4. 指纹伪造脚本覆盖 WebGL/Canvas/Platform
  *
- * 关于 headless 模式：
- *  - Playwright 文档显示 headless: 'new' 在某些版本/Docker 环境下报错"expected boolean"
- *  - Docker 镜像用 apk add chromium 装的系统 Chromium 可能不支持新 headless
- *  - 改回 headless: true（旧模式），但通过 stealth.min.js + 反检测 args 补偿
- *  - stealth.min.js 已覆盖 HeadlessChrome UA、navigator.webdriver=true 等旧 headless 特征
+ * 依赖：Playwright >= 1.42（支持 headless: 'new' 字符串模式）
+ *      系统 Chromium >= 109（支持 --headless=new 参数）
+ *      Alpine 3.18+ 的 chromium 包已满足此要求
  */
 function getChromiumLaunchArgs() {
   const useHeadless = shouldUseHeadless();
   return {
-    // 旧 headless 模式（兼容所有 Playwright 版本和 Docker 系统 Chromium）
-    // 隐身由 stealth.min.js + 反检测 args + 指纹伪造脚本保证
-    headless: useHeadless ? true : false,
+    // Chrome 新 headless 模式（与旧 headless: true 完全不同，几乎与有头浏览器一致）
+    headless: useHeadless ? ('new' as any) : false,
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
     args: getAntiDetectionArgs(),
   };
