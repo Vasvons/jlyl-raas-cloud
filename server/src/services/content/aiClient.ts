@@ -121,6 +121,41 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
 }
 
 /**
+ * 从 axios 错误对象中提取各平台兼容的错误信息
+ * 兼容 OpenAI / 通义 / 智谱 / 火山方舟 / Kimi / 文心 等不同的错误 JSON 结构
+ */
+function extractApiErrorMessage(err: any): string {
+  const status = err?.response?.status;
+  const data = err?.response?.data;
+
+  // 1. OpenAI 兼容格式：{ error: { message, type, code } }
+  // 2. 智谱：{ error: { code, message } }
+  // 3. 火山方舟：可能 { error: { message } } 或 { Message: "..." }
+  if (data) {
+    if (typeof data === 'string') return data.slice(0, 300);
+    if (data.error?.message) return data.error.message;
+    if (data.error && typeof data.error === 'string') return data.error;
+    if (data.Message) return data.Message;
+    if (data.message) return data.message;
+    // 通义千问：{ code: "InvalidApiKey", message: "...", request_id: "..." }
+    if (data.code && data.message) return `[${data.code}] ${data.message}`;
+    if (data.code) return `[${data.code}]`;
+  }
+
+  // 4. axios 原生错误（网络层/超时）
+  if (err?.code === 'ECONNABORTED') return '请求超时（30s），请检查网络或稍后重试';
+  if (err?.code === 'ENOTFOUND' || err?.code === 'ECONNREFUSED') {
+    return `无法连接到 base_url（${err.code}），请检查地址是否正确`;
+  }
+  if (status === 401 || status === 403) return `认证失败（HTTP ${status}）：API-KEY 无效或无权限`;
+  if (status === 404) return `接口地址不存在（HTTP 404）：请检查 base_url 是否正确`;
+  if (status === 429) return `请求频率超限（HTTP 429）：请稍后重试`;
+  if (status && status >= 500) return `服务端错误（HTTP ${status}）：平台暂不可用，请稍后重试`;
+
+  return err?.message || '未知错误';
+}
+
+/**
  * 测试模型连通性 — 发送一条简单消息验证 KEY 是否有效
  */
 export async function testModelConnection(params: ChatCompletionParams): Promise<{ success: boolean; message: string }> {
@@ -135,7 +170,6 @@ export async function testModelConnection(params: ChatCompletionParams): Promise
     });
     return { success: true, message: result.content.slice(0, 100) };
   } catch (err: any) {
-    const msg = err.response?.data?.error?.message || err.message || '未知错误';
-    return { success: false, message: msg };
+    return { success: false, message: extractApiErrorMessage(err) };
   }
 }
