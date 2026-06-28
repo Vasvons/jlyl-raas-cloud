@@ -3088,7 +3088,7 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
   // 返回用户自有配置 + 平台共享配置（user_id IS NULL）
   const result = await query(
     `SELECT id, user_id, platform, model_name, base_url, max_tokens, temperature,
-            is_active, daily_quota, used_today, quota_reset_at, use_for_collect,
+            is_active, daily_quota, used_today, quota_reset_at, use_for_collect, web_search,
             create_time, update_time
      FROM ai_model_config
      WHERE user_id = $1 OR user_id IS NULL
@@ -3101,7 +3101,7 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
 export async function getAiModelConfigById(id: number): Promise<any | null> {
   const result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at
+            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
      FROM ai_model_config WHERE id = $1`,
     [id]
   );
@@ -3118,7 +3118,7 @@ export async function getDefaultModelConfig(userId: number): Promise<any | null>
   // 先查用户私有配置
   let result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at
+            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
      FROM ai_model_config
      WHERE user_id = $1 AND is_active = true
      ORDER BY create_time DESC LIMIT 1`,
@@ -3128,7 +3128,7 @@ export async function getDefaultModelConfig(userId: number): Promise<any | null>
   // 降级：平台共享配置
   result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at
+            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
      FROM ai_model_config
      WHERE user_id IS NULL AND is_active = true
      ORDER BY create_time DESC LIMIT 1`
@@ -3140,7 +3140,7 @@ export async function getActiveModelConfig(userId: number, platform: string): Pr
   // 优先返回用户自有配置，其次返回共享配置
   const result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at
+            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
      FROM ai_model_config
      WHERE platform = $1 AND is_active = true
        AND (user_id = $2 OR user_id IS NULL)
@@ -3154,12 +3154,12 @@ export async function getActiveModelConfig(userId: number, platform: string): Pr
 export async function createAiModelConfig(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_model_config (user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, use_for_collect)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            max_tokens, temperature, is_active, daily_quota, use_for_collect, web_search)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING id`,
     [data.user_id, data.platform, data.model_name, data.api_key_encrypted, data.base_url,
-     data.max_tokens || 4096, data.temperature || 0.7, data.is_active ?? true, data.daily_quota,
-     data.use_for_collect ?? false]
+     data.max_tokens || 4096, data.temperature ?? 0.7, data.is_active ?? true, data.daily_quota,
+     data.use_for_collect ?? false, data.web_search ?? false]
   );
   return result.rows[0].id;
 }
@@ -3176,6 +3176,7 @@ export async function updateAiModelConfig(id: number, data: any): Promise<void> 
   if (data.is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(data.is_active); }
   if (data.daily_quota !== undefined) { fields.push(`daily_quota = $${idx++}`); values.push(data.daily_quota); }
   if (data.use_for_collect !== undefined) { fields.push(`use_for_collect = $${idx++}`); values.push(data.use_for_collect); }
+  if (data.web_search !== undefined) { fields.push(`web_search = $${idx++}`); values.push(data.web_search); }
   if (fields.length === 0) return;
   fields.push(`update_time = NOW()`);
   values.push(id);
@@ -3217,6 +3218,7 @@ export async function getApiConfigForCollect(collectPlatform: string): Promise<{
   baseUrl: string;
   apiKey: string;
   modelName: string;
+  webSearch: boolean;
 } | null> {
   const modelPlatform = COLLECT_PLATFORM_TO_MODEL_PLATFORM[collectPlatform];
   if (!modelPlatform) {
@@ -3225,7 +3227,7 @@ export async function getApiConfigForCollect(collectPlatform: string): Promise<{
   }
 
   const result = await query(
-    `SELECT model_name, api_key_encrypted, base_url, max_tokens, temperature
+    `SELECT model_name, api_key_encrypted, base_url, max_tokens, temperature, web_search
      FROM ai_model_config
      WHERE platform = $1 AND use_for_collect = TRUE AND is_active = TRUE
        AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
@@ -3249,6 +3251,7 @@ export async function getApiConfigForCollect(collectPlatform: string): Promise<{
     baseUrl: row.base_url,
     apiKey,
     modelName: row.model_name,
+    webSearch: !!row.web_search,
   };
 }
 

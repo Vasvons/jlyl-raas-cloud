@@ -974,6 +974,10 @@ export async function migrate() {
     // true = 该平台模型同时用于智能巡检（worker 优先调用 API，失败降级爬虫）
     await client.query(`ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_collect BOOLEAN DEFAULT FALSE`);
 
+    // 8.6.1 ai_model_config 新增 web_search 字段（v1.4：联网搜索开关）
+    // true = 调用大模型时启用联网搜索（智谱 tools.web_search / 通义 enable_search / Kimi builtin_function）
+    await client.query(`ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS web_search BOOLEAN DEFAULT FALSE`);
+
     // 8.7 real_collect_record 新增 source 字段（标记查询来源：api / crawler）
     await client.query(`ALTER TABLE real_collect_record ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'crawler'`);
 

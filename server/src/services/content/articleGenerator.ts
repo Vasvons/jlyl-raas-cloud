@@ -251,6 +251,7 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
           messages,
           temperature: Number(modelConfig.temperature) || 0.7,
           timeout: 120000,
+          webSearch: !!modelConfig.web_search,
         });
 
         // 如果指令配置了 title_prompt，单独调用AI生成标题
@@ -406,6 +407,7 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     temperature: Number(modelConfig.temperature) || 0.7,
     maxTokens: modelConfig.max_tokens || 4096,
     timeout: 120000,
+    webSearch: !!modelConfig.web_search,
   });
 
   let title = '';
