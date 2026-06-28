@@ -69,7 +69,8 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
     body.max_tokens = params.maxTokens;
   }
 
-  // 联网搜索：按平台动态注入
+  // 联网搜索：按平台动态注入（v1.4.1 修正三家平台参数错误）
+  // 与 auto-collect-worker/src/apiAdapter.ts 的 applyWebSearchParams 保持一致
   if (params.webSearch) {
     const platform = detectPlatform(params.baseUrl, params.model);
     switch (platform) {
@@ -82,10 +83,10 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
         body.enable_search = true;
         break;
       case 'kimi':
-        // Kimi 内置 web_search 函数
+        // Kimi 内置函数名必须是 '$web_search'（带 $ 前缀），否则 HTTP 400
         body.tools = [{
           type: 'builtin_function',
-          function: { name: 'web_search' },
+          function: { name: '$web_search' },
         }];
         break;
       case 'doubao':
@@ -97,8 +98,8 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
         body.enable_search = true;
         break;
       case 'wenxin':
-        // 文心一言（千帆 OpenAI 兼容）启用联网搜索
-        body.enable_search = true;
+        // 文心一言（百度千帆 OpenAI 兼容模式）：用 extra_parameters 而非 enable_search
+        body.extra_parameters = { search: true };
         break;
       // DeepSeek 暂不支持联网搜索（截至 2025-08），忽略
       default:
@@ -114,10 +115,37 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
     timeout: params.timeout ?? 120000,
   });
 
-  const content = (response.data as any)?.choices?.[0]?.message?.content || '';
-  const usage = (response.data as any)?.usage;
+  // 兼容各平台响应结构：标准 OpenAI content / 文心 result / function_call 兜底
+  const data = response.data as any;
+  const content = extractContent(data);
+  const usage = data?.usage;
 
   return { content, usage };
+}
+
+/**
+ * 从 HTTP 响应中提取文本内容，兼容各平台的响应结构
+ *
+ * 文心一言开启联网搜索时，可能返回 function_call / tool_calls 形式而非 content，
+ * 需要兜底从其他字段取值，避免 "空内容" 误判
+ */
+function extractContent(data: any): string {
+  if (!data) return '';
+  const choice = data.choices?.[0];
+  if (!choice) return '';
+  const msg = choice.message || {};
+
+  // 1. 标准 OpenAI 格式
+  if (msg.content) return String(msg.content);
+  // 2. 文心/千帆格式：result 字段
+  if (data.result) return String(data.result);
+  // 3. function_call / tool_calls 兜底（联网搜索时可能返回）
+  if (msg.function_call?.arguments) return String(msg.function_call.arguments);
+  if (msg.tool_calls?.length) {
+    const first = msg.tool_calls[0];
+    if (first?.function?.arguments) return String(first.function.arguments);
+  }
+  return '';
 }
 
 /**
