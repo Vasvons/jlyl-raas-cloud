@@ -3086,9 +3086,11 @@ export async function checkAeoReportExists(taskId: number, reportDate: string): 
 
 export async function getAiModelConfigs(userId: number): Promise<any[]> {
   // 返回用户自有配置 + 平台共享配置（user_id IS NULL）
+  // api_key_masked：脱敏标识（不返回明文/密文，仅告知前端"已配置"用于显示 placeholder 和绿色 Tag）
   const result = await query(
     `SELECT id, user_id, platform, model_name, base_url, max_tokens, temperature,
             is_active, daily_quota, used_today, quota_reset_at, use_for_collect, web_search,
+            CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN '已配置' ELSE NULL END AS api_key_masked,
             create_time, update_time
      FROM ai_model_config
      WHERE user_id = $1 OR user_id IS NULL
