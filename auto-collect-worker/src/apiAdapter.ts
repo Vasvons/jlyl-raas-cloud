@@ -75,7 +75,11 @@ export async function getApiConfig(platform: string): Promise<ApiConfig | null> 
 }
 
 /**
- * 按平台注入联网搜索参数（v1.4.1 修正三家平台参数错误）
+ * 按平台注入联网搜索参数（v1.4.2 修正 Kimi 联网搜索方式）
+ *
+ * v1.4.2 修复：
+ *  - Kimi：builtin_function $web_search 是 agentic 模式，只返回搜索摘要（~96 字符）
+ *    改用 model 名加 -online 后缀（如 moonshot-v1-32k-online），单次调用返回完整回答
  *
  * 之前 bug：
  *  - Kimi：函数名 'web_search' 错误，正确是 '$web_search'（带 $ 前缀），导致 HTTP 400
@@ -94,11 +98,12 @@ function applyWebSearchParams(platform: string, body: any): void {
       body.enable_search = true;
       break;
     case 'kimi':
-      // Kimi 内置函数名必须是 '$web_search'（带 $ 前缀）
-      body.tools = [{
-        type: 'builtin_function',
-        function: { name: '$web_search' },
-      }];
+      // Kimi 联网搜索：改用 model 名加 -online 后缀（v1.4.2）
+      // 之前用 builtin_function $web_search 是 agentic 模式，只返回搜索摘要
+      // 改为在 model 名后加 -online，单次调用返回完整联网搜索回答
+      if (body.model && !body.model.endsWith('-online')) {
+        body.model = `${body.model}-online`;
+      }
       break;
     case 'doubao':
       // 豆包（火山方舟）启用搜索插件

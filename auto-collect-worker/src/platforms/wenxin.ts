@@ -21,8 +21,10 @@ export class WenxinAdapter extends BasePlatformAdapter {
   // 输入框选择器：新页面结构未知，使用通用选择器兼容多种情况
   // 保留 Slate.js 编辑器选择器（旧版）+ 通用 textarea（新版）
   protected inputSelector = 'div[data-slate-node="element"], textarea, #chat-input, .chat-input textarea, [class*="chat-input"] textarea, div[contenteditable="true"], [class*="input-area"] textarea, [class*="prompt"] textarea, [class*="editor"] textarea, [class*="chat-input"] [contenteditable="true"], [class*="input-area"] [contenteditable="true"], [role="textbox"]';
-  // 响应选择器：新页面结构未知，使用通用选择器
-  protected responseSelector = '#answer_text_id, .answer, .markdown-body, [class*="answer"], [class*="chat-content"], [class*="response"], [class*="message-content"]';
+  // 响应选择器：v1.4.2 精确化，去掉模糊的 [class*="answer"] 等匹配
+  // 之前 bug：[class*="answer"] 会匹配到包含整个对话容器的父元素，导致 7 万字符 + 图片 UI 全部被抓
+  // 现在只匹配明确的回答内容容器，依赖 baseAdapter 的 HTML 清理逻辑去除残留
+  protected responseSelector = '#answer_text_id, .markdown-body, .answer-content, .answer-text, .bot-reply, .ai-reply, .reply-content, .message-text, .response-text, [class*="answer-text"], [class*="reply-content"], [class*="bot-reply"], [class*="ai-reply"], [class*="message-text"], [class*="response-text"]';
   // 停止按钮
   protected stopButtonSelector = '.pause__ZJpNwrGC, [class*="pause"], [class*="stop"], .stop-btn, [class*="Stop"]';
   protected loginUrlPattern = 'login';

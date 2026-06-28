@@ -505,10 +505,35 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       for (let i = elements.length - 1; i >= 0; i--) {
         const el = elements[i];
         const text = (await el.textContent()) || '';
-        const html = (await el.innerHTML()) || '';
         if (text.trim().length > 0) {
-          console.log(`[${this.platformName}] 提取内容成功: ${text.trim().length} 字符 (selector: ${this.responseSelector.split(',')[0]}...)`);
-          return { text: text.trim(), html };
+          // v1.4.2：清理 HTML，移除图片/脚本/样式/按钮等非内容元素
+          // 之前 bug：直接用 innerHTML，把整个页面的图片、UI、侧边栏都装进静态页（7 万字符）
+          const cleanedHtml = await el.evaluate((node: HTMLElement) => {
+            // 克隆节点避免影响原页面
+            const clone = node.cloneNode(true) as HTMLElement;
+            // 移除非内容元素
+            const removeSelectors = [
+              'script', 'style', 'noscript', 'iframe', 'svg', 'canvas',
+              'img', 'video', 'audio', 'source',
+              'button', 'input', 'textarea', 'select', 'form',
+              '.btn', '.button', '.action', '.toolbar', '.menu', '.sidebar',
+              '.navigation', '.nav', '.header', '.footer',
+              '[class*="btn"]', '[class*="button"]', '[class*="action"]',
+              '[class*="toolbar"]', '[class*="menu"]', '[class*="sidebar"]',
+              '[class*="navigation"]', '[class*="nav-"]', '[class*="header"]',
+              '[class*="footer"]', '[class*="copy"]', '[class*="share"]',
+              '[class*="like"]', '[class*="feedback"]', '[class*="rating"]',
+              '[role="button"]', '[role="navigation"]', '[role="toolbar"]',
+              '[aria-hidden="true"]',
+            ];
+            for (const sel of removeSelectors) {
+              clone.querySelectorAll(sel).forEach(e => e.remove());
+            }
+            return clone.innerHTML;
+          }).catch(() => '');
+          const cleanedText = cleanedHtml.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+          console.log(`[${this.platformName}] 提取内容成功: 原文=${text.trim().length} 字符, 清理后=${cleanedText.length} 字符 (selector: ${this.responseSelector.split(',')[0]}...)`);
+          return { text: text.trim(), html: cleanedHtml || `<div>${escapeHtml(text.trim())}</div>` };
         }
       }
       // 选择器匹配到元素但内容为空，走兜底
@@ -535,7 +560,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       const text = await page.evaluate(() => document.body.textContent || '');
       if (text.trim().length > 0) {
         console.log(`[${this.platformName}] body.textContent 兜底提取: ${text.trim().length} 字符`);
-        return { text: text.trim(), html: `<div>${text}</div>` };
+        return { text: text.trim(), html: `<div>${escapeHtml(text.trim())}</div>` };
       }
     } catch (e) {
       console.error(`[${this.platformName}] body.textContent 兜底失败:`, (e as Error).message);
@@ -616,4 +641,14 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       await page.waitForTimeout(30000);
     }
   }
+}
+
+/** HTML 特殊字符转义 */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
