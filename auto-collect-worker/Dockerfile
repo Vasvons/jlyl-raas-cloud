@@ -29,7 +29,11 @@ RUN npm config set registry https://registry.npmmirror.com
 
 COPY package*.json ./
 COPY tsconfig.json ./
-RUN npm install
+# 加 --no-cache 强制 npm 不使用本地缓存（避免 Docker 层缓存命中旧版本）
+RUN npm install --no-cache
+
+# 验证 Playwright 版本（构建日志可见，便于排查 headless: 'new' 不支持问题）
+RUN npx playwright --version
 
 COPY . .
 RUN npm run build

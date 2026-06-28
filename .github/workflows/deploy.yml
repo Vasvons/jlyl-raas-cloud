@@ -184,7 +184,9 @@ jobs:
             build_success=false
             for attempt in 1 2 3; do
               echo ">>> 构建尝试 $attempt/3..."
-              if $DC build; then
+              # auto-collect-worker 单独 --no-cache 构建（避免 Docker 层缓存命中旧 Playwright 版本，
+              # 导致 headless: 'new' 报 "expected boolean, got string" 错误）
+              if $DC build --no-cache auto-collect-worker && $DC build; then
                 echo ">>> 构建成功"
                 build_success=true
                 break
