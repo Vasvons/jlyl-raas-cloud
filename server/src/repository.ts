@@ -3087,14 +3087,22 @@ export async function checkAeoReportExists(taskId: number, reportDate: string): 
 export async function getAiModelConfigs(userId: number): Promise<any[]> {
   // 返回用户自有配置 + 平台共享配置（user_id IS NULL）
   // api_key_masked：脱敏标识（不返回明文/密文，仅告知前端"已配置"用于显示 placeholder 和绿色 Tag）
+  //
+  // ⚠️ v1.4.1 修复：用 DISTINCT ON (platform) 去重，每个平台只返回一条最新的配置。
+  //   之前 bug：由于历史原因数据库中存在大量重复记录（同一 user_id + platform 多条），
+  //   旧的 SQL 没有按 update_time 排序，前端 modelList.find() 总是返回不确定的第一条，
+  //   导致用户保存后刷新页面，显示的是旧记录而非刚保存的新记录。
+  //   现在按 platform 分组，优先取用户私有配置（user_id 非 null），其次共享配置，
+  //   同优先级下按 update_time DESC 取最新一条。
   const result = await query(
-    `SELECT id, user_id, platform, model_name, base_url, max_tokens, temperature,
+    `SELECT DISTINCT ON (platform)
+            id, user_id, platform, model_name, base_url, max_tokens, temperature,
             is_active, daily_quota, used_today, quota_reset_at, use_for_collect, web_search,
             CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN '已配置' ELSE NULL END AS api_key_masked,
             create_time, update_time
      FROM ai_model_config
      WHERE user_id = $1 OR user_id IS NULL
-     ORDER BY user_id NULLS LAST, platform`,
+     ORDER BY platform, (user_id IS NULL) ASC, update_time DESC, id DESC`,
     [userId]
   );
   return result.rows;
@@ -3231,12 +3239,15 @@ export async function getApiConfigForCollect(collectPlatform: string): Promise<{
     return null;
   }
 
+  // ⚠️ v1.4.1 修复：加 update_time DESC，确保取到用户最近保存的那条记录
+  //   （数据库可能存在同一 platform 的多条历史记录，旧的 SQL 只按 user_id 排序，
+  //    可能取到旧记录，导致巡检用的 model_name/api_key 不是用户最近配置的）
   const result = await query(
     `SELECT model_name, api_key_encrypted, base_url, max_tokens, temperature, web_search
      FROM ai_model_config
      WHERE platform = $1 AND use_for_collect = TRUE
        AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
-     ORDER BY user_id NULLS LAST
+     ORDER BY (user_id IS NULL) ASC, update_time DESC, id DESC
      LIMIT 1`,
     [modelPlatform]
   );
