@@ -2588,18 +2588,21 @@ export async function acquirePlatformAccount(platform: string): Promise<{
 } | null> {
   // 只借用 normal 状态、status=active、未过期、未超日限额的账号（最久未使用优先）
   // v1.3+：LEFT JOIN proxy_pool 返回账号绑定的代理信息（解密密码）
+  //
+  // 注意：原实现用 LEFT JOIN + FOR UPDATE SKIP LOCKED，在某些 PostgreSQL 版本会报错
+  // （FOR UPDATE 无法锁定 LEFT JOIN 右侧表的 NULL 行）。
+  // 改为分两步：先 UPDATE...RETURNING 拿到账号 id 和 proxy_id，再单独查代理详情。
   const result = await query(
-    `UPDATE platform_auth 
+    `UPDATE platform_auth
      SET last_used_at = NOW(), last_query_count = last_query_count + 1
      WHERE id = (
-       SELECT pa.id FROM platform_auth pa
-       LEFT JOIN proxy_pool pp ON pa.proxy_id = pp.id AND pp.is_active = TRUE
-       WHERE pa.platform = $1 
-         AND pa.health_status = 'normal'
-         AND pa.status = 'active'
-         AND (pa.expires_at IS NULL OR pa.expires_at > NOW())
-         AND pa.last_query_count < pa.daily_limit
-       ORDER BY pa.last_used_at ASC NULLS FIRST
+       SELECT id FROM platform_auth
+       WHERE platform = $1
+         AND health_status = 'normal'
+         AND status = 'active'
+         AND (expires_at IS NULL OR expires_at > NOW())
+         AND last_query_count < daily_limit
+       ORDER BY last_used_at ASC NULLS FIRST
        LIMIT 1
        FOR UPDATE SKIP LOCKED
      )
@@ -2614,7 +2617,7 @@ export async function acquirePlatformAccount(platform: string): Promise<{
     storageState: row.storage_state,
   };
 
-  // 如果账号绑定了代理，查询代理详情并解密密码
+  // 如果账号绑定了代理，单独查询代理详情（避免 JOIN + FOR UPDATE 兼容性问题）
   if (row.proxy_id) {
     try {
       const proxyDetail = await getProxyById(row.proxy_id);
