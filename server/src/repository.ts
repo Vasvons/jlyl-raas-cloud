@@ -3209,10 +3209,13 @@ const COLLECT_PLATFORM_TO_MODEL_PLATFORM: Record<string, string> = {
  *
  * 查询条件：
  *   - platform 映射后 = ai_model_config.platform
- *   - use_for_collect = TRUE（用户在「生文模型配置」Tab 勾选了"用于巡检"）
- *   - is_active = TRUE
+ *   - use_for_collect = TRUE（用户在「AI模型配置」勾选了"用于巡检"开关）
  *   - api_key_encrypted 非空（必须配置了 API KEY）
  *   - 优先用户私有配置，其次共享配置
+ *
+ * 注意：is_active（用于写作）与 use_for_collect（用于巡检）是两个独立的开关，
+ *       巡检只需要 use_for_collect = TRUE，不要求 is_active = TRUE。
+ *       用户可以只开启巡检而不开启写作，反之亦然。
  *
  * 返回解密后的 api_key + base_url + model_name
  */
@@ -3231,7 +3234,7 @@ export async function getApiConfigForCollect(collectPlatform: string): Promise<{
   const result = await query(
     `SELECT model_name, api_key_encrypted, base_url, max_tokens, temperature, web_search
      FROM ai_model_config
-     WHERE platform = $1 AND use_for_collect = TRUE AND is_active = TRUE
+     WHERE platform = $1 AND use_for_collect = TRUE
        AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
      ORDER BY user_id NULLS LAST
      LIMIT 1`,
