@@ -16,9 +16,10 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   // 输入框：参考 auth helper 的 XPath
   protected inputSelector = 'textarea.semi-input-textarea, textarea[data-testid="chat_input_input"], [data-testid="chat_input"] textarea, [class*="chat-input"] textarea, [class*="input-area"] textarea, textarea';
   // 响应选择器：豆包的消息内容容器
-  // 之前用 [data-testid="message_text_content"] 匹配不到，导致走兜底逻辑被截断到10000
-  // 改用更通用的选择器，参考 auth helper 的滚动容器定位思路
-  protected responseSelector = '[class*="receive-message"], [class*="message-content"], [class*="message_text"], [data-testid="message_text_content"], [class*="answer"], [class*="bubble-content"], [class*="chat-content"]';
+  // 历史问题：[data-testid="message_text_content"] 偶发匹配不到，走兜底被截断到 10000
+  // 改进：覆盖更多选择器，加上 [class*="flow-markdown"] 和 div[data-testid] 的通用匹配
+  // 如果都匹配不到，baseAdapter 的兜底会用 smartFindLongestContent 找最长文本
+  protected responseSelector = '[class*="receive-message"], [class*="message-content"], [class*="message_text"], [data-testid="message_text_content"], [class*="answer"], [class*="bubble-content"], [class*="chat-content"], [class*="flow-markdown"], [class*="markdown-body"], [class*="render-content"], div[class*="content-wrapper"]';
   // 停止按钮：参考 auth helper 的 div[class*="break-btn"]
   protected stopButtonSelector = '[class*="break-btn"], [data-testid="stop_button"], .stop-btn, [class*="stop"], [class*="Stop"]';
   protected loginUrlPattern = 'login';

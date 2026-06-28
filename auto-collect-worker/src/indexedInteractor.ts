@@ -126,17 +126,20 @@ async function getState(page: Page): Promise<IndexedElement[]> {
  *
  * @param page Playwright Page
  * @param preferredText 可选：优先匹配 placeholder/aria-label 含此关键词的元素
+ * @param options.includeHidden 可选：true 时不过滤 visible，覆盖 textarea 存在但被 overflow:hidden 隐藏的情况
  */
 export async function smartFindInputElement(
   page: Page,
   preferredText?: string,
+  options?: { includeHidden?: boolean },
 ): Promise<ElementHandle | null> {
+  const includeHidden = options?.includeHidden ?? false;
   const elements = await getState(page);
 
   // 仅保留可输入元素
   const inputs = elements.filter(
     (e) =>
-      e.enabled &&
+      (includeHidden || e.enabled) &&
       (e.tag === 'textarea' ||
         e.tag === 'input' ||
         e.selector.includes('contenteditable') ||
@@ -144,7 +147,35 @@ export async function smartFindInputElement(
         e.selector.includes('[role="textbox"]')),
   );
 
-  if (inputs.length === 0) return null;
+  if (inputs.length === 0) {
+    // 终极兜底：用 evaluate 直接查找页面所有 textarea/input/contenteditable，不管 visible
+    // 解决 DeepSeek 偶发 textarea 被 overflow:hidden 隐藏但实际可用的情况
+    console.log('[smartFindInputElement] 索引扫描未找到可输入元素，启用 evaluate 直接查找...');
+    const selector = await page.evaluate(() => {
+      const candidates = [
+        'textarea',
+        'div[contenteditable="true"]',
+        '[role="textbox"]',
+        'input[type="text"]',
+        'input:not([type])',
+      ];
+      for (const sel of candidates) {
+        const el = document.querySelector(sel);
+        if (el) {
+          // 返回选择器 + 元素引用 ID（用 id 或构造选择器）
+          if (el.id) return `#${el.id}`;
+          return sel;
+        }
+      }
+      return null;
+    });
+    if (selector) {
+      console.log(`[smartFindInputElement] evaluate 找到元素: ${selector}`);
+      const el = await page.$(selector);
+      if (el) return el;
+    }
+    return null;
+  }
 
   // 优先按文本匹配
   if (preferredText) {

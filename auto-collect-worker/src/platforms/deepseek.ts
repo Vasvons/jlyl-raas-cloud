@@ -84,10 +84,10 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
 
     if (!inputFound) {
       // 第三轮兜底：用 indexedInteractor 的 smartFindInputElement 扫描页面所有可见可交互元素
-      // 解决 DeepSeek 偶发 textarea 不可见但页面有其他可输入元素的问题
+      // includeHidden: true 覆盖 textarea 被 overflow:hidden 隐藏但实际可用的情况
       console.log('[DeepSeek] locator 策略全部失败，启用 smartFindInputElement 兜底扫描...');
       try {
-        const smartEl = await smartFindInputElement(page);
+        const smartEl = await smartFindInputElement(page, undefined, { includeHidden: true });
         if (smartEl) {
           console.log('[DeepSeek] smartFindInputElement 找到可输入元素，使用 click+type 输入');
           await this.activateModes(page);
@@ -104,10 +104,59 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
       }
     }
 
+    // 第四轮兜底：用 evaluate 直接定位 textarea 并通过 React 兼容方式注入 value
+    // 解决 textarea 存在但被 overflow:hidden / 父元素折叠隐藏，Playwright click/fill 都拒绝交互的情况
+    if (!inputFound) {
+      console.log('[DeepSeek] smartFindInputElement 也失败，启用 evaluate 直接注入兜底...');
+      try {
+        const injected = await page.evaluate((kw) => {
+          const textarea = document.querySelector('textarea') as HTMLTextAreaElement | null;
+          if (textarea) {
+            // React 受控组件需要用 nativeInputValueSetter 设置 value
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+              window.HTMLTextAreaElement.prototype, 'value'
+            )?.set;
+            if (nativeInputValueSetter) {
+              nativeInputValueSetter.call(textarea, kw);
+            } else {
+              textarea.value = kw;
+            }
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            textarea.focus();
+            return true;
+          }
+          // 尝试 contenteditable
+          const editable = document.querySelector('div[contenteditable="true"]') as HTMLElement | null;
+          if (editable) {
+            editable.textContent = kw;
+            editable.dispatchEvent(new InputEvent('input', { bubbles: true, data: kw }));
+            editable.focus();
+            return true;
+          }
+          return false;
+        }, keyword);
+
+        if (injected) {
+          console.log('[DeepSeek] evaluate 注入成功，激活模式并按 Enter 提交');
+          await this.activateModes(page);
+          await randomDelay(500, 1500);
+          await page.keyboard.press('Enter');
+          return await this.extractResult(page);
+        }
+      } catch (e: any) {
+        console.log(`[DeepSeek] evaluate 注入兜底失败: ${e.message}`);
+      }
+    }
+
     if (!inputFound) {
       const url = page.url();
       const title = await page.title().catch(() => '未知');
-      throw new Error(`输入框未找到: textarea/contenteditable/smartFind 均失败 (URL=${url}, title=${title})`);
+      // 保存页面快照用于调试
+      try {
+        const html = await page.content();
+        console.log(`[DeepSeek] 输入框未找到 - 页面 HTML 前 2000 字符: ${html.substring(0, 2000)}`);
+      } catch {}
+      throw new Error(`输入框未找到: textarea/contenteditable/smartFind/evaluate 均失败 (URL=${url}, title=${title})`);
     }
 
     // 步骤4: 激活"深度思考"和"智能搜索"模式

@@ -172,31 +172,110 @@ export class ZhipuAdapter extends BasePlatformAdapter {
 
     // 步骤2: 点击"联网"按钮（参考 auth helper 的 //span[text()="联网"]）
     // 关键：必须点击"联网"激活联网搜索模式，否则AI不搜索直接返回简短答案
-    // 历史问题：未激活联网时 AI 返回的内容长度只有 3-12 字符
-    try {
-      let lianwangBtn = await page.$('xpath=//span[text()="联网"]').catch(() => null);
-      if (!lianwangBtn) {
-        // smartFind 兜底：按文本模糊查找（覆盖 span 文本结构变化）
-        console.log('[智谱AI] XPath 找不到"联网"按钮，启用 smartFindClickableElement 兜底...');
-        lianwangBtn = await smartFindClickableElement(page, '联网');
-      }
-      if (lianwangBtn) {
+    // 历史问题：未激活联网时 AI 返回的内容长度只有 3-97 字符
+    // 改进：最多重试 3 次，每次失败换不同的查找/点击策略
+    let lianwangActivated = false;
+    for (let attempt = 1; attempt <= 3 && !lianwangActivated; attempt++) {
+      try {
+        console.log(`[智谱AI] 第 ${attempt} 次尝试激活"联网"模式...`);
+
+        // 检查当前是否已激活
         const isAlreadyActive = await page.evaluate(() => {
+          // 优先用 XPath
           const span = document.evaluate(
             '//span[text()="联网"]', document, null,
             XPathResult.FIRST_ORDERED_NODE_TYPE, null
           ).singleNodeValue as HTMLElement | null;
-          if (!span) return false;
-          const parent = span.parentElement;
-          if (!parent) return false;
-          const cls = parent.className || '';
-          return cls.includes('active') || cls.includes('selected') || cls.includes('checked');
+          if (span) {
+            const parent = span.parentElement;
+            if (parent) {
+              const cls = parent.className || '';
+              if (cls.includes('active') || cls.includes('selected') || cls.includes('checked')) {
+                return true;
+              }
+            }
+          }
+          // 兜底：找所有含"联网"文本的元素，检查其父级 class
+          const allSpans = Array.from(document.querySelectorAll('span, div, button'));
+          for (const el of allSpans) {
+            if ((el.textContent || '').trim() === '联网') {
+              const parent = el.parentElement;
+              if (parent) {
+                const cls = parent.className || '';
+                if (cls.includes('active') || cls.includes('selected') || cls.includes('checked')) {
+                  return true;
+                }
+              }
+            }
+          }
+          return false;
         }).catch(() => false);
 
-        if (!isAlreadyActive) {
-          await lianwangBtn.click({ timeout: 2000 }).catch(() => {});
-          await page.waitForTimeout(1000);
-          // 二次验证：点击后再次检查是否激活
+        if (isAlreadyActive) {
+          console.log('[智谱AI] "联网"已激活，无需重复点击');
+          lianwangActivated = true;
+          break;
+        }
+
+        // 策略1（attempt=1）：XPath 精确匹配
+        // 策略2（attempt=2）：smartFindClickableElement 模糊匹配
+        // 策略3（attempt=3）：evaluate 直接 click + pointerdown 事件
+        let btn: any = null;
+        if (attempt === 1) {
+          btn = await page.$('xpath=//span[text()="联网"]').catch(() => null);
+          if (!btn) {
+            btn = await page.$('xpath=//*[text()="联网"]').catch(() => null);
+          }
+        } else if (attempt === 2) {
+          btn = await smartFindClickableElement(page, '联网');
+        } else {
+          // 策略3：evaluate 直接查找并点击
+          const clicked = await page.evaluate(() => {
+            const candidates = [
+              'span', 'div', 'button', '[role="button"]', '[role="switch"]',
+            ];
+            for (const tag of candidates) {
+              const els = Array.from(document.querySelectorAll(tag));
+              for (const el of els) {
+                if ((el.textContent || '').trim() === '联网') {
+                  (el as HTMLElement).click();
+                  // 同时派发 pointerdown/mousedown 事件，覆盖 React onClick 监听
+                  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                  el.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }));
+                  return true;
+                }
+              }
+            }
+            return false;
+          }).catch(() => false);
+          if (clicked) {
+            await page.waitForTimeout(1500);
+            // 验证激活状态
+            const active = await page.evaluate(() => {
+              const span = document.evaluate(
+                '//span[text()="联网"]', document, null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE, null
+              ).singleNodeValue as HTMLElement | null;
+              if (!span) return false;
+              const parent = span.parentElement;
+              if (!parent) return false;
+              const cls = parent.className || '';
+              return cls.includes('active') || cls.includes('selected') || cls.includes('checked');
+            }).catch(() => false);
+            if (active) {
+              lianwangActivated = true;
+              console.log('[智谱AI] evaluate 直接点击成功，已激活联网模式');
+            } else {
+              console.log('[智谱AI] evaluate 点击了但未检测到激活');
+            }
+            continue;
+          }
+        }
+
+        if (btn) {
+          await btn.click({ timeout: 3000 }).catch(() => {});
+          await page.waitForTimeout(1500);
+          // 验证激活状态
           const nowActive = await page.evaluate(() => {
             const span = document.evaluate(
               '//span[text()="联网"]', document, null,
@@ -209,18 +288,21 @@ export class ZhipuAdapter extends BasePlatformAdapter {
             return cls.includes('active') || cls.includes('selected') || cls.includes('checked');
           }).catch(() => false);
           if (nowActive) {
-            console.log('[智谱AI] 已点击"联网"按钮，激活联网搜索模式');
+            lianwangActivated = true;
+            console.log(`[智谱AI] 第 ${attempt} 次尝试成功，已激活联网模式`);
           } else {
-            console.log('[智谱AI] 点击"联网"按钮但未检测到激活状态，可能已默认激活');
+            console.log(`[智谱AI] 第 ${attempt} 次点击后未检测到激活状态`);
           }
         } else {
-          console.log('[智谱AI] "联网"按钮已激活，无需重复点击');
+          console.log(`[智谱AI] 第 ${attempt} 次尝试未找到"联网"按钮`);
         }
-      } else {
-        console.log('[智谱AI] smartFind 也找不到"联网"按钮（可能已激活或页面结构变化）');
+      } catch (e: any) {
+        console.log(`[智谱AI] 第 ${attempt} 次激活联网失败: ${e.message}`);
       }
-    } catch (e: any) {
-      console.log(`[智谱AI] 点击"联网"按钮失败: ${e.message}`);
+    }
+
+    if (!lianwangActivated) {
+      console.log('[智谱AI] ⚠️ 3 次尝试均未激活联网模式，AI 可能返回简短答案');
     }
 
     // 步骤3: 点击"推理"按钮（参考 auth helper 的 //span[text()="推理"]，is_try=1 可选）

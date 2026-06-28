@@ -1,6 +1,6 @@
 import { Page } from 'playwright';
 import { PlatformAdapter, PlatformCredentials, QueryResult, randomDelay } from './base';
-import { smartFindInputElement } from '../indexedInteractor';
+import { smartFindInputElement, smartFindLongestContent } from '../indexedInteractor';
 
 /**
  * 通用平台适配器基类实现
@@ -471,33 +471,13 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     await this.scrollToBottom(page);
 
     if (!this.responseSelector) {
-      // 无选择器时，尝试获取页面上最后一段长文本
-      // 优先查找常见的 AI 回答容器，避免获取到侧边栏/导航等无关内容
-      const text = await page.evaluate(() => {
-        // 1. 优先查找常见的 AI 回答容器
-        const answerSelectors = [
-          '[class*="answer"]', '[class*="response"]', '[class*="message"]',
-          '[class*="chat-content"]', '[class*="bubble"]', '[class*="content"]'
-        ];
-        for (const sel of answerSelectors) {
-          const els = Array.from(document.querySelectorAll(sel));
-          if (els.length > 0) {
-            // 取最后一个（最新的回答）
-            const lastEl = els[els.length - 1] as HTMLElement;
-            const t = (lastEl.textContent || '').trim();
-            if (t.length > 50) return t;
-          }
-        }
-        // 2. 兜底：获取页面上最长的 div 文本
-        const elements = Array.from(document.querySelectorAll('div, section, article'));
-        let lastLongText = '';
-        for (const el of elements) {
-          const t = (el.textContent || '').trim();
-          if (t.length > lastLongText.length) lastLongText = t;
-        }
-        return lastLongText;
-      });
-      return { text, html: `<div>${text}</div>` };
+      // 无选择器时，直接用 smartFindLongestContent 扫描最长文本
+      const smart = await smartFindLongestContent(page, 50);
+      if (smart) {
+        console.log(`[${this.platformName}] smartFindLongestContent 提取成功: ${smart.text.length} 字符`);
+        return { text: smart.text, html: smart.html };
+      }
+      return { text: '', html: '' };
     }
 
     try {
@@ -507,12 +487,13 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       await this.scrollToBottom(page);
       // 取最后一个匹配的元素（最新的回答）
       const elements = await page.$$(this.responseSelector);
-      const lastEl = elements[elements.length - 1];
-      if (lastEl) {
-        const text = (await lastEl.textContent()) || '';
-        const html = (await lastEl.innerHTML()) || '';
+      // 从后往前找第一个有内容的元素（最新的回答）
+      for (let i = elements.length - 1; i >= 0; i--) {
+        const el = elements[i];
+        const text = (await el.textContent()) || '';
+        const html = (await el.innerHTML()) || '';
         if (text.trim().length > 0) {
-          console.log(`[${this.platformName}] 提取内容成功: ${text.trim().length} 字符`);
+          console.log(`[${this.platformName}] 提取内容成功: ${text.trim().length} 字符 (selector: ${this.responseSelector.split(',')[0]}...)`);
           return { text: text.trim(), html };
         }
       }
@@ -522,38 +503,73 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       console.log(`[${this.platformName}] responseSelector 等待超时: ${(e as Error).message}，走兜底`);
     }
 
-    // 兜底：尝试获取页面所有文本（这是最初能正常工作的逻辑）
-    // 当 responseSelector 匹配不到或内容为空时，用 document.body.textContent
-    // 虽然会包含侧边栏等无关内容，但能确保拿到 AI 回答
-    // 截断到 10000 字符避免过长
+    // 兜底1：用 smartFindLongestContent 扫描页面所有长文本元素
+    // 替代之前的 document.body.textContent + substring(0, 10000) 截断
+    // 解决：1) 豆包每次 10000 字符截断 2) 避免提取侧边栏/导航等无关内容
+    try {
+      const smart = await smartFindLongestContent(page, 50);
+      if (smart) {
+        console.log(`[${this.platformName}] smartFindLongestContent 兜底提取: ${smart.text.length} 字符`);
+        return { text: smart.text, html: smart.html };
+      }
+    } catch (e) {
+      console.error(`[${this.platformName}] smartFindLongestContent 兜底失败:`, (e as Error).message);
+    }
+
+    // 兜底2：最终降级，取 body 文本（不截断，保留完整内容）
     try {
       const text = await page.evaluate(() => document.body.textContent || '');
       if (text.trim().length > 0) {
-        console.log(`[${this.platformName}] 兜底提取内容: ${text.trim().length} 字符 (截断到10000)`);
-        return { text: text.trim().substring(0, 10000), html: `<div>${text}</div>` };
+        console.log(`[${this.platformName}] body.textContent 兜底提取: ${text.trim().length} 字符`);
+        return { text: text.trim(), html: `<div>${text}</div>` };
       }
     } catch (e) {
-      console.error(`[${this.platformName}] 兜底提取失败:`, (e as Error).message);
+      console.error(`[${this.platformName}] body.textContent 兜底失败:`, (e as Error).message);
     }
     return { text: '', html: '' };
   }
 
   /**
    * 滚动到页面底部，触发 SPA 懒加载，确保 AI 回答完整渲染
+   * 注意：之前有 totalHeight > 10000 的限制，导致长回答被截断
+   *       现改为按 scrollHeight 完整滚动，最多 30 秒
    */
   protected async scrollToBottom(page: Page): Promise<void> {
     try {
       await page.evaluate(async () => {
         await new Promise<void>((resolve) => {
           let totalHeight = 0;
-          const distance = 200;
+          let lastScrollHeight = 0;
+          let stableCount = 0;
+          const distance = 300;
+          const startTime = Date.now();
           const timer = setInterval(() => {
             const scrollHeight = document.body.scrollHeight;
             window.scrollBy(0, distance);
             totalHeight += distance;
-            if (totalHeight >= scrollHeight || totalHeight > 10000) {
+            // 检测页面高度是否稳定（连续 3 次不变则认为加载完成）
+            if (scrollHeight === lastScrollHeight) {
+              stableCount++;
+              if (stableCount >= 3) {
+                clearInterval(timer);
+                resolve();
+                return;
+              }
+            } else {
+              stableCount = 0;
+            }
+            lastScrollHeight = scrollHeight;
+            // 到达底部
+            if (totalHeight >= scrollHeight) {
               clearInterval(timer);
               resolve();
+              return;
+            }
+            // 超时 30 秒
+            if (Date.now() - startTime > 30000) {
+              clearInterval(timer);
+              resolve();
+              return;
             }
           }, 100);
         });
