@@ -1,6 +1,7 @@
 import { Page } from 'playwright';
 import { PlatformAdapter, PlatformCredentials, QueryResult, randomDelay } from './base';
 import { smartFindInputElement, smartFindLongestContent } from '../indexedInteractor';
+import { humanType, humanDelay, humanClick } from '../behaviorHumanizer';
 
 /**
  * 通用平台适配器基类实现
@@ -278,19 +279,32 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       throw new Error(`输入框未找到: 主选择器(${this.inputSelector})及所有回退选择器均超时 (URL=${url}, title=${title})`);
     }
 
-    // 清空输入框并填入关键词
-    // 部分平台 fill 失败（如 contenteditable），降级为 click + type
+    // 清空输入框并填入关键词（v1.3+ 行为人性化：逐字符输入 + 随机间隔）
+    // 部分平台 fill 失败（如 contenteditable），降级为 humanType
     try {
-      await page.fill(activeSelector, '');
-      await page.fill(activeSelector, keyword);
+      // 优先用 humanType 逐字符输入（反检测核心：避免瞬时输入被识别为自动化）
+      const inputEl = await page.$(activeSelector);
+      if (inputEl) {
+        await humanType(page, inputEl, keyword, { clear: true });
+      } else {
+        // 兜底：fill + 固定 delay
+        await page.fill(activeSelector, '');
+        await page.fill(activeSelector, keyword);
+      }
     } catch {
-      console.log(`[${this.platformName}] fill 失败，降级为 click+type`);
-      await page.click(activeSelector);
-      await page.keyboard.press('Control+A');
-      await page.keyboard.press('Delete');
-      await page.keyboard.type(keyword, { delay: 50 });
+      console.log(`[${this.platformName}] humanType 失败，降级为 fill+type`);
+      try {
+        await page.fill(activeSelector, '');
+        await page.fill(activeSelector, keyword);
+      } catch {
+        await page.click(activeSelector).catch(() => {});
+        await page.keyboard.press('Control+A');
+        await page.keyboard.press('Delete');
+        await page.keyboard.type(keyword, { delay: 50 });
+      }
     }
-    await randomDelay(500, 1500);
+    // 提交前随机停顿（模拟人类思考）
+    await humanDelay('medium');
 
     // 提交
     await page.press(activeSelector, 'Enter');

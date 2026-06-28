@@ -7,10 +7,13 @@ import { YuanbaoAdapter } from './platforms/yuanbao';
 import { WenxinAdapter } from './platforms/wenxin';
 import { NanoAdapter } from './platforms/nano';
 import { ZhipuAdapter } from './platforms/zhipu';
-import { PlatformAdapter, getRandomContextIdentity } from './platforms/base';
+import { PlatformAdapter } from './platforms/base';
 import { reportResult } from './resultReporter';
 import * as logger from './logger';
 import axios from 'axios';
+// 隐身浏览器组件（v1.3+）
+import { getAntiDetectionArgs, shouldUseHeadless, getStealthScript, hasStealthScript, getAppLayerInjectionScript } from './stealthLoader';
+import { getRandomFingerprint, getStableFingerprint, fingerprintToContextOptions, getFingerprintInjectionScript } from './fingerprintManager';
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 
@@ -71,13 +74,19 @@ async function updateProgress(queueId: number, lastKeywordIndex: number): Promis
 }
 
 /** 从云端账号池借用账号 */
-async function acquireAccount(platform: string): Promise<{ authId: number; storageState: string } | null> {
+async function acquireAccount(platform: string): Promise<{
+  authId: number;
+  storageState: string;
+  proxy?: { endpoint: string; username?: string; password?: string } | null;
+} | null> {
   try {
     const resp = await axios.post(`${SERVER_URL}/platform-auth/acquire`, { platform }, { timeout: 10000 });
     if (resp.data?.code === 200 && resp.data?.data) {
       return {
         authId: resp.data.data.id,
         storageState: resp.data.data.storageState,
+        // 代理信息（v1.3+：账号绑定的代理，由云端从 proxy_pool 解密返回）
+        proxy: resp.data.data.proxy || null,
       };
     }
     return null;
@@ -142,28 +151,63 @@ function chunk<T>(arr: T[], size: number): T[][] {
   return result;
 }
 
-/** 启动 Chromium 的统一参数（内存优化） */
+/**
+ * 启动 Chromium（v1.3+ 隐身版）
+ *
+ * 关键改进（DeepSeek 被封的根因修复）：
+ * 1. 使用 30+ 反检测 args（含 --disable-blink-features=AutomationControlled）
+ * 2. 默认 headless: 'new'（Chrome 新 headless 模式，过检测能力大幅提升）
+ * 3. 不再暴露 HeadlessChrome UA、navigator.webdriver=true 等自动化特征
+ */
 function getChromiumLaunchArgs() {
+  const useHeadless = shouldUseHeadless();
   return {
-    headless: true,
+    // Chrome 新 headless 模式（与旧 headless: true 完全不同，几乎与有头浏览器一致）
+    headless: useHeadless ? ('new' as any) : false,
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--no-zygote',
-      '--disable-extensions',
-      '--disable-plugins',
-      '--disable-notifications',
-      '--disable-background-networking',
-      '--disable-sync',
-      '--disable-translate',
-      '--disable-default-apps',
-      '--no-first-run',
-      '--memory-pressure-off',
-    ],
+    args: getAntiDetectionArgs(),
   };
+}
+
+/**
+ * 为 BrowserContext 注入所有隐身措施（v1.3+）
+ *
+ * 调用时机：browser.newContext() 之后、page.goto() 之前
+ * 注入内容：
+ *  1. stealth.min.js（来自 berstend/puppeteer-extra，覆盖 webdriver/plugins/chrome.runtime 等）
+ *  2. appLayerInjectionScript（navigator.webdriver=false 等）
+ *  3. fingerprintInjectionScript（WebGL/Canvas/Platform 伪造）
+ *
+ * @param context Playwright BrowserContext
+ * @param fingerprint 本次会话使用的指纹（决定 WebGL/Canvas 伪造值）
+ */
+async function injectStealthScripts(context: any, fingerprint: ReturnType<typeof getRandomFingerprint>): Promise<void> {
+  // 1. stealth.min.js（每个新 page 都会自动注入）
+  if (hasStealthScript()) {
+    try {
+      const stealthScript = getStealthScript();
+      await context.addInitScript(stealthScript);
+      logger.info('[隐身] stealth.min.js 已注入');
+    } catch (e: any) {
+      logger.warn(`[隐身] stealth.min.js 注入失败: ${e.message}`);
+    }
+  } else {
+    logger.warn('[隐身] stealth.min.js 未找到，仅用 appLayerInjectionScript 兜底');
+  }
+
+  // 2. 应用层注入脚本（navigator.webdriver=false 等）
+  try {
+    await context.addInitScript(getAppLayerInjectionScript());
+  } catch (e: any) {
+    logger.warn(`[隐身] appLayerInjectionScript 注入失败: ${e.message}`);
+  }
+
+  // 3. 指纹伪造脚本（WebGL/Canvas/Platform）
+  try {
+    await context.addInitScript(getFingerprintInjectionScript(fingerprint));
+  } catch (e: any) {
+    logger.warn(`[隐身] 指纹伪造脚本注入失败: ${e.message}`);
+  }
 }
 
 /** 执行单次查询（一个关键词在一个平台上） */
@@ -202,10 +246,28 @@ async function executeSingleQuery(
       storageState = undefined;
     }
 
-    context = await browser.newContext({
+    // 隐私模式：每次 newContext 用全新随机指纹（不复用账号指纹，降低被关联风险）
+    const fingerprint = getRandomFingerprint();
+    const contextOptions: any = {
       storageState,
-      ...getRandomContextIdentity(),
-    });
+      ...fingerprintToContextOptions(fingerprint),
+    };
+
+    // 代理注入（v1.3+：账号绑定的代理）
+    if (account.proxy?.endpoint) {
+      contextOptions.proxy = {
+        server: account.proxy.endpoint,
+        username: account.proxy.username || undefined,
+        password: account.proxy.password || undefined,
+      };
+      logger.info(`[隐身] 账号 ${account.authId} 使用代理: ${account.proxy.endpoint}`);
+    }
+
+    context = await browser.newContext(contextOptions);
+
+    // 注入所有隐身脚本（stealth.min.js + appLayerInjectionScript + 指纹伪造）
+    await injectStealthScripts(context, fingerprint);
+
     page = await context.newPage();
 
     // 执行查询（query 方法内部已包含登录态检测，无需重复调用 checkLoginStatus）

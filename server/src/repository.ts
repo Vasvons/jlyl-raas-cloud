@@ -2581,27 +2581,56 @@ export async function getPlatformAuthById(id: number) {
  * - offline：登录态掉线，需重新登录
  * 到达每日查询量（last_query_count >= daily_limit）的账号当天不再借用，次日 0 点重置计数
  */
-export async function acquirePlatformAccount(platform: string): Promise<{ id: number; storageState: string } | null> {
+export async function acquirePlatformAccount(platform: string): Promise<{
+  id: number;
+  storageState: string;
+  proxy?: { endpoint: string; username?: string; password?: string } | null;
+} | null> {
   // 只借用 normal 状态、status=active、未过期、未超日限额的账号（最久未使用优先）
+  // v1.3+：LEFT JOIN proxy_pool 返回账号绑定的代理信息（解密密码）
   const result = await query(
     `UPDATE platform_auth 
      SET last_used_at = NOW(), last_query_count = last_query_count + 1
      WHERE id = (
-       SELECT id FROM platform_auth 
-       WHERE platform = $1 
-         AND health_status = 'normal'
-         AND status = 'active'
-         AND (expires_at IS NULL OR expires_at > NOW())
-         AND last_query_count < daily_limit
-       ORDER BY last_used_at ASC NULLS FIRST
+       SELECT pa.id FROM platform_auth pa
+       LEFT JOIN proxy_pool pp ON pa.proxy_id = pp.id AND pp.is_active = TRUE
+       WHERE pa.platform = $1 
+         AND pa.health_status = 'normal'
+         AND pa.status = 'active'
+         AND (pa.expires_at IS NULL OR pa.expires_at > NOW())
+         AND pa.last_query_count < pa.daily_limit
+       ORDER BY pa.last_used_at ASC NULLS FIRST
        LIMIT 1
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING id, storage_state`,
+     RETURNING id, storage_state, proxy_id`,
     [platform]
   );
   if (result.rows.length === 0) return null;
-  return { id: result.rows[0].id, storageState: result.rows[0].storage_state };
+
+  const row = result.rows[0];
+  const account: { id: number; storageState: string; proxy?: any } = {
+    id: row.id,
+    storageState: row.storage_state,
+  };
+
+  // 如果账号绑定了代理，查询代理详情并解密密码
+  if (row.proxy_id) {
+    try {
+      const proxyDetail = await getProxyById(row.proxy_id);
+      if (proxyDetail && proxyDetail.is_active) {
+        account.proxy = {
+          endpoint: proxyDetail.endpoint,
+          username: proxyDetail.username || undefined,
+          password: proxyDetail.password || undefined,
+        };
+      }
+    } catch (e: any) {
+      console.error(`[acquirePlatformAccount] 获取代理 ${row.proxy_id} 失败:`, e.message);
+    }
+  }
+
+  return account;
 }
 
 /** 归还账号（根据查询结果更新账号状态）
