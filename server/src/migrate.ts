@@ -915,7 +915,11 @@ export async function migrate() {
     await client.query(`ALTER TABLE writing_instruction ADD COLUMN IF NOT EXISTS title_prompt TEXT DEFAULT ''`);
     // 数据迁移：将旧 user_prompt_template 的值复制到 article_prompt（仅 article_prompt 为空时）
     await client.query(`UPDATE writing_instruction SET article_prompt = user_prompt_template WHERE article_prompt = '' AND user_prompt_template IS NOT NULL AND user_prompt_template != ''`);
-    // system_prompt 字段保留但不再使用（向后兼容，不删除）
+    // system_prompt/user_prompt_template 字段保留但不再使用（向后兼容，不删除）
+    // 8.2.1 修复：repository INSERT 不再传 system_prompt/user_prompt_template，需去掉 NOT NULL 约束
+    // 否则 CREATE TABLE 时的 NOT NULL 约束会导致 INSERT 失败
+    await client.query(`ALTER TABLE writing_instruction ALTER COLUMN system_prompt DROP NOT NULL`);
+    await client.query(`ALTER TABLE writing_instruction ALTER COLUMN user_prompt_template DROP NOT NULL`);
 
     // 8.2.2 写作任务表新增 generation_mode 字段（专家系统/扣子工作流双模式）
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS generation_mode VARCHAR(16) DEFAULT 'expert'`);

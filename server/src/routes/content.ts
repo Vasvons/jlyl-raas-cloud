@@ -268,12 +268,17 @@ router.post('/instructions', async (req: Request, res: Response) => {
     const customerId = req.body.customer_id
       ? Number(req.body.customer_id)
       : getUserId(req);
-    const { name, category, system_prompt, user_prompt_template, target_word_count, include_faq, include_comparison_table, content_types, random_mode } = req.body;
-    if (!name || !system_prompt || !user_prompt_template) {
-      return res.status(400).json({ code: 400, message: 'name/system_prompt/user_prompt_template 必填' });
+    const { name, category, article_prompt, title_prompt, system_prompt, user_prompt_template, target_word_count, include_faq, include_comparison_table, content_types, random_mode } = req.body;
+    // 新字段优先；兼容旧字段 system_prompt/user_prompt_template
+    const finalArticlePrompt = article_prompt ?? system_prompt ?? '';
+    const finalTitlePrompt = title_prompt ?? user_prompt_template ?? '';
+    if (!name || !finalArticlePrompt) {
+      return res.status(400).json({ code: 400, message: 'name/article_prompt 必填' });
     }
     const id = await createWritingInstruction({
-      user_id: customerId, name, category, system_prompt, user_prompt_template,
+      user_id: customerId, name, category,
+      article_prompt: finalArticlePrompt,
+      title_prompt: finalTitlePrompt,
       target_word_count, include_faq, include_comparison_table,
       content_types: Array.isArray(content_types) ? content_types : [],
       random_mode: !!random_mode,
