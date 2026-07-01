@@ -67,6 +67,7 @@ import {
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection } from '../services/content/aiClient';
 import { executeWritingTask, regenerateArticle } from '../services/content/articleGenerator';
+import { extractTriplesFromKnowledge } from '../services/content/tripleExtractor';
 
 const router = Router();
 
@@ -359,6 +360,22 @@ router.delete('/knowledge/:id', async (req: Request, res: Response) => {
     await deleteEnterpriseKnowledge(Number(req.params.id));
     res.json({ code: 200 });
   } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * 从企业知识库文本字段中抽取实体三元组
+ * 调用 AI 模型分析 intro_text / cases_text / products_services 等文本，
+ * 返回 Triple[] 数组（不自动写入数据库，由前端追加到编辑器，用户确认后再保存）
+ */
+router.post('/knowledge/:id/extract-triples', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const triples = await extractTriplesFromKnowledge(Number(req.params.id), userId);
+    res.json({ code: 200, data: triples });
+  } catch (err: any) {
+    console.error('[POST /knowledge/:id/extract-triples] 抽取失败:', err.message);
     res.status(500).json({ code: 500, message: err.message });
   }
 });
