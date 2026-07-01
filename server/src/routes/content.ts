@@ -14,6 +14,7 @@ import {
   updateWritingInstruction,
   deleteWritingInstruction,
   getEnterpriseKnowledges,
+  getAllEnterpriseKnowledges,
   getEnterpriseKnowledgeById,
   createEnterpriseKnowledge,
   updateEnterpriseKnowledge,
@@ -318,6 +319,12 @@ router.delete('/instructions/:id', async (req: Request, res: Response) => {
 
 router.get('/knowledge', async (req: Request, res: Response) => {
   try {
+    // 管理员视角：all=1 时返回所有客户的知识库（用于桌面端知识库列表）
+    if (req.query.all === '1') {
+      const list = await getAllEnterpriseKnowledges();
+      res.json({ code: 200, data: list });
+      return;
+    }
     const customerId = getCustomerId(req);
     const list = await getEnterpriseKnowledges(customerId);
     res.json({ code: 200, data: list });

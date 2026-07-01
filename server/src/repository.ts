@@ -3454,6 +3454,14 @@ export async function getEnterpriseKnowledgesByCustomer(customerId: number): Pro
   return getEnterpriseKnowledges(customerId);
 }
 
+/** 管理员视角：获取所有客户的企业知识库（不按 user_id 过滤，用于桌面端知识库列表） */
+export async function getAllEnterpriseKnowledges(): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM enterprise_knowledge WHERE is_active = true ORDER BY user_id, create_time DESC`
+  );
+  return result.rows;
+}
+
 export async function getEnterpriseKnowledgeById(id: number): Promise<any | null> {
   const result = await query('SELECT * FROM enterprise_knowledge WHERE id = $1', [id]);
   return result.rows[0] || null;
