@@ -173,7 +173,8 @@ async function resolveModelConfig(task: any, userId: number, taskId: number): Pr
 }
 
 /**
- * 执行写作任务 — 遍历关键词调AI生成文章
+ * 执行写作任务 — 按用户设定的篇数循环调AI生成文章
+ * v1.4+：关键词库作为整体主题参考注入 prompt，不再一对一
  * 支持双模式：expert（专家系统）/ coze（扣子工作流）
  */
 export async function executeWritingTask(taskId: number, userId: number): Promise<void> {
@@ -182,13 +183,14 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
     throw new Error(`Writing task ${taskId} not found`);
   }
 
-  // 获取关键词详情
+  // 获取关键词详情（v1.4+：关键词库作为主题参考，可为空）
   const keywordIds: number[] = task.keyword_ids || [];
   const keywords = await getKeywordsByIds(keywordIds);
-  if (keywords.length === 0) {
-    await completeWritingTask(taskId, 'failed', '未找到选中的关键词');
-    return;
-  }
+  // 关键词列表字符串（顿号连接），注入到 prompt 中作为主题参考
+  const keywordsListStr = keywords.map((k: any) => k.value).join('、');
+
+  // 文章篇数：由用户在创建任务时手动设定（task.total_count）
+  const totalCount: number = Math.max(1, Number(task.total_count) || 1);
 
   // 生成模式：expert（默认）/ coze
   const generationMode = task.generation_mode || 'expert';
@@ -210,16 +212,22 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
   let failCount = 0;
   const errors: string[] = [];
 
-  for (const kw of keywords) {
+  // v1.4+：按用户设定的 total_count 循环生成，不再按关键词一对一
+  // 关键词列表作为整体主题参考注入到每篇文章的 prompt 中
+  // AI 根据 指令 + 知识库 + 专家 + 关键词列表 自行决定每篇文章的主题
+  for (let i = 0; i < totalCount; i++) {
     try {
       let title = '';
       let contentHtml = '';
       let wordCount = 0;
       let modelUsed = '';
 
+      // 为本次生成选择一个主题关键词（轮询取，用于文章归属标记，不影响 prompt 内容）
+      const kw = keywords.length > 0 ? keywords[i % keywords.length] : null;
+
       if (generationMode === 'coze') {
         // 扣子工作流模式
-        const result = await generateByCoze(task, kw.value, enterpriseInfo, userId);
+        const result = await generateByCoze(task, keywordsListStr || '', enterpriseInfo, userId);
         title = result.title;
         contentHtml = result.contentHtml;
         wordCount = result.wordCount;
@@ -227,9 +235,10 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
       } else {
         // 专家系统模式
         // 组装 prompt（方向×类型上下文注入 article_prompt 开头）
+        // v1.4+：keyword 参数传整个关键词列表作为主题参考
         const directionCtx = buildDirectionContextForTask(task);
         const articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
-          keyword: kw.value,
+          keyword: keywordsListStr || '',
           enterprise: enterpriseInfo,
           wordCount: task.target_word_count,
         });
@@ -257,7 +266,7 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
         // 如果指令配置了 title_prompt，单独调用AI生成标题
         if (task.title_prompt && task.title_prompt.trim()) {
           const titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
-            keyword: kw.value,
+            keyword: keywordsListStr || '',
             enterprise: enterpriseInfo,
             wordCount: task.target_word_count,
           });
@@ -293,9 +302,9 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
       await createArticle({
         user_id: userId,
         task_id: taskId,
-        keyword_id: kw.id,
-        core_keyword: kw.value,
-        keyword_type: kw.keyword_type || 0,
+        keyword_id: kw?.id ?? null,
+        core_keyword: kw?.value || '',
+        keyword_type: kw?.keyword_type || 0,
         title,
         content_html: contentHtml,
         entity_triples: enterpriseInfo.entity_triples,
@@ -311,7 +320,7 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
       }
     } catch (err: any) {
       failCount++;
-      errors.push(`关键词"${kw.value}"生成失败：${err.message}`);
+      errors.push(`第 ${i + 1} 篇生成失败：${err.message}`);
       await updateWritingTaskProgress(taskId, 0, 1);
     }
   }

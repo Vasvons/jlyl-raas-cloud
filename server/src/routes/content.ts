@@ -596,12 +596,12 @@ router.get('/writing-tasks/:id', async (req: Request, res: Response) => {
 router.post('/writing-tasks', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id } = req.body;
+    const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id, article_count } = req.body;
 
     // 关键词来源优先级：
     //   1. keyword_ids（显式传入，向后兼容）
     //   2. keywords（字符串数组，前端手动输入，需转换为 keyword_ids）
-    //   3. 都没有 → 报错
+    //   3. 都没有 → 关键词库可为空（v1.4+：文章内容由指令+知识库+专家决定，关键词仅作主题参考）
     let finalKeywordIds: number[] = [];
     if (Array.isArray(keyword_ids) && keyword_ids.length > 0) {
       finalKeywordIds = keyword_ids;
@@ -611,20 +611,22 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
       finalKeywordIds = await getKeywordIdsByValues(userId, keywords);
     }
 
-    if (finalKeywordIds.length === 0) {
-      return res.status(400).json({ code: 400, message: '关键词必填且非空' });
-    }
+    // v1.4+：关键词库不再强制非空，文章内容由 指令+知识库+专家 决定
+    // 兼容旧逻辑：未传 article_count 且有关键词时，回退到关键词数量
+    const articleCount = Math.max(1, Math.min(100, Number(article_count) || (finalKeywordIds.length > 0 ? finalKeywordIds.length : 1)));
+
     if (!instruction_id || !knowledge_id) {
       return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id 必填' });
     }
     // model_config_id 可选：未传时由 articleGenerator 自动取默认模型
     // agent_profile_id 可选：指定专家智能体角色（systemPrompt+skills 注入 system message）
+    // total_count：用户手动设定的文章篇数（不再由关键词数量决定）
     const taskId = await createWritingTask({
       user_id: userId, task_name, keyword_ids: finalKeywordIds, instruction_id, knowledge_id,
       model_config_id: model_config_id || null,
       generation_mode: generation_mode || 'expert',
       agent_profile_id: agent_profile_id || null,
-      total_count: finalKeywordIds.length,
+      total_count: articleCount,
     });
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {
