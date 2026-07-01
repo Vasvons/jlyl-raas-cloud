@@ -75,14 +75,20 @@ export async function getApiConfig(platform: string): Promise<ApiConfig | null> 
 }
 
 /**
- * 按平台注入联网搜索参数（v1.4.2 修正 Kimi 联网搜索方式）
+ * 按平台注入联网搜索参数（v1.4.3 修正 Kimi 联网搜索方式）
  *
- * v1.4.2 修复：
- *  - Kimi：builtin_function $web_search 是 agentic 模式，只返回搜索摘要（~96 字符）
- *    改用 model 名加 -online 后缀（如 moonshot-v1-32k-online），单次调用返回完整回答
+ * v1.4.3 修复：
+ *  - Kimi：不存在 -online 后缀的模型（moonshot-v1-32k-online 会 HTTP 404）
+ *    正确方式是用 builtin_function.$web_search 工具，但需要循环处理 tool_calls：
+ *    1. 第一次请求带 tools=[{type:"builtin_function",function:{name:"$web_search"}}]
+ *    2. 模型返回 finish_reason="tool_calls"，tool_calls[0].function.name="$web_search"
+ *    3. 把 arguments 原封不动作为 tool 角色消息回传
+ *    4. 第二次请求，模型基于搜索结果生成完整回答
+ *    （之前只调用一次就返回，导致只拿到 96 字符的搜索摘要）
  *
  * 之前 bug：
- *  - Kimi：函数名 'web_search' 错误，正确是 '$web_search'（带 $ 前缀），导致 HTTP 400
+ *  - Kimi：函数名 'web_search' 错误，正确是 '$web_search'（带 $ 前缀）
+ *  - Kimi：-online 后缀模型不存在，返回 HTTP 404
  *  - 文心一言：'enable_search=true' 百度千帆 OpenAI 兼容接口不识别，
  *    正确参数是 'extra_parameters.search=true'，且响应可能放在 tool_calls/function_call
  *  - 智谱：参数格式正确，429 是限流问题，已加重试
@@ -98,12 +104,12 @@ function applyWebSearchParams(platform: string, body: any): void {
       body.enable_search = true;
       break;
     case 'kimi':
-      // Kimi 联网搜索：改用 model 名加 -online 后缀（v1.4.2）
-      // 之前用 builtin_function $web_search 是 agentic 模式，只返回搜索摘要
-      // 改为在 model 名后加 -online，单次调用返回完整联网搜索回答
-      if (body.model && !body.model.endsWith('-online')) {
-        body.model = `${body.model}-online`;
-      }
+      // Kimi 联网搜索：用 builtin_function.$web_search 工具
+      // 注意：需要循环处理 tool_calls，见 callKimiWithWebSearch
+      body.tools = [{
+        type: 'builtin_function',
+        function: { name: '$web_search' },
+      }];
       break;
     case 'doubao':
       // 豆包（火山方舟）启用搜索插件
@@ -121,6 +127,83 @@ function applyWebSearchParams(platform: string, body: any): void {
     default:
       break;
   }
+}
+
+/**
+ * Kimi 联网搜索专用调用：循环处理 tool_calls
+ *
+ * Kimi 的 $web_search 是 agentic 工具，流程：
+ *  1. 第一次请求带 tools，模型返回 tool_calls 调用 $web_search
+ *  2. 我们把 arguments 原封不动作为 tool 角色消息回传（这是 Kimi 的特殊要求）
+ *  3. 第二次请求，模型基于搜索结果生成完整回答
+ *
+ * 如果不循环处理，只会拿到 tool_calls 的搜索参数（~96 字符），不是最终回答
+ */
+async function callKimiWithWebSearch(
+  config: ApiConfig,
+  keyword: string,
+  buildBody: (withWebSearch: boolean) => any
+): Promise<string> {
+  const messages: any[] = [
+    { role: 'user', content: keyword },
+  ];
+
+  const MAX_TOOL_ROUNDS = 3; // 防止无限循环
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const body = buildBody(true);
+    body.messages = messages;
+
+    const response = await axios.post(config.baseUrl, body, {
+      headers: {
+        'Authorization': `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 120000,
+    });
+
+    const choice = response.data?.choices?.[0];
+    if (!choice) {
+      throw new Error('Kimi API 返回无 choices');
+    }
+
+    const msg = choice.message || {};
+    const finishReason = choice.finish_reason;
+
+    // 如果模型要求调用工具，把 tool_calls 回传后继续
+    if (finishReason === 'tool_calls' && msg.tool_calls?.length) {
+      // 把 assistant 消息（含 tool_calls）加入对话
+      messages.push(msg);
+      // 为每个 tool_call 回传 tool 角色消息
+      for (const tc of msg.tool_calls) {
+        const toolName = tc.function?.name || '';
+        let toolResult: string;
+        if (toolName === '$web_search') {
+          // Kimi 的 $web_search：arguments 原封不动返回
+          toolResult = tc.function.arguments || '{}';
+        } else {
+          toolResult = `Error: unknown tool ${toolName}`;
+        }
+        messages.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          name: toolName,
+          content: toolResult,
+        });
+      }
+      // 继续下一轮，让模型基于搜索结果生成回答
+      continue;
+    }
+
+    // finish_reason !== "tool_calls"，说明模型已生成最终回答
+    const content = extractContent(response.data);
+    if (!content) {
+      throw new Error('Kimi API 返回空内容');
+    }
+    logger.info(`[API] kimi 联网搜索完成 (round=${round + 1})，内容长度=${content.length}`);
+    return content;
+  }
+
+  throw new Error('Kimi 联网搜索超出最大工具调用轮数');
 }
 
 /**
@@ -187,6 +270,40 @@ export async function queryByApi(config: ApiConfig, keyword: string): Promise<Ap
     }
     return body;
   };
+
+  // Kimi 联网搜索需要循环处理 tool_calls，走单独流程
+  if (platform === 'kimi' && config.webSearch) {
+    try {
+      const content = await callKimiWithWebSearch(config, keyword, buildBody);
+      const htmlContent = `<div style="white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">${escapeHtml(content)}</div>`;
+      return { content, htmlContent, shareUrl: null, supportsShare: false };
+    } catch (e: any) {
+      const status = e?.response?.status;
+      const respData = e?.response?.data;
+      const respStr = typeof respData === 'string' ? respData.slice(0, 300) : JSON.stringify(respData || {}).slice(0, 300);
+      logger.warn(`[API] kimi 联网搜索失败 (HTTP ${status || 'N/A'}): ${respStr || e.message}，降级为不带联网搜索重试`);
+      // 降级为不带联网搜索
+      try {
+        const fallbackBody = buildBody(false);
+        const fallbackResp = await axios.post(config.baseUrl, fallbackBody, {
+          headers: {
+            'Authorization': `Bearer ${config.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          timeout: 120000,
+        });
+        const fallbackContent = extractContent(fallbackResp.data);
+        if (fallbackContent) {
+          logger.info(`[API] kimi 降级（无联网搜索）调用成功，内容长度=${fallbackContent.length}`);
+          const htmlContent = `<div style="white-space: pre-wrap; word-wrap: break-word; line-height: 1.6;">${escapeHtml(fallbackContent)}</div>`;
+          return { content: fallbackContent, htmlContent, shareUrl: null, supportsShare: false };
+        }
+      } catch (fallbackErr: any) {
+        logger.warn(`[API] kimi 降级重试仍失败: ${fallbackErr.message}`);
+      }
+      throw new Error(e?.message || 'Kimi API 调用失败');
+    }
+  }
 
   // 第一次：按用户配置（含联网搜索）调用
   let lastErr: any = null;
