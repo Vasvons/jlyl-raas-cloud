@@ -3137,12 +3137,13 @@ export async function getAiModelConfigById(id: number): Promise<any | null> {
  *   2. 平台共享配置（user_id IS NULL）中 is_active=true 的最新一条
  */
 export async function getDefaultModelConfig(userId: number): Promise<any | null> {
-  // 先查用户私有配置
+  // 先查用户私有配置（必须已配置 api_key，避免返回空 KEY 的记录导致后续调用失败）
   let result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
             max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
      FROM ai_model_config
      WHERE user_id = $1 AND is_active = true
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
      ORDER BY create_time DESC LIMIT 1`,
     [userId]
   );
@@ -3153,6 +3154,7 @@ export async function getDefaultModelConfig(userId: number): Promise<any | null>
             max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
      FROM ai_model_config
      WHERE user_id IS NULL AND is_active = true
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
      ORDER BY create_time DESC LIMIT 1`
   );
   return result.rows[0] || null;
