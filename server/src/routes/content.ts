@@ -8,6 +8,7 @@ import {
   updateAiModelConfig,
   deleteAiModelConfig,
   getWritingInstructions,
+  getAllWritingInstructions,
   getWritingInstructionById,
   createWritingInstruction,
   updateWritingInstruction,
@@ -253,8 +254,14 @@ router.get('/instructions/categories', (req: Request, res: Response) => {
 
 router.get('/instructions', async (req: Request, res: Response) => {
   try {
-    const customerId = getCustomerId(req);
     const category = req.query.category as string | undefined;
+    // 管理员视角：all=1 时返回所有客户的指令（用于桌面端指令库列表）
+    if (req.query.all === '1') {
+      const list = await getAllWritingInstructions(category);
+      res.json({ code: 200, data: list });
+      return;
+    }
+    const customerId = getCustomerId(req);
     const list = await getWritingInstructions(customerId, category);
     res.json({ code: 200, data: list });
   } catch (err: any) {

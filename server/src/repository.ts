@@ -3378,6 +3378,19 @@ export async function getWritingInstructions(userId: number, category?: string):
   return result.rows;
 }
 
+/** 获取所有客户的写作指令（管理员视角，用于桌面端指令库管理） */
+export async function getAllWritingInstructions(category?: string): Promise<any[]> {
+  let sql = `SELECT * FROM writing_instruction WHERE is_active = true`;
+  const params: any[] = [];
+  if (category) {
+    params.push(category);
+    sql += ` AND category = $1`;
+  }
+  sql += ` ORDER BY user_id, create_time DESC`;
+  const result = await query(sql, params);
+  return result.rows;
+}
+
 /** 获取指定客户名下的写作指令（管理员模式：customerId 由前端传入） */
 export async function getWritingInstructionsByCustomer(customerId: number, category?: string): Promise<any[]> {
   return getWritingInstructions(customerId, category);
