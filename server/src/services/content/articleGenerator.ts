@@ -1,5 +1,5 @@
 import { chatCompletion } from './aiClient';
-import { buildPrompt, buildDirectionContext, pickRandomContentType, pickRandomDirection } from './promptBuilder';
+import { buildPrompt, buildDirectionContext, pickRandomContentType, pickRandomDirection, formatEnterprise } from './promptBuilder';
 import {
   getWritingTaskById,
   getKeywordsByIds,
@@ -117,10 +117,14 @@ function buildEnterpriseInfo(task: any) {
  * 把专家角色的 systemPrompt + 启用的技能内容拼成 system message
  * 用于注入到 chatCompletion 调用，让大模型"成为"这个专家
  *
+ * v1.4+：无条件附加「写作上下文」块（企业信息+关键词库），确保专家角色知道为谁写作
+ *
  * @param task 已联表查询 agent_profile 的任务对象（含 agent_system_prompt, agent_skills_content）
- * @returns system message 字符串，若角色未配置则返回空字符串
+ * @param enterpriseInfo 企业知识库信息
+ * @param keywordsListStr 关键词列表字符串（顿号连接）
+ * @returns system message 字符串，若角色未配置且无上下文则返回空字符串
  */
-function buildSystemMessageFromAgentProfile(task: any): string {
+function buildSystemMessageFromAgentProfile(task: any, enterpriseInfo: any, keywordsListStr: string): string {
   const systemPrompt: string = task.agent_system_prompt || '';
   const skillsContent: string = task.agent_skills_content || '';
 
@@ -131,7 +135,42 @@ function buildSystemMessageFromAgentProfile(task: any): string {
   if (skillsContent.trim()) {
     parts.push(skillsContent.trim());
   }
+
+  // 无条件附加「写作上下文」块，让专家角色也知道企业信息和关键词
+  const ctxLines: string[] = [];
+  const entText = formatEnterprise(enterpriseInfo);
+  if (entText) {
+    ctxLines.push('【企业信息】');
+    ctxLines.push(entText);
+  }
+  if (keywordsListStr) {
+    ctxLines.push('【关键词库（主题参考，请从中选择主题创作，不要逐一展开）】');
+    ctxLines.push(keywordsListStr);
+  }
+  if (ctxLines.length > 0) {
+    parts.push('【写作上下文】\n' + ctxLines.join('\n'));
+  }
+
   return parts.join('\n\n');
+}
+
+/**
+ * 构建「写作上下文」附加块（无条件注入到 article_prompt 末尾）
+ * 确保即使 article_prompt 模板里没有 {enterprise} {keyword} 占位符，
+ * AI 也能看到企业信息和关键词库
+ */
+function buildWritingContextBlock(enterpriseInfo: any, keywordsListStr: string): string {
+  const lines: string[] = [];
+  const entText = formatEnterprise(enterpriseInfo);
+  if (entText) {
+    lines.push('【企业信息】');
+    lines.push(entText);
+  }
+  if (keywordsListStr) {
+    lines.push('【关键词库（主题参考，请从中选择主题创作，不要逐一展开）】');
+    lines.push(keywordsListStr);
+  }
+  return lines.length > 0 ? '\n\n---\n【写作上下文】\n' + lines.join('\n') : '';
 }
 
 /**
@@ -237,14 +276,18 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
         // 组装 prompt（方向×类型上下文注入 article_prompt 开头）
         // v1.4+：keyword 参数传整个关键词列表作为主题参考
         const directionCtx = buildDirectionContextForTask(task);
-        const articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
+        // 1. 先做占位符替换（向后兼容用户在模板里写的 {enterprise} {keyword} 等）
+        let articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
           keyword: keywordsListStr || '',
           enterprise: enterpriseInfo,
           wordCount: task.target_word_count,
         });
+        // 2. 无条件附加「写作上下文」块（不依赖占位符，确保 AI 一定能看到企业信息和关键词）
+        articlePrompt += buildWritingContextBlock(enterpriseInfo, keywordsListStr);
 
         // 构建系统消息：若任务绑定了专家智能体(agent_profile)，注入其 systemPrompt + 技能内容
-        const systemContent = buildSystemMessageFromAgentProfile(task);
+        // v1.4+：系统消息也附加「写作上下文」块，让专家角色知道为谁写作
+        const systemContent = buildSystemMessageFromAgentProfile(task, enterpriseInfo, keywordsListStr);
         const messages: { role: 'system' | 'user'; content: string }[] = systemContent
           ? [
               { role: 'system', content: systemContent },
@@ -265,11 +308,12 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
 
         // 如果指令配置了 title_prompt，单独调用AI生成标题
         if (task.title_prompt && task.title_prompt.trim()) {
-          const titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
+          let titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
             keyword: keywordsListStr || '',
             enterprise: enterpriseInfo,
             wordCount: task.target_word_count,
           });
+          titlePrompt += buildWritingContextBlock(enterpriseInfo, keywordsListStr);
           const titleMessages: { role: 'system' | 'user'; content: string }[] = systemContent
             ? [
                 { role: 'system', content: systemContent },

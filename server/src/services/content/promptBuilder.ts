@@ -114,9 +114,9 @@ export function pickRandomDirection(categories: string[]): string {
 }
 
 /**
- * 组装企业基础信息文本（用于占位符替换）
+ * 组装企业基础信息文本（用于占位符替换和无条件上下文注入）
  */
-function formatEnterprise(info: EnterpriseInfo): string {
+export function formatEnterprise(info: EnterpriseInfo): string {
   const lines: string[] = [];
   if (info.company_full_name) lines.push(`企业全称：${info.company_full_name}`);
   if (info.company_short_name) lines.push(`简称：${info.company_short_name}`);
