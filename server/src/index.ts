@@ -21,6 +21,24 @@ import { startAeoScheduler } from './services/aeo/scheduler';
 
 dotenv.config();
 
+// ===== 内存日志缓冲（启动时立即接管 console，捕获所有日志）=====
+// 通过 GET /debug/memory-logs?filter=AI&lines=200 在线查看，无需上服务器
+const memoryLogs: string[] = [];
+const MAX_MEMORY_LOGS = 2000;
+const origConsoleLog = console.log;
+const origConsoleWarn = console.warn;
+const origConsoleError = console.error;
+function pushLog(level: string, args: any[]) {
+  try {
+    const line = `[${new Date().toISOString()}] [${level}] ${args.map(a => typeof a === 'string' ? a : (a instanceof Error ? a.message : JSON.stringify(a))).join(' ')}`;
+    memoryLogs.push(line);
+    if (memoryLogs.length > MAX_MEMORY_LOGS) memoryLogs.shift();
+  } catch { /* 避免日志缓冲自身报错导致进程崩溃 */ }
+}
+console.log = (...args: any[]) => { pushLog('log', args); origConsoleLog(...args); };
+console.warn = (...args: any[]) => { pushLog('warn', args); origConsoleWarn(...args); };
+console.error = (...args: any[]) => { pushLog('error', args); origConsoleError(...args); };
+
 const app = express();
 const PORT = parseInt(process.env.PORT || '3002');
 
@@ -231,6 +249,19 @@ app.use('/platform-auth', platformAuthRoutes);
 app.use('/real-collect/logs', workerLogRoutes);
 app.use('/aeo', aeoRoutes);
 app.use('/content', contentRoutes);
+
+// ===== 临时调试 API：查看 server 内存日志（无需上服务器）=====
+// 用法：GET /debug/memory-logs?lines=200&filter=AI
+//       GET /debug/memory-logs?lines=500  （查看全部最近 500 行）
+app.get('/debug/memory-logs', (req: any, res: any) => {
+  const filter = req.query.filter as string;
+  const lines = Math.min(Number(req.query.lines) || 200, memoryLogs.length);
+  let result = memoryLogs.slice(-lines);
+  if (filter) {
+    result = result.filter(l => l.toLowerCase().includes(filter.toLowerCase()));
+  }
+  res.json({ code: 200, data: { total: memoryLogs.length, returned: result.length, lines: result } });
+});
 
 // 错误处理
 app.use((err: any, req: any, res: any, next: any) => {
