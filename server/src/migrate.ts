@@ -1028,10 +1028,12 @@ export async function migrate() {
     `);
     await client.query('CREATE INDEX IF NOT EXISTS idx_article_embedding_knowledge ON article_embedding(knowledge_id)');
     // ivfflat 索引加速向量检索（余弦距离）
+    // lists=10：初期数据量小，10 足够（pgvector 推荐 lists = rows/1000，最少 10）
+    // 大 lists 会触发 IvfflatCheckMemoryUsage 错误（maintenance_work_mem 不足）
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_article_embedding_vector
       ON article_embedding USING ivfflat (embedding vector_cosine_ops)
-      WITH (lists = 100)
+      WITH (lists = 10)
     `);
 
     // 文章效果追踪表（L3 效果记忆层，关联 AEO 分析和关键词排名）
