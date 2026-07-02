@@ -389,18 +389,23 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
       }
 
       // 保存文章
+      // 字段长度保护（避免数据库 varchar 长度限制报错）
+      // article 表：title VARCHAR(255), core_keyword VARCHAR(128), target_platform VARCHAR(32), model_used VARCHAR(64)
+      const safeTitle = (title || '未命名文章').slice(0, 250);
+      const safeCoreKeyword = (kw?.value || '').slice(0, 120);
+      const safeModelUsed = (modelUsed || '').slice(0, 60);
       const articleId = await createArticle({
         user_id: userId,
         task_id: taskId,
         keyword_id: kw?.id ?? null,
-        core_keyword: kw?.value || '',
+        core_keyword: safeCoreKeyword,
         keyword_type: kw?.keyword_type || 0,
-        title,
+        title: safeTitle,
         content_html: contentHtml,
         entity_triples: enterpriseInfo.entity_triples,
         word_count: wordCount,
         status: 'generated',
-        model_used: modelUsed,
+        model_used: safeModelUsed,
       });
 
       // 异步生成 embedding（不阻塞主流程，失败不影响文章生成）
