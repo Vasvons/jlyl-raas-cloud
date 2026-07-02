@@ -332,14 +332,15 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
             ]
           : [{ role: 'user', content: articlePrompt }];
 
-        // 调AI生成文章正文（传 maxTokens 避免部分平台默认值过小导致截断）
+        // 调AI生成文章正文
+        // 注意：不传 maxTokens，让平台用默认值（豆包等平台对 max_tokens 有硬截断行为，
+        // 传 4096 会导致 finish_reason=length 被截断成几个字符）
         const articleResult = await chatCompletion({
           baseUrl: modelConfig.base_url,
           apiKey,
           model: modelConfig.model_name,
           messages,
           temperature: Number(modelConfig.temperature) || 0.7,
-          maxTokens: (modelConfig as any).max_tokens || 4096,
           timeout: 120000,
           webSearch: !!modelConfig.web_search,
         });
