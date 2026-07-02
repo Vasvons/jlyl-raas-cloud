@@ -3761,8 +3761,9 @@ export async function completeWritingTask(taskId: number, status: 'completed' | 
 }
 
 export async function deleteWritingTask(taskId: number): Promise<void> {
-  // 删除任务关联的 draft 状态文章，然后删除任务
-  await query('DELETE FROM article WHERE task_id = $1 AND status = $2', [taskId, 'draft']);
+  // 删除任务关联的所有文章（不限状态），然后删除任务
+  // article.task_id 外键引用 ai_writing_task.id（无 ON DELETE CASCADE），必须先删文章
+  await query('DELETE FROM article WHERE task_id = $1', [taskId]);
   await query('DELETE FROM ai_writing_task WHERE id = $1', [taskId]);
 }
 
