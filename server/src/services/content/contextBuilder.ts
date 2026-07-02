@@ -228,9 +228,8 @@ function buildLayer5RagSnippets(ragSnippets?: RagSnippet[]): string {
   return `【相关参考】基于向量检索的相关历史内容片段：\n${lines.join('\n')}`;
 }
 
-/** L6 输出规范层：强制输出格式、字数、排版、关键词密度 */
+/** L6 输出规范层：强制输出格式、排版、关键词密度（字数由写作指令控制） */
 function buildLayer6OutputSpec(task: any, keywords: string[]): string {
-  const wordCount = Number(task.target_word_count) || 1500;
   // 从关键词库中选出主关键词（前 5 个）用于关键词密度要求
   const mainKeywords = keywords.slice(0, 5);
 
@@ -244,12 +243,12 @@ function buildLayer6OutputSpec(task: any, keywords: string[]): string {
   lines.push(`正文HTML内容`);
   lines.push(`</body>`);
   lines.push(``);
-  lines.push(`二、字数限制（硬约束）`);
-  lines.push(`正文字数严格控制在 ${wordCount} 字以内（±10%），不要超过 ${Math.round(wordCount * 1.1)} 字。`);
+  lines.push(`二、字数要求`);
+  lines.push(`字数以写作指令中的要求为准（如果指令中指定了字数范围，严格遵守该范围）。`);
   lines.push(`字数统计基于纯文本（不含 HTML 标签），写完后自行核对字数。`);
   lines.push(``);
   lines.push(`三、排版规范（必须使用语义化 HTML 标签）`);
-  lines.push(`1. 用 <h2> 划分文章主要章节（3-5 个 H2，每个 H2 下 200-400 字）`);
+  lines.push(`1. 用 <h2> 划分文章主要章节（3-5 个 H2）`);
   lines.push(`2. 用 <h3> 划分子章节（可选，用于更细的内容分层）`);
   lines.push(`3. 用 <p> 标签包裹正文段落，每段 80-150 字，不要一整段超过 200 字`);
   lines.push(`4. 用 <ul><li> 或 <ol><li> 展示要点、特征、步骤（至少出现 1-2 次）`);
