@@ -120,14 +120,36 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
   const content = extractContent(data);
   const usage = data?.usage;
 
+  // 诊断：content 过短时记录完整响应结构，帮助定位 AI 返回异常
+  if (!content || content.trim().length < 50) {
+    const choice = data?.choices?.[0];
+    const msg = choice?.message || {};
+    console.warn('[AI] 响应内容过短，响应结构诊断:', JSON.stringify({
+      finish_reason: choice?.finish_reason,
+      content_length: msg.content ? String(msg.content).length : 0,
+      content_preview: msg.content ? String(msg.content).slice(0, 200) : null,
+      reasoning_content_length: msg.reasoning_content ? String(msg.reasoning_content).length : 0,
+      reasoning_content_preview: msg.reasoning_content ? String(msg.reasoning_content).slice(0, 200) : null,
+      has_function_call: !!msg.function_call,
+      has_tool_calls: !!msg.tool_calls?.length,
+      tool_calls_count: msg.tool_calls?.length || 0,
+      has_result: !!data.result,
+      result_preview: data.result ? String(data.result).slice(0, 200) : null,
+      model: data.model,
+    }));
+  }
+
   return { content, usage };
 }
 
 /**
  * 从 HTTP 响应中提取文本内容，兼容各平台的响应结构
  *
- * 文心一言开启联网搜索时，可能返回 function_call / tool_calls 形式而非 content，
- * 需要兜底从其他字段取值，避免 "空内容" 误判
+ * 兼容场景：
+ *  - 标准 OpenAI content
+ *  - 推理模型（DeepSeek-R1 等）：content 为空，真实内容在 reasoning_content
+ *  - 文心/千帆 result 字段
+ *  - 联网搜索 function_call / tool_calls 兜底
  */
 function extractContent(data: any): string {
   if (!data) return '';
@@ -135,17 +157,32 @@ function extractContent(data: any): string {
   if (!choice) return '';
   const msg = choice.message || {};
 
-  // 1. 标准 OpenAI 格式
-  if (msg.content) return String(msg.content);
-  // 2. 文心/千帆格式：result 字段
+  const rawContent = msg.content;
+  const reasoningContent = msg.reasoning_content || msg.reasoning;
+
+  // 1. content 有实质内容（非纯空白）时优先用
+  if (rawContent && String(rawContent).trim().length > 0) {
+    return String(rawContent);
+  }
+
+  // 2. 推理模型场景：content 为空/空白，真实内容在 reasoning_content
+  if (reasoningContent && String(reasoningContent).trim().length > 0) {
+    console.info('[AI] content 为空，使用 reasoning_content 字段（推理模型）');
+    return String(reasoningContent);
+  }
+
+  // 3. 文心/千帆格式：result 字段
   if (data.result) return String(data.result);
-  // 3. function_call / tool_calls 兜底（联网搜索时可能返回）
+
+  // 4. function_call / tool_calls 兜底（联网搜索时可能返回）
   if (msg.function_call?.arguments) return String(msg.function_call.arguments);
   if (msg.tool_calls?.length) {
     const first = msg.tool_calls[0];
     if (first?.function?.arguments) return String(first.function.arguments);
   }
-  return '';
+
+  // 5. 最后兜底：返回原始 content（可能是空白字符串，由调用方校验）
+  return rawContent ? String(rawContent) : '';
 }
 
 /**
