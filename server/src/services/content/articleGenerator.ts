@@ -362,6 +362,26 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         // 2. 附加 L4 主题参考层（userPromptSuffix）
         articlePrompt += writingCtx.userPromptSuffix;
 
+        // === 诊断日志：输出各层上下文生效情况（仅第一篇打印，避免刷屏）===
+        if (i === 0) {
+          console.log('[ArticleGen] 上下文诊断 === 任务', taskId, '===');
+          console.log('[ArticleGen][L0专家] systemPrompt 长度:', (task.agent_system_prompt || '').length, '预览:', (task.agent_system_prompt || '').slice(0, 100));
+          console.log('[ArticleGen][L0专家] skills 长度:', (task.agent_skills_content || '').length, '预览:', (task.agent_skills_content || '').slice(0, 100));
+          console.log('[ArticleGen][L1客户] company_full_name:', task.company_full_name, '/ industry:', task.industry, '/ intro_text 长度:', (task.intro_text || '').length);
+          console.log('[ArticleGen][L1客户] products_services 长度:', (task.products_services || '').length, '/ user_pain_points 长度:', (task.user_pain_points || '').length);
+          console.log('[ArticleGen][L1客户] entity_triples 数量:', Array.isArray(task.entity_triples) ? task.entity_triples.length : 0);
+          console.log('[ArticleGen][L2历史] recentArticles 数量:', recentArticles.length);
+          console.log('[ArticleGen][L3效果] performanceMemory 数量:', performanceMemory.length);
+          console.log('[ArticleGen][L3策略] strategyMemory 数量:', strategyMemory.length);
+          console.log('[ArticleGen][L4主题] keywords 数量:', keywords.length, '前5:', keywords.slice(0, 5).map((k: any) => k.value));
+          console.log('[ArticleGen][L5RAG] ragSnippets 数量:', ragSnippets.length);
+          console.log('[ArticleGen][写作指令] article_prompt 长度:', (task.article_prompt || '').length, '预览:', (task.article_prompt || '').slice(0, 200));
+          console.log('[ArticleGen][标题指令] title_prompt 长度:', (task.title_prompt || '').length, '预览:', (task.title_prompt || '').slice(0, 200));
+          console.log('[ArticleGen][创作方向] directionCtx 长度:', directionCtx.length, '内容:', directionCtx.slice(0, 200));
+          console.log('[ArticleGen][最终 systemMessage] 总长度:', writingCtx.systemMessage.length, '前300字符:', writingCtx.systemMessage.slice(0, 300));
+          console.log('[ArticleGen][最终 userPrompt] 总长度:', articlePrompt.length, '前300字符:', articlePrompt.slice(0, 300));
+        }
+
         // 3. 组装 messages（systemMessage 含 L0+L1+L2+L3+L5）
         const messages: { role: 'system' | 'user'; content: string }[] = writingCtx.systemMessage
           ? [
