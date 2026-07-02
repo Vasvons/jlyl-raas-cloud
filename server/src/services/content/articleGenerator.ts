@@ -67,6 +67,25 @@ function buildDirectionContextForTask(task: any): string {
 }
 
 /**
+ * 剥离 AI 响应中的思考过程
+ * 兼容：
+ *   1. <think>...</think> 标签（DeepSeek-R1 等推理模型）
+ *   2. <reasoning>...</reasoning> 标签
+ *   3. 裸思考文本（"好的，用户..."、"首先，我..." 等开头）
+ */
+function stripThinking(text: string): string {
+  let result = text;
+  // 1. 剥离 <think>...</think> 思考过程标签
+  result = result.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // 2. 剥离 <reasoning>...</reasoning> 思考过程标签
+  result = result.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+  // 3. 剥离裸思考过程（在第一个 HTML 标签或换行之前的思考文本）
+  //    特征：以"好的"、"首先"、"让我"、"我需要"、"用户"、"根据"、"分析"、"思考"等开头
+  result = result.replace(/^[\s\n]*((好的|首先|让我|我需要|用户|根据|分析|思考)[^<\n]{20,2000})/i, '');
+  return result.trim();
+}
+
+/**
  * 从AI响应中提取标题和正文HTML
  *
  * 约定AI返回格式：
@@ -74,18 +93,12 @@ function buildDirectionContextForTask(task: any): string {
  *   <body>正文HTML</body>
  *
  * 兼容处理：
- *   1. 推理模型（DeepSeek-R1 等）的思考过程：<think>...</think> 标签或裸思考文本
+ *   1. 推理模型（DeepSeek-R1 等）的思考过程
  *   2. 无 <title> 标签时，从 H1/H2 提取标题
- *   3. 思考过程剥离（"好的，用户..."、"首先，我..." 等开头）
  */
 function parseArticleContent(rawContent: string): { title: string; contentHtml: string; wordCount: number } {
-  let content = rawContent;
-
-  // 1. 剥离 <think>...</think> 思考过程标签（DeepSeek-R1 等推理模型）
-  content = content.replace(/<think>[\s\S]*?<\/think>/gi, '');
-  // 2. 剥离 <reasoning>...</reasoning> 思考过程标签
-  content = content.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
-  content = content.trim();
+  // 先剥离思考过程
+  const content = stripThinking(rawContent);
 
   let title = '';
   let contentHtml = '';
@@ -105,11 +118,7 @@ function parseArticleContent(rawContent: string): { title: string; contentHtml: 
     contentHtml = content.replace(/<title>[\s\S]*?<\/title>/i, '').trim();
   }
 
-  // 3. 剥离正文开头的裸思考过程（推理模型可能不加标签直接输出思考）
-  //    特征：以"好的，"、"首先，"、"让我"、"我需要"、"用户"等开头，且在第一个 HTML 标签之前
-  contentHtml = contentHtml.replace(/^[\s\n]*((好的|首先|让我|我需要|用户|根据|分析|思考)[^<]{20,500})\n/i, '');
-
-  // 4. 无标题时从 H1 提取
+  // 无标题时从 H1 提取
   if (!title) {
     const h1Match = contentHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
     if (h1Match) {
@@ -119,12 +128,12 @@ function parseArticleContent(rawContent: string): { title: string; contentHtml: 
     }
   }
 
-  // 5. 仍然无标题，取前 30 字符纯文本
+  // 仍然无标题，取前 30 字符纯文本
   if (!title) {
     title = contentHtml.replace(/<[^>]+>/g, '').slice(0, 30).trim() || '未命名文章';
   }
 
-  // 6. 标题长度保护（最长 80 字符，超过截取到第一个标点）
+  // 标题长度保护（最长 80 字符，超过截取到第一个标点）
   if (title.length > 80) {
     const punctPos = title.slice(0, 80).search(/[。，！？；,!?;]/);
     title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 80);
@@ -412,22 +421,36 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
               wordCount: task.target_word_count,
             });
             titlePrompt += writingCtx.userPromptSuffix;
-            const titleMessages: { role: 'system' | 'user'; content: string }[] = writingCtx.systemMessage
-              ? [
-                  { role: 'system', content: writingCtx.systemMessage },
-                  { role: 'user', content: titlePrompt },
-                ]
-              : [{ role: 'user', content: titlePrompt }];
+            // 标题生成用极简 system message，避免 L0-L5 上下文让 AI 陷入思考
+            const titleMessages: { role: 'system' | 'user'; content: string }[] = [
+              { role: 'system', content: '你是标题生成器。只输出标题文字本身，不要输出任何思考过程、分析、解释、引号、前缀。直接输出标题。' },
+              { role: 'user', content: titlePrompt },
+            ];
             const titleResult = await chatCompletion({
               baseUrl: modelConfig.base_url,
               apiKey,
               model: modelConfig.model_name,
               messages: titleMessages,
               temperature: Number(modelConfig.temperature) || 0.7,
-              maxTokens: 200,
+              // 不传 maxTokens，避免推理模型思考过程占满 token 后被截断
               timeout: 30000,
             });
-            title = titleResult.content.replace(/<[^>]+>/g, '').trim();
+            // 剥离思考过程 + HTML 标签 + 引号
+            title = stripThinking(titleResult.content)
+              .replace(/<[^>]+>/g, '')
+              .replace(/^["'"「『]+|["'"」』]+$/g, '')
+              .replace(/\n+/g, ' ')
+              .trim();
+            // 标题长度保护
+            if (title.length > 80) {
+              const punctPos = title.slice(0, 80).search(/[。，！？；,!?;]/);
+              title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 80);
+            }
+            // 如果剥离思考后标题为空或仍然像思考过程，降级使用正文标题
+            if (!title || title.length < 5 || /^(好的|首先|让我|我需要|用户|根据|分析|思考)/.test(title)) {
+              console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇标题生成结果异常，降级使用正文标题。原始返回前100字符:`, titleResult.content.slice(0, 100));
+              title = '';
+            }
           } catch (titleErr) {
             console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇标题生成失败，降级使用正文标题:`, extractApiErrorMessage(titleErr));
           }
