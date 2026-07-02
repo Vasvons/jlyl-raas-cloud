@@ -1,4 +1,4 @@
-import { chatCompletion } from './aiClient';
+import { chatCompletion, extractApiErrorMessage } from './aiClient';
 import { buildPrompt, buildDirectionContext, pickRandomContentType, pickRandomDirection, formatEnterprise } from './promptBuilder';
 import { buildWritingContext, stripHtml, type RecentArticleItem, type PerformanceMemoryItem, type StrategyMemoryItem, type RagSnippet } from './contextBuilder';
 import { retrieveRelevantArticles } from './ragRetrieval';
@@ -170,6 +170,21 @@ async function resolveModelConfig(task: any, userId: number, taskId: number): Pr
  * 支持双模式：expert（专家系统）/ coze（扣子工作流）
  */
 export async function executeWritingTask(taskId: number, userId: number): Promise<void> {
+  // 整个函数主体包在 try-catch 中，任何异常都标记任务失败，避免卡在 'processing'
+  try {
+    await executeWritingTaskInner(taskId, userId);
+  } catch (err: any) {
+    console.error(`[ArticleGen] 任务 ${taskId} 执行异常:`, err);
+    try {
+      await completeWritingTask(taskId, 'failed', `任务执行异常：${err?.message || err}`);
+    } catch (e) {
+      // completeWritingTask 自身失败时只能记录日志
+      console.error(`[ArticleGen] 任务 ${taskId} 标记失败状态时出错:`, e);
+    }
+  }
+}
+
+async function executeWritingTaskInner(taskId: number, userId: number): Promise<void> {
   const task = await getWritingTaskById(taskId);
   if (!task) {
     throw new Error(`Writing task ${taskId} not found`);
@@ -195,6 +210,11 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
     if (!resolved) return;
     modelConfig = resolved.modelConfig;
     apiKey = resolved.apiKey;
+    // 校验 base_url 非空（避免 axios "invalid URL" 错误）
+    if (!modelConfig.base_url) {
+      await completeWritingTask(taskId, 'failed', '模型配置的 base_url 为空，请到「后台配置 > 生文模型配置」中填写');
+      return;
+    }
   }
 
   // 企业知识库信息
@@ -312,41 +332,46 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
             ]
           : [{ role: 'user', content: articlePrompt }];
 
-        // 调AI生成文章正文
+        // 调AI生成文章正文（传 maxTokens 避免部分平台默认值过小导致截断）
         const articleResult = await chatCompletion({
           baseUrl: modelConfig.base_url,
           apiKey,
           model: modelConfig.model_name,
           messages,
           temperature: Number(modelConfig.temperature) || 0.7,
+          maxTokens: (modelConfig as any).max_tokens || 4096,
           timeout: 120000,
           webSearch: !!modelConfig.web_search,
         });
 
-        // 如果指令配置了 title_prompt，单独调用AI生成标题
+        // 如果指令配置了 title_prompt，单独调用AI生成标题（失败时降级使用正文解析的标题）
         if (task.title_prompt && task.title_prompt.trim()) {
-          let titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
-            keyword: keywordsListStr || '',
-            enterprise: enterpriseInfo,
-            wordCount: task.target_word_count,
-          });
-          titlePrompt += writingCtx.userPromptSuffix;
-          const titleMessages: { role: 'system' | 'user'; content: string }[] = writingCtx.systemMessage
-            ? [
-                { role: 'system', content: writingCtx.systemMessage },
-                { role: 'user', content: titlePrompt },
-              ]
-            : [{ role: 'user', content: titlePrompt }];
-          const titleResult = await chatCompletion({
-            baseUrl: modelConfig.base_url,
-            apiKey,
-            model: modelConfig.model_name,
-            messages: titleMessages,
-            temperature: Number(modelConfig.temperature) || 0.7,
-            maxTokens: 200,
-            timeout: 30000,
-          });
-          title = titleResult.content.replace(/<[^>]+>/g, '').trim();
+          try {
+            let titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
+              keyword: keywordsListStr || '',
+              enterprise: enterpriseInfo,
+              wordCount: task.target_word_count,
+            });
+            titlePrompt += writingCtx.userPromptSuffix;
+            const titleMessages: { role: 'system' | 'user'; content: string }[] = writingCtx.systemMessage
+              ? [
+                  { role: 'system', content: writingCtx.systemMessage },
+                  { role: 'user', content: titlePrompt },
+                ]
+              : [{ role: 'user', content: titlePrompt }];
+            const titleResult = await chatCompletion({
+              baseUrl: modelConfig.base_url,
+              apiKey,
+              model: modelConfig.model_name,
+              messages: titleMessages,
+              temperature: Number(modelConfig.temperature) || 0.7,
+              maxTokens: 200,
+              timeout: 30000,
+            });
+            title = titleResult.content.replace(/<[^>]+>/g, '').trim();
+          } catch (titleErr) {
+            console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇标题生成失败，降级使用正文标题:`, extractApiErrorMessage(titleErr));
+          }
         }
 
         const parsed = parseArticleContent(articleResult.content);
@@ -354,6 +379,10 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
         wordCount = parsed.wordCount;
         if (!title) {
           title = parsed.title;
+        }
+        // 空内容校验：AI 返回空内容时跳过保存，避免出现"空文章"
+        if (!contentHtml || contentHtml.replace(/<[^>]+>/g, '').trim().length < 50) {
+          throw new Error(`AI 返回内容为空或过短（${contentHtml.length} 字符），可能是内容审查触发或平台限流`);
         }
         modelUsed = modelConfig.model_name;
       }
@@ -380,12 +409,18 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
 
       successCount++;
       await updateWritingTaskProgress(taskId, 1, 0);
+      // 模型使用次数统计失败不阻塞文章生成
       if (modelConfig?.id) {
-        await incrementModelUsedCount(modelConfig.id);
+        await incrementModelUsedCount(modelConfig.id).catch(e => {
+          console.warn(`[ArticleGen] 模型使用次数统计失败:`, e?.message);
+        });
       }
     } catch (err: any) {
       failCount++;
-      errors.push(`第 ${i + 1} 篇生成失败：${err.message}`);
+      // 用 extractApiErrorMessage 提取各平台兼容的错误信息，避免只看到 axios 通用消息
+      const errMsg = extractApiErrorMessage(err) || err?.message || String(err);
+      errors.push(`第 ${i + 1} 篇生成失败：${errMsg}`);
+      console.error(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇生成失败:`, errMsg);
       await updateWritingTaskProgress(taskId, 0, 1);
     }
   }

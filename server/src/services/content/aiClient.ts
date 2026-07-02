@@ -152,7 +152,7 @@ function extractContent(data: any): string {
  * 从 axios 错误对象中提取各平台兼容的错误信息
  * 兼容 OpenAI / 通义 / 智谱 / 火山方舟 / Kimi / 文心 等不同的错误 JSON 结构
  */
-function extractApiErrorMessage(err: any): string {
+export function extractApiErrorMessage(err: any): string {
   const status = err?.response?.status;
   const data = err?.response?.data;
 
