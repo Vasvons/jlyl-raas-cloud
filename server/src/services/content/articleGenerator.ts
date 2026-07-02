@@ -437,14 +437,15 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
   const enterpriseInfo = buildEnterpriseInfo(task);
   const directionCtx = buildDirectionContextForTask(task);
 
-  const articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
+  let articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
     keyword: article.core_keyword,
     enterprise: enterpriseInfo,
     wordCount: task.target_word_count,
   });
+  articlePrompt += buildWritingContextBlock(enterpriseInfo, article.core_keyword || '');
 
   // 构建系统消息：若任务绑定了专家智能体，注入其 systemPrompt + 技能内容
-  const systemContent = buildSystemMessageFromAgentProfile(task);
+  const systemContent = buildSystemMessageFromAgentProfile(task, enterpriseInfo, article.core_keyword || '');
   const messages: { role: 'system' | 'user'; content: string }[] = systemContent
     ? [
         { role: 'system', content: systemContent },
