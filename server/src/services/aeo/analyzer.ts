@@ -12,6 +12,10 @@ import {
   getRoundRecordsForAeo,
   insertAeoFullReport,
   getDistillateKeywords,
+  getArticlesByUserAndTimeRange,
+  upsertArticlePerformance,
+  insertWritingStrategy,
+  getArticlePerformanceStatsByKnowledge,
 } from '../../repository';
 
 const LLM_API_URL = process.env.LLM_API_URL || '';
@@ -271,9 +275,205 @@ export async function generateAeoFullReport(
     });
 
     console.log(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮报告生成成功 reportId=${reportId} mentions=${brandMatchedCount} keywords=${totalKeywords}`);
+
+    // ===== 阶段3.2：填充 article_performance 效果数据 =====
+    // 将本轮 AEO 分析结果回写到本轮时间窗口内生成的文章效果表
+    // L3 效果记忆层的数据来源，供下一轮写作上下文使用
+    try {
+      await fillArticlePerformanceFromAeo(
+        userId, roundStartTime, roundEndTime, reportId,
+        analysis.visibilityScore, records
+      );
+    } catch (e: any) {
+      console.warn(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮填充文章效果失败:`, e.message);
+    }
+
+    // ===== 阶段3.3：飞轮策略生成 =====
+    // 基于本轮文章效果统计，用 LLM 生成创作策略，注入下一轮写作上下文
+    try {
+      await generateWritingStrategyFromRound(userId, roundNo, roundStartTime, roundEndTime);
+    } catch (e: any) {
+      console.warn(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮策略生成失败:`, e.message);
+    }
+
     return reportId;
   } catch (e: any) {
     console.error(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮报告生成失败:`, e.message);
     return null;
   }
+}
+
+/**
+ * 阶段3.2：将 AEO 分析结果回填到 article_performance 表
+ * - 查询本轮时间窗口内该用户生成的所有文章
+ * - 检查每篇文章的 core_keyword 是否在本轮品牌命中记录中出现
+ * - 根据可见度评分和品牌命中情况标记 good/poor/neutral
+ */
+async function fillArticlePerformanceFromAeo(
+  userId: string,
+  roundStartTime: Date,
+  roundEndTime: Date,
+  aeoReportId: number,
+  visibilityScore: number,
+  roundRecords: any[]
+): Promise<void> {
+  const articles = await getArticlesByUserAndTimeRange(userId, roundStartTime, roundEndTime);
+  if (articles.length === 0) {
+    console.log(`[AEO] 用户 ${userId} 本轮无已生成文章，跳过效果回填`);
+    return;
+  }
+
+  // 本轮品牌命中的关键词集合
+  const brandMatchedKeywords = new Set(
+    roundRecords
+      .filter(r => r.matched_brands && r.matched_brands.length > 0)
+      .map(r => r.keyword)
+  );
+
+  let filled = 0;
+  for (const article of articles) {
+    const brandMentioned = article.coreKeyword
+      ? brandMatchedKeywords.has(article.coreKeyword)
+      : false;
+
+    // 效果标记：品牌被提及=good，可见度>=60=neutral，否则=poor
+    let label = 'neutral';
+    if (brandMentioned) {
+      label = 'good';
+    } else if (visibilityScore < 60) {
+      label = 'poor';
+    }
+
+    await upsertArticlePerformance(article.id, article.knowledgeId, {
+      aeoReportId,
+      aeoScore: visibilityScore,
+      brandMentioned,
+      performanceLabel: label,
+      direction: article.direction || undefined,
+      contentType: article.contentType || undefined,
+    });
+    filled++;
+  }
+  console.log(`[AEO] 文章效果回填完成: ${filled}/${articles.length} 篇，品牌命中关键词 ${brandMatchedKeywords.size} 个`);
+}
+
+/**
+ * 阶段3.3：飞轮策略生成
+ * 基于本轮文章效果统计，用 LLM 总结创作策略，写入 writing_strategy 表
+ * 策略将在下一轮写作时作为 L3 策略记忆注入到 system message
+ */
+async function generateWritingStrategyFromRound(
+  userId: string,
+  roundNo: number,
+  roundStartTime: Date,
+  roundEndTime: Date
+): Promise<void> {
+  // 收集用户所有 knowledge_id 的效果统计
+  const articles = await getArticlesByUserAndTimeRange(userId, roundStartTime, roundEndTime);
+  if (articles.length === 0) return;
+
+  // 按 knowledge_id 分组
+  const knowledgeGroups = new Map<number, typeof articles>();
+  for (const a of articles) {
+    if (a.knowledgeId == null) continue;
+    if (!knowledgeGroups.has(a.knowledgeId)) {
+      knowledgeGroups.set(a.knowledgeId, [] as typeof articles);
+    }
+    knowledgeGroups.get(a.knowledgeId)!.push(a);
+  }
+
+  for (const [knowledgeId, _articles] of knowledgeGroups) {
+    try {
+      const stats = await getArticlePerformanceStatsByKnowledge(knowledgeId, roundStartTime, roundEndTime);
+      if (stats.total === 0) continue;
+
+      // 用 LLM 生成策略（无 LLM 配置时用规则兜底）
+      const strategyText = await callLlmForStrategy(stats, roundNo);
+      if (!strategyText) continue;
+
+      await insertWritingStrategy(
+        knowledgeId,
+        strategyText,
+        JSON.stringify({
+          total: stats.total,
+          goodCount: stats.goodCount,
+          poorCount: stats.poorCount,
+          goodExamples: stats.goodExamples.map(g => g.title),
+        }),
+        roundNo,
+        stats.goodCount,
+        stats.poorCount
+      );
+      console.log(`[AEO] 飞轮策略已生成: knowledgeId=${knowledgeId} round=${roundNo} good=${stats.goodCount} poor=${stats.poorCount}`);
+    } catch (e: any) {
+      console.warn(`[AEO] knowledgeId=${knowledgeId} 策略生成失败:`, e.message);
+    }
+  }
+}
+
+/**
+ * 调用 LLM 生成创作策略（飞轮反馈）
+ * 输入本轮文章效果统计，输出 2-3 条可执行的创作建议
+ */
+async function callLlmForStrategy(
+  stats: { total: number; goodCount: number; poorCount: number; neutralCount: number; goodExamples: any[] },
+  roundNo: number
+): Promise<string> {
+  // 无 LLM 配置时用规则生成
+  if (!LLM_API_URL || !LLM_API_KEY) {
+    return fallbackStrategy(stats);
+  }
+
+  const prompt = `你是内容营销策略专家。请基于以下本轮（第 ${roundNo} 轮）文章效果数据，生成 2-3 条可执行的自媒体创作策略建议。
+
+本轮数据：
+- 文章总数: ${stats.total}
+- 效果好(品牌被提及): ${stats.goodCount}
+- 效果差(可见度低): ${stats.poorCount}
+- 效果中性: ${stats.neutralCount}
+- 效果好的文章标题示例: ${stats.goodExamples.map(g => g.title).join(' | ') || '无'}
+
+请直接输出策略文本（不要 JSON、不要 markdown 代码块），每条策略一行，聚焦于「下一轮写作应该调整什么」。例如：多用某类标题、聚焦某方向、避免某类选题等。`;
+
+  try {
+    const resp = await axios.post(
+      LLM_API_URL,
+      {
+        model: LLM_MODEL,
+        messages: [
+          { role: 'system', content: '你是内容营销策略专家，输出简洁可执行的建议。' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.5,
+      },
+      {
+        headers: { 'Authorization': `Bearer ${LLM_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 30000,
+      }
+    );
+    const content = (resp.data as any)?.choices?.[0]?.message?.content || '';
+    return content.trim() || fallbackStrategy(stats);
+  } catch (e: any) {
+    console.warn('[AEO] 策略 LLM 调用失败，使用规则兜底:', e.message);
+    return fallbackStrategy(stats);
+  }
+}
+
+/**
+ * 无 LLM 时的规则兜底策略
+ */
+function fallbackStrategy(stats: { total: number; goodCount: number; poorCount: number; goodExamples: any[] }): string {
+  const lines: string[] = [];
+  if (stats.goodCount > 0) {
+    lines.push(`本轮有 ${stats.goodCount} 篇文章获得品牌提及，继续保持当前创作方向，参考表现好的标题模式。`);
+  } else {
+    lines.push(`本轮无文章获得品牌提及，下一轮尝试调整标题风格，强化品牌词在标题中的出现。`);
+  }
+  if (stats.poorCount > stats.total * 0.5) {
+    lines.push(`超过半数文章效果偏弱（可见度低于60），下一轮聚焦核心关键词，减少泛主题内容。`);
+  }
+  if (stats.goodExamples.length > 0) {
+    lines.push(`表现好的方向：${stats.goodExamples.map(g => g.direction || '未分类').join('、')}，下一轮优先选用。`);
+  }
+  return lines.join('\n') || '保持当前创作节奏，持续监控品牌可见度变化。';
 }

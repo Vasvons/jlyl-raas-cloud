@@ -1005,6 +1005,74 @@ export async function migrate() {
 
     console.log('[Migrate] 内容中枢相关表创建/验证完成');
 
+    // ============ v1.4: pgvector 向量检索 + 飞轮反馈闭环 ============
+
+    // 启用 pgvector 扩展（需要 pgvector/pgvector:pg15 镜像）
+    await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+
+    // ai_model_config 新增 use_for_embedding 字段（标记模型是否用于生成 embedding）
+    await client.query('ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_embedding BOOLEAN DEFAULT false');
+
+    // 文章 embedding 表（存储文章标题+摘要的向量表示，用于 RAG 检索）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS article_embedding (
+        id SERIAL PRIMARY KEY,
+        article_id INTEGER NOT NULL REFERENCES article(id) ON DELETE CASCADE,
+        knowledge_id INTEGER,
+        content_text TEXT NOT NULL,
+        embedding vector(1024),
+        model_name VARCHAR(64),
+        create_time TIMESTAMP DEFAULT NOW(),
+        UNIQUE(article_id)
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_article_embedding_knowledge ON article_embedding(knowledge_id)');
+    // ivfflat 索引加速向量检索（余弦距离）
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_article_embedding_vector
+      ON article_embedding USING ivfflat (embedding vector_cosine_ops)
+      WITH (lists = 100)
+    `);
+
+    // 文章效果追踪表（L3 效果记忆层，关联 AEO 分析和关键词排名）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS article_performance (
+        id SERIAL PRIMARY KEY,
+        article_id INTEGER NOT NULL REFERENCES article(id) ON DELETE CASCADE,
+        knowledge_id INTEGER,
+        keyword_rank_id BIGINT,
+        aeo_report_id BIGINT,
+        aeo_score NUMERIC(5,2),
+        brand_mentioned BOOLEAN DEFAULT false,
+        share_url TEXT,
+        performance_label VARCHAR(16) DEFAULT 'neutral',
+        direction VARCHAR(32),
+        content_type VARCHAR(32),
+        analyzed_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(article_id, keyword_rank_id)
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_article_perf_knowledge ON article_performance(knowledge_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_article_perf_label ON article_performance(knowledge_id, performance_label)');
+
+    // 创作策略表（L3 策略记忆层，飞轮每轮结束后自动生成）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS writing_strategy (
+        id SERIAL PRIMARY KEY,
+        knowledge_id INTEGER NOT NULL,
+        strategy TEXT NOT NULL,
+        evidence TEXT,
+        round_no INTEGER,
+        good_count INTEGER DEFAULT 0,
+        poor_count INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_writing_strategy_knowledge ON writing_strategy(knowledge_id, is_active, create_time DESC)');
+
+    console.log('[Migrate] v1.4 pgvector + 飞轮反馈表创建/验证完成');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

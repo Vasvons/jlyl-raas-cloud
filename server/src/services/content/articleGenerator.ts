@@ -1,5 +1,8 @@
 import { chatCompletion } from './aiClient';
 import { buildPrompt, buildDirectionContext, pickRandomContentType, pickRandomDirection, formatEnterprise } from './promptBuilder';
+import { buildWritingContext, stripHtml, type RecentArticleItem, type PerformanceMemoryItem, type StrategyMemoryItem, type RagSnippet } from './contextBuilder';
+import { retrieveRelevantArticles } from './ragRetrieval';
+import { generateAndSaveEmbedding } from './embeddingService';
 import {
   getWritingTaskById,
   getKeywordsByIds,
@@ -10,6 +13,9 @@ import {
   incrementModelUsedCount,
   getDefaultModelConfig,
   getAiModelConfigById,
+  getRecentArticlesByKnowledge,
+  getPerformanceMemory,
+  getStrategyMemory,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 
@@ -113,65 +119,12 @@ function buildEnterpriseInfo(task: any) {
 }
 
 /**
- * 从 agent_profile 构建系统消息（system message）
- * 把专家角色的 systemPrompt + 启用的技能内容拼成 system message
- * 用于注入到 chatCompletion 调用，让大模型"成为"这个专家
+ * v1.4+ 重构：以下两个函数已迁移到 contextBuilder.ts 的 buildWritingContext()
+ * - buildSystemMessageFromAgentProfile → L0 专家人格层 + L1 客户档案层
+ * - buildWritingContextBlock → L4 主题参考层（userPromptSuffix）
  *
- * v1.4+：无条件附加「写作上下文」块（企业信息+关键词库），确保专家角色知道为谁写作
- *
- * @param task 已联表查询 agent_profile 的任务对象（含 agent_system_prompt, agent_skills_content）
- * @param enterpriseInfo 企业知识库信息
- * @param keywordsListStr 关键词列表字符串（顿号连接）
- * @returns system message 字符串，若角色未配置且无上下文则返回空字符串
+ * contextBuilder 新增了 L2 历史记忆、L3 效果/策略记忆、L5 RAG 检索层
  */
-function buildSystemMessageFromAgentProfile(task: any, enterpriseInfo: any, keywordsListStr: string): string {
-  const systemPrompt: string = task.agent_system_prompt || '';
-  const skillsContent: string = task.agent_skills_content || '';
-
-  const parts: string[] = [];
-  if (systemPrompt.trim()) {
-    parts.push(systemPrompt.trim());
-  }
-  if (skillsContent.trim()) {
-    parts.push(skillsContent.trim());
-  }
-
-  // 无条件附加「写作上下文」块，让专家角色也知道企业信息和关键词
-  const ctxLines: string[] = [];
-  const entText = formatEnterprise(enterpriseInfo);
-  if (entText) {
-    ctxLines.push('【企业信息】');
-    ctxLines.push(entText);
-  }
-  if (keywordsListStr) {
-    ctxLines.push('【关键词库（主题参考，请从中选择主题创作，不要逐一展开）】');
-    ctxLines.push(keywordsListStr);
-  }
-  if (ctxLines.length > 0) {
-    parts.push('【写作上下文】\n' + ctxLines.join('\n'));
-  }
-
-  return parts.join('\n\n');
-}
-
-/**
- * 构建「写作上下文」附加块（无条件注入到 article_prompt 末尾）
- * 确保即使 article_prompt 模板里没有 {enterprise} {keyword} 占位符，
- * AI 也能看到企业信息和关键词库
- */
-function buildWritingContextBlock(enterpriseInfo: any, keywordsListStr: string): string {
-  const lines: string[] = [];
-  const entText = formatEnterprise(enterpriseInfo);
-  if (entText) {
-    lines.push('【企业信息】');
-    lines.push(entText);
-  }
-  if (keywordsListStr) {
-    lines.push('【关键词库（主题参考，请从中选择主题创作，不要逐一展开）】');
-    lines.push(keywordsListStr);
-  }
-  return lines.length > 0 ? '\n\n---\n【写作上下文】\n' + lines.join('\n') : '';
-}
 
 /**
  * 解析模型配置并解密 API-KEY
@@ -247,13 +200,63 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
   // 企业知识库信息
   const enterpriseInfo = buildEnterpriseInfo(task);
 
+  // v1.4+：构建分层写作上下文（运行时聚合层）
+  // L2 历史记忆：查询该客户最近 20 篇已生成文章，避免重复选题
+  let recentArticles: RecentArticleItem[] = [];
+  if (task.knowledge_id) {
+    try {
+      const rawArticles = await getRecentArticlesByKnowledge(task.knowledge_id, 20);
+      recentArticles = rawArticles.map(a => ({
+        title: a.title,
+        summary: stripHtml((a as any).contentHtml || '', 200),
+        createdAt: a.createdAt,
+        coreKeyword: a.coreKeyword || undefined,
+      }));
+    } catch (err) {
+      console.warn('[ArticleGen] 查询 L2 历史记忆失败:', err);
+    }
+  }
+
+  // L3 效果记忆：收录好的文章模式
+  let performanceMemory: PerformanceMemoryItem[] = [];
+  if (task.knowledge_id) {
+    try {
+      const rawPerf = await getPerformanceMemory(task.knowledge_id, 10);
+      performanceMemory = rawPerf.map((p: any) => ({
+        articleTitle: p.article_title,
+        performanceLabel: p.performance_label,
+        keywordRankChange: p.keyword_rank_change,
+        aeoScore: p.aeo_score ? parseFloat(p.aeo_score) : undefined,
+        direction: p.direction,
+        contentType: p.content_type,
+      }));
+    } catch (err) {
+      console.warn('[ArticleGen] 查询 L3 效果记忆失败:', err);
+    }
+  }
+
+  // L3 策略记忆：飞轮总结的创作策略
+  let strategyMemory: StrategyMemoryItem[] = [];
+  if (task.knowledge_id) {
+    try {
+      const rawStrategy = await getStrategyMemory(task.knowledge_id, 3);
+      strategyMemory = rawStrategy.map((s: any) => ({
+        strategy: s.strategy,
+        evidence: s.evidence || '',
+        generatedAt: s.generated_at,
+      }));
+    } catch (err) {
+      console.warn('[ArticleGen] 查询 L3 策略记忆失败:', err);
+    }
+  }
+
   let successCount = 0;
   let failCount = 0;
   const errors: string[] = [];
 
   // v1.4+：按用户设定的 total_count 循环生成，不再按关键词一对一
   // 关键词列表作为整体主题参考注入到每篇文章的 prompt 中
-  // AI 根据 指令 + 知识库 + 专家 + 关键词列表 自行决定每篇文章的主题
+  // AI 根据 指令 + 知识库 + 专家 + 关键词列表 + 历史记忆 + RAG 自行决定每篇文章的主题
   for (let i = 0; i < totalCount; i++) {
     try {
       let title = '';
@@ -273,29 +276,43 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
         modelUsed = 'coze';
       } else {
         // 专家系统模式
-        // 组装 prompt（方向×类型上下文注入 article_prompt 开头）
-        // v1.4+：keyword 参数传整个关键词列表作为主题参考
         const directionCtx = buildDirectionContextForTask(task);
+
+        // L5 RAG 检索：用当前选题关键词 + 创作方向检索相关历史文章
+        let ragSnippets: RagSnippet[] = [];
+        if (task.knowledge_id) {
+          const queryText = `${kw?.value || keywordsListStr} ${directionCtx}`;
+          ragSnippets = await retrieveRelevantArticles(task.knowledge_id, queryText, 5);
+        }
+
+        // 构建分层写作上下文（L0专家 + L1客户档案 + L2历史 + L3效果/策略 + L5 RAG）
+        const writingCtx = buildWritingContext({
+          task,
+          keywords: keywords.map((k: any) => k.value),
+          recentArticles,
+          performanceMemory,
+          strategyMemory,
+          ragSnippets,
+        });
+
         // 1. 先做占位符替换（向后兼容用户在模板里写的 {enterprise} {keyword} 等）
         let articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
           keyword: keywordsListStr || '',
           enterprise: enterpriseInfo,
           wordCount: task.target_word_count,
         });
-        // 2. 无条件附加「写作上下文」块（不依赖占位符，确保 AI 一定能看到企业信息和关键词）
-        articlePrompt += buildWritingContextBlock(enterpriseInfo, keywordsListStr);
+        // 2. 附加 L4 主题参考层（userPromptSuffix）
+        articlePrompt += writingCtx.userPromptSuffix;
 
-        // 构建系统消息：若任务绑定了专家智能体(agent_profile)，注入其 systemPrompt + 技能内容
-        // v1.4+：系统消息也附加「写作上下文」块，让专家角色知道为谁写作
-        const systemContent = buildSystemMessageFromAgentProfile(task, enterpriseInfo, keywordsListStr);
-        const messages: { role: 'system' | 'user'; content: string }[] = systemContent
+        // 3. 组装 messages（systemMessage 含 L0+L1+L2+L3+L5）
+        const messages: { role: 'system' | 'user'; content: string }[] = writingCtx.systemMessage
           ? [
-              { role: 'system', content: systemContent },
+              { role: 'system', content: writingCtx.systemMessage },
               { role: 'user', content: articlePrompt },
             ]
           : [{ role: 'user', content: articlePrompt }];
 
-        // 调AI生成文章正文（不限制 max_tokens，让大模型用默认值输出完整内容）
+        // 调AI生成文章正文
         const articleResult = await chatCompletion({
           baseUrl: modelConfig.base_url,
           apiKey,
@@ -313,10 +330,10 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
             enterprise: enterpriseInfo,
             wordCount: task.target_word_count,
           });
-          titlePrompt += buildWritingContextBlock(enterpriseInfo, keywordsListStr);
-          const titleMessages: { role: 'system' | 'user'; content: string }[] = systemContent
+          titlePrompt += writingCtx.userPromptSuffix;
+          const titleMessages: { role: 'system' | 'user'; content: string }[] = writingCtx.systemMessage
             ? [
-                { role: 'system', content: systemContent },
+                { role: 'system', content: writingCtx.systemMessage },
                 { role: 'user', content: titlePrompt },
               ]
             : [{ role: 'user', content: titlePrompt }];
@@ -335,7 +352,6 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
         const parsed = parseArticleContent(articleResult.content);
         contentHtml = parsed.contentHtml;
         wordCount = parsed.wordCount;
-        // 如果没有单独的 title_prompt，则从文章内容中解析标题
         if (!title) {
           title = parsed.title;
         }
@@ -343,7 +359,7 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
       }
 
       // 保存文章
-      await createArticle({
+      const articleId = await createArticle({
         user_id: userId,
         task_id: taskId,
         keyword_id: kw?.id ?? null,
@@ -355,6 +371,11 @@ export async function executeWritingTask(taskId: number, userId: number): Promis
         word_count: wordCount,
         status: 'generated',
         model_used: modelUsed,
+      });
+
+      // 异步生成 embedding（不阻塞主流程，失败不影响文章生成）
+      generateAndSaveEmbedding(articleId, task.knowledge_id || null, title, contentHtml).catch(err => {
+        console.warn(`[ArticleGen] 文章 ${articleId} embedding 生成失败:`, err?.message);
       });
 
       successCount++;
@@ -437,15 +458,47 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
   const enterpriseInfo = buildEnterpriseInfo(task);
   const directionCtx = buildDirectionContextForTask(task);
 
+  // v1.4+：使用 contextBuilder 构建分层上下文
+  let recentArticles: RecentArticleItem[] = [];
+  let performanceMemory: PerformanceMemoryItem[] = [];
+  let strategyMemory: StrategyMemoryItem[] = [];
+  if (task.knowledge_id) {
+    try {
+      const rawArticles = await getRecentArticlesByKnowledge(task.knowledge_id, 20);
+      recentArticles = rawArticles.map(a => ({
+        title: a.title,
+        summary: stripHtml((a as any).contentHtml || '', 200),
+        createdAt: a.createdAt,
+        coreKeyword: a.coreKeyword || undefined,
+      }));
+    } catch { /* 降级 */ }
+    try { performanceMemory = (await getPerformanceMemory(task.knowledge_id, 10)).map((p: any) => ({ articleTitle: p.article_title, performanceLabel: p.performance_label, direction: p.direction, contentType: p.content_type })); } catch { /* 降级 */ }
+    try { strategyMemory = (await getStrategyMemory(task.knowledge_id, 3)).map((s: any) => ({ strategy: s.strategy, evidence: s.evidence || '', generatedAt: s.generated_at })); } catch { /* 降级 */ }
+  }
+
+  // L5 RAG 检索
+  let ragSnippets: RagSnippet[] = [];
+  if (task.knowledge_id) {
+    ragSnippets = await retrieveRelevantArticles(task.knowledge_id, `${article.core_keyword} ${directionCtx}`, 5);
+  }
+
+  const writingCtx = buildWritingContext({
+    task,
+    keywords: article.core_keyword ? [article.core_keyword] : [],
+    recentArticles,
+    performanceMemory,
+    strategyMemory,
+    ragSnippets,
+  });
+
   let articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
     keyword: article.core_keyword,
     enterprise: enterpriseInfo,
     wordCount: task.target_word_count,
   });
-  articlePrompt += buildWritingContextBlock(enterpriseInfo, article.core_keyword || '');
+  articlePrompt += writingCtx.userPromptSuffix;
 
-  // 构建系统消息：若任务绑定了专家智能体，注入其 systemPrompt + 技能内容
-  const systemContent = buildSystemMessageFromAgentProfile(task, enterpriseInfo, article.core_keyword || '');
+  const systemContent = writingCtx.systemMessage;
   const messages: { role: 'system' | 'user'; content: string }[] = systemContent
     ? [
         { role: 'system', content: systemContent },

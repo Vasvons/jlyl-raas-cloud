@@ -1,0 +1,281 @@
+/**
+ * 写作上下文构建器（运行时聚合层）
+ *
+ * 从现有表实时聚合五层上下文，分层组织成 system message + user prompt 后缀：
+ *   L0 专家人格层：agent_profile.systemPrompt + skills（角色设定）
+ *   L1 客户档案层：enterprise_knowledge 全字段（为谁写）
+ *   L2 历史记忆层：article 表最近 N 篇标题+摘要（避免重复选题）
+ *   L3 效果记忆层：article_performance 关联 keyword_search_rank（收录好的文章模式）— 阶段3
+ *   L4 主题参考层：关键词库列表（写什么）
+ *   L5 RAG 检索层：向量检索 top-K 相关历史片段 — 阶段2
+ *
+ * 设计原则：
+ *   - 纯函数模块，不直接访问数据库，数据由调用方通过 repository 查询后传入
+ *   - 无条件注入，不依赖占位符（解决用户不写 {enterprise} 导致信息丢失的问题）
+ *   - 分层组织，各层独立可选，缺失的层自动跳过
+ */
+
+import { formatEnterprise, EnterpriseInfo, buildDirectionContext } from './promptBuilder';
+
+// ---------- 类型定义 ----------
+
+/** L2 历史记忆条目 */
+export interface RecentArticleItem {
+  title: string;
+  summary: string;       // 前 200 字纯文本
+  createdAt: string;     // YYYY-MM-DD
+  coreKeyword?: string;  // 文章的核心关键词
+}
+
+/** L3 效果记忆条目（阶段3） */
+export interface PerformanceMemoryItem {
+  articleTitle: string;
+  performanceLabel: 'good' | 'neutral' | 'poor';
+  keywordRankChange?: number;  // 关键词排名变化（正数=提升）
+  aeoScore?: number;
+  direction?: string;          // 创作方向
+  contentType?: string;        // 文案类型
+}
+
+/** L3 策略记忆条目（阶段3） */
+export interface StrategyMemoryItem {
+  strategy: string;     // 策略建议文本
+  evidence: string;     // 策略依据
+  generatedAt: string;  // 生成时间
+}
+
+/** L5 RAG 检索片段（阶段2） */
+export interface RagSnippet {
+  source: 'article' | 'knowledge' | 'triple';
+  title: string;
+  content: string;   // 摘要文本
+  score: number;     // 相似度分数（0-1）
+  articleId?: number;
+}
+
+/** buildWritingContext 输入 */
+export interface WritingContextInput {
+  /** 已联表查询的 task 对象（含 instruction/knowledge/agent_profile 字段） */
+  task: any;
+  /** 关键词列表 */
+  keywords: string[];
+  /** L2 历史记忆：最近已生成的文章列表 */
+  recentArticles?: RecentArticleItem[];
+  /** L3 效果记忆（阶段3，可选） */
+  performanceMemory?: PerformanceMemoryItem[];
+  /** L3 策略记忆（阶段3，可选） */
+  strategyMemory?: StrategyMemoryItem[];
+  /** L5 RAG 检索片段（阶段2，可选） */
+  ragSnippets?: RagSnippet[];
+}
+
+/** buildWritingContext 输出 */
+export interface WritingContext {
+  /** 完整的 system message（含专家人格+客户档案+历史记忆+策略+效果） */
+  systemMessage: string;
+  /** 附加到 user prompt 末尾的上下文块 */
+  userPromptSuffix: string;
+}
+
+// ---------- 辅助函数 ----------
+
+/** 从 HTML 中提取纯文本，截取前 N 字符作为摘要 */
+export function stripHtml(html: string, maxLen: number = 200): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+}
+
+/** 从 task 对象构建 EnterpriseInfo */
+function buildEnterpriseInfo(task: any): EnterpriseInfo {
+  return {
+    company_full_name: task.company_full_name || '',
+    company_short_name: task.company_short_name,
+    city: task.city,
+    industry: task.industry,
+    business_scope: task.business_scope,
+    intro_text: task.intro_text,
+    cases_text: task.cases_text,
+    entity_triples: task.entity_triples || [],
+    products_services: task.products_services,
+    product_features: task.product_features,
+    user_pain_points: task.user_pain_points,
+    trust_endorsement: task.trust_endorsement,
+    other_info: task.other_info,
+  };
+}
+
+/** 格式化实体三元组 */
+function formatTriples(triples: Array<{ subject: string; relation: string; object: string }>): string {
+  if (!triples || triples.length === 0) return '';
+  return triples.map(t => `- ${t.subject} ${t.relation} ${t.object}`).join('\n');
+}
+
+/** 格式化关键词列表 */
+function formatKeywords(keywords: string[]): string {
+  if (!keywords || keywords.length === 0) return '';
+  return keywords.join('、');
+}
+
+// ---------- 各层构建函数 ----------
+
+/** L0 专家人格层：agent_profile 的 systemPrompt + skills */
+function buildLayer0ExpertPersona(task: any): string {
+  const systemPrompt: string = task.agent_system_prompt || '';
+  const skillsContent: string = task.agent_skills_content || '';
+  const parts: string[] = [];
+  if (systemPrompt.trim()) {
+    parts.push(systemPrompt.trim());
+  }
+  if (skillsContent.trim()) {
+    parts.push(`【已启用技能】\n${skillsContent.trim()}`);
+  }
+  return parts.join('\n\n');
+}
+
+/** L1 客户档案层：enterprise_knowledge 全字段 */
+function buildLayer1CustomerProfile(task: any): string {
+  const enterpriseInfo = buildEnterpriseInfo(task);
+  const entText = formatEnterprise(enterpriseInfo);
+  if (!entText) return '';
+
+  const lines: string[] = [entText];
+
+  // 实体三元组
+  const triplesText = formatTriples(enterpriseInfo.entity_triples || []);
+  if (triplesText) {
+    lines.push(`实体三元组：\n${triplesText}`);
+  }
+
+  return `【客户档案】\n你正在为以下客户写作，请确保内容与客户的产品、行业、痛点紧密相关：\n${lines.join('\n')}`;
+}
+
+/** L2 历史记忆层：最近已生成的文章（避免重复选题） */
+function buildLayer2RecentArticles(recentArticles?: RecentArticleItem[]): string {
+  if (!recentArticles || recentArticles.length === 0) return '';
+
+  const lines = recentArticles.map((a, i) => {
+    const kw = a.coreKeyword ? `[${a.coreKeyword}] ` : '';
+    return `${i + 1}. ${kw}${a.title}（${a.createdAt}）`;
+  });
+
+  return `【历史记忆】以下是最近已生成的文章，请避免重复选题和相似角度：\n${lines.join('\n')}`;
+}
+
+/** L3 效果记忆层：收录好的文章模式（阶段3） */
+function buildLayer3Performance(performanceMemory?: PerformanceMemoryItem[]): string {
+  if (!performanceMemory || performanceMemory.length === 0) return '';
+
+  const goodItems = performanceMemory.filter(p => p.performanceLabel === 'good');
+  const poorItems = performanceMemory.filter(p => p.performanceLabel === 'poor');
+
+  const lines: string[] = [];
+  if (goodItems.length > 0) {
+    lines.push('收录效果好的文章特征（可借鉴）：');
+    for (const item of goodItems.slice(0, 5)) {
+      const dir = item.direction ? `[${item.direction}] ` : '';
+      const rank = item.keywordRankChange !== undefined ? `（排名+${item.keywordRankChange}）` : '';
+      lines.push(`  ✓ ${dir}${item.articleTitle}${rank}`);
+    }
+  }
+  if (poorItems.length > 0) {
+    lines.push('收录效果差的文章特征（需避免）：');
+    for (const item of poorItems.slice(0, 3)) {
+      const dir = item.direction ? `[${item.direction}] ` : '';
+      lines.push(`  ✗ ${dir}${item.articleTitle}`);
+    }
+  }
+
+  return lines.length > 0 ? `【效果记忆】基于 AEO 分析的收录效果反馈：\n${lines.join('\n')}` : '';
+}
+
+/** L3 策略记忆层：飞轮总结的创作策略（阶段3） */
+function buildLayer3Strategy(strategyMemory?: StrategyMemoryItem[]): string {
+  if (!strategyMemory || strategyMemory.length === 0) return '';
+
+  const lines = strategyMemory.slice(0, 3).map((s, i) => {
+    return `${i + 1}. ${s.strategy}\n   依据：${s.evidence}（${s.generatedAt}）`;
+  });
+
+  return `【飞轮策略】基于近期收录数据自动总结的创作策略建议：\n${lines.join('\n')}`;
+}
+
+/** L4 主题参考层：关键词库列表 */
+function buildLayer4TopicReference(keywords: string[]): string {
+  const kwText = formatKeywords(keywords);
+  if (!kwText) return '';
+
+  return `【主题参考】客户关键词库（请从中选择主题创作，不要逐一展开，也不要一个关键词写一篇）：\n${kwText}`;
+}
+
+/** L5 RAG 检索层：向量检索相关历史片段（阶段2） */
+function buildLayer5RagSnippets(ragSnippets?: RagSnippet[]): string {
+  if (!ragSnippets || ragSnippets.length === 0) return '';
+
+  const lines = ragSnippets.map((s, i) => {
+    const sourceLabel = s.source === 'article' ? '历史文章' : s.source === 'knowledge' ? '知识库' : '三元组';
+    return `${i + 1}. [${sourceLabel}] ${s.title}\n   ${s.content}`;
+  });
+
+  return `【相关参考】基于向量检索的相关历史内容片段：\n${lines.join('\n')}`;
+}
+
+// ---------- 核心函数 ----------
+
+/**
+ * 构建完整写作上下文（运行时聚合层）
+ *
+ * @param input 写作上下文输入
+ * @returns { systemMessage, userPromptSuffix }
+ *
+ * systemMessage 包含 L0(专家) + L1(客户档案) + L2(历史) + L3(效果/策略) + L5(RAG)
+ * userPromptSuffix 包含 L4(主题参考) — 因为主题参考与具体任务指令更相关
+ *
+ * 调用方使用方式：
+ *   const ctx = await buildWritingContext({ task, keywords, recentArticles });
+ *   const messages = ctx.systemMessage
+ *     ? [{ role: 'system', content: ctx.systemMessage }, { role: 'user', content: articlePrompt + ctx.userPromptSuffix }]
+ *     : [{ role: 'user', content: articlePrompt + ctx.userPromptSuffix }];
+ */
+export function buildWritingContext(input: WritingContextInput): WritingContext {
+  const { task, keywords, recentArticles, performanceMemory, strategyMemory, ragSnippets } = input;
+
+  // 构建 system message：L0 + L1 + L2 + L3 + L5
+  const systemParts: string[] = [];
+
+  const l0 = buildLayer0ExpertPersona(task);
+  if (l0) systemParts.push(l0);
+
+  const l1 = buildLayer1CustomerProfile(task);
+  if (l1) systemParts.push(l1);
+
+  const l2 = buildLayer2RecentArticles(recentArticles);
+  if (l2) systemParts.push(l2);
+
+  const l3Perf = buildLayer3Performance(performanceMemory);
+  if (l3Perf) systemParts.push(l3Perf);
+
+  const l3Strategy = buildLayer3Strategy(strategyMemory);
+  if (l3Strategy) systemParts.push(l3Strategy);
+
+  const l5 = buildLayer5RagSnippets(ragSnippets);
+  if (l5) systemParts.push(l5);
+
+  // 构建 user prompt 后缀：L4 主题参考
+  const suffixParts: string[] = [];
+  const l4 = buildLayer4TopicReference(keywords);
+  if (l4) suffixParts.push(l4);
+
+  return {
+    systemMessage: systemParts.join('\n\n---\n'),
+    userPromptSuffix: suffixParts.length > 0 ? '\n\n---\n' + suffixParts.join('\n\n') : '',
+  };
+}

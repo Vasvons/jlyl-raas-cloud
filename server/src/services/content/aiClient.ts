@@ -201,3 +201,48 @@ export async function testModelConnection(params: ChatCompletionParams): Promise
     return { success: false, message: extractApiErrorMessage(err) };
   }
 }
+
+// ---------- Embedding 接口 ----------
+
+export interface EmbeddingParams {
+  /** embedding 接口完整 URL（如 https://open.bigmodel.cn/api/paas/v4/embeddings） */
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  input: string;
+  timeout?: number;
+}
+
+export interface EmbeddingResult {
+  embedding: number[];
+  usage?: { prompt_tokens?: number; total_tokens?: number };
+}
+
+/**
+ * 调用 OpenAI 兼容协议的 embeddings 接口
+ * 支持智谱/通义/OpenAI 等提供 embedding 的平台
+ *
+ * 注意：DeepSeek 不提供 embedding 接口，需配置其他平台的模型
+ */
+export async function embeddings(params: EmbeddingParams): Promise<EmbeddingResult> {
+  const body = {
+    model: params.model,
+    input: params.input,
+  };
+
+  const response = await axios.post(params.baseUrl, body, {
+    headers: {
+      'Authorization': `Bearer ${params.apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: params.timeout ?? 30000,
+  });
+
+  const data = response.data as any;
+  const embedding = data?.data?.[0]?.embedding;
+  if (!Array.isArray(embedding)) {
+    throw new Error('Embedding 接口返回格式异常：缺少 data[0].embedding');
+  }
+
+  return { embedding, usage: data?.usage };
+}

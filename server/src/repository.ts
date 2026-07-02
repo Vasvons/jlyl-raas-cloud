@@ -3769,6 +3769,281 @@ export async function deleteWritingTask(taskId: number): Promise<void> {
 
 // ============ 内容中枢：文章 ============
 
+/**
+ * 查询某客户最近生成的文章（L2 历史记忆）
+ * 通过 ai_writing_task.knowledge_id 关联，返回最近 N 篇标题+摘要+核心关键词
+ *
+ * @param knowledgeId 企业知识库 ID
+ * @param limit 返回条数，默认 20
+ * @returns RecentArticleItem 数组（title/summary/createdAt/coreKeyword）
+ */
+export async function getRecentArticlesByKnowledge(
+  knowledgeId: number,
+  limit: number = 20
+): Promise<Array<{ title: string; summary: string; createdAt: string; coreKeyword: string | null }>> {
+  const result = await query(
+    `SELECT a.title,
+            a.content_html,
+            a.core_keyword,
+            to_char(a.create_time AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') as created_at
+     FROM article a
+     JOIN ai_writing_task t ON a.task_id = t.id
+     WHERE t.knowledge_id = $1
+       AND a.status IN ('generated', 'published')
+     ORDER BY a.create_time DESC
+     LIMIT $2`,
+    [knowledgeId, limit]
+  );
+  return result.rows.map((r: any) => ({
+    title: r.title,
+    summary: '', // 摘要由 contextBuilder 的 stripHtml 生成，这里先留空
+    contentHtml: r.content_html, // 临时字段，contextBuilder 会处理
+    createdAt: r.created_at,
+    coreKeyword: r.core_keyword,
+  }));
+}
+
+/**
+ * 按用户和时间范围查询文章（飞轮反馈用，AEO 分析后填充 article_performance）
+ * 返回文章 id、knowledge_id、core_keyword、direction、content_type、create_time
+ */
+export async function getArticlesByUserAndTimeRange(
+  userId: string,
+  startTime: Date,
+  endTime: Date
+): Promise<Array<{
+  id: number;
+  knowledgeId: number | null;
+  coreKeyword: string;
+  direction: string | null;
+  contentType: string | null;
+  createTime: Date;
+}>> {
+  const result = await query(
+    `SELECT a.id, t.knowledge_id, a.core_keyword,
+            t.instruction_category as direction,
+            t.content_types as content_type,
+            a.create_time
+     FROM article a
+     JOIN ai_writing_task t ON a.task_id = t.id
+     WHERE t.user_id = $1
+       AND a.status IN ('generated', 'published')
+       AND a.create_time >= $2 AND a.create_time <= $3
+     ORDER BY a.create_time DESC`,
+    [userId, startTime, endTime]
+  );
+  return result.rows.map((r: any) => ({
+    id: r.id,
+    knowledgeId: r.knowledge_id,
+    coreKeyword: r.core_keyword || '',
+    direction: r.direction,
+    contentType: r.content_type,
+    createTime: r.create_time,
+  }));
+}
+
+/**
+ * 查询某客户（knowledge_id）在指定时间范围内的文章效果统计
+ * 用于飞轮策略生成（阶段3.3）
+ */
+export async function getArticlePerformanceStatsByKnowledge(
+  knowledgeId: number,
+  startTime: Date,
+  endTime: Date
+): Promise<{
+  total: number;
+  goodCount: number;
+  poorCount: number;
+  neutralCount: number;
+  goodExamples: Array<{ title: string; direction: string | null; contentType: string | null; aeoScore: number | null }>;
+}> {
+  const result = await query(
+    `SELECT ap.performance_label, ap.aeo_score, ap.direction, ap.content_type, a.title
+     FROM article_performance ap
+     JOIN article a ON ap.article_id = a.id
+     JOIN ai_writing_task t ON a.task_id = t.id
+     WHERE t.knowledge_id = $1
+       AND ap.analyzed_at >= $2 AND ap.analyzed_at <= $3`,
+    [knowledgeId, startTime, endTime]
+  );
+  const rows = result.rows;
+  const good = rows.filter((r: any) => r.performance_label === 'good');
+  const poor = rows.filter((r: any) => r.performance_label === 'poor');
+  const neutral = rows.filter((r: any) => r.performance_label === 'neutral');
+  return {
+    total: rows.length,
+    goodCount: good.length,
+    poorCount: poor.length,
+    neutralCount: neutral.length,
+    goodExamples: good.slice(0, 5).map((r: any) => ({
+      title: r.title,
+      direction: r.direction,
+      contentType: r.content_type,
+      aeoScore: r.aeo_score ? parseFloat(r.aeo_score) : null,
+    })),
+  };
+}
+
+// ============ Embedding & RAG ============
+
+/** 获取用于 embedding 的模型配置（use_for_embedding=true 且有 api_key） */
+export async function getEmbeddingModelConfig(): Promise<any | null> {
+  const result = await query(
+    `SELECT * FROM ai_model_config
+     WHERE use_for_embedding = true AND is_active = true
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+     ORDER BY update_time DESC LIMIT 1`
+  );
+  return result.rows[0] || null;
+}
+
+/** 存储 embedding 到 article_embedding 表 */
+export async function saveArticleEmbedding(
+  articleId: number,
+  knowledgeId: number | null,
+  contentText: string,
+  embedding: number[],
+  modelName: string
+): Promise<void> {
+  // 将数组转为 pgvector 格式的字符串: '[0.1,0.2,...]'
+  const vectorStr = `[${embedding.join(',')}]`;
+  await query(
+    `INSERT INTO article_embedding (article_id, knowledge_id, content_text, embedding, model_name)
+     VALUES ($1, $2, $3, $4::vector, $5)
+     ON CONFLICT (article_id) DO UPDATE SET
+       knowledge_id = EXCLUDED.knowledge_id,
+       content_text = EXCLUDED.content_text,
+       embedding = EXCLUDED.embedding,
+       model_name = EXCLUDED.model_name`,
+    [articleId, knowledgeId, contentText, vectorStr, modelName]
+  );
+}
+
+/** 向量检索：按 knowledge_id 和查询向量检索 top-K 相关文章 */
+export async function searchArticleEmbeddings(
+  knowledgeId: number,
+  queryEmbedding: number[],
+  topK: number = 5
+): Promise<Array<{ articleId: number; title: string; contentText: string; score: number }>> {
+  const vectorStr = `[${queryEmbedding.join(',')}]`;
+  const result = await query(
+    `SELECT ae.article_id, ae.content_text,
+            a.title,
+            1 - (ae.embedding <=> $1::vector) as score
+     FROM article_embedding ae
+     JOIN article a ON a.id = ae.article_id
+     WHERE ae.knowledge_id = $2
+     ORDER BY ae.embedding <=> $1::vector
+     LIMIT $3`,
+    [vectorStr, knowledgeId, topK]
+  );
+  return result.rows.map((r: any) => ({
+    articleId: r.article_id,
+    title: r.title,
+    contentText: r.content_text,
+    score: parseFloat(r.score),
+  }));
+}
+
+/** 获取某客户的 L3 效果记忆（收录好的文章模式） */
+export async function getPerformanceMemory(
+  knowledgeId: number,
+  limit: number = 10
+): Promise<Array<any>> {
+  const result = await query(
+    `SELECT ap.*, a.title as article_title, a.core_keyword
+     FROM article_performance ap
+     JOIN article a ON a.id = ap.article_id
+     WHERE ap.knowledge_id = $1
+       AND ap.performance_label IN ('good', 'poor')
+     ORDER BY ap.analyzed_at DESC
+     LIMIT $2`,
+    [knowledgeId, limit]
+  );
+  return result.rows;
+}
+
+/** 获取某客户的 L3 策略记忆（飞轮总结的创作策略） */
+export async function getStrategyMemory(
+  knowledgeId: number,
+  limit: number = 3
+): Promise<Array<any>> {
+  const result = await query(
+    `SELECT strategy, evidence, to_char(create_time AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') as generated_at
+     FROM writing_strategy
+     WHERE knowledge_id = $1 AND is_active = true
+     ORDER BY create_time DESC
+     LIMIT $2`,
+    [knowledgeId, limit]
+  );
+  return result.rows;
+}
+
+/** 插入创作策略（飞轮每轮结束后调用） */
+export async function insertWritingStrategy(
+  knowledgeId: number,
+  strategy: string,
+  evidence: string,
+  roundNo: number,
+  goodCount: number,
+  poorCount: number
+): Promise<void> {
+  await query(
+    `INSERT INTO writing_strategy (knowledge_id, strategy, evidence, round_no, good_count, poor_count)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [knowledgeId, strategy, evidence, roundNo, goodCount, poorCount]
+  );
+}
+
+/** 批量插入文章效果记录（AEO 分析时调用）
+ *  keyword_rank_id 为 null 时先删除旧记录再插入，避免重复行（NULL 不参与 UNIQUE 冲突）
+ */
+export async function upsertArticlePerformance(
+  articleId: number,
+  knowledgeId: number | null,
+  data: {
+    keywordRankId?: number;
+    aeoReportId?: number;
+    aeoScore?: number;
+    brandMentioned?: boolean;
+    shareUrl?: string;
+    performanceLabel: string;
+    direction?: string;
+    contentType?: string;
+  }
+): Promise<void> {
+  const keywordRankId = data.keywordRankId || null;
+  // NULL keyword_rank_id 时先删除旧行（UNIQUE 约束不匹配 NULL，会导致重复）
+  if (keywordRankId === null) {
+    await query(
+      `DELETE FROM article_performance WHERE article_id = $1 AND keyword_rank_id IS NULL`,
+      [articleId]
+    );
+  }
+  await query(
+    `INSERT INTO article_performance
+       (article_id, knowledge_id, keyword_rank_id, aeo_report_id, aeo_score,
+        brand_mentioned, share_url, performance_label, direction, content_type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (article_id, keyword_rank_id) DO UPDATE SET
+       aeo_score = EXCLUDED.aeo_score,
+       brand_mentioned = EXCLUDED.brand_mentioned,
+       performance_label = EXCLUDED.performance_label,
+       analyzed_at = NOW()`,
+    [
+      articleId, knowledgeId,
+      keywordRankId,
+      data.aeoReportId || null,
+      data.aeoScore || null,
+      data.brandMentioned || false,
+      data.shareUrl || null,
+      data.performanceLabel,
+      data.direction || null,
+      data.contentType || null,
+    ]
+  );
+}
+
 export async function getArticles(userId: number, filters: { keyword?: string; status?: string; task_id?: number; page?: number; pageSize?: number }): Promise<{ list: any[]; total: number }> {
   const page = filters.page || 1;
   const pageSize = filters.pageSize || 20;
