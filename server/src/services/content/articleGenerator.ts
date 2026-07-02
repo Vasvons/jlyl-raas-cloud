@@ -67,11 +67,26 @@ function buildDirectionContextForTask(task: any): string {
 }
 
 /**
+ * 检测文本是否像思考过程（而非正常标题/内容）
+ * 用于过滤推理模型把思考过程当成标题返回的情况
+ */
+function isThinkingProcess(text: string): boolean {
+  if (!text || text.length < 5) return false;
+  // 1. 以思考特征词开头（强信号）
+  if (/^(好的|首先|让我|我需要|用户|根据|分析|思考|这是一个|我打算|我计划|我考虑|接下来|那么|现在|本次|这次)/i.test(text)) return true;
+  // 2. 包含思考特征短语（强信号）
+  if (/用户(的需求|希望|需要|这次|提供)|我的思考|我需要|我打算|我计划|我考虑|分析一下|思考一下|核心诉求|围绕如何|GEO优化|差异化优势|我(已经|将|会|打算)/i.test(text)) return true;
+  // 3. 标题过长（正常标题 15-30 字，超过 50 字大概率是思考过程）
+  if (text.length > 50) return true;
+  return false;
+}
+
+/**
  * 剥离 AI 响应中的思考过程
  * 兼容：
  *   1. <think>...</think> 标签（DeepSeek-R1 等推理模型）
  *   2. <reasoning>...</reasoning> 标签
- *   3. 裸思考文本（"好的，用户..."、"首先，我..." 等开头）
+ *   3. 裸思考文本（"好的，用户..."、"首先，我..." 等开头，支持多行）
  */
 function stripThinking(text: string): string {
   let result = text;
@@ -79,9 +94,10 @@ function stripThinking(text: string): string {
   result = result.replace(/<think>[\s\S]*?<\/think>/gi, '');
   // 2. 剥离 <reasoning>...</reasoning> 思考过程标签
   result = result.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
-  // 3. 剥离裸思考过程（在第一个 HTML 标签或换行之前的思考文本）
-  //    特征：以"好的"、"首先"、"让我"、"我需要"、"用户"、"根据"、"分析"、"思考"等开头
-  result = result.replace(/^[\s\n]*((好的|首先|让我|我需要|用户|根据|分析|思考)[^<\n]{20,2000})/i, '');
+  // 3. 剥离裸思考过程（支持多行，持续到第一个 <title>/<body>/<h> 标签或结尾）
+  //    特征：以"好的"、"首先"、"让我"等开头，后面跟随长文本（可能含换行）
+  //    使用 [\s\S] 允许多行，用前瞻 (?=...) 在遇到 HTML 结构标签时停止
+  result = result.replace(/^[\s\n]*((好的|首先|让我|我需要|用户|根据|分析|思考)[\s\S]{20,5000}?)(?=<title>|<body>|<h[1-6]|<p[^>]*>|$)/i, '');
   return result.trim();
 }
 
@@ -108,6 +124,11 @@ function parseArticleContent(rawContent: string): { title: string; contentHtml: 
     title = titleMatch[1].trim();
     // 标题里不能有换行和 HTML 标签
     title = title.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim();
+    // 检测 <title> 内容是否像思考过程，如果是就清空（降级用 H1 或首段）
+    if (isThinkingProcess(title)) {
+      console.warn('[ArticleGen] <title> 标签内容像思考过程，已清空降级。前80字符:', title.slice(0, 80));
+      title = '';
+    }
   }
 
   const bodyMatch = content.match(/<body>([\s\S]*?)<\/body>/i);
@@ -122,21 +143,30 @@ function parseArticleContent(rawContent: string): { title: string; contentHtml: 
   if (!title) {
     const h1Match = contentHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
     if (h1Match) {
-      title = h1Match[1].replace(/<[^>]+>/g, '').trim();
-      // 从正文中移除已作为标题的 H1
-      contentHtml = contentHtml.replace(/<h1[^>]*>[\s\S]*?<\/h1>/i, '').trim();
+      const h1Title = h1Match[1].replace(/<[^>]+>/g, '').trim();
+      // H1 也可能是思考过程，检测一下
+      if (!isThinkingProcess(h1Title)) {
+        title = h1Title;
+        contentHtml = contentHtml.replace(/<h1[^>]*>[\s\S]*?<\/h1>/i, '').trim();
+      }
     }
   }
 
-  // 仍然无标题，取前 30 字符纯文本
+  // 仍然无标题，取首段纯文本前 30 字符
   if (!title) {
-    title = contentHtml.replace(/<[^>]+>/g, '').slice(0, 30).trim() || '未命名文章';
+    const firstP = contentHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+    if (firstP) {
+      title = firstP[1].replace(/<[^>]+>/g, '').trim().slice(0, 30);
+    }
+    if (!title) {
+      title = contentHtml.replace(/<[^>]+>/g, '').slice(0, 30).trim() || '未命名文章';
+    }
   }
 
-  // 标题长度保护（最长 80 字符，超过截取到第一个标点）
-  if (title.length > 80) {
-    const punctPos = title.slice(0, 80).search(/[。，！？；,!?;]/);
-    title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 80);
+  // 标题长度保护（最长 50 字符，超过截取到第一个标点）
+  if (title.length > 50) {
+    const punctPos = title.slice(0, 50).search(/[。，！？；,!?;]/);
+    title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 50);
   }
 
   const wordCount = contentHtml.replace(/<[^>]+>/g, '').length;
@@ -442,12 +472,12 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
               .replace(/\n+/g, ' ')
               .trim();
             // 标题长度保护
-            if (title.length > 80) {
-              const punctPos = title.slice(0, 80).search(/[。，！？；,!?;]/);
-              title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 80);
+            if (title.length > 50) {
+              const punctPos = title.slice(0, 50).search(/[。，！？；,!?;]/);
+              title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 50);
             }
             // 如果剥离思考后标题为空或仍然像思考过程，降级使用正文标题
-            if (!title || title.length < 5 || /^(好的|首先|让我|我需要|用户|根据|分析|思考)/.test(title)) {
+            if (!title || title.length < 5 || isThinkingProcess(title)) {
               console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇标题生成结果异常，降级使用正文标题。原始返回前100字符:`, titleResult.content.slice(0, 100));
               title = '';
             }
@@ -461,6 +491,17 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         wordCount = parsed.wordCount;
         if (!title) {
           title = parsed.title;
+        }
+        // 最终兜底：如果 parsed.title 也是思考过程，用关键词 + 首段纯文本生成标题
+        if (!title || isThinkingProcess(title)) {
+          const firstP = contentHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+          const firstText = firstP ? firstP[1].replace(/<[^>]+>/g, '').trim() : '';
+          if (firstText && !isThinkingProcess(firstText)) {
+            title = (kw?.value ? kw.value + '：' : '') + firstText.slice(0, 25);
+          } else {
+            title = kw?.value || '未命名文章';
+          }
+          console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文标题也是思考过程，用关键词+首段生成标题:`, title);
         }
         // 空内容校验：AI 返回空内容时跳过保存，避免出现"空文章"
         if (!contentHtml || contentHtml.replace(/<[^>]+>/g, '').trim().length < 50) {
@@ -634,7 +675,7 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     model: modelConfig.model_name,
     messages,
     temperature: Number(modelConfig.temperature) || 0.7,
-    maxTokens: modelConfig.max_tokens || 4096,
+    // 不传 maxTokens，避免豆包等平台对 max_tokens 硬截断导致内容被截断成几个字符
     timeout: 120000,
     webSearch: !!modelConfig.web_search,
   });
@@ -646,26 +687,51 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
       enterprise: enterpriseInfo,
       wordCount: task.target_word_count,
     });
-    const titleMessages: { role: 'system' | 'user'; content: string }[] = systemContent
-      ? [
-          { role: 'system', content: systemContent },
-          { role: 'user', content: titlePrompt },
-        ]
-      : [{ role: 'user', content: titlePrompt }];
+    // 标题生成用极简 system message，避免 L0-L5 上下文让 AI 陷入思考
+    const titleMessages: { role: 'system' | 'user'; content: string }[] = [
+      { role: 'system', content: '你是标题生成器。只输出标题文字本身，不要输出任何思考过程、分析、解释、引号、前缀。直接输出标题。' },
+      { role: 'user', content: titlePrompt },
+    ];
     const titleResult = await chatCompletion({
       baseUrl: modelConfig.base_url,
       apiKey,
       model: modelConfig.model_name,
       messages: titleMessages,
       temperature: Number(modelConfig.temperature) || 0.7,
-      maxTokens: 200,
+      // 不传 maxTokens，避免推理模型思考过程占满 token 后被截断
       timeout: 30000,
     });
-    title = titleResult.content.replace(/<[^>]+>/g, '').trim();
+    // 剥离思考过程 + HTML 标签 + 引号
+    title = stripThinking(titleResult.content)
+      .replace(/<[^>]+>/g, '')
+      .replace(/^["'"「『]+|["'"」』]+$/g, '')
+      .replace(/\n+/g, ' ')
+      .trim();
+    // 标题长度保护
+    if (title.length > 50) {
+      const punctPos = title.slice(0, 50).search(/[。，！？；,!?;]/);
+      title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 50);
+    }
+    // 如果剥离思考后标题为空或仍然像思考过程，降级使用正文标题
+    if (!title || title.length < 5 || isThinkingProcess(title)) {
+      console.warn(`[ArticleGen] 文章 ${articleId} 重新生成标题异常，降级使用正文标题。原始返回前100字符:`, titleResult.content.slice(0, 100));
+      title = '';
+    }
   }
 
   const { title: parsedTitle, contentHtml, wordCount } = parseArticleContent(articleResult.content);
   if (!title) title = parsedTitle;
+  // 最终兜底：如果 parsedTitle 也是思考过程，用关键词 + 首段纯文本生成标题
+  if (!title || isThinkingProcess(title)) {
+    const firstP = contentHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+    const firstText = firstP ? firstP[1].replace(/<[^>]+>/g, '').trim() : '';
+    if (firstText && !isThinkingProcess(firstText)) {
+      title = (article.core_keyword ? article.core_keyword + '：' : '') + firstText.slice(0, 25);
+    } else {
+      title = article.core_keyword || '未命名文章';
+    }
+    console.warn(`[ArticleGen] 文章 ${articleId} 正文标题也是思考过程，用关键词+首段生成标题:`, title);
+  }
 
   const { updateArticle } = await import('../../repository');
   await updateArticle(articleId, {
