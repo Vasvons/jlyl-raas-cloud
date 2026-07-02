@@ -1,7 +1,8 @@
 services:
   # PostgreSQL 数据库（pgvector 镜像，支持向量检索）
+  # 使用 daocloud 直接镜像源前缀，避免 Docker Hub 加速器对小众镜像缓存不一致导致拉取超时
   db:
-    image: pgvector/pgvector:pg15
+    image: docker.m.daocloud.io/pgvector/pgvector:pg15
     container_name: jlyl-cloud-db
     restart: always
     environment:

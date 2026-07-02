@@ -103,21 +103,21 @@ jobs:
 
             # 预拉取基础镜像（带重试，失败不阻塞部署，docker compose build 会自动拉取）
             echo ">>> 预拉取基础镜像..."
-            for img in node:18-alpine postgres:15-alpine nginx:alpine; do
+            for img in node:18-alpine docker.m.daocloud.io/pgvector/pgvector:pg15 nginx:alpine; do
               # 检查镜像是否已存在（缓存），存在则跳过
               if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${img}$"; then
                 echo ">>> $img 已存在，跳过拉取"
                 continue
               fi
               pulled=false
-              for attempt in 1 2 3; do
-                echo ">>> 拉取 $img (尝试 $attempt/3)..."
+              for attempt in 1 2 3 4 5; do
+                echo ">>> 拉取 $img (尝试 $attempt/5)..."
                 if docker pull $img; then
                   echo ">>> $img 拉取成功"
                   pulled=true
                   break
                 fi
-                sleep 3
+                sleep 5
               done
               if [ "$pulled" = false ]; then
                 echo ">>> 警告：$img 拉取失败，将在 docker compose build 时自动拉取"
