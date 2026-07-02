@@ -228,6 +228,56 @@ function buildLayer5RagSnippets(ragSnippets?: RagSnippet[]): string {
   return `【相关参考】基于向量检索的相关历史内容片段：\n${lines.join('\n')}`;
 }
 
+/** L6 输出规范层：强制输出格式、字数、排版、关键词密度 */
+function buildLayer6OutputSpec(task: any, keywords: string[]): string {
+  const wordCount = Number(task.target_word_count) || 1500;
+  // 从关键词库中选出主关键词（前 5 个）用于关键词密度要求
+  const mainKeywords = keywords.slice(0, 5);
+
+  const lines: string[] = [];
+  lines.push(`【输出规范（必须严格遵守）】`);
+  lines.push(``);
+  lines.push(`一、输出格式`);
+  lines.push(`必须按以下格式输出，不要输出任何其他内容（不要输出思考过程、分析过程、解释说明）：`);
+  lines.push(`<title>文章标题（15-30字，不要包含"文章"二字，不要包含书名号）</title>`);
+  lines.push(`<body>`);
+  lines.push(`正文HTML内容`);
+  lines.push(`</body>`);
+  lines.push(``);
+  lines.push(`二、字数限制（硬约束）`);
+  lines.push(`正文字数严格控制在 ${wordCount} 字以内（±10%），不要超过 ${Math.round(wordCount * 1.1)} 字。`);
+  lines.push(`字数统计基于纯文本（不含 HTML 标签），写完后自行核对字数。`);
+  lines.push(``);
+  lines.push(`三、排版规范（必须使用语义化 HTML 标签）`);
+  lines.push(`1. 用 <h2> 划分文章主要章节（3-5 个 H2，每个 H2 下 200-400 字）`);
+  lines.push(`2. 用 <h3> 划分子章节（可选，用于更细的内容分层）`);
+  lines.push(`3. 用 <p> 标签包裹正文段落，每段 80-150 字，不要一整段超过 200 字`);
+  lines.push(`4. 用 <ul><li> 或 <ol><li> 展示要点、特征、步骤（至少出现 1-2 次）`);
+  lines.push(`5. 对比类内容用 <table><thead><tr><th>...</th></tr></thead><tbody><tr><td>...</td></tr></tbody></table> 展示`);
+  lines.push(`6. 重要观点、关键数据用 <strong> 或 <em> 加粗强调（适度使用，不要滥用）`);
+  lines.push(`7. 不要使用 <h1>（H1 由系统自动从 <title> 生成）`);
+  lines.push(`8. 不要输出 markdown 语法（## ** 等），必须用 HTML 标签`);
+  lines.push('9. 不要输出 ``` 代码块标记');
+  lines.push(``);
+  lines.push(`四、关键词密度要求（GEO 优化核心）`);
+  if (mainKeywords.length > 0) {
+    lines.push(`以下关键词必须在文章中自然出现（关键词密度 2%-5%，即每 100 字出现 2-5 次）：`);
+    mainKeywords.forEach((kw, i) => lines.push(`  ${i + 1}. "${kw}"`));
+    lines.push(`要求：`);
+    lines.push(`- 关键词必须出现在标题、H2 标题、正文段落中（至少 3 个位置）`);
+    lines.push(`- 关键词使用要自然流畅，不要生硬堆砌，不要影响阅读体验`);
+    lines.push(`- 优先使用关键词的完整匹配，不要随意拆分`);
+  }
+  lines.push(``);
+  lines.push(`五、内容质量要求`);
+  lines.push(`1. 开头直接切入主题，不要"随着...的发展"等套话`);
+  lines.push(`2. 内容必须基于客户档案的真实信息，不要编造企业信息、案例、数据`);
+  lines.push(`3. 结尾给出明确的行动建议或总结，不要泛泛而谈`);
+  lines.push(`4. 不要输出"以上就是"、"希望对您有帮助"等废话结尾`);
+
+  return lines.join('\n');
+}
+
 // ---------- 核心函数 ----------
 
 /**
@@ -236,7 +286,7 @@ function buildLayer5RagSnippets(ragSnippets?: RagSnippet[]): string {
  * @param input 写作上下文输入
  * @returns { systemMessage, userPromptSuffix }
  *
- * systemMessage 包含 L0(专家) + L1(客户档案) + L2(历史) + L3(效果/策略) + L5(RAG)
+ * systemMessage 包含 L0(专家) + L1(客户档案) + L2(历史) + L3(效果/策略) + L5(RAG) + L6(输出规范)
  * userPromptSuffix 包含 L4(主题参考) — 因为主题参考与具体任务指令更相关
  *
  * 调用方使用方式：
@@ -248,7 +298,7 @@ function buildLayer5RagSnippets(ragSnippets?: RagSnippet[]): string {
 export function buildWritingContext(input: WritingContextInput): WritingContext {
   const { task, keywords, recentArticles, performanceMemory, strategyMemory, ragSnippets } = input;
 
-  // 构建 system message：L0 + L1 + L2 + L3 + L5
+  // 构建 system message：L0 + L1 + L2 + L3 + L5 + L6
   const systemParts: string[] = [];
 
   const l0 = buildLayer0ExpertPersona(task);
@@ -268,6 +318,10 @@ export function buildWritingContext(input: WritingContextInput): WritingContext 
 
   const l5 = buildLayer5RagSnippets(ragSnippets);
   if (l5) systemParts.push(l5);
+
+  // L6 输出规范层（始终注入，确保格式/字数/排版/关键词密度）
+  const l6 = buildLayer6OutputSpec(task, keywords);
+  if (l6) systemParts.push(l6);
 
   // 构建 user prompt 后缀：L4 主题参考
   const suffixParts: string[] = [];

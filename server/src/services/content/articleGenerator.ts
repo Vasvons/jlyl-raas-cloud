@@ -68,28 +68,66 @@ function buildDirectionContextForTask(task: any): string {
 
 /**
  * 从AI响应中提取标题和正文HTML
+ *
  * 约定AI返回格式：
  *   <title>标题</title>
  *   <body>正文HTML</body>
- * 如果没有标签则整段作为正文，标题用前30字符
+ *
+ * 兼容处理：
+ *   1. 推理模型（DeepSeek-R1 等）的思考过程：<think>...</think> 标签或裸思考文本
+ *   2. 无 <title> 标签时，从 H1/H2 提取标题
+ *   3. 思考过程剥离（"好的，用户..."、"首先，我..." 等开头）
  */
 function parseArticleContent(rawContent: string): { title: string; contentHtml: string; wordCount: number } {
+  let content = rawContent;
+
+  // 1. 剥离 <think>...</think> 思考过程标签（DeepSeek-R1 等推理模型）
+  content = content.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  // 2. 剥离 <reasoning>...</reasoning> 思考过程标签
+  content = content.replace(/<reasoning>[\s\S]*?<\/reasoning>/gi, '');
+  content = content.trim();
+
   let title = '';
   let contentHtml = '';
 
-  const titleMatch = rawContent.match(/<title>([\s\S]*?)<\/title>/i);
+  const titleMatch = content.match(/<title>([\s\S]*?)<\/title>/i);
   if (titleMatch) {
     title = titleMatch[1].trim();
+    // 标题里不能有换行和 HTML 标签
+    title = title.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim();
   }
 
-  const bodyMatch = rawContent.match(/<body>([\s\S]*?)<\/body>/i);
+  const bodyMatch = content.match(/<body>([\s\S]*?)<\/body>/i);
   if (bodyMatch) {
     contentHtml = bodyMatch[1].trim();
   } else {
-    contentHtml = rawContent.trim();
-    if (!title) {
-      title = contentHtml.replace(/<[^>]+>/g, '').slice(0, 30).trim() || '未命名文章';
+    // 没有 <body> 标签，去掉 <title> 标签后剩余作为正文
+    contentHtml = content.replace(/<title>[\s\S]*?<\/title>/i, '').trim();
+  }
+
+  // 3. 剥离正文开头的裸思考过程（推理模型可能不加标签直接输出思考）
+  //    特征：以"好的，"、"首先，"、"让我"、"我需要"、"用户"等开头，且在第一个 HTML 标签之前
+  contentHtml = contentHtml.replace(/^[\s\n]*((好的|首先|让我|我需要|用户|根据|分析|思考)[^<]{20,500})\n/i, '');
+
+  // 4. 无标题时从 H1 提取
+  if (!title) {
+    const h1Match = contentHtml.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+    if (h1Match) {
+      title = h1Match[1].replace(/<[^>]+>/g, '').trim();
+      // 从正文中移除已作为标题的 H1
+      contentHtml = contentHtml.replace(/<h1[^>]*>[\s\S]*?<\/h1>/i, '').trim();
     }
+  }
+
+  // 5. 仍然无标题，取前 30 字符纯文本
+  if (!title) {
+    title = contentHtml.replace(/<[^>]+>/g, '').slice(0, 30).trim() || '未命名文章';
+  }
+
+  // 6. 标题长度保护（最长 80 字符，超过截取到第一个标点）
+  if (title.length > 80) {
+    const punctPos = title.slice(0, 80).search(/[。，！？；,!?;]/);
+    title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 80);
   }
 
   const wordCount = contentHtml.replace(/<[^>]+>/g, '').length;
