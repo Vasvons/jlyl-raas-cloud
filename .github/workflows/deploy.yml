@@ -200,16 +200,45 @@ jobs:
               exit 1
             fi
 
-            echo ">>> 启动所有服务..."
+            echo ">>> 先启动 server 容器（单独启动，便于捕获启动日志）..."
+            $DC up -d --no-deps server
+
+            # 等待 server 启动并执行迁移（migrate 在启动时自动执行）
+            echo ">>> 等待 server 启动（最多 120 秒）..."
+            server_healthy=false
+            for i in $(seq 1 24); do
+              status=$($DC ps --format json server 2>/dev/null | grep -o '"Health":"healthy"' || echo "")
+              if [ -n "$status" ]; then
+                echo ">>> server 已健康"
+                server_healthy=true
+                break
+              fi
+              # 检查容器是否已退出（崩溃）
+              container_state=$($DC ps -a --format json server 2>/dev/null | grep -o '"State":"exited"' || echo "")
+              if [ -n "$container_state" ]; then
+                echo ">>> server 容器已退出（崩溃），输出完整日志："
+                $DC logs --tail 200 server
+                exit 1
+              fi
+              echo "等待 server 启动... ($i/24)"
+              sleep 5
+            done
+
+            if [ "$server_healthy" = false ]; then
+              echo ">>> server 健康检查失败，输出完整日志："
+              $DC logs --tail 200 server
+              echo ">>> server 容器状态："
+              $DC ps -a server
+              exit 1
+            fi
+
+            # 启动其余服务（web 和 worker，它们依赖 server 健康）
+            echo ">>> 启动 web 和 worker 服务..."
             $DC up -d
 
             # 等待服务启动
-            echo ">>> 等待服务启动..."
+            echo ">>> 等待所有服务启动..."
             sleep 20
-
-            # 执行数据库迁移
-            echo ">>> 执行数据库迁移..."
-            $DC exec -T server node /app/server/dist/migrate.js || echo "迁移执行失败（可能已是最新）"
 
             # 检查服务状态
             echo ">>> 检查服务状态..."
@@ -226,7 +255,7 @@ jobs:
             # 如果健康检查失败，输出server日志
             if ! curl -s http://localhost:3002/health | grep -q '"status":"ok"'; then
               echo ">>> 健康检查失败，输出server日志："
-              $DC logs --tail 50 server
+              $DC logs --tail 100 server
             fi
 
             echo "===== 部署完成 ====="

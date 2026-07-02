@@ -3806,6 +3806,7 @@ export async function getRecentArticlesByKnowledge(
 /**
  * 按用户和时间范围查询文章（飞轮反馈用，AEO 分析后填充 article_performance）
  * 返回文章 id、knowledge_id、core_keyword、direction、content_type、create_time
+ * 注意：direction/content_type 来自 writing_instruction 表（通过 ai_writing_task.instruction_id 关联）
  */
 export async function getArticlesByUserAndTimeRange(
   userId: string,
@@ -3821,11 +3822,12 @@ export async function getArticlesByUserAndTimeRange(
 }>> {
   const result = await query(
     `SELECT a.id, t.knowledge_id, a.core_keyword,
-            t.instruction_category as direction,
-            t.content_types as content_type,
+            i.category as direction,
+            i.content_types as content_type,
             a.create_time
      FROM article a
      JOIN ai_writing_task t ON a.task_id = t.id
+     LEFT JOIN writing_instruction i ON t.instruction_id = i.id
      WHERE t.user_id = $1
        AND a.status IN ('generated', 'published')
        AND a.create_time >= $2 AND a.create_time <= $3
