@@ -808,7 +808,7 @@ const PUBLISH_PLATFORMS = [
   { platform: 'wxgzh', name: '微信公众号', loginUrl: 'https://mp.weixin.qq.com/' },
   { platform: 'wy', name: '网易号', loginUrl: 'https://mp.163.com/login' },
   { platform: 'bili', name: 'B站', loginUrl: 'https://passport.bilibili.com/login' },
-  { platform: 'dy', name: '抖音', loginUrl: 'https://creator.douyin.com/' },
+  { platform: 'dy', name: '抖音', loginUrl: 'https://www.douyin.com/' },
 ];
 
 router.get('/publish/platforms', (req: Request, res: Response) => {
