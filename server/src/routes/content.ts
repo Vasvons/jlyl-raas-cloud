@@ -796,18 +796,19 @@ router.get('/dashboard/stats', async (req: Request, res: Response) => {
 // ============ 发布：12 个自媒体平台清单 ============
 
 const PUBLISH_PLATFORMS = [
-  { platform: 'bjh', name: '百家号', loginUrl: 'https://passport.baidu.com/v2/?login' },
+  // v1.5.2：修正登录入口，统一指向创作者后台/官方登录页（避免登录后不跳转或落在 C 端首页）
+  { platform: 'bjh', name: '百家号', loginUrl: 'https://baijiahao.baidu.com' },
   { platform: 'csdn', name: 'CSDN', loginUrl: 'https://passport.csdn.net/login' },
   { platform: 'js', name: '简书', loginUrl: 'https://www.jianshu.com/sign_in' },
   { platform: 'zh', name: '知乎', loginUrl: 'https://www.zhihu.com/signin' },
-  { platform: 'xhs', name: '小红书', loginUrl: 'https://www.xiaohongshu.com' },
+  { platform: 'xhs', name: '小红书', loginUrl: 'https://creator.xiaohongshu.com/login' },
   { platform: 'qeh', name: '企鹅号', loginUrl: 'https://om.qq.com/userAuth/index' },
   { platform: 'sohu', name: '搜狐号', loginUrl: 'https://mp.sohu.com/mp/login' },
-  { platform: 'tt', name: '今日头条', loginUrl: 'https://sso.toutiao.com/login' },
+  { platform: 'tt', name: '今日头条', loginUrl: 'https://mp.toutiao.com/' },
   { platform: 'wxgzh', name: '微信公众号', loginUrl: 'https://mp.weixin.qq.com/' },
   { platform: 'wy', name: '网易号', loginUrl: 'https://mp.163.com/login' },
   { platform: 'bili', name: 'B站', loginUrl: 'https://passport.bilibili.com/login' },
-  { platform: 'dy', name: '抖音', loginUrl: 'https://www.douyin.com/login' },
+  { platform: 'dy', name: '抖音', loginUrl: 'https://creator.douyin.com/' },
 ];
 
 router.get('/publish/platforms', (req: Request, res: Response) => {
