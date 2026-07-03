@@ -3329,6 +3329,7 @@ const CLOUD_API_FIELDS = [
   'aliyun_access_key',
   'aliyun_access_secret',
   'aliyun_oss_bucket',
+  'aliyun_oss_endpoint',
   'aliyun_oss_cdn',
   'doubao_app_id',
   'coze_key',
@@ -3695,12 +3696,14 @@ export async function incrementProxyUsedCount(id: number): Promise<void> {
 export async function createWritingTask(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_writing_task (user_id, task_name, keyword_ids, instruction_id, knowledge_id,
-            model_config_id, generation_mode, agent_profile_id, status, total_count, started_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW())
+            model_config_id, generation_mode, agent_profile_id, status, total_count, started_at,
+            cover_image_mode, cover_image_id, illustration_count)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12)
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
      data.model_config_id || null, data.generation_mode || 'expert', data.agent_profile_id || null,
-     data.total_count]
+     data.total_count,
+     data.cover_image_mode || 'none', data.cover_image_id || null, data.illustration_count || 0]
   );
   return result.rows[0].id;
 }
@@ -4089,13 +4092,13 @@ export async function getArticleById(id: number): Promise<any | null> {
 export async function createArticle(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO article (user_id, task_id, keyword_id, core_keyword, keyword_type, title,
-            content_html, entity_triples, target_platform, word_count, status, tags, model_used)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            content_html, entity_triples, target_platform, word_count, status, tags, model_used, cover_image_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING id`,
     [data.user_id, data.task_id, data.keyword_id, data.core_keyword, data.keyword_type || 0,
      data.title, data.content_html, JSON.stringify(data.entity_triples || []),
      data.target_platform, data.word_count, data.status || 'generated',
-     data.tags || [], data.model_used]
+     data.tags || [], data.model_used, data.cover_image_url || null]
   );
   return result.rows[0].id;
 }
@@ -4118,6 +4121,79 @@ export async function updateArticle(id: number, data: any): Promise<void> {
 
 export async function deleteArticle(id: number): Promise<void> {
   await query('DELETE FROM article WHERE id = $1', [id]);
+}
+
+// ============ 内容中枢：企业图库（image_library） ============
+
+/** 查询图库图片列表（按客户+类型筛选） */
+export async function getImageLibrary(userId: number, knowledgeId?: number, imageType?: string): Promise<any[]> {
+  let sql = `SELECT * FROM image_library WHERE user_id = $1`;
+  const params: any[] = [userId];
+  let idx = 2;
+  if (knowledgeId !== undefined && knowledgeId !== null) {
+    sql += ` AND knowledge_id = $${idx++}`;
+    params.push(knowledgeId);
+  }
+  if (imageType) {
+    sql += ` AND image_type = $${idx++}`;
+    params.push(imageType);
+  }
+  sql += ` ORDER BY sort_order ASC, create_time DESC`;
+  const result = await query(sql, params);
+  return result.rows;
+}
+
+/** 获取单张图片 */
+export async function getImageById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM image_library WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+/** 创建图片记录 */
+export async function createImage(data: any): Promise<number> {
+  const result = await query(
+    `INSERT INTO image_library (user_id, knowledge_id, image_type, url, file_path, original_name, file_size, mime_type, width, height, description, tags, sort_order)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     RETURNING id`,
+    [data.user_id, data.knowledge_id, data.image_type, data.url, data.file_path || null,
+     data.original_name || null, data.file_size || null, data.mime_type || null,
+     data.width || null, data.height || null, data.description || null,
+     JSON.stringify(data.tags || []), data.sort_order || 0]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新图片记录 */
+export async function updateImage(id: number, data: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of ['description', 'tags', 'sort_order', 'url', 'original_name']) {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = $${idx++}`);
+      values.push(key === 'tags' ? JSON.stringify(data[key]) : data[key]);
+    }
+  }
+  if (fields.length === 0) return;
+  fields.push(`update_time = NOW()`);
+  values.push(id);
+  await query(`UPDATE image_library SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+}
+
+/** 删除图片记录 */
+export async function deleteImage(id: number): Promise<void> {
+  await query('DELETE FROM image_library WHERE id = $1', [id]);
+}
+
+/** 随机取 N 张指定类型的图片（用于写作任务插图/封面） */
+export async function getRandomImages(userId: number, knowledgeId: number, imageType: string, count: number): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM image_library
+     WHERE user_id = $1 AND knowledge_id = $2 AND image_type = $3
+     ORDER BY RANDOM() LIMIT $4`,
+    [userId, knowledgeId, imageType, count]
+  );
+  return result.rows;
 }
 
 // ============ 内容中枢：关键词查询辅助 ============

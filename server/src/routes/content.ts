@@ -63,6 +63,13 @@ import {
   deleteProxy,
   updateProxyHealthCheck,
   incrementProxyUsedCount,
+  // 企业图库
+  getImageLibrary,
+  getImageById,
+  createImage,
+  updateImage,
+  deleteImage,
+  getRandomImages,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection } from '../services/content/aiClient';
@@ -596,7 +603,8 @@ router.get('/writing-tasks/:id', async (req: Request, res: Response) => {
 router.post('/writing-tasks', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id, article_count } = req.body;
+    const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id, article_count,
+            cover_image_mode, cover_image_id, illustration_count } = req.body;
 
     // 关键词来源优先级：
     //   1. keyword_ids（显式传入，向后兼容）
@@ -618,15 +626,19 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     if (!instruction_id || !knowledge_id) {
       return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id 必填' });
     }
-    // model_config_id 可选：未传时由 articleGenerator 自动取默认模型
-    // agent_profile_id 可选：指定专家智能体角色（systemPrompt+skills 注入 system message）
-    // total_count：用户手动设定的文章篇数（不再由关键词数量决定）
+    // v1.5+：图库配置
+    // cover_image_mode: 'none' 不用图库 / 'random' 随机选 / 'fixed' 指定一张
+    // cover_image_id: 指定封面图 ID（cover_image_mode=fixed 时使用）
+    // illustration_count: 插图数量（0=不插图，从插画图库随机取 N 张由 AI 决定插入位置）
     const taskId = await createWritingTask({
       user_id: userId, task_name, keyword_ids: finalKeywordIds, instruction_id, knowledge_id,
       model_config_id: model_config_id || null,
       generation_mode: generation_mode || 'expert',
       agent_profile_id: agent_profile_id || null,
       total_count: articleCount,
+      cover_image_mode: cover_image_mode || 'none',
+      cover_image_id: cover_image_id || null,
+      illustration_count: Math.max(0, Math.min(20, Number(illustration_count) || 0)),
     });
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {
@@ -1210,6 +1222,74 @@ router.put('/cloud-api', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     await upsertCloudApiConfig(userId, req.body || {});
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 企业图库（image_library） ============
+// 桌面端直传 OSS 后，把图片 URL 记录到云端 image_library 表
+
+// 查询图库（支持按 knowledge_id + image_type 筛选）
+router.get('/images', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const knowledgeId = req.query.knowledge_id ? Number(req.query.knowledge_id) : undefined;
+    const imageType = req.query.image_type as string | undefined;
+    const list = await getImageLibrary(userId, knowledgeId, imageType);
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 获取单张图片
+router.get('/images/:id', async (req: Request, res: Response) => {
+  try {
+    const image = await getImageById(Number(req.params.id));
+    if (!image) return res.status(404).json({ code: 404, message: '图片不存在' });
+    res.json({ code: 200, data: image });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 创建图片记录（桌面端直传 OSS 成功后调用，记录 URL 等元数据）
+router.post('/images', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { knowledge_id, image_type, url, original_name, file_size, mime_type, width, height, description, tags, sort_order } = req.body;
+    if (!url || !image_type) {
+      return res.status(400).json({ code: 400, message: 'url 和 image_type 必填' });
+    }
+    if (!['cover', 'illustration'].includes(image_type)) {
+      return res.status(400).json({ code: 400, message: 'image_type 必须是 cover 或 illustration' });
+    }
+    const id = await createImage({
+      user_id: userId, knowledge_id: knowledge_id || null, image_type, url,
+      original_name, file_size, mime_type, width, height, description, tags, sort_order,
+    });
+    res.json({ code: 200, data: { id } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 更新图片记录（描述、标签、排序）
+router.put('/images/:id', async (req: Request, res: Response) => {
+  try {
+    await updateImage(Number(req.params.id), req.body || {});
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 删除图片记录（只删数据库记录，不删 OSS 文件）
+router.delete('/images/:id', async (req: Request, res: Response) => {
+  try {
+    await deleteImage(Number(req.params.id));
     res.json({ code: 200 });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });

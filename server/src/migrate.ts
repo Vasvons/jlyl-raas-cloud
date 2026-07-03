@@ -925,7 +925,7 @@ export async function migrate() {
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS generation_mode VARCHAR(16) DEFAULT 'expert'`);
 
     // 8.3 云接口配置表（参考 jlyl.net.cn/agent/api_set）
-    // 单行配置模式：每个 user_id 一行，存储 9 个固定字段（敏感字段加密）
+    // 单行配置模式：每个 user_id 一行，存储固定字段（敏感字段加密）
     await client.query(`
       CREATE TABLE IF NOT EXISTS cloud_api_config (
         id SERIAL PRIMARY KEY,
@@ -943,6 +943,8 @@ export async function migrate() {
         update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    // v1.5: 新增 OSS endpoint 字段（区域端点，如 oss-cn-hangzhou.aliyuncs.com）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS aliyun_oss_endpoint TEXT DEFAULT ''`);
 
     // 8.4 智能体角色同步表（agent_profile）
     // 用于内容中枢写作任务复用 AGENT 人事部中配置的专家智能体
@@ -1074,6 +1076,45 @@ export async function migrate() {
     await client.query('CREATE INDEX IF NOT EXISTS idx_writing_strategy_knowledge ON writing_strategy(knowledge_id, is_active, create_time DESC)');
 
     console.log('[Migrate] v1.4 pgvector + 飞轮反馈表创建/验证完成');
+
+    // ============ v1.5: 企业图库（封面图 + 插画） ============
+
+    // 企业图库表：与 enterprise_knowledge 一对多关联，支持客户专属图库
+    // image_type: 'cover' 封面图 / 'illustration' 插画
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS image_library (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        knowledge_id INTEGER REFERENCES enterprise_knowledge(id) ON DELETE CASCADE,
+        image_type VARCHAR(16) NOT NULL,
+        url TEXT NOT NULL,
+        file_path TEXT,
+        original_name VARCHAR(255),
+        file_size INTEGER,
+        mime_type VARCHAR(64),
+        width INTEGER,
+        height INTEGER,
+        description TEXT,
+        tags TEXT[],
+        sort_order INTEGER DEFAULT 0,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query('CREATE INDEX IF NOT EXISTS idx_image_library_user ON image_library(user_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_image_library_knowledge ON image_library(knowledge_id)');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_image_library_type ON image_library(knowledge_id, image_type)');
+
+    // ai_writing_task 新增图库配置字段
+    // cover_image_mode: 'random' 随机选 / 'fixed' 指定一张 / 'none' 不用图库
+    // cover_image_id: 指定封面图 ID（cover_image_mode=fixed 时使用）
+    // illustration_count: 插图数量（0=不插图，从插画图库随机取 N 张）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS cover_image_mode VARCHAR(16) DEFAULT 'none'`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS cover_image_id INTEGER REFERENCES image_library(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS illustration_count INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS agent_profile_id INTEGER`);
+
+    console.log('[Migrate] v1.5 企业图库表创建/验证完成');
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {

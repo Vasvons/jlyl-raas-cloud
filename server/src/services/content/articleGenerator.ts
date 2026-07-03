@@ -16,6 +16,8 @@ import {
   getRecentArticlesByKnowledge,
   getPerformanceMemory,
   getStrategyMemory,
+  getRandomImages,
+  getImageById,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 
@@ -347,6 +349,20 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
     }
   }
 
+  // v1.5+：图库图片获取（封面 + 插画）
+  // cover_image_mode: 'none' / 'random' / 'fixed'
+  // illustration_count: 插图数量（每篇文章独立随机取）
+  const coverMode = task.cover_image_mode || 'none';
+  let fixedCoverUrl = '';
+  if (coverMode === 'fixed' && task.cover_image_id) {
+    try {
+      const coverImg = await getImageById(task.cover_image_id);
+      if (coverImg) fixedCoverUrl = coverImg.url;
+    } catch (err) {
+      console.warn('[ArticleGen] 获取指定封面图失败:', err);
+    }
+  }
+
   let successCount = 0;
   let failCount = 0;
   const errors: string[] = [];
@@ -360,6 +376,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
       let contentHtml = '';
       let wordCount = 0;
       let modelUsed = '';
+      let coverUrlForArticle = '';
 
       // 为本次生成选择一个主题关键词（轮询取，用于文章归属标记，不影响 prompt 内容）
       const kw = keywords.length > 0 ? keywords[i % keywords.length] : null;
@@ -419,6 +436,36 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           console.log('[ArticleGen][创作方向] directionCtx 长度:', directionCtx.length, '内容:', directionCtx.slice(0, 200));
           console.log('[ArticleGen][最终 systemMessage] 总长度:', writingCtx.systemMessage.length, '前300字符:', writingCtx.systemMessage.slice(0, 300));
           console.log('[ArticleGen][最终 userPrompt] 总长度:', articlePrompt.length, '前300字符:', articlePrompt.slice(0, 300));
+        }
+
+        // v1.5+：图库图片注入 prompt
+        // 1. 封面图：coverMode='random' 时每篇随机取一张；'fixed' 时用 fixedCoverUrl
+        // 2. 插画：illustration_count>0 时每篇随机取 N 张，由 AI 决定插入位置
+        let illustrationImageBlock = '';
+        if (coverMode === 'fixed' && fixedCoverUrl) {
+          coverUrlForArticle = fixedCoverUrl;
+        } else if (coverMode === 'random' && task.knowledge_id) {
+          try {
+            const randomCovers = await getRandomImages(userId, task.knowledge_id, 'cover', 1);
+            if (randomCovers.length > 0) coverUrlForArticle = randomCovers[0].url;
+          } catch (err) {
+            console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇取随机封面失败:`, err);
+          }
+        }
+        const illuCount = Math.max(0, Math.min(20, Number(task.illustration_count) || 0));
+        if (illuCount > 0 && task.knowledge_id) {
+          try {
+            const randomIllus = await getRandomImages(userId, task.knowledge_id, 'illustration', illuCount);
+            if (randomIllus.length > 0) {
+              const imgLines = randomIllus.map((img: any, idx: number) => `${idx + 1}. <img src="${img.url}" alt="插图${idx + 1}">`);
+              illustrationImageBlock = `\n\n【插画素材（请在正文合适位置插入以下 <img> 标签，每张图前应有承上启下的文字过渡，不要堆在一起）】\n${imgLines.join('\n')}`;
+            }
+          } catch (err) {
+            console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇取插画失败:`, err);
+          }
+        }
+        if (illustrationImageBlock) {
+          articlePrompt += illustrationImageBlock;
         }
 
         // 3. 组装 messages（systemMessage 含 L0+L1+L2+L3+L5）
@@ -528,6 +575,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         word_count: wordCount,
         status: 'generated',
         model_used: safeModelUsed,
+        cover_image_url: coverUrlForArticle || null,
       });
 
       // 异步生成 embedding（不阻塞主流程，失败不影响文章生成）
