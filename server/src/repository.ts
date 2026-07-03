@@ -4158,7 +4158,7 @@ export async function createImage(data: any): Promise<number> {
     [data.user_id, data.knowledge_id, data.image_type, data.url, data.file_path || null,
      data.original_name || null, data.file_size || null, data.mime_type || null,
      data.width || null, data.height || null, data.description || null,
-     JSON.stringify(data.tags || []), data.sort_order || 0]
+     data.tags || [], data.sort_order || 0]
   );
   return result.rows[0].id;
 }
@@ -4171,7 +4171,7 @@ export async function updateImage(id: number, data: any): Promise<void> {
   for (const key of ['description', 'tags', 'sort_order', 'url', 'original_name']) {
     if (data[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
-      values.push(key === 'tags' ? JSON.stringify(data[key]) : data[key]);
+      values.push(data[key]);
     }
   }
   if (fields.length === 0) return;

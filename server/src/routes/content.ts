@@ -1272,6 +1272,7 @@ router.post('/images', async (req: Request, res: Response) => {
     });
     res.json({ code: 200, data: { id } });
   } catch (err: any) {
+    console.error('[content/images] 创建图片记录失败:', err.message, err.stack);
     res.status(500).json({ code: 500, message: err.message });
   }
 });
