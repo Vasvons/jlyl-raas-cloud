@@ -1,9 +1,7 @@
-feat(content): 文章列表支持task_id过滤 + 发布step_list种子数据 + 清理web内容页
+fix(content): 修复 POST /images 500 错误 - tags 字段类型不匹配
 
-- repository.ts: getArticles 新增 task_id 过滤参数（支持写作任务卡片"文章管理"弹窗按任务过滤文章）
-- routes/content.ts: GET /articles 接口透传 task_id 查询参数
-- index.ts: 启动时导入发布 step_list 种子数据（幂等，仅缺失平台才导入）
-- services/content/stepListSeeder.ts: 12个平台的发布步骤种子数据导入器
-- data/step-lists/: 12个平台(bili/bjh/csdn/dy/js/qeh/sohu/tt/wxgzh/wy/xhs/zh)的发布步骤JSON
-- Dockerfile.server: COPY server/data ./data 确保种子数据进入镜像
-- web/: 删除已迁移到桌面端的内容中枢页面（articles/writing-tasks/config/layout）
+image_library.tags 是 TEXT[] 类型，pg 驱动需要 JS 数组，
+但代码用 JSON.stringify 传了字符串，导致 PostgreSQL 类型转换失败。
+- createImage: JSON.stringify(data.tags || []) → data.tags || []
+- updateImage: JSON.stringify(data[key]) → data[key]
+- 路由 catch 块增加 console.error 记录错误堆栈

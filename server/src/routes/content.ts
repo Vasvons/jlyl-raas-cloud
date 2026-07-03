@@ -808,7 +808,7 @@ const PUBLISH_PLATFORMS = [
   { platform: 'wxgzh', name: '微信公众号', loginUrl: 'https://mp.weixin.qq.com/' },
   { platform: 'wy', name: '网易号', loginUrl: 'https://mp.163.com/login' },
   { platform: 'bili', name: 'B站', loginUrl: 'https://passport.bilibili.com/login' },
-  { platform: 'dy', name: '抖音', loginUrl: 'https://creator.douyin.com/' },
+  { platform: 'dy', name: '抖音', loginUrl: 'https://www.douyin.com/login' },
 ];
 
 router.get('/publish/platforms', (req: Request, res: Response) => {
@@ -1065,7 +1065,7 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
 router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { storage_state, status, health_status, proxy_id } = req.body;
+    const { storage_state, status, health_status, proxy_id, account_name, avatar_url } = req.body;
     if (storage_state) {
       await updatePublishAccountStorageState(id, storage_state);
     }
@@ -1075,6 +1075,13 @@ router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
     // 更新代理绑定（支持 null 解绑）
     if (proxy_id !== undefined) {
       await query('UPDATE platform_auth SET proxy_id = $1 WHERE id = $2', [proxy_id || null, id]);
+    }
+    // v1.5.5：支持双击编辑账号名和头像
+    if (account_name !== undefined) {
+      await query('UPDATE platform_auth SET account_name = $1 WHERE id = $2', [account_name, id]);
+    }
+    if (avatar_url !== undefined) {
+      await query('UPDATE platform_auth SET avatar_url = $1 WHERE id = $2', [avatar_url || null, id]);
     }
     res.json({ code: 200, data: { ok: true } });
   } catch (err: any) {
