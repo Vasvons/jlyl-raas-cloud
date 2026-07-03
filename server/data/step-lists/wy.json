@@ -1,22 +1,60 @@
 {
   "platform": "wy",
   "version": "1.0.0",
-  "description": "网易号发布流程占位（待 Playwright codegen 录制补全）",
+  "description": "网易号图文发布流程：mp.163.com/dy/article/post（v1.5.6 模板，需基于实测调整选择器）",
   "is_placeholder": true,
-  "login_check_url": "https://mp.163.com",
-  "login_check_selector": "//div[contains(@class,'user-info')]",
-  "logout_keywords": ["登录", "请登录"],
+  "login_check_url": "https://mp.163.com/dy/home",
+  "login_check_selector": "//div[contains(@class,'user-info')] | //div[contains(@class,'avatar')]",
+  "logout_keywords": ["登录", "请登录", "sign in"],
   "steps": [
     {
       "type": "navigate",
       "value": "https://mp.163.com/dy/article/post",
-      "descript": "导航到网易号发布页（占位：该平台 step_list 待补全）",
+      "descript": "导航到网易号图文发布页",
+      "timeout": 30000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": "//input[@placeholder='请输入标题'] | //input[contains(@class,'title-input')] | //input[@id='title']",
+      "descript": "等待标题输入框",
+      "timeout": 15000
+    },
+    {
+      "type": "fill",
+      "selector": "//input[@placeholder='请输入标题'] | //input[contains(@class,'title-input')] | //input[@id='title']",
+      "value": "{title}",
+      "descript": "填写标题",
+      "timeout": 5000
+    },
+    {
+      "type": "click",
+      "selector": "//div[@contenteditable='true'] | //div[contains(@class,'ql-editor')] | //div[contains(@class,'editor-content')]",
+      "descript": "点击正文编辑区",
+      "timeout": 5000
+    },
+    {
+      "type": "content",
+      "selector": "//div[@contenteditable='true'] | //div[contains(@class,'ql-editor')] | //div[contains(@class,'editor-content')]",
+      "value": "{content}",
+      "descript": "粘贴正文",
+      "timeout": 10000
+    },
+    {
+      "type": "click",
+      "selector": "//button[contains(text(),'发布')] | //button[contains(@class,'publish-btn')]",
+      "descript": "点击发布按钮",
+      "timeout": 8000
+    },
+    {
+      "type": "wait_for_url",
+      "value": "mp.163.com/dy/article/",
+      "descript": "等待跳转到文章详情",
       "timeout": 30000
     },
     {
       "type": "evaluate_edit",
-      "value": "throw new Error('网易号 step_list 尚未实现，请联系开发人员通过 Playwright codegen 录制补全');",
-      "descript": "提示用户该平台尚未实现",
+      "value": "return window.location.href;",
+      "descript": "获取发布后 URL",
       "timeout": 3000
     }
   ]

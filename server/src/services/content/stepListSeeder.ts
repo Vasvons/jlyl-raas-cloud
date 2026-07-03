@@ -18,18 +18,29 @@ const SUPPORTED_PLATFORMS = [
  * 2. 版本号 — 种子统一使用 1.0.0，便于后续通过版本号升级
  * 3. 占位 — 9 个未实现平台也导入占位 step_list（含 is_placeholder:true 标识），
  *           桌面端 Worker 检测到占位 step_list 时会跳过并提示用户
+ * 4. 模板刷新（v1.5.6）— 若现有记录仍为 placeholder（is_placeholder=true），
+ *    则用最新种子文件覆盖刷新，便于持续优化模板选择器；用户手动调试好的
+ *    真实配置（is_placeholder=false/null）始终保留不被覆盖。
  */
 export async function seedStepLists(): Promise<void> {
   let imported = 0;
   let skipped = 0;
   let failed = 0;
+  let refreshed = 0;
 
   for (const platform of SUPPORTED_PLATFORMS) {
     try {
       const existing = await getStepListByPlatform(platform);
+      let isRefresh = false;
       if (existing) {
-        skipped++;
-        continue;
+        // v1.5.6：若现有记录仍为 placeholder，用最新种子文件刷新（持续优化模板）
+        const isExistingPlaceholder = existing.step_list?.is_placeholder === true;
+        if (!isExistingPlaceholder) {
+          skipped++;
+          continue;
+        }
+        // placeholder 记录，走刷新逻辑（下方代码会重新读取种子文件并 upsert）
+        isRefresh = true;
       }
 
       // 种子 JSON 文件路径：编译后 dist/services/content/stepListSeeder.js → ../../data/step-lists
@@ -51,13 +62,18 @@ export async function seedStepLists(): Promise<void> {
         seedData,
         seedData.description || `${platform} 种子数据`
       );
-      console.log(`[StepListSeeder] 已导入 ${platform} 种子数据 (id=${id}${seedData.is_placeholder ? ', placeholder' : ''})`);
-      imported++;
+      if (isRefresh) {
+        console.log(`[StepListSeeder] 已刷新 ${platform} 模板 (id=${id}${seedData.is_placeholder ? ', placeholder' : ''})`);
+        refreshed++;
+      } else {
+        console.log(`[StepListSeeder] 已导入 ${platform} 种子数据 (id=${id}${seedData.is_placeholder ? ', placeholder' : ''})`);
+        imported++;
+      }
     } catch (err: any) {
       console.error(`[StepListSeeder] 导入 ${platform} 失败:`, err.message);
       failed++;
     }
   }
 
-  console.log(`[StepListSeeder] 完成：导入 ${imported}，跳过 ${skipped}，失败 ${failed}`);
+  console.log(`[StepListSeeder] 完成：导入 ${imported}，刷新 ${refreshed}，跳过 ${skipped}，失败 ${failed}`);
 }
