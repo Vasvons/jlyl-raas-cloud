@@ -1039,7 +1039,7 @@ router.get('/publish-accounts', async (req: Request, res: Response) => {
 
 router.post('/publish-accounts', async (req: Request, res: Response) => {
   try {
-    const { platform, account_name, storage_state, avatar_url, pool_type, customer_id, proxy_id } = req.body;
+    const { platform, account_name, storage_state, avatar_url, expires_at, pool_type, customer_id, proxy_id } = req.body;
     if (!platform || !account_name || !storage_state) {
       return res.status(400).json({ code: 400, message: 'platform, account_name, storage_state 必填' });
     }
@@ -1051,6 +1051,7 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
       account_name,
       storage_state,
       avatar_url,
+      expires_at,
     });
     // 绑定代理（可选）
     if (proxy_id) {
@@ -1065,9 +1066,12 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
 router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { storage_state, status, health_status, proxy_id, account_name, avatar_url } = req.body;
+    const { storage_state, status, health_status, proxy_id, account_name, avatar_url, expires_at } = req.body;
     if (storage_state) {
-      await updatePublishAccountStorageState(id, storage_state);
+      await updatePublishAccountStorageState(id, storage_state, expires_at);
+    } else if (expires_at !== undefined) {
+      // 单独更新 expires_at（健康巡检回传）
+      await query('UPDATE platform_auth SET expires_at = $1 WHERE id = $2', [expires_at || null, id]);
     }
     if (status && health_status) {
       await updatePublishAccountStatus(id, status, health_status);

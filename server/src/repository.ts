@@ -4527,26 +4527,28 @@ export async function createPublishAccount(data: {
   account_name: string;
   storage_state: any;
   avatar_url?: string;
+  expires_at?: string;
 }): Promise<number> {
   const result = await query(
-    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, avatar_url, platform_type, status, health_status)
-     VALUES ($1, $2, $3, $4, $5, 'publish', 'active', 'normal')
+    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, avatar_url, expires_at, platform_type, status, health_status)
+     VALUES ($1, $2, $3, $4, $5, $6, 'publish', 'active', 'normal')
      RETURNING id`,
-    [data.user_id == null ? null : String(data.user_id), data.platform, data.account_name, JSON.stringify(data.storage_state), data.avatar_url || null]
+    [data.user_id == null ? null : String(data.user_id), data.platform, data.account_name, JSON.stringify(data.storage_state), data.avatar_url || null, data.expires_at || null]
   );
   return result.rows[0].id;
 }
 
-export async function updatePublishAccountStorageState(id: number, storageState: any): Promise<void> {
+export async function updatePublishAccountStorageState(id: number, storageState: any, expiresAt?: string): Promise<void> {
   await query(
     `UPDATE platform_auth
      SET storage_state = $2,
+         expires_at = $3,
          status = 'active',
          health_status = 'normal',
          offline_fail_count = 0,
          updated_at = NOW()
      WHERE id = $1`,
-    [id, JSON.stringify(storageState)]
+    [id, JSON.stringify(storageState), expiresAt || null]
   );
 }
 
