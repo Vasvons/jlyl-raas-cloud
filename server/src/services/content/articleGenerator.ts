@@ -354,10 +354,17 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   // illustration_count: 插图数量（每篇文章独立随机取）
   const coverMode = task.cover_image_mode || 'none';
   let fixedCoverUrl = '';
+  // v1.5.1：保存固定封面图的指纹（original_name + file_size），用于和插画去重
+  let fixedCoverFingerprint: { name: string; size: number } | null = null;
   if (coverMode === 'fixed' && task.cover_image_id) {
     try {
       const coverImg = await getImageById(task.cover_image_id);
-      if (coverImg) fixedCoverUrl = coverImg.url;
+      if (coverImg) {
+        fixedCoverUrl = coverImg.url;
+        if (coverImg.original_name && coverImg.file_size != null) {
+          fixedCoverFingerprint = { name: coverImg.original_name, size: coverImg.file_size };
+        }
+      }
     } catch (err) {
       console.warn('[ArticleGen] 获取指定封面图失败:', err);
     }
@@ -441,13 +448,23 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         // v1.5+：图库图片注入 prompt
         // 1. 封面图：coverMode='random' 时每篇随机取一张；'fixed' 时用 fixedCoverUrl
         // 2. 插画：illustration_count>0 时每篇随机取 N 张，由 AI 决定插入位置
+        // v1.5.1 去重：同一篇文章的封面和插画不能是同一张图
+        //   （按 original_name + file_size 判定，因为同一张图传到 cover/illustration 会有不同 OSS URL）
         let illustrationImageBlock = '';
+        let coverFingerprint: { name: string; size: number } | null = null;
         if (coverMode === 'fixed' && fixedCoverUrl) {
           coverUrlForArticle = fixedCoverUrl;
+          coverFingerprint = fixedCoverFingerprint;
         } else if (coverMode === 'random' && task.knowledge_id) {
           try {
             const randomCovers = await getRandomImages(userId, task.knowledge_id, 'cover', 1);
-            if (randomCovers.length > 0) coverUrlForArticle = randomCovers[0].url;
+            if (randomCovers.length > 0) {
+              coverUrlForArticle = randomCovers[0].url;
+              const c = randomCovers[0];
+              if (c.original_name && c.file_size != null) {
+                coverFingerprint = { name: c.original_name, size: c.file_size };
+              }
+            }
           } catch (err) {
             console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇取随机封面失败:`, err);
           }
@@ -455,9 +472,22 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         const illuCount = Math.max(0, Math.min(20, Number(task.illustration_count) || 0));
         if (illuCount > 0 && task.knowledge_id) {
           try {
-            const randomIllus = await getRandomImages(userId, task.knowledge_id, 'illustration', illuCount);
+            // 多取 5 张作为去重缓冲，过滤后取前 illuCount 张
+            const fetchCount = illuCount + 5;
+            let randomIllus = await getRandomImages(userId, task.knowledge_id, 'illustration', fetchCount);
+            if (randomIllus.length > 0 && coverFingerprint) {
+              randomIllus = randomIllus.filter((img: any) => {
+                return !(
+                  img.original_name &&
+                  img.original_name === coverFingerprint!.name &&
+                  img.file_size != null &&
+                  img.file_size === coverFingerprint!.size
+                );
+              });
+            }
             if (randomIllus.length > 0) {
-              const imgLines = randomIllus.map((img: any, idx: number) => `${idx + 1}. <img src="${img.url}" alt="插图${idx + 1}">`);
+              const selectedIllus = randomIllus.slice(0, illuCount);
+              const imgLines = selectedIllus.map((img: any, idx: number) => `${idx + 1}. <img src="${img.url}" alt="插图${idx + 1}">`);
               illustrationImageBlock = `\n\n【插画素材（请在正文合适位置插入以下 <img> 标签，每张图前应有承上启下的文字过渡，不要堆在一起）】\n${imgLines.join('\n')}`;
             }
           } catch (err) {
