@@ -1037,6 +1037,95 @@ router.get('/publish-accounts', async (req: Request, res: Response) => {
   }
 });
 
+// v1.5.6：健康巡检批量拉取（桌面端 healthCheckRunner 调用）
+// 返回所有有 storage_state 的发布账号 + 各平台 step_list 的 login_check 配置 + 代理信息
+// 桌面端用 Playwright 逐个检测登录态后，通过 POST /publish-accounts/:id/check-login 回传结果
+router.get('/publish-accounts/health-check-batch', async (req: Request, res: Response) => {
+  try {
+    // 1. 查询所有有 storage_state 的发布账号
+    const accountResult = await query(
+      `SELECT pa.id, pa.platform, pa.account_name, pa.storage_state,
+              pa.status, pa.health_status, pa.expires_at, pa.proxy_id
+       FROM platform_auth pa
+       WHERE pa.platform_type IN ('publish', 'both')
+         AND pa.storage_state IS NOT NULL
+       ORDER BY pa.platform ASC, pa.created_at DESC`
+    );
+    const accounts = accountResult.rows;
+    if (accounts.length === 0) {
+      res.json({ code: 200, data: [] });
+      return;
+    }
+
+    // 2. 批量查询各平台 step_list 的 login_check 配置（按 platform 去重缓存，避免 N+1）
+    const platformSet = new Set(accounts.map((a: any) => a.platform));
+    const stepListMap = new Map<string, any>();
+    for (const platform of platformSet) {
+      try {
+        const sl = await getStepListByPlatform(platform);
+        if (sl && sl.step_list) {
+          stepListMap.set(platform, {
+            login_check_url: sl.step_list.login_check_url,
+            login_check_selector: sl.step_list.login_check_selector,
+            logout_keywords: sl.step_list.logout_keywords,
+            is_placeholder: sl.step_list.is_placeholder || false,
+          });
+        }
+      } catch (e: any) {
+        console.warn(`[HealthCheck] 获取 ${platform} step_list 失败:`, e.message);
+      }
+    }
+
+    // 3. 批量查询代理信息（解密密码）
+    const proxyIds = [...new Set(accounts.map((a: any) => a.proxy_id).filter(Boolean))];
+    const proxyMap = new Map<number, any>();
+    if (proxyIds.length > 0) {
+      const proxyResult = await query(
+        `SELECT id, name, endpoint, username, password, region, proxy_type
+         FROM proxy_pool WHERE id = ANY($1::int[])`,
+        [proxyIds]
+      );
+      for (const row of proxyResult.rows) {
+        let password = row.password;
+        try { if (password) password = decrypt(password); } catch {}
+        proxyMap.set(row.id, {
+          id: row.id,
+          name: row.name,
+          endpoint: row.endpoint,
+          username: row.username,
+          password,
+          region: row.region,
+          proxy_type: row.proxy_type,
+        });
+      }
+    }
+
+    // 4. 组装返回数据（过滤掉无 login_check_url 的账号，无法检测）
+    const batch = accounts
+      .map((a: any) => {
+        const stepListInfo = stepListMap.get(a.platform);
+        if (!stepListInfo || !stepListInfo.login_check_url) return null;
+        return {
+          id: a.id,
+          platform: a.platform,
+          account_name: a.account_name,
+          storage_state: a.storage_state,
+          status: a.status,
+          health_status: a.health_status,
+          expires_at: a.expires_at,
+          login_check: stepListInfo,
+          proxy: a.proxy_id ? proxyMap.get(a.proxy_id) || null : null,
+        };
+      })
+      .filter(Boolean);
+
+    console.log(`[HealthCheck] 批量拉取: ${accounts.length} 个账号，${batch.length} 个可检测（有 login_check_url）`);
+    res.json({ code: 200, data: batch });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 router.post('/publish-accounts', async (req: Request, res: Response) => {
   try {
     const { platform, account_name, storage_state, avatar_url, expires_at, pool_type, customer_id, proxy_id } = req.body;
