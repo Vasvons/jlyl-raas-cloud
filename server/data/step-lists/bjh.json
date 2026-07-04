@@ -1,6 +1,6 @@
 {
   "platform": "bjh",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "百家号图文发布流程（基于 baidu.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://baijiahao.baidu.com/builder/rc/home",
@@ -110,9 +110,10 @@
     },
     {
       "type": "wait_for_selector",
-      "selector": "//p[text()=\"提交成功，正在审核中...\"]",
+      "selector": "//p[text()=\"提交成功，正在审核中...\"] | //p[contains(text(),\"提交成功\")] | //p[contains(text(),\"发布成功\")] | //div[contains(text(),\"审核中\")] | //div[contains(@class,\"success\")]",
       "descript": "等待发布成功",
-      "timeout": 30000
+      "is_try": true,
+      "timeout": 60000
     },
     {
       "type": "evaluate_edit",

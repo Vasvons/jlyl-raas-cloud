@@ -1,6 +1,6 @@
 {
   "platform": "dy",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "抖音图文发布流程（基于 tiktok.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
@@ -21,22 +21,32 @@
       "timeout": 15000
     },
     {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待上传组件加载"
+    },
+    {
       "type": "input_files",
-      "selector": "//input[@type='file']",
+      "selector": "//input[@type='file'] | //input[@accept='image/*'] | //div[contains(@class,'upload')]//input | //input",
       "files": ["{cover_image_url}"],
       "descript": "上传图片",
       "ai_fallback": true,
-      "ai_intent": "找到文件上传按钮并上传",
-      "timeout": 10000
+      "ai_intent": "找到抖音图文上传图片的文件选择按钮",
+      "timeout": 15000
+    },
+    {
+      "type": "timing",
+      "ms": 3000,
+      "descript": "等待图片上传完成"
     },
     {
       "type": "fill",
-      "selector": "//input[@placeholder='添加作品标题']",
+      "selector": "//input[@placeholder='添加作品标题'] | //input[contains(@placeholder,'标题')]",
       "value": "{title}",
       "descript": "填写标题",
       "ai_fallback": true,
       "ai_intent": "找到抖音标题输入框并填写",
-      "timeout": 5000
+      "timeout": 8000
     },
     {
       "type": "tags",

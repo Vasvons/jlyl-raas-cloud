@@ -32,19 +32,6 @@ export async function seedStepLists(): Promise<void> {
 
   for (const platform of SUPPORTED_PLATFORMS) {
     try {
-      const existing = await getStepListByPlatform(platform);
-      let isRefresh = false;
-      if (existing) {
-        // v1.7.0：若现有记录仍为 placeholder，用最新种子文件刷新（持续优化真实步骤）
-        const isExistingPlaceholder = existing.step_list?.is_placeholder === true;
-        if (!isExistingPlaceholder) {
-          skipped++;
-          continue;
-        }
-        // placeholder 记录，走刷新逻辑（下方代码会重新读取种子文件并 upsert）
-        isRefresh = true;
-      }
-
       // 种子 JSON 文件路径：编译后 dist/services/content/stepListSeeder.js → ../../data/step-lists
       const filePath = path.join(__dirname, '../../../data/step-lists', `${platform}.json`);
       if (!fs.existsSync(filePath)) {
@@ -55,20 +42,37 @@ export async function seedStepLists(): Promise<void> {
 
       const fileContent = fs.readFileSync(filePath, 'utf-8');
       const seedData = JSON.parse(fileContent);
+      const seedVersion = seedData?.version || '1.0.0';
+
+      const existing = await getStepListByPlatform(platform);
+      let isRefresh = false;
+      if (existing) {
+        // v1.7.0：若现有记录仍为 placeholder，用最新种子文件刷新（持续优化真实步骤）
+        const isExistingPlaceholder = existing.step_list?.is_placeholder === true;
+        // v1.7.1：若版本号不一致（种子有更新），用最新种子文件刷新
+        const dbVersion = existing.version || '';
+        const versionMismatch = !isExistingPlaceholder && dbVersion !== seedVersion;
+        if (!isExistingPlaceholder && !versionMismatch) {
+          skipped++;
+          continue;
+        }
+        // placeholder 或 版本不一致，走刷新逻辑（下方代码会重新 upsert）
+        isRefresh = true;
+      }
 
       // 整个 seedData（含 steps 数组、login_check_url 等元数据）作为 step_list 字段存储
       // 桌面端发布 Worker 通过 step_list.steps 遍历执行
       const id = await upsertStepList(
         platform,
-        seedData.version || '1.0.0',
+        seedVersion,
         seedData,
         seedData.description || `${platform} 种子数据`
       );
       if (isRefresh) {
-        console.log(`[StepListSeeder] 已刷新 ${platform} 模板 (id=${id}${seedData.is_placeholder ? ', placeholder' : ''})`);
+        console.log(`[StepListSeeder] 已刷新 ${platform} 模板 v${seedVersion} (id=${id}${seedData.is_placeholder ? ', placeholder' : ''})`);
         refreshed++;
       } else {
-        console.log(`[StepListSeeder] 已导入 ${platform} 种子数据 (id=${id}${seedData.is_placeholder ? ', placeholder' : ''})`);
+        console.log(`[StepListSeeder] 已导入 ${platform} 种子数据 v${seedVersion} (id=${id}${seedData.is_placeholder ? ', placeholder' : ''})`);
         imported++;
       }
     } catch (err: any) {
