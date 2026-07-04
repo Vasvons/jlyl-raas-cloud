@@ -4487,6 +4487,48 @@ export async function getPublishRecordsByTask(taskId: number): Promise<any[]> {
   return result.rows;
 }
 
+/**
+ * 重置发布记录为 pending（用于重试失败的记录）
+ * 支持：单条记录重试 / 按任务批量重试
+ */
+export async function retryPublishRecords(
+  taskId?: number,
+  recordId?: number
+): Promise<{ reset_count: number }> {
+  if (recordId) {
+    // 单条记录重试
+    const result = await query(
+      `UPDATE publish_record
+       SET status = 'pending',
+           error_msg = NULL,
+           started_at = NULL,
+           published_at = NULL
+       WHERE id = $1 AND status IN ('failed', 'login_expired')`,
+      [recordId]
+    );
+    return { reset_count: result.rowCount || 0 };
+  }
+  if (taskId) {
+    // 按任务批量重试
+    const result = await query(
+      `UPDATE publish_record
+       SET status = 'pending',
+           error_msg = NULL,
+           started_at = NULL,
+           published_at = NULL
+       WHERE task_id = $1 AND status IN ('failed', 'login_expired')`,
+      [taskId]
+    );
+    // 同时把任务状态恢复为 pending
+    await query(
+      `UPDATE publish_task SET status = 'pending' WHERE id = $1 AND status IN ('failed', 'completed')`,
+      [taskId]
+    );
+    return { reset_count: result.rowCount || 0 };
+  }
+  return { reset_count: 0 };
+}
+
 // ============ 内容中枢：发布型账号管理（platform_auth 改造） ============
 
 /**

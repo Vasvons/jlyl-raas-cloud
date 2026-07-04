@@ -41,6 +41,7 @@ import {
   updatePublishRecordResult,
   markPublishRecordStarted,
   getPublishRecordsByTask,
+  retryPublishRecords,
   getPublishAccounts,
   createPublishAccount,
   updatePublishAccountStorageState,
@@ -1007,6 +1008,28 @@ router.post('/publish/tasks/:id/cancel', async (req: Request, res: Response) => 
   }
 });
 
+// 重试发布任务（重置失败记录为 pending，让 Worker 重新拉取）
+router.post('/publish/tasks/:id/retry', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await retryPublishRecords(id);
+    res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 重试单条发布记录
+router.post('/publish/records/:id/retry', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await retryPublishRecords(undefined, id);
+    res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 // 桌面端 Worker 拉取待发布记录（dequeue：拉取 + 标记 started + 附带 step_list）
 router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
   try {
@@ -1069,6 +1092,7 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
             platform: stepList.platform,
             version: stepList.version,
             login_check_url: stepList.step_list?.login_check_url,
+            login_check_url_pattern: stepList.step_list?.login_check_url_pattern,
             login_check_selector: stepList.step_list?.login_check_selector,
             logout_keywords: stepList.step_list?.logout_keywords,
             steps: stepList.step_list?.steps || [],
