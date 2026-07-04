@@ -4450,16 +4450,19 @@ export async function updatePublishRecordResult(
   id: number,
   result: { status: string; article_id_on_platform?: string; platform_url?: string; error_msg?: string }
 ): Promise<void> {
+  // 注意：$2 同时用于 SET status 和 CASE 表达式，PostgreSQL prepared statement 会因
+  // 上下文推断类型不一致（varchar vs text）抛 "inconsistent types deduced for parameter $2"。
+  // 修复：用 $6 重复传入 status 参数，避免同一参数跨上下文。
   await query(
     `UPDATE publish_record
      SET status = $2,
          article_id_on_platform = $3,
          platform_url = $4,
          error_msg = $5,
-         published_at = CASE WHEN $2 = 'success' THEN NOW() ELSE published_at END,
+         published_at = CASE WHEN $6 = 'success' THEN NOW() ELSE published_at END,
          started_at = CASE WHEN started_at IS NULL THEN NOW() ELSE started_at END
      WHERE id = $1`,
-    [id, result.status, result.article_id_on_platform || null, result.platform_url || null, result.error_msg || null]
+    [id, result.status, result.article_id_on_platform || null, result.platform_url || null, result.error_msg || null, result.status]
   );
 }
 
