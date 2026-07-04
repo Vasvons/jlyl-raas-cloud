@@ -1,75 +1,118 @@
 {
   "platform": "bjh",
-  "version": "1.1.0",
-  "description": "百家号图文发布流程：baijiahao.baidu.com/builder/rc/edit（v1.5.6 混合模式，AI 视觉识别元素）",
-  "is_placeholder": true,
+  "version": "1.7.0",
+  "description": "百家号图文发布流程（基于 baidu.pyc 反编译的真实确定性步骤 + AI 兜底）",
+  "is_placeholder": false,
   "login_check_url": "https://baijiahao.baidu.com/builder/rc/home",
   "login_check_selector": "//div[contains(@class,'avatar')] | //img[contains(@class,'portrait')]",
+  "login_check_url_pattern": "^https://baijiahao\\.baidu\\.com/builder/theme/bjh/login",
   "logout_keywords": ["登录", "请登录", "sign in"],
   "steps": [
     {
       "type": "navigate",
-      "value": "https://baijiahao.baidu.com/builder/rc/edit",
-      "descript": "导航到百家号图文编辑页",
+      "value": "https://baijiahao.baidu.com/builder/rc/edit?type=news&is_from_cms=1",
+      "descript": "导航到百家号新建图文编辑页",
       "timeout": 30000
     },
     {
-      "type": "timing",
-      "ms": 3000,
-      "descript": "等待页面加载"
+      "type": "click",
+      "selector": "//span[text()=\"我知道了\"] | //button[@class=\"cheetah-tour-close\"] | div.c27d9e2f3e73a2ac-btn-close | //span[text()=\"好的\"]",
+      "descript": "关闭我知道了弹窗",
+      "is_try": true,
+      "timeout": 5000
     },
     {
-      "type": "ai_action",
-      "intent": "找到文章标题输入框（通常是页面上方的输入框，placeholder 可能含'标题'或'Title'）",
-      "ai_action": "fill",
+      "type": "fill",
+      "selector": "//div[@class=\"FeEditorApp-_9ddb7e475b559749-editor FeEditorApp-_377c94a778c072b3-editor\"] | //textarea[@placeholder=\"请输入标题\"]",
       "value": "{title}",
-      "max_retries": 2,
-      "descript": "AI识别标题框并填写标题"
+      "descript": "填写文章标题",
+      "ai_fallback": true,
+      "ai_intent": "找到文章标题输入框并填写标题",
+      "timeout": 5000
     },
     {
-      "type": "ai_action",
-      "intent": "找到正文编辑区域（通常是页面中间的可编辑区域，可能含'开始写作'或空白富文本区）并点击",
-      "ai_action": "click",
-      "max_retries": 2,
-      "descript": "AI识别正文区并点击"
+      "type": "iframe_selector",
+      "iframe": "iframe[id^=\"ueditor\"]",
+      "descript": "进入 ueditor 正文 iframe",
+      "is_list": [
+        {
+          "type": "press",
+          "selector": "body[contenteditable=\"true\"]",
+          "value": "{content}",
+          "descript": "输入正文",
+          "ai_fallback": true,
+          "ai_intent": "在 ueditor 编辑器中输入正文",
+          "timeout": 5000
+        }
+      ]
+    },
+    {
+      "type": "click",
+      "selector": "//span[text()=\"单图\"]",
+      "descript": "选择单图封面",
+      "is_try": true,
+      "timeout": 5000
+    },
+    {
+      "type": "click",
+      "selector": "div.DraggableTags-tag-drag div.coverUploaderView",
+      "descript": "点击上传图片焦点",
+      "is_try": true,
+      "timeout": 5000
+    },
+    {
+      "type": "click",
+      "selector": "//button//span[text()=\"确定 (1)\"]",
+      "descript": "确认图片",
+      "is_try": true,
+      "timeout": 5000
+    },
+    {
+      "type": "branch",
+      "condition": "data_item.ai_status === true",
+      "branch_steps": [
+        {
+          "type": "click",
+          "selector": "//span[text()=\"采用AI生成内容\"]",
+          "descript": "勾选AI创作声明",
+          "is_try": true,
+          "timeout": 5000
+        }
+      ],
+      "descript": "AI创作声明分支"
+    },
+    {
+      "type": "branch",
+      "condition": "data_item.guazai_phone === true",
+      "branch_steps": [
+        {
+          "type": "click",
+          "selector": "//span[text()=\"挂载营销通电话\"]",
+          "descript": "勾选挂载营销通电话",
+          "is_try": true,
+          "timeout": 5000
+        }
+      ],
+      "descript": "挂载营销通电话分支"
     },
     {
       "type": "timing",
       "ms": 1000,
-      "descript": "等待正文区聚焦"
+      "descript": "等待选项生效"
     },
     {
-      "type": "ai_action",
-      "intent": "在当前聚焦的正文编辑区域填入文章内容",
-      "ai_action": "fill",
-      "value": "{content}",
-      "max_retries": 2,
-      "descript": "AI识别正文区并填写内容"
+      "type": "click",
+      "selector": "//button//span[text()=\"发布\"] | //div[text()=\"发布\"]/parent::div",
+      "descript": "点击发布按钮",
+      "ai_fallback": true,
+      "ai_intent": "找到发布按钮并点击",
+      "timeout": 5000
     },
     {
-      "type": "ai_action",
-      "intent": "找到页面上的'发布'或'发表'按钮（通常在右上角或底部，红色或蓝色主色调）并点击",
-      "ai_action": "click",
-      "max_retries": 2,
-      "descript": "AI识别发布按钮并点击"
-    },
-    {
-      "type": "timing",
-      "ms": 2000,
-      "descript": "等待可能的确认弹窗"
-    },
-    {
-      "type": "ai_action",
-      "intent": "如果出现确认发布弹窗，找到'确认发布'或'确定'或'确认'按钮并点击",
-      "ai_action": "click",
-      "max_retries": 1,
-      "is_try": true,
-      "descript": "AI识别确认弹窗按钮（可选）"
-    },
-    {
-      "type": "timing",
-      "ms": 3000,
-      "descript": "等待发布完成跳转"
+      "type": "wait_for_selector",
+      "selector": "//p[text()=\"提交成功，正在审核中...\"]",
+      "descript": "等待发布成功",
+      "timeout": 30000
     },
     {
       "type": "evaluate_edit",

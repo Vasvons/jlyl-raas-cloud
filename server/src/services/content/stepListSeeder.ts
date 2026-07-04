@@ -18,9 +18,11 @@ const SUPPORTED_PLATFORMS = [
  * 2. 版本号 — 种子统一使用 1.0.0，便于后续通过版本号升级
  * 3. 占位 — 9 个未实现平台也导入占位 step_list（含 is_placeholder:true 标识），
  *           桌面端 Worker 检测到占位 step_list 时会跳过并提示用户
- * 4. 模板刷新（v1.5.6）— 若现有记录仍为 placeholder（is_placeholder=true），
- *    则用最新种子文件覆盖刷新，便于持续优化模板选择器；用户手动调试好的
- *    真实配置（is_placeholder=false/null）始终保留不被覆盖。
+ * 4. 真实步骤刷新（v1.7.0 真实步骤）— 9 个 placeholder 平台 step_list 已升级为基于
+ *    auth helper 反编译的真实确定性步骤，ai_action 仅作为 ai_fallback 兜底；若现有
+ *    记录仍为 placeholder（is_placeholder=true），用最新种子文件覆盖刷新，便于持续
+ *    优化真实步骤选择器；用户手动调试好的真实配置（is_placeholder=false/null）始终
+ *    保留不被覆盖。
  */
 export async function seedStepLists(): Promise<void> {
   let imported = 0;
@@ -33,7 +35,7 @@ export async function seedStepLists(): Promise<void> {
       const existing = await getStepListByPlatform(platform);
       let isRefresh = false;
       if (existing) {
-        // v1.5.6：若现有记录仍为 placeholder，用最新种子文件刷新（持续优化模板）
+        // v1.7.0：若现有记录仍为 placeholder，用最新种子文件刷新（持续优化真实步骤）
         const isExistingPlaceholder = existing.step_list?.is_placeholder === true;
         if (!isExistingPlaceholder) {
           skipped++;
@@ -75,5 +77,6 @@ export async function seedStepLists(): Promise<void> {
     }
   }
 
+  // v1.7.0 升级：9 平台 placeholder 改为真实确定性步骤，ai_action 降级为 ai_fallback 兜底
   console.log(`[StepListSeeder] 完成：导入 ${imported}，刷新 ${refreshed}，跳过 ${skipped}，失败 ${failed}`);
 }
