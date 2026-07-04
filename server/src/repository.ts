@@ -4383,15 +4383,17 @@ export async function updatePublishTaskStatus(
   completedDelta = 0,
   failedDelta = 0
 ): Promise<void> {
+  // 注意：$2 同时用于 SET 和 CASE 表达式会导致 PostgreSQL prepared statement
+  // "inconsistent types deduced for parameter $2" 错误，用 $5 重复传入 status 参数
   await query(
     `UPDATE publish_task
      SET status = $2,
          completed_count = completed_count + $3,
          failed_count = failed_count + $4,
-         started_at = CASE WHEN $2 = 'processing' AND started_at IS NULL THEN NOW() ELSE started_at END,
-         finished_at = CASE WHEN $2 IN ('completed', 'failed', 'partial') THEN NOW() ELSE finished_at END
+         started_at = CASE WHEN $5 = 'processing' AND started_at IS NULL THEN NOW() ELSE started_at END,
+         finished_at = CASE WHEN $5 IN ('completed', 'failed', 'partial') THEN NOW() ELSE finished_at END
      WHERE id = $1`,
-    [id, status, completedDelta, failedDelta]
+    [id, status, completedDelta, failedDelta, status]
   );
 }
 
