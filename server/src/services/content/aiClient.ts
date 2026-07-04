@@ -2,7 +2,19 @@ import axios from 'axios';
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  /**
+   * 消息内容。
+   * - 纯文本调用：string
+   * - vision/多模态调用：数组格式（OpenAI vision 协议）
+   *   [
+   *     { type: 'text', text: '请找到标题输入框' },
+   *     { type: 'image_url', image_url: { url: 'data:image/png;base64,...' } }
+   *   ]
+   */
+  content: string | Array<
+    | { type: 'text'; text: string }
+    | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }
+  >;
 }
 
 export interface ChatCompletionParams {

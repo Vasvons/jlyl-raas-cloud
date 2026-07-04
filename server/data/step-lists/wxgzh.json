@@ -1,63 +1,75 @@
 {
   "platform": "wxgzh",
-  "version": "1.0.0",
-  "description": "微信公众号图文发布流程：mp.weixin.qq.com（v1.5.6 模板，需基于实测调整选择器）",
+  "version": "1.1.0",
+  "description": "微信公众号图文发布流程：https://mp.weixin.qq.com/cgi-bin/appmsg（v1.5.6 混合模式，AI 视觉识别元素）",
   "is_placeholder": true,
-  "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home?t=home/index&lang=zh_CN",
-  "login_check_selector": "//div[contains(@class,'account_box')] | //a[contains(@class,'weui-desktop-btn')]",
-  "logout_keywords": ["登录", "请登录", "扫码登录"],
+  "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
+  "login_check_selector": "//div[contains(@class,'user-info')] | //div[contains(@class,'avatar')]",
+  "logout_keywords": ["登录", "请登录", "sign in"],
   "steps": [
     {
       "type": "navigate",
-      "value": "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit&action=edit&type=10&appmsgid=0&token=&lang=zh_CN",
-      "descript": "导航到微信公众号图文编辑页（新建图文）",
+      "value": "https://mp.weixin.qq.com/cgi-bin/appmsg",
+      "descript": "导航到微信公众号图文编辑页",
       "timeout": 30000
     },
     {
-      "type": "wait_for_selector",
-      "selector": "//input[@id='title'] | //input[contains(@class,'title-input')] | //textarea[contains(@class,'title')]",
-      "descript": "等待标题输入框",
-      "timeout": 15000
+      "type": "timing",
+      "ms": 3000,
+      "descript": "等待页面加载"
     },
     {
-      "type": "fill",
-      "selector": "//input[@id='title'] | //input[contains(@class,'title-input')]",
+      "type": "ai_action",
+      "intent": "找到文章标题输入框（通常是页面上方的输入框，placeholder 可能含'标题'或'Title'）",
+      "ai_action": "fill",
       "value": "{title}",
-      "descript": "填写标题",
-      "timeout": 5000
+      "max_retries": 2,
+      "descript": "AI识别标题框并填写标题"
     },
     {
-      "type": "click",
-      "selector": "//div[@id='ueditor_0'] | //div[@contenteditable='true'] | //body[contains(@class,'editor')]",
-      "descript": "点击正文编辑区（UEditor）",
-      "timeout": 5000
+      "type": "ai_action",
+      "intent": "找到正文编辑区域（通常是页面中间的可编辑区域，可能含'开始写作'或空白富文本区）并点击",
+      "ai_action": "click",
+      "max_retries": 2,
+      "descript": "AI识别正文区并点击"
     },
     {
-      "type": "content",
-      "selector": "//div[@id='ueditor_0'] | //div[@contenteditable='true'] | //body[contains(@class,'editor')]",
+      "type": "timing",
+      "ms": 1000,
+      "descript": "等待正文区聚焦"
+    },
+    {
+      "type": "ai_action",
+      "intent": "在当前聚焦的正文编辑区域填入文章内容",
+      "ai_action": "fill",
       "value": "{content}",
-      "descript": "粘贴正文",
-      "timeout": 10000
+      "max_retries": 2,
+      "descript": "AI识别正文区并填写内容"
     },
     {
-      "type": "click",
-      "selector": "//button[contains(text(),'群发')] | //a[contains(text(),'群发')] | //button[contains(text(),'发表')]",
-      "descript": "点击群发/发表按钮",
-      "timeout": 8000
+      "type": "ai_action",
+      "intent": "找到页面上的'发布'或'发表'按钮（通常在右上角或底部，红色或蓝色主色调）并点击",
+      "ai_action": "click",
+      "max_retries": 2,
+      "descript": "AI识别发布按钮并点击"
     },
     {
-      "type": "wait_for_selector",
-      "selector": "//button[contains(text(),'确定')] | //div[contains(@class,'weui-desktop-dialog')]",
-      "descript": "等待群发确认弹窗",
-      "timeout": 5000,
-      "is_try": true
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待可能的确认弹窗"
     },
     {
-      "type": "click",
-      "selector": "//button[contains(text(),'确定')] | //button[contains(text(),'确认发送')]",
-      "descript": "确认群发",
-      "timeout": 5000,
-      "is_try": true
+      "type": "ai_action",
+      "intent": "如果出现确认发布弹窗，找到'确认发布'或'确定'或'确认'按钮并点击",
+      "ai_action": "click",
+      "max_retries": 1,
+      "is_try": true,
+      "descript": "AI识别确认弹窗按钮（可选）"
+    },
+    {
+      "type": "timing",
+      "ms": 3000,
+      "descript": "等待发布完成跳转"
     },
     {
       "type": "evaluate_edit",

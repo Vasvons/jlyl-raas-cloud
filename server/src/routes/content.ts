@@ -70,9 +70,11 @@ import {
   updateImage,
   deleteImage,
   getRandomImages,
+  // AI 模型默认配置（v1.5.6 vision 路由用）
+  getDefaultModelConfig,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
-import { testModelConnection } from '../services/content/aiClient';
+import { testModelConnection, chatCompletion } from '../services/content/aiClient';
 import { executeWritingTask, regenerateArticle } from '../services/content/articleGenerator';
 import { extractTriplesFromKnowledge } from '../services/content/tripleExtractor';
 
@@ -244,6 +246,122 @@ router.post('/models/:id/test', async (req: Request, res: Response) => {
     });
     res.json({ code: 200, data: result });
   } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// v1.5.6：多模态 LLM 视觉识别路由（混合模式发布引擎用）
+// 桌面端 publishWorker 的 aiActionExecutor 截图后调用此路由，LLM 看图返回元素坐标
+// 请求体：{ screenshot: base64, intent: string, action: 'fill'|'click'|'verify', value?: string, model_config_id?: number }
+// 返回：{ success, x, y, confidence, reasoning, raw_response }
+router.post('/ai/vision', async (req: Request, res: Response) => {
+  try {
+    const { screenshot, intent, action, value, model_config_id } = req.body;
+    if (!screenshot || !intent) {
+      return res.status(400).json({ code: 400, message: 'screenshot, intent 必填' });
+    }
+
+    // 读取模型配置：优先指定 ID，其次用户默认配置
+    let modelConfig: any = null;
+    if (model_config_id) {
+      modelConfig = await getAiModelConfigById(Number(model_config_id));
+    } else {
+      const userId = getUserId(req);
+      modelConfig = await getDefaultModelConfig(userId);
+    }
+    if (!modelConfig || !modelConfig.api_key_encrypted) {
+      return res.status(400).json({ code: 400, message: '未配置 AI 模型或缺少 API-KEY，请先在后台配置 AI 模型' });
+    }
+
+    let apiKey = '';
+    try {
+      apiKey = decrypt(modelConfig.api_key_encrypted);
+    } catch {
+      return res.status(500).json({ code: 500, message: 'API-KEY 解密失败' });
+    }
+
+    const baseUrl = (modelConfig.base_url || '').trim().replace(/^['"`]|['"`]$/g, '');
+    const modelName = modelConfig.model_name;
+
+    // 构造 vision prompt：要求 LLM 返回严格 JSON
+    const actionDesc = action === 'fill'
+      ? `需要找到可输入文本的元素并填入"${value || ''}"。`
+      : action === 'click'
+      ? '需要找到可点击的按钮或元素并点击。'
+      : '需要验证当前页面状态是否符合预期。';
+
+    const systemPrompt = `你是一个专业的网页自动化助手。用户会给你一张网页截图和操作意图，你需要找到截图中最符合意图的元素，并返回该元素中心的归一化坐标。
+
+归一化坐标：x 和 y 都是 0 到 1 之间的浮点数，表示元素中心相对于截图宽高的比例位置。
+- 左上角是 (0, 0)
+- 右下角是 (1, 1)
+- 例如截图正中心是 (0.5, 0.5)
+
+你必须只返回一个 JSON 对象，不要有任何其他文字：
+{"x": 0.5, "y": 0.3, "confidence": 0.9, "reasoning": "标题输入框位于页面上方居中位置"}
+
+如果截图中找不到符合意图的元素，返回：
+{"x": -1, "y": -1, "confidence": 0, "reasoning": "截图中未找到相关元素"}`;
+
+    const userPrompt = `操作意图：${intent}
+${actionDesc}
+当前页面 URL 已知（截图为当前浏览器视图）。
+
+请分析截图，找到最符合操作意图的元素，返回其中心的归一化坐标。`;
+
+    console.log(`[POST /ai/vision] intent="${intent}", action=${action}, model=${modelName}, screenshot_len=${screenshot.length}`);
+
+    const result = await chatCompletion({
+      baseUrl,
+      apiKey,
+      model: modelName,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: userPrompt },
+            { type: 'image_url', image_url: { url: screenshot.startsWith('data:') ? screenshot : `data:image/png;base64,${screenshot}`, detail: 'high' } },
+          ],
+        },
+      ],
+      temperature: 0.1,
+      maxTokens: 500,
+      timeout: 60000,
+    });
+
+    // 解析 LLM 返回的 JSON
+    let parsed: any = null;
+    try {
+      // 尝试从返回内容中提取 JSON
+      const content = result.content || '';
+      const jsonMatch = content.match(/\{[^{}]*\}/);
+      if (jsonMatch) {
+        parsed = JSON.parse(jsonMatch[0]);
+      }
+    } catch {}
+
+    if (!parsed || typeof parsed.x !== 'number' || typeof parsed.y !== 'number') {
+      console.warn(`[POST /ai/vision] LLM 响应解析失败，原始内容: ${(result.content || '').slice(0, 300)}`);
+      return res.json({
+        code: 200,
+        data: { success: false, reason: 'LLM 响应解析失败', raw_response: result.content },
+      });
+    }
+
+    res.json({
+      code: 200,
+      data: {
+        success: parsed.x >= 0 && parsed.y >= 0,
+        x: parsed.x,
+        y: parsed.y,
+        confidence: parsed.confidence ?? 0.5,
+        reasoning: parsed.reasoning || '',
+        usage: result.usage,
+      },
+    });
+  } catch (err: any) {
+    console.error('[POST /ai/vision] 错误:', err.message);
     res.status(500).json({ code: 500, message: err.message });
   }
 });
