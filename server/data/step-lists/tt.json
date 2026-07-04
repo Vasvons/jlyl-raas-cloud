@@ -81,11 +81,24 @@
     },
     {
       "type": "click",
-      "selector": "//span[text()=\"预览并发布\"] | //span[text()=\"预览并定时发布\"]",
+      "selector": "div.byte-drawer-mask",
+      "descript": "关闭抽屉遮罩（如有）",
+      "is_try": true,
+      "timeout": 2000
+    },
+    {
+      "type": "timing",
+      "ms": 500,
+      "descript": "等待遮罩消失"
+    },
+    {
+      "type": "click",
+      "selector": "//span[text()=\"预览并发布\"] | //span[text()=\"预览并定时发布\"] | //button[contains(@class,\"byte-btn-primary\")]//span[text()=\"发布\"]",
       "descript": "预览并发布",
       "ai_fallback": true,
       "ai_intent": "找到头条发布按钮并点击",
-      "timeout": 5000
+      "timeout": 5000,
+      "force": true
     },
     {
       "type": "click",

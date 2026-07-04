@@ -51,19 +51,12 @@
     },
     {
       "type": "click",
-      "selector": "//button[text()=\"提交\"] | //span[text()=\"提交\"]",
-      "descript": "点击提交",
-      "ai_fallback": true,
-      "ai_intent": "找到企鹅号提交按钮并点击",
-      "timeout": 5000
-    },
-    {
-      "type": "click",
-      "selector": "//button[text()=\"发布\"] | //span[text()=\"发布\"]",
+      "selector": "//button[text()=\"发布\"] | //span[text()=\"发布\"] | //button//span[text()=\"发布\"] | //button[contains(@class,\"omui-btn-primary\")]//span",
       "descript": "点击发布",
       "ai_fallback": true,
       "ai_intent": "找到企鹅号发布按钮并点击",
-      "timeout": 5000
+      "timeout": 8000,
+      "force": true
     },
     {
       "type": "wait_for_url",
