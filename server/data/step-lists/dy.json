@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.4",
-  "description": "抖音图文发布流程（v1.7.4：修复发布按钮选择器，用 evaluate_edit 精准定位发布按钮排除保存草稿）",
+  "version": "1.7.5",
+  "description": "抖音图文发布流程（v1.7.5：修复图片上传等待——用 wait_for_selector 等待缩略图 + 关闭共创中心弹窗 + 发布前图片存在性检查）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
@@ -36,8 +36,31 @@
     },
     {
       "type": "timing",
-      "ms": 5000,
-      "descript": "等待图片上传完成（抖音 OSS 上传 + 服务端处理）"
+      "ms": 2000,
+      "descript": "等待图片开始上传（setInputFiles 触发后给浏览器 2 秒读取文件）"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const sleep = (ms) => new Promise(r => setTimeout(r, ms)); const start = Date.now(); let lastInfo = null; while (Date.now() - start < 30000) { const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const progressBars = document.querySelectorAll('.progress-bar, .uploading, [class*=\"progress\"], [class*=\"loading\"], [class*=\"uploading\"]'); const visibleImgs = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width > 30 && r.height > 30; }); const visibleProgress = Array.from(progressBars).filter(p => { const r = p.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); lastInfo = { imgCount: visibleImgs.length, progressCount: visibleProgress.length, elapsed: Math.round((Date.now() - start) / 1000) }; if (visibleImgs.length > 0 && visibleProgress.length === 0) { return { ok: true, ...lastInfo }; } await sleep(1000); } return { ok: false, ...lastInfo, reason: '等待 30 秒后图片仍未上传完成' };",
+      "descript": "等待图片上传完成（轮询检测缩略图出现 + 进度条消失，最多 30 秒）",
+      "timeout": 35000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const visible = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width > 30 && r.height > 30; }); const info = visible.map(i => ({ src: (i.src||'').slice(0, 80), w: Math.round(i.getBoundingClientRect().width), h: Math.round(i.getBoundingClientRect().height) })); return { count: visible.length, images: info.slice(0, 5) };",
+      "descript": "调试：列出页面上所有可见的已上传图片（src/尺寸）",
+      "timeout": 5000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const dialogs = document.querySelectorAll('.semi-modal-content, [role=\"dialog\"], .semi-modal'); for (const d of dialogs) { const r = d.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { const btns = d.querySelectorAll('button, [role=\"button\"]'); for (const b of btns) { const t = (b.innerText||b.textContent||'').trim(); if (t.includes('我知道了') || t.includes('知道了') || t.includes('确定') || t === '×' || t === '关闭') { b.click(); return { closed: true, btnText: t }; } } } } return { closed: false, reason: '无弹窗或未找到关闭按钮' };",
+      "descript": "关闭「共创中心」弹窗（点击我知道了/确定/×）",
+      "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 500,
+      "descript": "等待弹窗关闭动画"
     },
     {
       "type": "fill",
@@ -123,14 +146,20 @@
     },
     {
       "type": "evaluate_edit",
+      "value": "const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const visible = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width > 30 && r.height > 30; }); const dialogs = document.querySelectorAll('.semi-modal-content, [role=\"dialog\"]'); const visibleDialogs = Array.from(dialogs).filter(d => { const r = d.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); return { imageCount: visible.length, hasDialog: visibleDialogs.length > 0, dialogCount: visibleDialogs.length };",
+      "descript": "发布前最终检查：图片数量 + 弹窗状态",
+      "timeout": 5000
+    },
+    {
+      "type": "evaluate_edit",
       "value": "const btns = Array.from(document.querySelectorAll('button, [role=\"button\"], .btn-primary, .btn-publish')); const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); const info = visible.map(b => ({ tag: b.tagName, text: (b.innerText||b.textContent||'').trim().slice(0,30), cls: b.className, disabled: b.disabled, rect: { x: Math.round(b.getBoundingClientRect().x), y: Math.round(b.getBoundingClientRect().y) } })); return info;",
       "descript": "调试：列出页面上所有可见按钮（text/class/坐标）",
       "timeout": 5000
     },
     {
       "type": "evaluate_edit",
-      "value": "const btns = Array.from(document.querySelectorAll('button, [role=\"button\"], .btn-primary, .btn-publish, div[class*=\"publish\"] button')); const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !b.disabled; }); const text = b => (b.innerText||b.textContent||'').trim(); const isDraft = b => /草稿|存为草稿|存草稿/.test(text(b)); const isPublish = b => /^发布$|^直接发布$|^发布$/.test(text(b)) || (text(b).includes('发布') && !isDraft(b) && text(b).length <= 6); const candidates = visible.filter(b => isPublish(b) && !isDraft(b)); if (candidates.length === 0) { return { ok: false, reason: '未找到发布按钮', all: visible.map(b => ({text: text(b).slice(0,30), cls: b.className})) }; } const preferred = candidates.find(b => /btn-primary|primary|publish/.test(b.className)) || candidates[0]; try { preferred.click(); } catch(e) { preferred.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } return { ok: true, clicked: { text: text(preferred), cls: preferred.className, tag: preferred.tagName }, candidateCount: candidates.length, all: candidates.map(b => ({text: text(b).slice(0,30), cls: b.className})) };",
-      "descript": "用 JS 精准定位发布按钮并点击（排除保存草稿按钮）",
+      "value": "const btns = Array.from(document.querySelectorAll('button, [role=\"button\"], .btn-primary, .btn-publish, div[class*=\"publish\"] button')); const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !b.disabled; }); const text = b => (b.innerText||b.textContent||'').trim(); const isDraft = b => /草稿|存为草稿|存草稿/.test(text(b)); const isPublish = b => /^发布$|^直接发布$|^高清发布$/.test(text(b)) || (text(b).includes('发布') && !isDraft(b) && text(b).length <= 6); const candidates = visible.filter(b => isPublish(b) && !isDraft(b)); if (candidates.length === 0) { return { ok: false, reason: '未找到发布按钮', all: visible.map(b => ({text: text(b).slice(0,30), cls: b.className})) }; } const preferred = candidates.find(b => /btn-primary|primary|publish/.test(b.className)) || candidates[0]; try { preferred.click(); } catch(e) { preferred.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } return { ok: true, clicked: { text: text(preferred), cls: preferred.className, tag: preferred.tagName }, candidateCount: candidates.length, all: candidates.map(b => ({text: text(b).slice(0,30), cls: b.className})) };",
+      "descript": "用 JS 精准定位发布按钮并点击（支持「高清发布」，排除保存草稿按钮）",
       "timeout": 8000
     },
     {
