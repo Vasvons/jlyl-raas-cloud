@@ -4661,6 +4661,243 @@ export async function retryPublishRecords(
   return { reset_count: 0 };
 }
 
+/**
+ * v1.8.4：按写作任务聚合的发布任务列表（一级聚合视图）
+ *
+ * 通过 publish_task.article_id → article.task_id 间接关联到写作任务，
+ * 把同一写作任务下的所有 publish_task 聚合成一行。
+ *
+ * 聚合规则：
+ * - total_count = SUM(publish_task.total_count)  即文章×平台总数
+ * - completed_count = SUM(publish_task.completed_count)
+ * - failed_count = SUM(publish_task.failed_count)
+ * - article_count = COUNT(DISTINCT publish_task.article_id)  即文章数
+ * - status = 聚合状态：任一 processing → processing；否则按 completed/failed/partial/paused/pending 优先级
+ *
+ * 不关联写作任务的 publish_task（article.task_id IS NULL）归到一个虚拟分组 writing_task_id=NULL。
+ */
+export async function getPublishTasksGroupedByWritingTask(
+  userId: number,
+  page = 1,
+  pageSize = 20
+): Promise<{ list: any[]; total: number }> {
+  const offset = (page - 1) * pageSize;
+  // 计数：写作任务分组数（含 NULL 分组）
+  const totalResult = await query(
+    `SELECT COUNT(DISTINCT a.task_id) as total
+     FROM publish_task pt
+     JOIN article a ON a.id = pt.article_id
+     WHERE pt.user_id = $1`,
+    [userId]
+  );
+  // 列表：按 task_id 聚合
+  const result = await query(
+    `SELECT
+       a.task_id as writing_task_id,
+       wt.task_name as writing_task_name,
+       COUNT(DISTINCT pt.id) as publish_task_count,
+       COUNT(DISTINCT pt.article_id) as article_count,
+       SUM(pt.total_count) as total_count,
+       SUM(pt.completed_count) as completed_count,
+       SUM(pt.failed_count) as failed_count,
+       MIN(pt.create_time) as create_time,
+       MAX(pt.finished_at) as finished_at,
+       bool_or(pt.status = 'processing') as has_processing,
+       bool_or(pt.status = 'paused') as has_paused,
+       bool_or(pt.status = 'pending') as has_pending,
+       bool_or(pt.status = 'failed') as has_failed,
+       bool_or(pt.status = 'completed') as all_completed,
+       array_agg(DISTINCT unnested_platform) as platforms
+     FROM publish_task pt
+     JOIN article a ON a.id = pt.article_id
+     LEFT JOIN ai_writing_task wt ON wt.id = a.task_id
+     LEFT JOIN LATERAL unnest(pt.target_platforms) as unnested_platform ON true
+     WHERE pt.user_id = $1
+     GROUP BY a.task_id, wt.task_name
+     ORDER BY MIN(pt.create_time) DESC
+     LIMIT $2 OFFSET $3`,
+    [userId, pageSize, offset]
+  );
+
+  // 计算聚合状态
+  const list = result.rows.map((row: any) => {
+    let status: string;
+    if (row.has_processing) {
+      status = 'processing';
+    } else if (row.has_paused && row.has_pending) {
+      status = 'partial_paused';
+    } else if (row.has_paused) {
+      status = 'paused';
+    } else if (row.has_pending) {
+      status = 'pending';
+    } else if (row.has_failed && row.completed_count > 0) {
+      status = 'partial';
+    } else if (row.has_failed) {
+      status = 'failed';
+    } else if (row.all_completed) {
+      status = 'completed';
+    } else {
+      status = 'pending';
+    }
+    return {
+      ...row,
+      total_count: parseInt(row.total_count) || 0,
+      completed_count: parseInt(row.completed_count) || 0,
+      failed_count: parseInt(row.failed_count) || 0,
+      publish_task_count: parseInt(row.publish_task_count) || 0,
+      article_count: parseInt(row.article_count) || 0,
+      status,
+    };
+  });
+
+  return {
+    list,
+    total: parseInt(totalResult.rows[0].total) || 0,
+  };
+}
+
+/**
+ * v1.8.4：获取写作任务下的所有 publish_task（二级详情视图）
+ */
+export async function getPublishTasksByWritingTask(
+  userId: number,
+  writingTaskId: number
+): Promise<any[]> {
+  const result = await query(
+    `SELECT pt.*,
+            a.title as article_title,
+            a.core_keyword as article_keyword,
+            a.target_platform as article_target_platform
+     FROM publish_task pt
+     JOIN article a ON a.id = pt.article_id
+     WHERE pt.user_id = $1 AND a.task_id = $2
+     ORDER BY pt.id ASC`,
+    [userId, writingTaskId]
+  );
+  return result.rows;
+}
+
+/**
+ * v1.8.4：暂停发布任务
+ *
+ * 把 publish_task.status 置为 'paused'，dequeue SQL 的 `pt.status IN ('pending','processing')`
+ * 天然过滤掉 paused，Worker 不再消费该任务的新 record。
+ *
+ * 注意：已被 Worker 拉走正在处理的 record 不会被中止（Worker 内部继续执行），
+ * 但完成后回写时不会再触发新一轮消费。
+ */
+export async function pausePublishTask(id: number): Promise<void> {
+  await query(
+    `UPDATE publish_task
+     SET status = 'paused'
+     WHERE id = $1 AND status IN ('pending', 'processing')`,
+    [id]
+  );
+}
+
+/**
+ * v1.8.4：恢复暂停的发布任务
+ *
+ * 把 'paused' 状态恢复为 'pending'（如果有未完成的 record）
+ * 或保持原状态（如果已全部完成）。
+ */
+export async function resumePublishTask(id: number): Promise<void> {
+  await query(
+    `UPDATE publish_task
+     SET status = CASE
+       WHEN completed_count + failed_count >= total_count THEN
+         CASE WHEN completed_count = 0 THEN 'failed'
+              WHEN failed_count = 0 THEN 'completed'
+              ELSE 'partial' END
+       ELSE 'pending'
+     END
+     WHERE id = $1 AND status = 'paused'`,
+    [id]
+  );
+}
+
+/**
+ * v1.8.4：批量暂停/恢复（按写作任务 ID）
+ *
+ * 对该写作任务下所有 publish_task 执行操作。
+ */
+export async function batchPauseResumeByWritingTask(
+  userId: number,
+  writingTaskId: number,
+  action: 'pause' | 'resume'
+): Promise<{ affected: number }> {
+  if (action === 'pause') {
+    const result = await query(
+      `UPDATE publish_task pt
+       SET status = 'paused'
+       FROM article a
+       WHERE pt.article_id = a.id
+         AND pt.user_id = $1
+         AND a.task_id = $2
+         AND pt.status IN ('pending', 'processing')`,
+      [userId, writingTaskId]
+    );
+    return { affected: result.rowCount || 0 };
+  } else {
+    const result = await query(
+      `UPDATE publish_task pt
+       SET status = CASE
+         WHEN pt.completed_count + pt.failed_count >= pt.total_count THEN
+           CASE WHEN pt.completed_count = 0 THEN 'failed'
+                WHEN pt.failed_count = 0 THEN 'completed'
+                ELSE 'partial' END
+         ELSE 'pending'
+       END
+       FROM article a
+       WHERE pt.article_id = a.id
+         AND pt.user_id = $1
+         AND a.task_id = $2
+         AND pt.status = 'paused'`,
+      [userId, writingTaskId]
+    );
+    return { affected: result.rowCount || 0 };
+  }
+}
+
+/**
+ * v1.8.4：删除发布任务（级联清理 publish_record）
+ *
+ * 顺序：
+ * 1. DELETE publish_record WHERE task_id = $1
+ * 2. DELETE publish_task WHERE id = $1
+ *
+ * 注意：article 不删除，因为文章本身属于写作任务，发布任务只是引用。
+ */
+export async function deletePublishTask(id: number): Promise<void> {
+  await query(`DELETE FROM publish_record WHERE task_id = $1`, [id]);
+  await query(`DELETE FROM publish_task WHERE id = $1`, [id]);
+}
+
+/**
+ * v1.8.4：批量删除（按写作任务 ID）
+ *
+ * 删除该写作任务下所有 publish_task 及其 publish_record。
+ */
+export async function batchDeleteByWritingTask(
+  userId: number,
+  writingTaskId: number
+): Promise<{ deleted: number }> {
+  // 查出该写作任务下所有 publish_task.id
+  const idsResult = await query(
+    `SELECT pt.id FROM publish_task pt
+     JOIN article a ON pt.article_id = a.id
+     WHERE pt.user_id = $1 AND a.task_id = $2`,
+    [userId, writingTaskId]
+  );
+  const ids = idsResult.rows.map((r: any) => r.id);
+  if (ids.length === 0) return { deleted: 0 };
+
+  // 批量删除 publish_record 和 publish_task
+  await query(`DELETE FROM publish_record WHERE task_id = ANY($1::int[])`, [ids]);
+  await query(`DELETE FROM publish_task WHERE id = ANY($1::int[])`, [ids]);
+  return { deleted: ids.length };
+}
+
 // ============ 内容中枢：发布型账号管理（platform_auth 改造） ============
 
 /**
