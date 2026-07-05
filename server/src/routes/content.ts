@@ -1389,7 +1389,8 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
             title: r.article_title,
             content_html: r.article_content,
             tags: r.article_tags ? (typeof r.article_tags === 'string' ? JSON.parse(r.article_tags) : r.article_tags) : [],
-            cover_image_url: r.article_cover,
+            // v1.8.4：cover_image_url 兜底——若文章无封面图，从 image_library 取该客户第一张封面图
+            cover_image_url: r.article_cover || await getFallbackCoverImage(r.article_id),
           },
           scheduled_at: r.scheduled_at,
           step_list: stepList ? {
@@ -1915,5 +1916,34 @@ router.delete('/images/:id', async (req: Request, res: Response) => {
     res.status(500).json({ code: 500, message: err.message });
   }
 });
+
+/**
+ * v1.8.4：获取文章的兜底封面图
+ *
+ * 当文章自身 cover_image_url 为空时，从企业图库 image_library 取该文章对应客户的第一张封面图。
+ * 关联链路：article.task_id → ai_writing_task.knowledge_id → image_library.knowledge_id
+ */
+async function getFallbackCoverImage(articleId: number): Promise<string | null> {
+  try {
+    const result = await query(
+      `SELECT il.url
+       FROM image_library il
+       WHERE il.knowledge_id = (
+         SELECT wt.knowledge_id
+         FROM article a
+         JOIN ai_writing_task wt ON wt.id = a.task_id
+         WHERE a.id = $1
+       )
+       AND il.image_type = 'cover'
+       AND il.url IS NOT NULL
+       ORDER BY il.id ASC
+       LIMIT 1`,
+      [articleId]
+    );
+    return result.rows[0]?.url || null;
+  } catch {
+    return null;
+  }
+}
 
 export default router;

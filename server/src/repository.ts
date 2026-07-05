@@ -4554,32 +4554,67 @@ export async function cancelPublishTask(id: number): Promise<void> {
 
 // ============ 内容中枢：publish_record ============
 
+/**
+ * v1.8.4：拉取待发布记录
+ *
+ * 关键修复：
+ * 1. 加 FOR UPDATE SKIP LOCKED 行级锁，避免并发 dequeue 拿到相同记录
+ * 2. 配合 markPublishRecordStarted 的 pending→processing 原子更新，确保同一条 record 不会被重复拉取
+ * 3. 回收超时记录：started_at 超过 10 分钟且仍为 processing 的，重置为 pending 后再被拉取
+ *
+ * 同平台串行：用 DISTINCT ON 限制每个 platform 只取 1 条最早的 pending
+ */
 export async function getPendingPublishRecords(limit: number): Promise<any[]> {
-  // 拉取 pending 且 platform_auth_id 非空（无账号的直接跳过）
-  // 同平台串行：用 DISTINCT ON 限制每个 platform 只取 1 条最早的 pending
-  const result = await query(
-    `SELECT DISTINCT ON (pr.platform)
-            pr.id, pr.task_id, pr.platform, pr.platform_auth_id,
-            pt.article_id, pt.user_id, pt.scheduled_at,
-            a.title as article_title,
-            a.content_html as article_content,
-            a.tags as article_tags,
-            a.cover_image_url as article_cover,
-            pa.storage_state as account_storage_state,
-            pa.account_name as account_name
-     FROM publish_record pr
-     JOIN publish_task pt ON pt.id = pr.task_id
-     LEFT JOIN article a ON a.id = pt.article_id
-     LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
-     WHERE pr.status = 'pending'
-       AND pr.platform_auth_id IS NOT NULL
-       AND pt.status IN ('pending', 'processing')
-       AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
-     ORDER BY pr.platform, pr.create_time ASC
-     LIMIT $1`,
-    [limit]
-  );
-  return result.rows;
+  const client = await (await import('./db')).pool.connect();
+  try {
+    await client.query('BEGIN');
+    // 1. 先回收超时的 processing 记录（Worker 崩溃后卡死的记录）
+    await client.query(
+      `UPDATE publish_record
+       SET status = 'pending', started_at = NULL, error_msg = COALESCE(error_msg, '处理超时自动回收')
+       WHERE status = 'processing' AND started_at < NOW() - INTERVAL '10 minutes'`
+    );
+    // 2. 加行级锁拉取 pending 记录
+    const result = await client.query(
+      `SELECT DISTINCT ON (pr.platform)
+              pr.id, pr.task_id, pr.platform, pr.platform_auth_id,
+              pt.article_id, pt.user_id, pt.scheduled_at,
+              a.title as article_title,
+              a.content_html as article_content,
+              a.tags as article_tags,
+              a.cover_image_url as article_cover,
+              pa.storage_state as account_storage_state,
+              pa.account_name as account_name
+       FROM publish_record pr
+       JOIN publish_task pt ON pt.id = pr.task_id
+       LEFT JOIN article a ON a.id = pt.article_id
+       LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
+       WHERE pr.status = 'pending'
+         AND pr.platform_auth_id IS NOT NULL
+         AND pt.status IN ('pending', 'processing')
+         AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
+       ORDER BY pr.platform, pr.create_time ASC
+       LIMIT $1
+       FOR UPDATE OF pr SKIP LOCKED`,
+      [limit]
+    );
+    // 3. 立即把拉到的记录标记为 processing（在事务内原子完成，避免下次 poll 重复拉取）
+    const ids = result.rows.map((r: any) => r.id);
+    if (ids.length > 0) {
+      await client.query(
+        `UPDATE publish_record SET status = 'processing', started_at = NOW()
+         WHERE id = ANY($1::int[]) AND status = 'pending'`,
+        [ids]
+      );
+    }
+    await client.query('COMMIT');
+    return result.rows;
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function updatePublishRecordResult(
@@ -4602,9 +4637,26 @@ export async function updatePublishRecordResult(
   );
 }
 
+/**
+ * v1.8.4：标记 publish_record 开始处理
+ *
+ * 关键修复：把 status 从 'pending' 改为 'processing'，避免 publishWorker 30s 轮询时重复拉取同一条记录。
+ * 原实现只更新 started_at 不更新 status，导致 dequeue SQL 的 `WHERE status='pending'` 仍能匹配到正在处理的记录。
+ *
+ * 同时回收超时的 processing 记录：started_at 超过 10 分钟且仍为 processing 的，重置为 pending。
+ */
 export async function markPublishRecordStarted(id: number): Promise<void> {
+  // 1. 回收超时的 processing 记录（Worker 崩溃后卡死的记录）
   await query(
-    `UPDATE publish_record SET started_at = NOW() WHERE id = $1 AND started_at IS NULL`,
+    `UPDATE publish_record
+     SET status = 'pending', started_at = NULL, error_msg = COALESCE(error_msg, '处理超时自动回收')
+     WHERE id = $1 AND status = 'processing' AND started_at < NOW() - INTERVAL '10 minutes'`,
+    [id]
+  );
+  // 2. 原子地把 pending → processing（只有 status 仍为 pending 才会成功）
+  await query(
+    `UPDATE publish_record SET status = 'processing', started_at = NOW()
+     WHERE id = $1 AND status = 'pending'`,
     [id]
   );
 }

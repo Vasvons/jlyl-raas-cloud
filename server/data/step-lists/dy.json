@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.2",
-  "description": "抖音图文发布流程（v1.7.2：修复正文/话题/图片上传/封面/发布按钮）",
+  "version": "1.7.3",
+  "description": "抖音图文发布流程（v1.7.3：精确图片上传选择器，排除视频 input）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
@@ -27,11 +27,11 @@
     },
     {
       "type": "input_files",
-      "selector": "//input[@type='file'] | //input[@accept='image/*'] | //div[contains(@class,'upload')]//input | //input",
+      "selector": "//input[@type='file' and (@accept='image/*' or contains(@accept,'image'))] | //input[@type='file' and contains(@class,'image')] | //div[contains(@class,'image-upload')]//input[@type='file'] | //input[@type='file' and not(contains(@accept,'video'))]",
       "files": ["{cover_image_url}"],
-      "descript": "上传图片（封面图）",
+      "descript": "上传图片（封面图）- 精确匹配图片 input，排除视频 input",
       "ai_fallback": true,
-      "ai_intent": "找到抖音图文上传图片的文件选择按钮",
+      "ai_intent": "找到抖音图文上传图片的文件选择按钮（注意不要选到视频上传 input）",
       "timeout": 15000
     },
     {

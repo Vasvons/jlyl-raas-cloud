@@ -735,6 +735,30 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
       }
       const safeCoreKeyword = (kw?.value || '').slice(0, 120);
       const safeModelUsed = (modelUsed || '').slice(0, 60);
+
+      // v1.8.4：从 core_keyword + entity_triples 派生 tags 数组
+      // 写作阶段不调用 AI 生成话题，而是从已有数据派生，确保与文章内容强关联
+      // 来源优先级：core_keyword 拆词 → entity_triples 实体名 → 截断到 5 个
+      const derivedTags: string[] = [];
+      const coreKw = (kw?.value || '').trim();
+      if (coreKw) {
+        // 按常见分隔符拆分 core_keyword
+        const parts = coreKw.split(/[，,、|/;\s]+/).map((s: string) => s.trim()).filter(Boolean);
+        derivedTags.push(...parts);
+      }
+      if (Array.isArray(enterpriseInfo.entity_triples)) {
+        for (const t of enterpriseInfo.entity_triples) {
+          if (derivedTags.length >= 5) break;
+          // entity_triples 每条形如 {subject, predicate, object}，取 subject 作为 tag
+          const subj = t?.subject || (typeof t === 'string' ? t : '');
+          if (subj && !derivedTags.includes(subj)) {
+            derivedTags.push(String(subj).slice(0, 20));
+          }
+        }
+      }
+      // 截断到 5 个，每个不超过 20 字
+      const articleTags = derivedTags.slice(0, 5).map(t => t.slice(0, 20));
+
       const articleId = await createArticle({
         user_id: userId,
         task_id: taskId,
@@ -749,6 +773,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         status: 'generated',
         model_used: safeModelUsed,
         cover_image_url: coverUrlForArticle || null,
+        tags: articleTags, // v1.8.4：派生 tags 用于发布时添加话题
       });
 
       // 异步生成 embedding（不阻塞主流程，失败不影响文章生成）
