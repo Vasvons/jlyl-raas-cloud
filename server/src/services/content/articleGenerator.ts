@@ -442,6 +442,9 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   // v1.4+：按用户设定的 total_count 循环生成，不再按关键词一对一
   // 关键词列表作为整体主题参考注入到每篇文章的 prompt 中
   // AI 根据 指令 + 知识库 + 专家 + 关键词列表 + 历史记忆 + RAG 自行决定每篇文章的主题
+  // v1.8.1：维护当前篇的 prompt 总长度，供 catch 块诊断 token 超限错误
+  let currentPromptTotalLen = 0;
+
   for (let i = 0; i < totalCount; i++) {
     try {
       let title = '';
@@ -498,7 +501,14 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         });
 
         // 1. 先做占位符替换（向后兼容用户在模板里写的 {enterprise} {keyword} 等）
-        let articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
+        // v1.8.1：article_prompt 模板长度保护，避免写作指令过长导致 prompt 超出模型上下文窗口
+        const MAX_ARTICLE_PROMPT_LEN = 30000; // 3 万字符 ≈ 8K tokens
+        let rawArticlePrompt = task.article_prompt || '';
+        if (rawArticlePrompt.length > MAX_ARTICLE_PROMPT_LEN) {
+          console.warn(`[ArticleGen] article_prompt 过长已截断: 原长=${rawArticlePrompt.length}, 截断到 ${MAX_ARTICLE_PROMPT_LEN}`);
+          rawArticlePrompt = rawArticlePrompt.slice(0, MAX_ARTICLE_PROMPT_LEN) + '\n\n[...写作指令已截断...]';
+        }
+        let articlePrompt = buildPrompt(directionCtx + rawArticlePrompt, {
           keyword: keywordsListStr || '',
           enterprise: enterpriseInfo,
           wordCount: task.target_word_count,
@@ -513,6 +523,9 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           console.log('[ArticleGen][L0专家] skills 长度:', (task.agent_skills_content || '').length, '预览:', (task.agent_skills_content || '').slice(0, 100));
           console.log('[ArticleGen][L1客户] company_full_name:', task.company_full_name, '/ industry:', task.industry, '/ intro_text 长度:', (task.intro_text || '').length);
           console.log('[ArticleGen][L1客户] products_services 长度:', (task.products_services || '').length, '/ user_pain_points 长度:', (task.user_pain_points || '').length);
+          console.log('[ArticleGen][L1客户] cases_text 长度:', (task.cases_text || '').length, '/ product_features 长度:', (task.product_features || '').length);
+          console.log('[ArticleGen][L1客户] trust_endorsement 长度:', (task.trust_endorsement || '').length, '/ other_info 长度:', (task.other_info || '').length);
+          console.log('[ArticleGen][L1客户] business_scope 长度:', (task.business_scope || '').length);
           console.log('[ArticleGen][L1客户] entity_triples 数量:', Array.isArray(task.entity_triples) ? task.entity_triples.length : 0);
           console.log('[ArticleGen][L2历史] recentArticles 数量:', recentArticles.length);
           console.log('[ArticleGen][L3效果] performanceMemory 数量:', performanceMemory.length);
@@ -525,6 +538,13 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           console.log('[ArticleGen][创作方向] directionCtx 长度:', directionCtx.length, '内容:', directionCtx.slice(0, 200));
           console.log('[ArticleGen][最终 systemMessage] 总长度:', writingCtx.systemMessage.length, '前300字符:', writingCtx.systemMessage.slice(0, 300));
           console.log('[ArticleGen][最终 userPrompt] 总长度:', articlePrompt.length, '前300字符:', articlePrompt.slice(0, 300));
+          // v1.8.1：总长度诊断 + 警告
+          const totalLen = writingCtx.systemMessage.length + articlePrompt.length;
+          const estimatedTokens = Math.ceil(totalLen / 3.5); // 粗估：1 token ≈ 3.5 字符（中文）
+          console.log('[ArticleGen][Token估算] 总字符:', totalLen, '/ 估算 tokens:', estimatedTokens);
+          if (estimatedTokens > 30000) {
+            console.warn('[ArticleGen][WARNING] 估算 token 数 > 30K，可能超出模型上下文窗口！请检查上述各层长度，缩短写作指令或企业知识库内容');
+          }
         }
 
         // v1.5+：图库图片注入 prompt
@@ -593,6 +613,9 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
               { role: 'user', content: articlePrompt },
             ]
           : [{ role: 'user', content: articlePrompt }];
+
+        // v1.8.1：记录当前篇 prompt 总长度，供 catch 块诊断 token 超限错误
+        currentPromptTotalLen = writingCtx.systemMessage.length + articlePrompt.length;
 
         // 调AI生成文章正文
         // 注意：不传 maxTokens，让平台用默认值（豆包等平台对 max_tokens 有硬截断行为，
@@ -728,7 +751,13 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
     } catch (err: any) {
       failCount++;
       // 用 extractApiErrorMessage 提取各平台兼容的错误信息，避免只看到 axios 通用消息
-      const errMsg = extractApiErrorMessage(err) || err?.message || String(err);
+      let errMsg = extractApiErrorMessage(err) || err?.message || String(err);
+      // v1.8.1：识别 token 超限错误，给出具体修复建议
+      const errStr = String(errMsg).toLowerCase();
+      if (errStr.includes('max_new_tokens') || errStr.includes('context length') || (errStr.includes('token') && (errStr.includes('exceed') || errStr.includes('must be')))) {
+        errMsg += `\n\n[修复建议] prompt 总长度约 ${currentPromptTotalLen} 字符（估算 ${Math.ceil(currentPromptTotalLen / 3.5)} tokens），超出模型上下文窗口。请：1) 缩短写作指令（article_prompt）；2) 缩短企业知识库各字段内容（intro_text/cases_text/products_services 等）；3) 切换到更大上下文窗口的模型（如 deepseek-chat 64K、moonshot-v1-128k 128K、glm-4-long 128K）。`;
+        console.error(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇 token 超限！总字符=${currentPromptTotalLen}, 估算 tokens=${Math.ceil(currentPromptTotalLen / 3.5)}`);
+      }
       errors.push(`第 ${i + 1} 篇生成失败：${errMsg}`);
       console.error(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇生成失败:`, errMsg);
       await updateWritingTaskProgress(taskId, 0, 1);

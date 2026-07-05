@@ -143,7 +143,33 @@ function buildLayer0ExpertPersona(task: any): string {
 
 /** L1 客户档案层：enterprise_knowledge 全字段 */
 function buildLayer1CustomerProfile(task: any): string {
-  const enterpriseInfo = buildEnterpriseInfo(task);
+  // v1.8.1：字段级长度保护，避免某个字段过长导致 prompt 超出模型上下文窗口
+  // 经验阈值：单字段 5000 字符（约 1400 tokens），entity_triples 最多 50 条
+  const MAX_FIELD_LEN = 5000;
+  const MAX_TRIPLES = 50;
+  const truncateField = (val: any): string => {
+    const s = typeof val === 'string' ? val : (val == null ? '' : String(val));
+    if (s.length > MAX_FIELD_LEN) {
+      console.warn(`[ContextBuilder][L1] 字段超长已截断: 原长=${s.length}, 截断到 ${MAX_FIELD_LEN}`);
+      return s.slice(0, MAX_FIELD_LEN) + '\n[...已截断...]';
+    }
+    return s;
+  };
+
+  const enterpriseInfo = buildEnterpriseInfo({
+    ...task,
+    intro_text: truncateField(task.intro_text),
+    cases_text: truncateField(task.cases_text),
+    business_scope: truncateField(task.business_scope),
+    products_services: truncateField(task.products_services),
+    product_features: truncateField(task.product_features),
+    user_pain_points: truncateField(task.user_pain_points),
+    trust_endorsement: truncateField(task.trust_endorsement),
+    other_info: truncateField(task.other_info),
+    entity_triples: Array.isArray(task.entity_triples)
+      ? task.entity_triples.slice(0, MAX_TRIPLES)
+      : task.entity_triples,
+  });
   const entText = formatEnterprise(enterpriseInfo);
   if (!entText) return '';
 
