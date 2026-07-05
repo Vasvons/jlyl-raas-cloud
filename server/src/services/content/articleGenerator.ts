@@ -316,8 +316,23 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   // 获取关键词详情（v1.4+：关键词库作为主题参考，可为空）
   const keywordIds: number[] = task.keyword_ids || [];
   const keywords = await getKeywordsByIds(keywordIds);
+
+  // v1.8.1：限制注入 prompt 的关键词数量，避免关键词库过大（如 15000+ 个）导致 token 超限
+  // 根因：之前 keywordsListStr 全量注入 {keyword} 占位符 + L4 主题参考层全量注入 = 关键词被注入两次
+  // 15000 个关键词 × ~10 字符 × 2 次 ≈ 300K 字符 ≈ 130K tokens，远超模型上下文窗口
+  const MAX_KEYWORDS_FOR_PROMPT = 100;   // {keyword} 占位符替换用，前 100 个足够 AI 理解主题方向
+  const MAX_KEYWORDS_FOR_CONTEXT = 200;  // L4 主题参考层用，前 200 个作为主题候选
+  const keywordsForPrompt = keywords.length > MAX_KEYWORDS_FOR_PROMPT
+    ? keywords.slice(0, MAX_KEYWORDS_FOR_PROMPT)
+    : keywords;
+  const keywordsForContext = keywords.length > MAX_KEYWORDS_FOR_CONTEXT
+    ? keywords.slice(0, MAX_KEYWORDS_FOR_CONTEXT)
+    : keywords;
   // 关键词列表字符串（顿号连接），注入到 prompt 中作为主题参考
-  const keywordsListStr = keywords.map((k: any) => k.value).join('、');
+  const keywordsListStr = keywordsForPrompt.map((k: any) => k.value).join('、');
+  if (keywords.length > MAX_KEYWORDS_FOR_PROMPT) {
+    console.warn(`[ArticleGen] 任务 ${taskId} 关键词库过大：共 ${keywords.length} 个，已截断到前 ${MAX_KEYWORDS_FOR_PROMPT} 个注入 {keyword} 占位符，前 ${MAX_KEYWORDS_FOR_CONTEXT} 个传入 L4 主题参考层`);
+  }
 
   // 文章篇数：由用户在创建任务时手动设定（task.total_count）
   const totalCount: number = Math.max(1, Number(task.total_count) || 1);
@@ -491,9 +506,10 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         }
 
         // 构建分层写作上下文（L0专家 + L1客户档案 + L2历史 + L3效果/策略 + L5 RAG）
+        // v1.8.1：使用截断后的 keywordsForContext（前 200 个），避免 L4 主题参考层全量注入导致 token 超限
         const writingCtx = buildWritingContext({
           task,
-          keywords: keywords.map((k: any) => k.value),
+          keywords: keywordsForContext.map((k: any) => k.value),
           recentArticles,
           performanceMemory,
           strategyMemory,
@@ -530,7 +546,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           console.log('[ArticleGen][L2历史] recentArticles 数量:', recentArticles.length);
           console.log('[ArticleGen][L3效果] performanceMemory 数量:', performanceMemory.length);
           console.log('[ArticleGen][L3策略] strategyMemory 数量:', strategyMemory.length);
-          console.log('[ArticleGen][L4主题] keywords 数量:', keywords.length, '前5:', keywords.slice(0, 5).map((k: any) => k.value));
+          console.log('[ArticleGen][L4主题] keywords 总数:', keywords.length, '/ 注入 {keyword} 数量:', keywordsForPrompt.length, '/ 注入 L4 数量:', keywordsForContext.length, '前5:', keywords.slice(0, 5).map((k: any) => k.value));
           console.log('[ArticleGen][L5RAG] ragSnippets 数量:', ragSnippets.length);
           console.log('[ArticleGen][L6平台] currentPlatform:', currentPlatform, '/ rule:', currentPlatformRule ? `${currentPlatformRule.name} 标题${currentPlatformRule.title_min_length}-${currentPlatformRule.title_max_length}字 正文${currentPlatformRule.content_min_length}-${currentPlatformRule.content_max_length}字` : '无（通用模式）');
           console.log('[ArticleGen][写作指令] article_prompt 长度:', (task.article_prompt || '').length, '预览:', (task.article_prompt || '').slice(0, 200));

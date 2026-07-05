@@ -122,7 +122,14 @@ function formatTriples(triples: Array<{ subject: string; relation: string; objec
 /** 格式化关键词列表 */
 function formatKeywords(keywords: string[]): string {
   if (!keywords || keywords.length === 0) return '';
-  return keywords.join('、');
+  // v1.8.1：兜底数量限制，防止调用方传入超大关键词库（如 15000+ 个）导致 prompt token 超限
+  // 上游 articleGenerator 已限制到 200 个，这里再兜底截断到 300 个（双保险）
+  const MAX_KEYWORDS = 300;
+  const list = keywords.length > MAX_KEYWORDS ? keywords.slice(0, MAX_KEYWORDS) : keywords;
+  if (keywords.length > MAX_KEYWORDS) {
+    console.warn(`[ContextBuilder] formatKeywords 关键词数量过大：${keywords.length}，已截断到前 ${MAX_KEYWORDS} 个`);
+  }
+  return list.join('、');
 }
 
 // ---------- 各层构建函数 ----------
