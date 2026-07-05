@@ -1213,11 +1213,50 @@ export async function migrate() {
     // 同一 batch_id 下的所有 publish_task 是一个"任务记录"（一次创建动作）
     // 用于一级聚合视图，避免按 writing_task_id 聚合时多次创建被合并
     await client.query(`ALTER TABLE publish_task ADD COLUMN IF NOT EXISTS batch_id UUID`);
-    // 为旧数据回填 batch_id（每行独立一个 UUID，避免旧数据聚合异常）
+
+    // v1.8.4 修复：重置并按 (user_id, article.task_id, 创建时间分钟) 聚合回填
+    // 同一写作任务、同一分钟内创建的 publish_task 视为同一次批量创建动作
+    // 注意：这里强制重置所有 batch_id（包括之前回填的独立 UUID），统一按规则聚合
+    // 新任务由 batch-publish 路由写入真实 batch_id，但因为同一次创建的 create_time 几乎相同，
+    // 按分钟聚合后仍然会归到同一 batch_id，所以重置不会破坏新任务的聚合关系
+    await client.query(`
+      WITH grouped AS (
+        SELECT
+          pt.id,
+          pt.user_id,
+          a.task_id,
+          date_trunc('minute', pt.create_time) as create_minute
+        FROM publish_task pt
+        JOIN article a ON a.id = pt.article_id
+      ),
+      batch_assign AS (
+        SELECT
+          id,
+          md5(
+            COALESCE(user_id::text, '') || '|' ||
+            COALESCE(task_id::text, 'null') || '|' ||
+            COALESCE(to_char(create_minute, 'YYYY-MM-DD HH24:MI:SS'), '')
+          ) as batch_hash
+        FROM grouped
+      )
+      UPDATE publish_task pt
+      SET batch_id = (
+        SELECT (substring(b.batch_hash from 1 for 8) ||
+                '-' || substring(b.batch_hash from 9 for 4) ||
+                '-' || substring(b.batch_hash from 13 for 4) ||
+                '-' || substring(b.batch_hash from 17 for 4) ||
+                '-' || substring(b.batch_hash from 21 for 12))::uuid
+        FROM batch_assign b
+        WHERE b.id = pt.id
+      )
+    `);
+
+    // 仍为 NULL 的（无 article 关联等异常情况）回填独立 UUID
     await client.query(`UPDATE publish_task SET batch_id = gen_random_uuid() WHERE batch_id IS NULL`);
+
     await client.query(`CREATE INDEX IF NOT EXISTS idx_publish_task_batch ON publish_task(batch_id)`);
 
-    console.log('[Migrate] v1.8.4 publish_task.batch_id 字段添加完成');
+    console.log('[Migrate] v1.8.4 publish_task.batch_id 字段添加完成（按写作任务+分钟聚合回填）');
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {
