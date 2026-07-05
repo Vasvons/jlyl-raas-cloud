@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.3",
-  "description": "抖音图文发布流程（v1.7.3：精确图片上传选择器，排除视频 input）",
+  "version": "1.7.4",
+  "description": "抖音图文发布流程（v1.7.4：修复发布按钮选择器，用 evaluate_edit 精准定位发布按钮排除保存草稿）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
@@ -122,13 +122,27 @@
       "descript": "等待表单稳定"
     },
     {
-      "type": "click",
-      "selector": "//button[.//span[text()=\"发布\"]] | //button[text()=\"发布\"] | //span[text()=\"直接发布\"] | //button[contains(@class,'btn-primary')]//span[text()=\"发布\"] | //div[contains(@class,'publish')]//button",
-      "descript": "点击发布按钮",
-      "ai_fallback": true,
-      "ai_intent": "找到抖音发布按钮并点击（注意不要误点保存草稿按钮）",
-      "timeout": 8000,
-      "force": true
+      "type": "evaluate_edit",
+      "value": "const btns = Array.from(document.querySelectorAll('button, [role=\"button\"], .btn-primary, .btn-publish')); const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); const info = visible.map(b => ({ tag: b.tagName, text: (b.innerText||b.textContent||'').trim().slice(0,30), cls: b.className, disabled: b.disabled, rect: { x: Math.round(b.getBoundingClientRect().x), y: Math.round(b.getBoundingClientRect().y) } })); return info;",
+      "descript": "调试：列出页面上所有可见按钮（text/class/坐标）",
+      "timeout": 5000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const btns = Array.from(document.querySelectorAll('button, [role=\"button\"], .btn-primary, .btn-publish, div[class*=\"publish\"] button')); const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !b.disabled; }); const text = b => (b.innerText||b.textContent||'').trim(); const isDraft = b => /草稿|存为草稿|存草稿/.test(text(b)); const isPublish = b => /^发布$|^直接发布$|^发布$/.test(text(b)) || (text(b).includes('发布') && !isDraft(b) && text(b).length <= 6); const candidates = visible.filter(b => isPublish(b) && !isDraft(b)); if (candidates.length === 0) { return { ok: false, reason: '未找到发布按钮', all: visible.map(b => ({text: text(b).slice(0,30), cls: b.className})) }; } const preferred = candidates.find(b => /btn-primary|primary|publish/.test(b.className)) || candidates[0]; try { preferred.click(); } catch(e) { preferred.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } return { ok: true, clicked: { text: text(preferred), cls: preferred.className, tag: preferred.tagName }, candidateCount: candidates.length, all: candidates.map(b => ({text: text(b).slice(0,30), cls: b.className})) };",
+      "descript": "用 JS 精准定位发布按钮并点击（排除保存草稿按钮）",
+      "timeout": 8000
+    },
+    {
+      "type": "timing",
+      "ms": 1500,
+      "descript": "等待发布按钮点击响应"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const url = window.location.href; const hasDialog = !!document.querySelector('.semi-modal-content, [role=\"dialog\"]'); const dialogText = hasDialog ? (document.querySelector('.semi-modal-content, [role=\"dialog\"]')?.innerText||'').slice(0,200) : ''; const errorMsg = (document.querySelector('.toast-error, .error-msg, .semi-toast-content')?.innerText||'').slice(0,200); return { url, hasDialog, dialogText, errorMsg };",
+      "descript": "调试：点击发布按钮后检查页面状态（URL/弹窗/错误）",
+      "timeout": 3000
     },
     {
       "type": "wait_for_url",
