@@ -1189,6 +1189,10 @@ export async function migrate() {
     // 旧任务该字段为 NULL，向后兼容（按通用流程生成单篇通用文章）
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS target_platforms JSONB`);
 
+    // article 表新增 target_platform 字段：v1.4 预留未启用，v1.8.0 正式启用
+    // 必须先 ADD COLUMN 再创建索引，否则索引创建会因列不存在而失败
+    await client.query(`ALTER TABLE article ADD COLUMN IF NOT EXISTS target_platform VARCHAR(32)`);
+
     // article 表新增索引：按 (task_id, target_platform) 查询文章（按任务+平台筛选）
     await client.query(`CREATE INDEX IF NOT EXISTS idx_article_task_platform ON article(task_id, target_platform)`);
 
