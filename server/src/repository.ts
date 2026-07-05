@@ -4562,8 +4562,9 @@ export async function cancelPublishTask(id: number): Promise<void> {
  * 2. 配合 markPublishRecordStarted 的 pending→processing 原子更新，确保同一条 record 不会被重复拉取
  * 3. 回收超时记录：started_at 超过 10 分钟且仍为 processing 的，重置为 pending 后再被拉取
  *
- * 同平台串行：用窗口函数 row_number() 限制每个 platform 只取 1 条最早的 pending
- * 注意：PostgreSQL 不允许 DISTINCT ON 与 FOR UPDATE 同时使用，改用子查询 + row_number()
+ * 同平台串行：每个 platform 只取 1 条最早的 pending
+ * 实现方式：CTE 先用 row_number() 选出每个平台最早的 id，再 JOIN 回 publish_record 加锁
+ * 注意：PostgreSQL 不允许 DISTINCT ON / 窗口函数直接与 FOR UPDATE 一起使用，必须分两步
  */
 export async function getPendingPublishRecords(limit: number): Promise<any[]> {
   const client = await (await import('./db')).pool.connect();
@@ -4575,35 +4576,43 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
        SET status = 'pending', started_at = NULL, error_msg = COALESCE(error_msg, '处理超时自动回收')
        WHERE status = 'processing' AND started_at < NOW() - INTERVAL '10 minutes'`
     );
-    // 2. 用子查询 + row_number() 取每个平台最早的 pending 记录，外层加 FOR UPDATE SKIP LOCKED
+    // 2. CTE 选出每个平台最早的 pending record id（不直接加锁）
+    //    外层 JOIN 回 publish_record 实体表加 FOR UPDATE SKIP LOCKED
     const result = await client.query(
-      `SELECT id, task_id, platform, platform_auth_id,
-              article_id, user_id, scheduled_at,
-              article_title, article_content, article_tags, article_cover,
-              account_storage_state, account_name
-       FROM (
-         SELECT
-           pr.id, pr.task_id, pr.platform, pr.platform_auth_id,
-           pt.article_id, pt.user_id, pt.scheduled_at,
-           a.title as article_title,
-           a.content_html as article_content,
-           a.tags as article_tags,
-           a.cover_image_url as article_cover,
-           pa.storage_state as account_storage_state,
-           pa.account_name as account_name,
-           ROW_NUMBER() OVER (PARTITION BY pr.platform ORDER BY pr.create_time ASC) as rn
+      `WITH candidate AS (
+         SELECT pr.id, pr.platform
          FROM publish_record pr
          JOIN publish_task pt ON pt.id = pr.task_id
-         LEFT JOIN article a ON a.id = pt.article_id
-         LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
          WHERE pr.status = 'pending'
            AND pr.platform_auth_id IS NOT NULL
            AND pt.status IN ('pending', 'processing')
            AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
-       ) ranked
-       WHERE ranked.rn = 1
-       LIMIT $1
-       FOR UPDATE OF ranked SKIP LOCKED`,
+         ORDER BY pr.platform, pr.create_time ASC
+       ),
+       ranked AS (
+         SELECT id, platform,
+                ROW_NUMBER() OVER (PARTITION BY platform ORDER BY id) as rn
+         FROM candidate
+       ),
+       picked AS (
+         SELECT id FROM ranked WHERE rn = 1
+         LIMIT $1
+       )
+       SELECT
+         pr.id, pr.task_id, pr.platform, pr.platform_auth_id,
+         pt.article_id, pt.user_id, pt.scheduled_at,
+         a.title as article_title,
+         a.content_html as article_content,
+         a.tags as article_tags,
+         a.cover_image_url as article_cover,
+         pa.storage_state as account_storage_state,
+         pa.account_name as account_name
+       FROM picked
+       JOIN publish_record pr ON pr.id = picked.id
+       JOIN publish_task pt ON pt.id = pr.task_id
+       LEFT JOIN article a ON a.id = pt.article_id
+       LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
+       FOR UPDATE OF pr SKIP LOCKED`,
       [limit]
     );
     // 3. 立即把拉到的记录标记为 processing（在事务内原子完成，避免下次 poll 重复拉取）
