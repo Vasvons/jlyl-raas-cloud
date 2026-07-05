@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.7.1",
-  "description": "企鹅号图文发布流程（基于 qeh.pyc 反编译的真实确定性步骤 + AI 兜底）",
+  "version": "1.7.2",
+  "description": "企鹅号图文发布流程（v1.7.2：修复每次进入编辑页而非新建页的问题）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": ".user-info | .user-avatar",
@@ -10,8 +10,8 @@
   "steps": [
     {
       "type": "navigate",
-      "value": "https://om.qq.com/main/creation/article",
-      "descript": "导航到企鹅号图文发布页",
+      "value": "https://om.qq.com/main/creation/article?refer=create",
+      "descript": "导航到企鹅号图文新建页（带 refer=create 强制新建，避免加载上次草稿）",
       "timeout": 30000
     },
     {
@@ -19,6 +19,18 @@
       "value": "creation/article",
       "descript": "等待进入发布页",
       "timeout": 15000
+    },
+    {
+      "type": "click",
+      "selector": "//a[text()=\"写文章\"] | //a[text()=\"图文\"] | //button[text()=\"写文章\"] | //span[text()=\"写文章\"] | //a[contains(@href,\"articleCreate\")] | //a[contains(@href,\"refer=create\")]",
+      "descript": "点击「写文章」按钮进入新建状态（兜底：若页面停在管理列表页则点击进入编辑器）",
+      "is_try": true,
+      "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 1500,
+      "descript": "等待编辑器加载完成"
     },
     {
       "type": "press",
