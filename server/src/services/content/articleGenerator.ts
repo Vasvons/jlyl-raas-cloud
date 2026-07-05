@@ -18,6 +18,7 @@ import {
   getStrategyMemory,
   getRandomImages,
   getImageById,
+  getPlatformRulesByPlatforms,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 
@@ -198,6 +199,49 @@ function buildEnterpriseInfo(task: any) {
 }
 
 /**
+ * v1.8.0：解析写作任务的 target_platforms 字段
+ * 数据库 JSONB 类型可能返回数组或字符串（pg 会自动解析 JSONB，但驱动不同行为不同）
+ */
+function parseTargetPlatforms(raw: any): string[] {
+  if (Array.isArray(raw)) return raw.filter((p: any) => typeof p === 'string' && p.trim());
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const p = JSON.parse(raw);
+      if (Array.isArray(p)) return p.filter((x: any) => typeof x === 'string' && x.trim());
+    } catch {
+      // 非 JSON 字符串，按逗号分隔兜底
+      return raw.split(',').map(s => s.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+/**
+ * v1.8.0：构建 L6 平台约束层提示词
+ * 注入到 articlePrompt 末尾，约束 AI 按平台字数 + 风格创作
+ */
+function buildPlatformConstraintPrompt(rule: any): string {
+  if (!rule) return '';
+  const tagsReq = rule.require_tags
+    ? `必须包含 ${rule.tags_min_count || 1}-${rule.tags_max_count || 5} 个相关话题标签`
+    : '话题标签可选';
+  return `\n\n## 目标平台约束
+你正在为【${rule.name}】平台创作内容，必须严格遵守以下约束：
+
+### 字数限制（硬性约束，超出会被平台拒绝）
+- 标题：${rule.title_min_length ?? 1}-${rule.title_max_length ?? 100} 字
+- 正文：${rule.content_min_length ?? 100}-${rule.content_max_length ?? 50000} 字
+
+### 风格要求
+${rule.style_prompt || '无特殊风格要求'}
+
+### 话题要求
+${tagsReq}
+
+请严格按照上述约束创作。标题务必控制在 ${rule.title_max_length ?? 100} 字以内，正文控制在 ${rule.content_max_length ?? 50000} 字以内。`;
+}
+
+/**
  * v1.4+ 重构：以下两个函数已迁移到 contextBuilder.ts 的 buildWritingContext()
  * - buildSystemMessageFromAgentProfile → L0 专家人格层 + L1 客户档案层
  * - buildWritingContextBlock → L4 主题参考层（userPromptSuffix）
@@ -277,6 +321,27 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
 
   // 文章篇数：由用户在创建任务时手动设定（task.total_count）
   const totalCount: number = Math.max(1, Number(task.total_count) || 1);
+
+  // v1.8.0：解析目标平台（target_platforms）
+  // 非空时：为每个平台生成专属文章，AI prompt 注入平台字数+风格约束
+  // 为空：向后兼容，走原通用流程（一篇多发）
+  const targetPlatforms = parseTargetPlatforms(task.target_platforms);
+  const platformRulesMap = new Map<string, any>();
+  if (targetPlatforms.length > 0) {
+    try {
+      const rules = await getPlatformRulesByPlatforms(targetPlatforms);
+      for (const r of rules) platformRulesMap.set(r.platform, r);
+      // 过滤掉无规则的平台（避免生成无约束的文章）
+      const validPlatforms = targetPlatforms.filter(p => platformRulesMap.has(p));
+      if (validPlatforms.length === 0) {
+        console.warn(`[ArticleGen] 任务 ${taskId} target_platforms=${targetPlatforms.join(',')} 均无对应规则，回退通用模式`);
+      }
+    } catch (err) {
+      console.warn(`[ArticleGen] 任务 ${taskId} 查询平台规则失败，回退通用模式:`, err);
+    }
+  }
+  const effectivePlatforms = targetPlatforms.filter(p => platformRulesMap.has(p));
+  const platformCount = effectivePlatforms.length;
 
   // 生成模式：expert（默认）/ coze
   const generationMode = task.generation_mode || 'expert';
@@ -385,8 +450,24 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
       let modelUsed = '';
       let coverUrlForArticle = '';
 
+      // v1.8.0：计算本次迭代的目标平台
+      // 平台专属模式（platformCount > 0）：
+      //   - platformCount = 平台数，articleCount = totalCount / platformCount
+      //   - 第 i 篇：platformIndex = i % platformCount，articleIdx = floor(i / platformCount)
+      //   - 生成顺序：kw0-p0, kw0-p1, ..., kw0-pN, kw1-p0, ...（每个关键词连续生成所有平台）
+      // 通用模式（platformCount === 0）：platform = null，走原逻辑
+      let currentPlatform: string | null = null;
+      let currentPlatformRule: any = null;
+      let articleIdx = i;
+      if (platformCount > 0) {
+        const platformIndex = i % platformCount;
+        articleIdx = Math.floor(i / platformCount);
+        currentPlatform = effectivePlatforms[platformIndex];
+        currentPlatformRule = platformRulesMap.get(currentPlatform) || null;
+      }
+
       // 为本次生成选择一个主题关键词（轮询取，用于文章归属标记，不影响 prompt 内容）
-      const kw = keywords.length > 0 ? keywords[i % keywords.length] : null;
+      const kw = keywords.length > 0 ? keywords[articleIdx % keywords.length] : null;
 
       if (generationMode === 'coze') {
         // 扣子工作流模式
@@ -438,6 +519,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           console.log('[ArticleGen][L3策略] strategyMemory 数量:', strategyMemory.length);
           console.log('[ArticleGen][L4主题] keywords 数量:', keywords.length, '前5:', keywords.slice(0, 5).map((k: any) => k.value));
           console.log('[ArticleGen][L5RAG] ragSnippets 数量:', ragSnippets.length);
+          console.log('[ArticleGen][L6平台] currentPlatform:', currentPlatform, '/ rule:', currentPlatformRule ? `${currentPlatformRule.name} 标题${currentPlatformRule.title_min_length}-${currentPlatformRule.title_max_length}字 正文${currentPlatformRule.content_min_length}-${currentPlatformRule.content_max_length}字` : '无（通用模式）');
           console.log('[ArticleGen][写作指令] article_prompt 长度:', (task.article_prompt || '').length, '预览:', (task.article_prompt || '').slice(0, 200));
           console.log('[ArticleGen][标题指令] title_prompt 长度:', (task.title_prompt || '').length, '预览:', (task.title_prompt || '').slice(0, 200));
           console.log('[ArticleGen][创作方向] directionCtx 长度:', directionCtx.length, '内容:', directionCtx.slice(0, 200));
@@ -498,6 +580,12 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           articlePrompt += illustrationImageBlock;
         }
 
+        // v1.8.0：注入 L6 平台约束层（字数 + 风格 + 话题要求）
+        // 仅在平台专属模式下生效，注入到 articlePrompt 末尾，让 AI 按平台约束创作
+        if (currentPlatformRule) {
+          articlePrompt += buildPlatformConstraintPrompt(currentPlatformRule);
+        }
+
         // 3. 组装 messages（systemMessage 含 L0+L1+L2+L3+L5）
         const messages: { role: 'system' | 'user'; content: string }[] = writingCtx.systemMessage
           ? [
@@ -528,6 +616,10 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
               wordCount: task.target_word_count,
             });
             titlePrompt += writingCtx.userPromptSuffix;
+            // v1.8.0：标题生成也注入平台字数约束（标题是平台最严格的字段）
+            if (currentPlatformRule) {
+              titlePrompt += `\n\n【标题字数硬约束】目标平台：${currentPlatformRule.name}，标题必须 ${currentPlatformRule.title_min_length ?? 1}-${currentPlatformRule.title_max_length ?? 100} 字。超出 ${currentPlatformRule.title_max_length ?? 100} 字会被平台拒绝，请严格控制。`;
+            }
             // 标题生成用极简 system message，避免 L0-L5 上下文让 AI 陷入思考
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: '你是标题生成器。只输出标题文字本身，不要输出任何思考过程、分析、解释、引号、前缀。直接输出标题。' },
@@ -590,7 +682,18 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
       // 保存文章
       // 字段长度保护（避免数据库 varchar 长度限制报错）
       // article 表：title VARCHAR(255), core_keyword VARCHAR(128), target_platform VARCHAR(32), model_used VARCHAR(64)
-      const safeTitle = (title || '未命名文章').slice(0, 250);
+      // v1.8.0：平台专属模式下，标题硬截断到平台 title_max_length（AI 偶尔不遵守约束的兜底）
+      let safeTitle = (title || '未命名文章').slice(0, 250);
+      if (currentPlatformRule && currentPlatformRule.title_max_length) {
+        const maxLen = Number(currentPlatformRule.title_max_length);
+        if (maxLen > 0 && safeTitle.length > maxLen) {
+          // 优先在标点处截断，找不到则硬截断
+          const punctPos = safeTitle.slice(0, maxLen).search(/[。，！？；,!?;:：]/);
+          safeTitle = punctPos > Math.floor(maxLen / 2)
+            ? safeTitle.slice(0, punctPos)
+            : safeTitle.slice(0, maxLen);
+        }
+      }
       const safeCoreKeyword = (kw?.value || '').slice(0, 120);
       const safeModelUsed = (modelUsed || '').slice(0, 60);
       const articleId = await createArticle({
@@ -602,6 +705,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         title: safeTitle,
         content_html: contentHtml,
         entity_triples: enterpriseInfo.entity_triples,
+        target_platform: currentPlatform, // v1.8.0：写入平台标识（通用模式为 null）
         word_count: wordCount,
         status: 'generated',
         model_used: safeModelUsed,
@@ -739,6 +843,20 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
   });
   articlePrompt += writingCtx.userPromptSuffix;
 
+  // v1.8.0：重新生成时也注入 L6 平台约束（基于文章已有的 target_platform）
+  let regenPlatformRule: any = null;
+  if (article.target_platform) {
+    try {
+      const { getPlatformRule } = await import('../../repository');
+      regenPlatformRule = await getPlatformRule(article.target_platform);
+      if (regenPlatformRule) {
+        articlePrompt += buildPlatformConstraintPrompt(regenPlatformRule);
+      }
+    } catch (err) {
+      console.warn(`[ArticleGen] 文章 ${articleId} 重新生成时查询平台规则失败:`, err);
+    }
+  }
+
   const systemContent = writingCtx.systemMessage;
   const messages: { role: 'system' | 'user'; content: string }[] = systemContent
     ? [
@@ -760,11 +878,15 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
 
   let title = '';
   if (task.title_prompt && task.title_prompt.trim()) {
-    const titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
+    let titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
       keyword: article.core_keyword,
       enterprise: enterpriseInfo,
       wordCount: task.target_word_count,
     });
+    // v1.8.0：重新生成时标题也注入平台字数约束
+    if (regenPlatformRule) {
+      titlePrompt += `\n\n【标题字数硬约束】目标平台：${regenPlatformRule.name}，标题必须 ${regenPlatformRule.title_min_length ?? 1}-${regenPlatformRule.title_max_length ?? 100} 字。超出 ${regenPlatformRule.title_max_length ?? 100} 字会被平台拒绝，请严格控制。`;
+    }
     // 标题生成用极简 system message，避免 L0-L5 上下文让 AI 陷入思考
     const titleMessages: { role: 'system' | 'user'; content: string }[] = [
       { role: 'system', content: '你是标题生成器。只输出标题文字本身，不要输出任何思考过程、分析、解释、引号、前缀。直接输出标题。' },

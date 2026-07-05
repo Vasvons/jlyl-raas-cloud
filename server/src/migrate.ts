@@ -1116,6 +1116,84 @@ export async function migrate() {
 
     console.log('[Migrate] v1.5 企业图库表创建/验证完成');
 
+    // ============ v1.8.0: 平台专属写作引擎 ============
+
+    // platform_content_rule: 平台内容约束规则表
+    // 存储每个平台（dy/xhs/zh/...）的字数限制 + 风格提示词，供写作任务构造 AI prompt 用
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS platform_content_rule (
+        platform VARCHAR(32) PRIMARY KEY,
+        name VARCHAR(64) NOT NULL,
+        title_min_length INT DEFAULT 1,
+        title_max_length INT DEFAULT 100,
+        content_min_length INT DEFAULT 100,
+        content_max_length INT DEFAULT 50000,
+        style_prompt TEXT,
+        require_tags BOOLEAN DEFAULT FALSE,
+        tags_min_count INT DEFAULT 0,
+        tags_max_count INT DEFAULT 5,
+        cover_image_required BOOLEAN DEFAULT FALSE,
+        cover_image_mode VARCHAR(20) DEFAULT 'none',
+        is_active BOOLEAN DEFAULT TRUE,
+        sort_order INT DEFAULT 0,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // 12 平台种子数据（UPSERT，每次启动幂等）
+    // 字数限制参考各平台官方文档；style_prompt 注入 AI prompt 控制风格
+    const platformRules = [
+      { platform: 'dy', name: '抖音', title_min: 1, title_max: 20, content_min: 100, content_max: 1000, style: '口语化、接地气、强情绪表达、适合短视频文案风格、多用短句、节奏感强', require_tags: true, tags_min: 1, tags_max: 5, cover: 'single', sort: 1 },
+      { platform: 'xhs', name: '小红书', title_min: 1, title_max: 20, content_min: 100, content_max: 1000, style: 'emoji表情丰富、口语化种草风、多用感叹号、适合图文笔记、标题要吸睛、分段清晰', require_tags: true, tags_min: 1, tags_max: 10, cover: 'single', sort: 2 },
+      { platform: 'zh', name: '知乎', title_min: 1, title_max: 100, content_min: 300, content_max: 50000, style: '专业深度、逻辑严谨、引用规范、适合长文论述、可使用小标题分层、避免口水话', require_tags: false, tags_min: 0, tags_max: 5, cover: 'none', sort: 3 },
+      { platform: 'bjh', name: '百家号', title_min: 1, title_max: 30, content_min: 300, content_max: 20000, style: '信息流风格、标题党但不过度、干货为主、适合移动端阅读、段落简短', require_tags: false, tags_min: 0, tags_max: 0, cover: 'none', sort: 4 },
+      { platform: 'qeh', name: '企鹅号', title_min: 5, title_max: 64, content_min: 300, content_max: 20000, style: '媒体风格、客观报道、适合新闻资讯、标题规范、正文结构清晰', require_tags: false, tags_min: 0, tags_max: 0, cover: 'none', sort: 5 },
+      { platform: 'tt', name: '今日头条', title_min: 2, title_max: 30, content_min: 300, content_max: 20000, style: '资讯风格、简洁明了、适合移动端、标题吸引点击、正文分段清晰', require_tags: false, tags_min: 0, tags_max: 0, cover: 'none', sort: 6 },
+      { platform: 'wy', name: '网易号', title_min: 1, title_max: 30, content_min: 300, content_max: 20000, style: '媒体风格、深度报道、适合新闻评论、标题客观', require_tags: false, tags_min: 0, tags_max: 0, cover: 'none', sort: 7 },
+      { platform: 'sohu', name: '搜狐号', title_min: 1, title_max: 30, content_min: 300, content_max: 20000, style: '媒体风格、广度覆盖、适合资讯聚合、标题规范', require_tags: false, tags_min: 0, tags_max: 0, cover: 'none', sort: 8 },
+      { platform: 'wxgzh', name: '微信公众号', title_min: 1, title_max: 64, content_min: 300, content_max: 20000, style: '深度文章、品牌调性、适合长文阅读、可使用排版样式、标题有内涵', require_tags: false, tags_min: 0, tags_max: 0, cover: 'none', sort: 9 },
+      { platform: 'bili', name: 'B站', title_min: 1, title_max: 80, content_min: 200, content_max: 20000, style: 'ACG风格、年轻化表达、适合社区互动、标题可玩梗', require_tags: false, tags_min: 0, tags_max: 5, cover: 'none', sort: 10 },
+      { platform: 'csdn', name: 'CSDN', title_min: 1, title_max: 100, content_min: 500, content_max: 50000, style: '技术文章、代码示例、专业严谨、适合程序员读者、可使用markdown代码块', require_tags: true, tags_min: 1, tags_max: 5, cover: 'none', sort: 11 },
+      { platform: 'js', name: '简书', title_min: 1, title_max: 50, content_min: 200, content_max: 50000, style: '随笔风格、个人化表达、适合文学创作、标题文艺', require_tags: false, tags_min: 0, tags_max: 5, cover: 'none', sort: 12 },
+    ];
+    for (const r of platformRules) {
+      await client.query(
+        `INSERT INTO platform_content_rule
+          (platform, name, title_min_length, title_max_length, content_min_length, content_max_length,
+           style_prompt, require_tags, tags_min_count, tags_max_count, cover_image_required, cover_image_mode, is_active, sort_order)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13)
+         ON CONFLICT (platform) DO UPDATE SET
+           name = EXCLUDED.name,
+           title_min_length = EXCLUDED.title_min_length,
+           title_max_length = EXCLUDED.title_max_length,
+           content_min_length = EXCLUDED.content_min_length,
+           content_max_length = EXCLUDED.content_max_length,
+           style_prompt = EXCLUDED.style_prompt,
+           require_tags = EXCLUDED.require_tags,
+           tags_min_count = EXCLUDED.tags_min_count,
+           tags_max_count = EXCLUDED.tags_max_count,
+           cover_image_required = EXCLUDED.cover_image_required,
+           cover_image_mode = EXCLUDED.cover_image_mode,
+           sort_order = EXCLUDED.sort_order,
+           update_time = NOW()`,
+        [
+          r.platform, r.name, r.title_min, r.title_max, r.content_min, r.content_max,
+          r.style, r.require_tags, r.tags_min, r.tags_max,
+          r.cover !== 'none', r.cover, r.sort,
+        ]
+      );
+    }
+
+    // ai_writing_task 新增 target_platforms 字段：存储目标平台数组，如 ["dy","xhs","zh"]
+    // 旧任务该字段为 NULL，向后兼容（按通用流程生成单篇通用文章）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS target_platforms JSONB`);
+
+    // article 表新增索引：按 (task_id, target_platform) 查询文章（按任务+平台筛选）
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_article_task_platform ON article(task_id, target_platform)`);
+
+    console.log('[Migrate] v1.8.0 平台专属写作引擎表/字段/索引创建完成（platform_content_rule + ai_writing_task.target_platforms + idx_article_task_platform）');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

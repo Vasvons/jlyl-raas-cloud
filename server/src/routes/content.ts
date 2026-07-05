@@ -71,6 +71,13 @@ import {
   updateImage,
   deleteImage,
   getRandomImages,
+  // 平台内容约束规则（v1.8.0）
+  getPlatformRules,
+  getPlatformRule,
+  getPlatformRulesByPlatforms,
+  upsertPlatformRule,
+  deletePlatformRule,
+  getPlatformArticlesByTask,
   // AI 模型默认配置（v1.5.6 vision 路由用）
   getDefaultModelConfig,
 } from '../repository';
@@ -723,7 +730,8 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id, article_count,
-            cover_image_mode, cover_image_id, illustration_count } = req.body;
+            cover_image_mode, cover_image_id, illustration_count,
+            target_platforms } = req.body;
 
     // 关键词来源优先级：
     //   1. keyword_ids（显式传入，向后兼容）
@@ -742,6 +750,20 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     // 兼容旧逻辑：未传 article_count 且有关键词时，回退到关键词数量
     const articleCount = Math.max(1, Math.min(100, Number(article_count) || (finalKeywordIds.length > 0 ? finalKeywordIds.length : 1)));
 
+    // v1.8.0：目标平台校验
+    // target_platforms 非空时：每个关键词 × 每个平台 生成一篇专属文章
+    // target_platforms 为空或未传：向后兼容，走原通用流程（一篇多发）
+    let finalTargetPlatforms: string[] = [];
+    if (Array.isArray(target_platforms) && target_platforms.length > 0) {
+      // 过滤掉空字符串和重复项
+      finalTargetPlatforms = Array.from(new Set(target_platforms.filter((p: any) => typeof p === 'string' && p.trim())));
+      if (finalTargetPlatforms.length === 0) {
+        return res.status(400).json({ code: 400, message: 'target_platforms 不能为空数组（如不需平台专属写作，请省略该字段）' });
+      }
+    }
+    // total_count = articleCount × 平台数（有平台时）；无平台时 = articleCount
+    const totalCount = finalTargetPlatforms.length > 0 ? articleCount * finalTargetPlatforms.length : articleCount;
+
     if (!instruction_id || !knowledge_id) {
       return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id 必填' });
     }
@@ -754,10 +776,11 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
       model_config_id: model_config_id || null,
       generation_mode: generation_mode || 'expert',
       agent_profile_id: agent_profile_id || null,
-      total_count: articleCount,
+      total_count: totalCount,
       cover_image_mode: cover_image_mode || 'none',
       cover_image_id: cover_image_id || null,
       illustration_count: Math.max(0, Math.min(20, Number(illustration_count) || 0)),
+      target_platforms: finalTargetPlatforms,
     });
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {
@@ -782,7 +805,7 @@ router.get('/writing-tasks/:id/articles', async (req: Request, res: Response) =>
   try {
     const taskId = Number(req.params.id);
     const result = await query(
-      `SELECT id, title, core_keyword, keyword_type, word_count, status, model_used, create_time
+      `SELECT id, title, core_keyword, keyword_type, target_platform, word_count, status, model_used, create_time
        FROM article WHERE task_id = $1 ORDER BY create_time DESC`,
       [taskId]
     );
@@ -802,6 +825,7 @@ router.get('/articles', async (req: Request, res: Response) => {
       keyword: req.query.keyword as string,
       status: req.query.status as string,
       task_id: taskId,
+      platform: req.query.platform as string,
       page: Number(req.query.page) || 1,
       pageSize: Number(req.query.pageSize) || 20,
     });
@@ -965,6 +989,87 @@ router.put('/publish/step-lists/:platform', async (req: Request, res: Response) 
     }
     const id = await upsertStepList(req.params.platform, version, step_list, description);
     res.json({ code: 200, data: { id } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 平台内容约束规则（v1.8.0） ============
+
+// 获取所有平台规则（?only_active=true 只返回启用的平台，前端选目标平台时用）
+router.get('/platform-rules', async (req: Request, res: Response) => {
+  try {
+    const onlyActive = req.query.only_active === 'true' || req.query.onlyActive === 'true';
+    const list = await getPlatformRules(onlyActive);
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 获取单个平台规则
+router.get('/platform-rules/:platform', async (req: Request, res: Response) => {
+  try {
+    const data = await getPlatformRule(req.params.platform);
+    if (!data) {
+      return res.status(404).json({ code: 404, message: `平台 ${req.params.platform} 规则不存在` });
+    }
+    res.json({ code: 200, data });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 新增平台规则（管理员）
+router.post('/platform-rules', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { platform, name } = req.body;
+    if (!platform || !name) {
+      return res.status(400).json({ code: 400, message: 'platform 和 name 必填' });
+    }
+    await upsertPlatformRule(req.body);
+    res.json({ code: 200, data: { platform } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 更新平台规则（管理员）
+router.put('/platform-rules/:platform', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const platform = req.params.platform;
+    const existing = await getPlatformRule(platform);
+    if (!existing) {
+      return res.status(404).json({ code: 404, message: `平台 ${platform} 规则不存在` });
+    }
+    // 合并现有字段与传入字段（未传的字段保留原值）
+    await upsertPlatformRule({
+      platform,
+      name: req.body.name ?? existing.name,
+      title_min_length: req.body.title_min_length ?? existing.title_min_length,
+      title_max_length: req.body.title_max_length ?? existing.title_max_length,
+      content_min_length: req.body.content_min_length ?? existing.content_min_length,
+      content_max_length: req.body.content_max_length ?? existing.content_max_length,
+      style_prompt: req.body.style_prompt ?? existing.style_prompt,
+      require_tags: req.body.require_tags ?? existing.require_tags,
+      tags_min_count: req.body.tags_min_count ?? existing.tags_min_count,
+      tags_max_count: req.body.tags_max_count ?? existing.tags_max_count,
+      cover_image_required: req.body.cover_image_required ?? existing.cover_image_required,
+      cover_image_mode: req.body.cover_image_mode ?? existing.cover_image_mode,
+      is_active: req.body.is_active ?? existing.is_active,
+      sort_order: req.body.sort_order ?? existing.sort_order,
+    });
+    res.json({ code: 200, data: { platform } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 删除平台规则（管理员）
+router.delete('/platform-rules/:platform', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    await deletePlatformRule(req.params.platform);
+    res.json({ code: 200, data: { ok: true } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
@@ -1156,6 +1261,74 @@ router.post('/publish/records/:id/result', async (req: Request, res: Response) =
     }
 
     res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v1.8.0：按写作任务发布（平台专属文章自动匹配） ============
+
+/**
+ * 按写作任务发布：查询该任务下所有平台专属文章（target_platform IS NOT NULL），
+ * 为每篇文章创建一个 publish_task（target_platforms = [该文章的平台]）。
+ *
+ * 适用场景：v1.8.0 平台专属写作引擎产出的文章，每篇已有平台归属。
+ * 旧任务（无 target_platforms）走原有 POST /articles/batch-publish 流程。
+ *
+ * Body: { writing_task_id: number, scheduled_at?: string(ISO) }
+ */
+router.post('/publish/by-writing-task', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { writing_task_id, scheduled_at } = req.body;
+    if (!writing_task_id) {
+      return res.status(400).json({ code: 400, message: 'writing_task_id 必填' });
+    }
+    const taskId = Number(writing_task_id);
+    const scheduledDate = scheduled_at ? new Date(scheduled_at) : undefined;
+
+    // 1. 查询该写作任务下所有平台专属文章
+    const articles = await getPlatformArticlesByTask(taskId);
+    if (articles.length === 0) {
+      return res.status(400).json({
+        code: 400,
+        message: `写作任务 ${taskId} 下无平台专属文章（target_platform IS NULL）。请用 v1.8.0+ 创建带 target_platforms 的写作任务，或使用 POST /articles/batch-publish 发布通用文章。`,
+      });
+    }
+
+    // 2. 为每篇文章创建一个 publish_task（target_platforms = [该文章的平台]）
+    //    每篇文章已是平台专属，publish_task 单平台发布
+    const createdTasks: { article_id: number; platform: string; publish_task_id: number; title: string }[] = [];
+    const skipped: { article_id: number; platform: string; reason: string }[] = [];
+    for (const article of articles) {
+      const platform = article.target_platform;
+      if (!platform) {
+        skipped.push({ article_id: article.id, platform: '', reason: 'target_platform 为空' });
+        continue;
+      }
+      try {
+        const publishTaskId = await createPublishTask({
+          user_id: userId,
+          article_id: article.id,
+          target_platforms: [platform],
+          scheduled_at: scheduledDate,
+        });
+        createdTasks.push({ article_id: article.id, platform, publish_task_id: publishTaskId, title: article.title });
+      } catch (err: any) {
+        skipped.push({ article_id: article.id, platform, reason: err?.message || String(err) });
+      }
+    }
+
+    res.json({
+      code: 200,
+      data: {
+        writing_task_id: taskId,
+        total_articles: articles.length,
+        created_publish_tasks: createdTasks.length,
+        skipped,
+        created_tasks: createdTasks,
+      },
+    });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

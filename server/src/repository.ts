@@ -3697,13 +3697,14 @@ export async function createWritingTask(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_writing_task (user_id, task_name, keyword_ids, instruction_id, knowledge_id,
             model_config_id, generation_mode, agent_profile_id, status, total_count, started_at,
-            cover_image_mode, cover_image_id, illustration_count)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12)
+            cover_image_mode, cover_image_id, illustration_count, target_platforms)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13)
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
      data.model_config_id || null, data.generation_mode || 'expert', data.agent_profile_id || null,
      data.total_count,
-     data.cover_image_mode || 'none', data.cover_image_id || null, data.illustration_count || 0]
+     data.cover_image_mode || 'none', data.cover_image_id || null, data.illustration_count || 0,
+     data.target_platforms && data.target_platforms.length > 0 ? JSON.stringify(data.target_platforms) : null]
   );
   return result.rows[0].id;
 }
@@ -4049,7 +4050,7 @@ export async function upsertArticlePerformance(
   );
 }
 
-export async function getArticles(userId: number, filters: { keyword?: string; status?: string; task_id?: number; page?: number; pageSize?: number }): Promise<{ list: any[]; total: number }> {
+export async function getArticles(userId: number, filters: { keyword?: string; status?: string; task_id?: number; platform?: string; page?: number; pageSize?: number }): Promise<{ list: any[]; total: number }> {
   const page = filters.page || 1;
   const pageSize = filters.pageSize || 20;
   const offset = (page - 1) * pageSize;
@@ -4068,6 +4069,15 @@ export async function getArticles(userId: number, filters: { keyword?: string; s
   if (filters.task_id) {
     where.push(`task_id = $${idx++}`);
     params.push(filters.task_id);
+  }
+  // v1.8.0：按平台筛选（target_platform = $N；平台为 'general' 时筛选 NULL 旧文章）
+  if (filters.platform) {
+    if (filters.platform === 'general') {
+      where.push(`target_platform IS NULL`);
+    } else {
+      where.push(`target_platform = $${idx++}`);
+      params.push(filters.platform);
+    }
   }
   const whereClause = where.join(' AND ');
   const countResult = await query(`SELECT COUNT(*) as total FROM article WHERE ${whereClause}`, params);
@@ -4620,5 +4630,117 @@ export async function getPublishAccountById(id: number): Promise<any | null> {
     [id]
   );
   return result.rows[0] || null;
+}
+
+// ============ 内容中枢：平台内容约束规则（platform_content_rule v1.8.0） ============
+
+/**
+ * 获取所有平台约束规则
+ * @param onlyActive true 时只返回 is_active=true 的平台（前端选目标平台时用）
+ */
+export async function getPlatformRules(onlyActive: boolean = false): Promise<any[]> {
+  const sql = onlyActive
+    ? `SELECT * FROM platform_content_rule WHERE is_active = true ORDER BY sort_order ASC, platform ASC`
+    : `SELECT * FROM platform_content_rule ORDER BY sort_order ASC, platform ASC`;
+  const result = await query(sql);
+  return result.rows;
+}
+
+/** 获取单个平台约束规则 */
+export async function getPlatformRule(platform: string): Promise<any | null> {
+  const result = await query(
+    `SELECT * FROM platform_content_rule WHERE platform = $1`,
+    [platform]
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * 批量获取平台规则（写作任务生成时用，按 target_platforms 数组查）
+ * 缺失的平台会被忽略（不报错），返回结果按 platform 升序
+ */
+export async function getPlatformRulesByPlatforms(platforms: string[]): Promise<any[]> {
+  if (!platforms || platforms.length === 0) return [];
+  const result = await query(
+    `SELECT * FROM platform_content_rule WHERE platform = ANY($1::text[]) ORDER BY sort_order ASC`,
+    [platforms]
+  );
+  return result.rows;
+}
+
+/**
+ * 新增或更新平台约束规则（UPSERT）
+ * platform 为主键，存在则更新
+ */
+export async function upsertPlatformRule(data: {
+  platform: string;
+  name: string;
+  title_min_length?: number;
+  title_max_length?: number;
+  content_min_length?: number;
+  content_max_length?: number;
+  style_prompt?: string;
+  require_tags?: boolean;
+  tags_min_count?: number;
+  tags_max_count?: number;
+  cover_image_required?: boolean;
+  cover_image_mode?: string;
+  is_active?: boolean;
+  sort_order?: number;
+}): Promise<void> {
+  await query(
+    `INSERT INTO platform_content_rule
+      (platform, name, title_min_length, title_max_length, content_min_length, content_max_length,
+       style_prompt, require_tags, tags_min_count, tags_max_count, cover_image_required, cover_image_mode,
+       is_active, sort_order)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     ON CONFLICT (platform) DO UPDATE SET
+       name = EXCLUDED.name,
+       title_min_length = EXCLUDED.title_min_length,
+       title_max_length = EXCLUDED.title_max_length,
+       content_min_length = EXCLUDED.content_min_length,
+       content_max_length = EXCLUDED.content_max_length,
+       style_prompt = EXCLUDED.style_prompt,
+       require_tags = EXCLUDED.require_tags,
+       tags_min_count = EXCLUDED.tags_min_count,
+       tags_max_count = EXCLUDED.tags_max_count,
+       cover_image_required = EXCLUDED.cover_image_required,
+       cover_image_mode = EXCLUDED.cover_image_mode,
+       is_active = EXCLUDED.is_active,
+       sort_order = EXCLUDED.sort_order,
+       update_time = NOW()`,
+    [
+      data.platform, data.name,
+      data.title_min_length ?? 1, data.title_max_length ?? 100,
+      data.content_min_length ?? 100, data.content_max_length ?? 50000,
+      data.style_prompt || null,
+      data.require_tags ?? false,
+      data.tags_min_count ?? 0, data.tags_max_count ?? 5,
+      data.cover_image_required ?? false,
+      data.cover_image_mode || 'none',
+      data.is_active ?? true,
+      data.sort_order ?? 0,
+    ]
+  );
+}
+
+/** 删除平台约束规则 */
+export async function deletePlatformRule(platform: string): Promise<void> {
+  await query(`DELETE FROM platform_content_rule WHERE platform = $1`, [platform]);
+}
+
+/**
+ * v1.8.0：按写作任务查询平台专属文章（target_platform IS NOT NULL）
+ * 用于「按写作任务发布」：每篇文章已有平台归属，发布时按文章的平台创建 publish_task
+ */
+export async function getPlatformArticlesByTask(taskId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT id, title, core_keyword, target_platform, word_count, status
+     FROM article
+     WHERE task_id = $1 AND target_platform IS NOT NULL
+     ORDER BY target_platform ASC, id ASC`,
+    [taskId]
+  );
+  return result.rows;
 }
 
