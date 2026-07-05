@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.1",
-  "description": "抖音图文发布流程（基于 tiktok.pyc 反编译的真实确定性步骤 + AI 兜底）",
+  "version": "1.7.2",
+  "description": "抖音图文发布流程（v1.7.2：修复正文/话题/图片上传/封面/发布按钮）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
@@ -22,26 +22,26 @@
     },
     {
       "type": "timing",
-      "ms": 2000,
-      "descript": "等待上传组件加载"
+      "ms": 2500,
+      "descript": "等待上传组件加载完成"
     },
     {
       "type": "input_files",
       "selector": "//input[@type='file'] | //input[@accept='image/*'] | //div[contains(@class,'upload')]//input | //input",
       "files": ["{cover_image_url}"],
-      "descript": "上传图片",
+      "descript": "上传图片（封面图）",
       "ai_fallback": true,
       "ai_intent": "找到抖音图文上传图片的文件选择按钮",
       "timeout": 15000
     },
     {
       "type": "timing",
-      "ms": 3000,
-      "descript": "等待图片上传完成"
+      "ms": 5000,
+      "descript": "等待图片上传完成（抖音 OSS 上传 + 服务端处理）"
     },
     {
       "type": "fill",
-      "selector": "//input[@placeholder='添加作品标题'] | //input[contains(@placeholder,'标题')]",
+      "selector": "//input[@placeholder='添加作品标题'] | //input[contains(@placeholder,'标题')] | //input[contains(@class,'title')]",
       "value": "{title}",
       "descript": "填写标题",
       "ai_fallback": true,
@@ -49,12 +49,36 @@
       "timeout": 8000
     },
     {
+      "type": "timing",
+      "ms": 800,
+      "descript": "等待标题渲染完成"
+    },
+    {
+      "type": "press",
+      "selector": "//div[@contenteditable='true'][contains(@class,'ql-editor')] | //div[@contenteditable='true'][contains(@data-role,'editor')] | //div[@contenteditable='true'][contains(@class,'editor')] | //div[@contenteditable='true']",
+      "value": "{content}",
+      "descript": "在「添加作品描述」编辑器中填入正文（contenteditable 富文本，press 长字符串自动转 execContent 剪贴板粘贴）",
+      "ai_fallback": true,
+      "ai_intent": "找到抖音「添加作品描述」富文本编辑区并填入正文内容",
+      "timeout": 10000
+    },
+    {
+      "type": "timing",
+      "ms": 800,
+      "descript": "等待正文渲染完成"
+    },
+    {
       "type": "tags",
-      "selector": "//input[@placeholder='添加话题'] | //div[contains(@class,'tag')]//input",
+      "selector": "//input[@placeholder='添加话题'] | //input[contains(@class,'tag')]//input | //div[contains(@class,'tag')]//input | //input[contains(@placeholder,'话题')]",
       "value": "{tags}",
-      "descript": "添加话题",
+      "descript": "添加话题（每个话题回车确认）",
       "is_try": true,
-      "timeout": 5000
+      "timeout": 8000
+    },
+    {
+      "type": "timing",
+      "ms": 800,
+      "descript": "等待话题渲染完成"
     },
     {
       "type": "branch",
@@ -93,18 +117,24 @@
       "descript": "商品链接分支"
     },
     {
+      "type": "timing",
+      "ms": 1000,
+      "descript": "等待表单稳定"
+    },
+    {
       "type": "click",
-      "selector": "//button[text()=\"发布\"] | //span[text()=\"直接发布\"]",
-      "descript": "点击发布",
+      "selector": "//button[.//span[text()=\"发布\"]] | //button[text()=\"发布\"] | //span[text()=\"直接发布\"] | //button[contains(@class,'btn-primary')]//span[text()=\"发布\"] | //div[contains(@class,'publish')]//button",
+      "descript": "点击发布按钮",
       "ai_fallback": true,
-      "ai_intent": "找到抖音发布按钮并点击",
-      "timeout": 5000
+      "ai_intent": "找到抖音发布按钮并点击（注意不要误点保存草稿按钮）",
+      "timeout": 8000,
+      "force": true
     },
     {
       "type": "wait_for_url",
       "value": "content/manage",
-      "descript": "等待发布成功跳转",
-      "timeout": 30000
+      "descript": "等待发布成功跳转到内容管理页",
+      "timeout": 45000
     },
     {
       "type": "evaluate_edit",
