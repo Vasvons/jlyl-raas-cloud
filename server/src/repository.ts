@@ -4735,6 +4735,40 @@ export async function retryPublishRecords(
 }
 
 /**
+ * v1.7.4：按 batch_id 批量重试
+ * 重置该批次下所有 publish_task 关联的 failed/login_expired 记录为 pending
+ * 同时把 publish_task 状态从 failed/completed 恢复为 pending
+ */
+export async function retryPublishRecordsByBatch(
+  userId: number,
+  batchId: string
+): Promise<{ reset_count: number }> {
+  // 1. 重置 publish_record（限定当前用户 + batch_id，防越权）
+  const recordResult = await query(
+    `UPDATE publish_record pr
+     SET status = 'pending',
+         error_msg = NULL,
+         started_at = NULL,
+         published_at = NULL
+     FROM publish_task pt
+     WHERE pr.task_id = pt.id
+       AND pt.user_id = $1
+       AND pt.batch_id = $2
+       AND pr.status IN ('failed', 'login_expired')`,
+    [userId, batchId]
+  );
+  // 2. 把 publish_task 从 failed/completed 恢复为 pending
+  await query(
+    `UPDATE publish_task
+     SET status = 'pending'
+     WHERE user_id = $1 AND batch_id = $2
+       AND status IN ('failed', 'completed')`,
+    [userId, batchId]
+  );
+  return { reset_count: recordResult.rowCount || 0 };
+}
+
+/**
  * v1.8.4：按 batch_id 聚合的发布任务列表（一级聚合视图）
  *
  * 同一次「新建发布任务」动作生成的所有 publish_task 共享一个 batch_id（UUID），

@@ -52,6 +52,8 @@ import {
   batchPauseResumeByBatch,
   deletePublishTask,
   batchDeleteByBatch,
+  // v1.7.4：批量重试（按 batch_id）
+  retryPublishRecordsByBatch,
   getPublishAccounts,
   createPublishAccount,
   updatePublishAccountStorageState,
@@ -1317,6 +1319,24 @@ router.post('/publish/tasks/:id/retry', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
     const result = await retryPublishRecords(id);
+    res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * 批量重试（按 batch_id）
+ * 重置该批次下所有 publish_task 的 failed/login_expired 记录为 pending
+ */
+router.post('/publish/batch/:batchId/retry', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const batchId = req.params.batchId;
+    if (!batchId) {
+      return res.status(400).json({ code: 400, message: 'batchId 必填' });
+    }
+    const result = await retryPublishRecordsByBatch(userId, batchId);
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
