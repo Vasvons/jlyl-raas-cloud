@@ -80,6 +80,8 @@ import {
   getPlatformArticlesByTask,
   // AI 模型默认配置（v1.5.6 vision 路由用）
   getDefaultModelConfig,
+  // v1.8.2：发布专用模型配置
+  getPublishModelConfig,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
@@ -269,13 +271,14 @@ router.post('/ai/vision', async (req: Request, res: Response) => {
       return res.status(400).json({ code: 400, message: 'screenshot, intent 必填' });
     }
 
-    // 读取模型配置：优先指定 ID，其次用户默认配置
+    // 读取模型配置：优先指定 ID，其次用户发布专用配置（v1.8.2：从 getDefaultModelConfig 改为 getPublishModelConfig）
+    // 之前用 getDefaultModelConfig 会取到写作模型，现在按 use_for_publish=true 过滤取发布专用模型
     let modelConfig: any = null;
     if (model_config_id) {
       modelConfig = await getAiModelConfigById(Number(model_config_id));
     } else {
       const userId = getUserId(req);
-      modelConfig = await getDefaultModelConfig(userId);
+      modelConfig = await getPublishModelConfig(userId);
     }
     if (!modelConfig || !modelConfig.api_key_encrypted) {
       return res.status(400).json({ code: 400, message: '未配置 AI 模型或缺少 API-KEY，请先在后台配置 AI 模型' });

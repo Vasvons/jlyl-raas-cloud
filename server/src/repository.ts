@@ -3104,7 +3104,9 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
   const result = await query(
     `SELECT DISTINCT ON (platform)
             id, user_id, platform, model_name, base_url, max_tokens, temperature,
-            is_active, daily_quota, used_today, quota_reset_at, use_for_collect, web_search,
+            is_active, use_for_writing, use_for_publish,
+            use_for_collect, use_for_embedding, web_search,
+            daily_quota, used_today, quota_reset_at,
             api_key_encrypted,
             CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN '已配置' ELSE NULL END AS api_key_masked,
             create_time, update_time
@@ -3123,7 +3125,9 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
 export async function getAiModelConfigById(id: number): Promise<any | null> {
   const result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
+            max_tokens, temperature, is_active, use_for_writing, use_for_publish,
+            use_for_collect, use_for_embedding, web_search,
+            daily_quota, used_today, quota_reset_at
      FROM ai_model_config WHERE id = $1`,
     [id]
   );
@@ -3137,12 +3141,16 @@ export async function getAiModelConfigById(id: number): Promise<any | null> {
  *   2. 平台共享配置（user_id IS NULL）中 is_active=true 的最新一条
  */
 export async function getDefaultModelConfig(userId: number): Promise<any | null> {
+  // v1.8.2：按 use_for_writing=true 过滤（之前错误用 is_active，导致发布模型被写作任务取走）
+  // is_active 现在仅表示配置启用，不再承载"用于写作"语义
   // 先查用户私有配置（必须已配置 api_key，避免返回空 KEY 的记录导致后续调用失败）
   let result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
+            max_tokens, temperature, is_active, use_for_writing, use_for_publish,
+            use_for_collect, use_for_embedding, web_search,
+            daily_quota, used_today, quota_reset_at
      FROM ai_model_config
-     WHERE user_id = $1 AND is_active = true
+     WHERE user_id = $1 AND is_active = true AND use_for_writing = true
        AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
      ORDER BY create_time DESC LIMIT 1`,
     [userId]
@@ -3151,13 +3159,49 @@ export async function getDefaultModelConfig(userId: number): Promise<any | null>
   // 降级：平台共享配置
   result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
+            max_tokens, temperature, is_active, use_for_writing, use_for_publish,
+            use_for_collect, use_for_embedding, web_search,
+            daily_quota, used_today, quota_reset_at
      FROM ai_model_config
-     WHERE user_id IS NULL AND is_active = true
+     WHERE user_id IS NULL AND is_active = true AND use_for_writing = true
        AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
      ORDER BY create_time DESC LIMIT 1`
   );
   return result.rows[0] || null;
+}
+
+/**
+ * v1.8.2：获取用于发布的默认模型（按 use_for_publish=true 过滤）
+ * 发布流程（桌面端 publishWorker 的 aiActionExecutor 截图识别）调用
+ * 优先取 use_for_publish=true 的模型，找不到则降级取 getDefaultModelConfig（写作模型兜底）
+ */
+export async function getPublishModelConfig(userId: number): Promise<any | null> {
+  let result = await query(
+    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, use_for_writing, use_for_publish,
+            use_for_collect, use_for_embedding, web_search,
+            daily_quota, used_today, quota_reset_at
+     FROM ai_model_config
+     WHERE user_id = $1 AND is_active = true AND use_for_publish = true
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+     ORDER BY create_time DESC LIMIT 1`,
+    [userId]
+  );
+  if (result.rows[0]) return result.rows[0];
+  // 降级1：平台共享配置中 use_for_publish=true 的
+  result = await query(
+    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, use_for_writing, use_for_publish,
+            use_for_collect, use_for_embedding, web_search,
+            daily_quota, used_today, quota_reset_at
+     FROM ai_model_config
+     WHERE user_id IS NULL AND is_active = true AND use_for_publish = true
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+     ORDER BY create_time DESC LIMIT 1`
+  );
+  if (result.rows[0]) return result.rows[0];
+  // 降级2：没有专门的发布模型时，用写作模型兜底（避免发布流程无模型可用）
+  return getDefaultModelConfig(userId);
 }
 
 export async function getActiveModelConfig(userId: number, platform: string): Promise<any | null> {
@@ -3178,12 +3222,14 @@ export async function getActiveModelConfig(userId: number, platform: string): Pr
 export async function createAiModelConfig(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_model_config (user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, daily_quota, use_for_collect, web_search)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            max_tokens, temperature, is_active, use_for_writing, use_for_publish,
+            daily_quota, use_for_collect, web_search)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING id`,
     [data.user_id, data.platform, data.model_name, data.api_key_encrypted, data.base_url,
-     data.max_tokens || 4096, data.temperature ?? 0.7, data.is_active ?? true, data.daily_quota,
-     data.use_for_collect ?? false, data.web_search ?? false]
+     data.max_tokens || 4096, data.temperature ?? 0.7, data.is_active ?? true,
+     data.use_for_writing ?? true, data.use_for_publish ?? false,
+     data.daily_quota, data.use_for_collect ?? false, data.web_search ?? false]
   );
   return result.rows[0].id;
 }
@@ -3198,6 +3244,8 @@ export async function updateAiModelConfig(id: number, data: any): Promise<void> 
   if (data.max_tokens !== undefined) { fields.push(`max_tokens = $${idx++}`); values.push(data.max_tokens); }
   if (data.temperature !== undefined) { fields.push(`temperature = $${idx++}`); values.push(data.temperature); }
   if (data.is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(data.is_active); }
+  if (data.use_for_writing !== undefined) { fields.push(`use_for_writing = $${idx++}`); values.push(data.use_for_writing); }
+  if (data.use_for_publish !== undefined) { fields.push(`use_for_publish = $${idx++}`); values.push(data.use_for_publish); }
   if (data.daily_quota !== undefined) { fields.push(`daily_quota = $${idx++}`); values.push(data.daily_quota); }
   if (data.use_for_collect !== undefined) { fields.push(`use_for_collect = $${idx++}`); values.push(data.use_for_collect); }
   if (data.web_search !== undefined) { fields.push(`web_search = $${idx++}`); values.push(data.web_search); }

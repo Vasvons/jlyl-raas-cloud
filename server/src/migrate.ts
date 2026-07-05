@@ -984,6 +984,17 @@ export async function migrate() {
     // true = 调用大模型时启用联网搜索（智谱 tools.web_search / 通义 enable_search / Kimi builtin_function）
     await client.query(`ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS web_search BOOLEAN DEFAULT FALSE`);
 
+    // 8.6.2 ai_model_config 新增 use_for_writing 字段（v1.8.2：写作专用开关）
+    // 之前前端"用于写作"开关错误映射到 is_active，导致 getDefaultModelConfig 无法区分用途
+    // 现在拆分：is_active 仅表示配置启用，use_for_writing 才表示用于写作任务
+    // DEFAULT true 向后兼容：现有 is_active=true 的记录默认可用于写作（避免迁移后写作任务无模型可用）
+    await client.query(`ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_writing BOOLEAN DEFAULT TRUE`);
+
+    // 8.6.3 ai_model_config 新增 use_for_publish 字段（v1.8.2：发布专用开关）
+    // 用户需求：某些模型（如 glm-4v-flash 视觉模型）仅用于发布流程兜底，不参与写作
+    // 发布流程（桌面端 publishWorker 的 aiActionExecutor 截图识别）按此字段取模型
+    await client.query(`ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_publish BOOLEAN DEFAULT FALSE`);
+
     // 8.7 real_collect_record 新增 source 字段（标记查询来源：api / crawler）
     await client.query(`ALTER TABLE real_collect_record ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'crawler'`);
 
