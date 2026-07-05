@@ -3812,10 +3812,82 @@ export async function completeWritingTask(taskId: number, status: 'completed' | 
   );
 }
 
+/**
+ * v1.8.2：重置写作任务以重试失败的文章
+ *
+ * 逻辑：
+ *   - 把任务状态从 failed/partial 重置为 pending
+ *   - 把 total_count 调整为原 failed_count（只重新生成失败的篇数）
+ *   - 重置 completed_count=0, failed_count=0, error_msg=NULL
+ *   - 清空 started_at/finished_at（让任务像新创建一样被重新执行）
+ *
+ * 调用方在重置后异步执行 executeWritingTask(taskId, userId) 即可重新生成
+ *
+ * @returns 重置后的任务对象（含新的 total_count），如果任务不存在或状态不允许重试则返回 null
+ */
+export async function resetWritingTaskForRetry(taskId: number): Promise<any | null> {
+  // 先查任务当前状态，只允许重试 failed/partial 状态的任务
+  const checkResult = await query(
+    `SELECT id, status, total_count, completed_count, failed_count
+     FROM ai_writing_task WHERE id = $1`,
+    [taskId]
+  );
+  if (!checkResult.rows[0]) return null;
+  const task = checkResult.rows[0];
+  if (!['failed', 'partial'].includes(task.status)) {
+    throw new Error(`任务状态为 ${task.status}，只有 failed/partial 状态的任务才能重试`);
+  }
+  if (!task.failed_count || task.failed_count <= 0) {
+    throw new Error('任务没有失败的文章，无需重试');
+  }
+
+  // 重置任务：total_count = 原 failed_count，其他计数清零，状态回 pending
+  await query(
+    `UPDATE ai_writing_task
+     SET status = 'pending',
+         total_count = $2,
+         completed_count = 0,
+         failed_count = 0,
+         error_msg = NULL,
+         started_at = NULL,
+         finished_at = NULL
+     WHERE id = $1`,
+    [taskId, task.failed_count]
+  );
+
+  // 返回重置后的任务（用于调用方决定是否触发执行）
+  const result = await query(
+    `SELECT id, user_id, status, total_count FROM ai_writing_task WHERE id = $1`,
+    [taskId]
+  );
+  return result.rows[0] || null;
+}
+
 export async function deleteWritingTask(taskId: number): Promise<void> {
   // 删除任务关联的所有文章（不限状态），然后删除任务
   // article.task_id 外键引用 ai_writing_task.id（无 ON DELETE CASCADE），必须先删文章
+  // v1.8.2：publish_task.article_id 引用 article(id) 也无 ON DELETE CASCADE，
+  //         publish_record.task_id 引用 publish_task(id) 也无 ON DELETE CASCADE，
+  //         必须按依赖顺序级联删除：publish_record → publish_task → article → ai_writing_task
+  // 1. 删除该任务下文章关联的发布记录（先查 publish_task.id，再删 publish_record）
+  await query(
+    `DELETE FROM publish_record
+     WHERE task_id IN (
+       SELECT pt.id FROM publish_task pt
+       JOIN article a ON pt.article_id = a.id
+       WHERE a.task_id = $1
+     )`,
+    [taskId]
+  );
+  // 2. 删除该任务下文章关联的发布任务
+  await query(
+    `DELETE FROM publish_task
+     WHERE article_id IN (SELECT id FROM article WHERE task_id = $1)`,
+    [taskId]
+  );
+  // 3. 删除文章（article_embedding 和 article_performance 有 ON DELETE CASCADE，会自动清理）
   await query('DELETE FROM article WHERE task_id = $1', [taskId]);
+  // 4. 删除写作任务本身
   await query('DELETE FROM ai_writing_task WHERE id = $1', [taskId]);
 }
 

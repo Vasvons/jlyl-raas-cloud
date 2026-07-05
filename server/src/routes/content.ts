@@ -23,6 +23,7 @@ import {
   getWritingTasks,
   getWritingTaskById,
   deleteWritingTask,
+  resetWritingTaskForRetry,
   getArticles,
   getArticleById,
   updateArticle,
@@ -799,6 +800,28 @@ router.delete('/writing-tasks/:id', async (req: Request, res: Response) => {
   try {
     await deleteWritingTask(Number(req.params.id));
     res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// v1.8.2：重试写作任务中失败的文章
+// 之前 bug：前端调用此路由但后端从未实现，导致 404
+// 实现：重置任务状态为 pending，total_count 调整为原 failed_count（只重新生成失败的篇数），
+//       然后异步执行 executeWritingTask
+router.post('/writing-tasks/:id/retry-failed', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const taskId = Number(req.params.id);
+    const resetTask = await resetWritingTaskForRetry(taskId);
+    if (!resetTask) {
+      return res.status(404).json({ code: 404, message: '任务不存在' });
+    }
+    // 异步执行任务（不阻塞响应）
+    executeWritingTask(taskId, userId).catch(err => {
+      console.error(`Retry writing task ${taskId} failed:`, err);
+    });
+    res.json({ code: 200, message: `已提交重试请求，将重新生成 ${resetTask.total_count} 篇失败的文章` });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
