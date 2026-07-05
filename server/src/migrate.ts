@@ -1209,6 +1209,16 @@ export async function migrate() {
 
     console.log('[Migrate] v1.8.0 平台专属写作引擎表/字段/索引创建完成（platform_content_rule + ai_writing_task.target_platforms + idx_article_task_platform）');
 
+    // v1.8.4：publish_task 表新增 batch_id 字段（UUID，标识一次「新建发布任务」动作）
+    // 同一 batch_id 下的所有 publish_task 是一个"任务记录"（一次创建动作）
+    // 用于一级聚合视图，避免按 writing_task_id 聚合时多次创建被合并
+    await client.query(`ALTER TABLE publish_task ADD COLUMN IF NOT EXISTS batch_id UUID`);
+    // 为旧数据回填 batch_id（每行独立一个 UUID，避免旧数据聚合异常）
+    await client.query(`UPDATE publish_task SET batch_id = gen_random_uuid() WHERE batch_id IS NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_publish_task_batch ON publish_task(batch_id)`);
+
+    console.log('[Migrate] v1.8.4 publish_task.batch_id 字段添加完成');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

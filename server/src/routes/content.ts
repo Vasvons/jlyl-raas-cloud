@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { authMiddleware, adminMiddleware } from '../auth';
 import { query } from '../db';
+import crypto from 'crypto';
 import {
   getAiModelConfigs,
   getAiModelConfigById,
@@ -43,14 +44,14 @@ import {
   markPublishRecordStarted,
   getPublishRecordsByTask,
   retryPublishRecords,
-  // v1.8.4：发布任务聚合 + 暂停/恢复/删除
-  getPublishTasksGroupedByWritingTask,
-  getPublishTasksByWritingTask,
+  // v1.8.4：发布任务聚合（按 batch_id）+ 暂停/恢复/删除
+  getPublishTasksGroupedByBatch,
+  getPublishTasksByBatch,
   pausePublishTask,
   resumePublishTask,
-  batchPauseResumeByWritingTask,
+  batchPauseResumeByBatch,
   deletePublishTask,
-  batchDeleteByWritingTask,
+  batchDeleteByBatch,
   getPublishAccounts,
   createPublishAccount,
   updatePublishAccountStorageState,
@@ -916,6 +917,7 @@ router.post('/articles/:id/regenerate', async (req: Request, res: Response) => {
 //   - 文章有 target_platform → 只发布到该平台（v1.8.0 平台专属写作引擎产出的文章）
 //   - 文章无 target_platform（旧文章）→ 用 target_platforms 作为兜底发布到所有选中平台
 //   - target_platforms 同时作为过滤条件：跳过文章 target_platform 不在列表中的文章
+// v1.8.4：一次 batch-publish 调用共享一个 batch_id（UUID），用于一级聚合视图按批次分组
 // Body: { article_ids: number[], target_platforms?: string[], scheduled_at?: string }
 router.post('/articles/batch-publish', async (req: Request, res: Response) => {
   try {
@@ -926,6 +928,9 @@ router.post('/articles/batch-publish', async (req: Request, res: Response) => {
     }
     const platformFilter = Array.isArray(target_platforms) && target_platforms.length > 0 ? target_platforms : null;
     const scheduledDate = scheduled_at ? new Date(scheduled_at) : undefined;
+
+    // v1.8.4：为本次批量发布生成一个共享的 batch_id
+    const batchId = crypto.randomUUID();
 
     // 1. 一次性查询所有文章的 target_platform
     const articleResult = await query(
@@ -961,6 +966,7 @@ router.post('/articles/batch-publish', async (req: Request, res: Response) => {
         article_id: numId,
         target_platforms: platformsForThisArticle,
         scheduled_at: scheduledDate,
+        batch_id: batchId,
       });
       taskIds.push(taskId);
     }
@@ -968,6 +974,7 @@ router.post('/articles/batch-publish', async (req: Request, res: Response) => {
       code: 200,
       data: {
         task_ids: taskIds,
+        batch_id: batchId,
         skipped,
         summary: {
           total: article_ids.length,
@@ -1188,20 +1195,20 @@ router.post('/publish/tasks/:id/cancel', async (req: Request, res: Response) => 
   }
 });
 
-// ============ v1.8.4：发布任务聚合 + 暂停/恢复/删除 ============
+// ============ v1.8.4：发布任务聚合（按 batch_id）+ 暂停/恢复/删除 ============
 
 /**
- * 按写作任务聚合的发布任务列表（一级聚合视图）
+ * 按 batch_id 聚合的发布任务列表（一级聚合视图）
  *
  * Query: page, pageSize
- * 返回同一写作任务下所有 publish_task 的合并进度、合并状态、文章数、平台列表
+ * 同一次「新建发布任务」的所有 publish_task 共享一个 batch_id，聚合为一行。
  */
-router.get('/publish/grouped-by-writing-task', async (req: Request, res: Response) => {
+router.get('/publish/grouped-by-batch', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
-    const data = await getPublishTasksGroupedByWritingTask(userId, page, pageSize);
+    const data = await getPublishTasksGroupedByBatch(userId, page, pageSize);
     res.json({ code: 200, data });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -1209,18 +1216,18 @@ router.get('/publish/grouped-by-writing-task', async (req: Request, res: Respons
 });
 
 /**
- * 获取写作任务下的所有 publish_task（二级详情视图）
+ * 获取一个批次下的所有 publish_task（二级详情视图）
  *
- * 返回该写作任务下所有 publish_task（每篇文章一个）。
+ * 返回该批次下所有 publish_task（每篇文章一个）。
  */
-router.get('/publish/by-writing-task/:writingTaskId', async (req: Request, res: Response) => {
+router.get('/publish/by-batch/:batchId', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const writingTaskId = Number(req.params.writingTaskId);
-    if (!writingTaskId) {
-      return res.status(400).json({ code: 400, message: 'writingTaskId 必填' });
+    const batchId = req.params.batchId;
+    if (!batchId) {
+      return res.status(400).json({ code: 400, message: 'batchId 必填' });
     }
-    const list = await getPublishTasksByWritingTask(userId, writingTaskId);
+    const list = await getPublishTasksByBatch(userId, batchId);
     res.json({ code: 200, data: { list, total: list.length } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -1267,21 +1274,21 @@ router.delete('/publish/tasks/:id', async (req: Request, res: Response) => {
 });
 
 /**
- * 批量暂停/恢复（按写作任务 ID）
+ * 批量暂停/恢复（按 batch_id）
  * Body: { action: 'pause' | 'resume' }
  */
-router.post('/publish/batch/:writingTaskId', async (req: Request, res: Response) => {
+router.post('/publish/batch/:batchId', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const writingTaskId = Number(req.params.writingTaskId);
+    const batchId = req.params.batchId;
     const action = req.body?.action;
-    if (!writingTaskId) {
-      return res.status(400).json({ code: 400, message: 'writingTaskId 必填' });
+    if (!batchId) {
+      return res.status(400).json({ code: 400, message: 'batchId 必填' });
     }
     if (action !== 'pause' && action !== 'resume') {
       return res.status(400).json({ code: 400, message: 'action 必须为 pause 或 resume' });
     }
-    const result = await batchPauseResumeByWritingTask(userId, writingTaskId, action);
+    const result = await batchPauseResumeByBatch(userId, batchId, action);
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -1289,16 +1296,16 @@ router.post('/publish/batch/:writingTaskId', async (req: Request, res: Response)
 });
 
 /**
- * 批量删除（按写作任务 ID）
+ * 批量删除（按 batch_id）
  */
-router.delete('/publish/batch/:writingTaskId', async (req: Request, res: Response) => {
+router.delete('/publish/batch/:batchId', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const writingTaskId = Number(req.params.writingTaskId);
-    if (!writingTaskId) {
-      return res.status(400).json({ code: 400, message: 'writingTaskId 必填' });
+    const batchId = req.params.batchId;
+    if (!batchId) {
+      return res.status(400).json({ code: 400, message: 'batchId 必填' });
     }
-    const result = await batchDeleteByWritingTask(userId, writingTaskId);
+    const result = await batchDeleteByBatch(userId, batchId);
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -1490,6 +1497,8 @@ router.post('/publish/by-writing-task', async (req: Request, res: Response) => {
 
     // 2. 为每篇文章创建一个 publish_task（target_platforms = [该文章的平台]）
     //    每篇文章已是平台专属，publish_task 单平台发布
+    //    v1.8.4：一次 by-writing-task 调用共享一个 batch_id，用于一级聚合视图按批次分组
+    const batchId = crypto.randomUUID();
     const createdTasks: { article_id: number; platform: string; publish_task_id: number; title: string }[] = [];
     const skipped: { article_id: number; platform: string; reason: string }[] = [];
     for (const article of articles) {
@@ -1504,6 +1513,7 @@ router.post('/publish/by-writing-task', async (req: Request, res: Response) => {
           article_id: article.id,
           target_platforms: [platform],
           scheduled_at: scheduledDate,
+          batch_id: batchId,
         });
         createdTasks.push({ article_id: article.id, platform, publish_task_id: publishTaskId, title: article.title });
       } catch (err: any) {
@@ -1515,6 +1525,7 @@ router.post('/publish/by-writing-task', async (req: Request, res: Response) => {
       code: 200,
       data: {
         writing_task_id: taskId,
+        batch_id: batchId,
         total_articles: articles.length,
         created_publish_tasks: createdTasks.length,
         skipped,

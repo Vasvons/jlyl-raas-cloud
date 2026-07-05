@@ -1,5 +1,6 @@
 import { query, withTransaction, PoolClient } from './db';
 import { encrypt, decrypt } from './utils/crypto';
+import crypto from 'crypto';
 
 // ============ 用户管理 ============
 
@@ -4431,14 +4432,17 @@ export async function createPublishTask(data: {
   article_id: number;
   target_platforms: string[];
   scheduled_at?: Date;
+  batch_id?: string; // v1.8.4：批次 ID（UUID），同一次「新建发布任务」的所有 publish_task 共享
 }): Promise<number> {
   return withTransaction(async (client: PoolClient) => {
+    // v1.8.4：若未提供 batch_id，自动生成一个（单条调用场景）
+    const batchId = data.batch_id || crypto.randomUUID();
     // 1. 创建任务
     const taskResult = await client.query(
-      `INSERT INTO publish_task (user_id, article_id, target_platforms, scheduled_at, status, total_count)
-       VALUES ($1, $2, $3, $4, 'pending', $5)
+      `INSERT INTO publish_task (user_id, article_id, target_platforms, scheduled_at, status, total_count, batch_id)
+       VALUES ($1, $2, $3, $4, 'pending', $5, $6)
        RETURNING id`,
-      [data.user_id, data.article_id, data.target_platforms, data.scheduled_at || null, data.target_platforms.length]
+      [data.user_id, data.article_id, data.target_platforms, data.scheduled_at || null, data.target_platforms.length, batchId]
     );
     const taskId = taskResult.rows[0].id;
 
@@ -4662,39 +4666,37 @@ export async function retryPublishRecords(
 }
 
 /**
- * v1.8.4：按写作任务聚合的发布任务列表（一级聚合视图）
+ * v1.8.4：按 batch_id 聚合的发布任务列表（一级聚合视图）
  *
- * 通过 publish_task.article_id → article.task_id 间接关联到写作任务，
- * 把同一写作任务下的所有 publish_task 聚合成一行。
+ * 同一次「新建发布任务」动作生成的所有 publish_task 共享一个 batch_id（UUID），
+ * 聚合为一行显示。这样每次创建是一个独立条目，不会因写作任务相同而合并。
  *
  * 聚合规则：
  * - total_count = SUM(publish_task.total_count)  即文章×平台总数
  * - completed_count = SUM(publish_task.completed_count)
  * - failed_count = SUM(publish_task.failed_count)
  * - article_count = COUNT(DISTINCT publish_task.article_id)  即文章数
- * - status = 聚合状态：任一 processing → processing；否则按 completed/failed/partial/paused/pending 优先级
+ * - status = 聚合状态：任一 processing → processing；否则按 paused/pending/partial/failed/completed 优先级
  *
- * 不关联写作任务的 publish_task（article.task_id IS NULL）归到一个虚拟分组 writing_task_id=NULL。
+ * 关联写作任务名是为了显示方便（一个批次可能涉及多个写作任务的文章，取第一个非空的写作任务名）。
  */
-export async function getPublishTasksGroupedByWritingTask(
+export async function getPublishTasksGroupedByBatch(
   userId: number,
   page = 1,
   pageSize = 20
 ): Promise<{ list: any[]; total: number }> {
   const offset = (page - 1) * pageSize;
-  // 计数：写作任务分组数（含 NULL 分组）
+  // 计数：batch_id 分组数
   const totalResult = await query(
-    `SELECT COUNT(DISTINCT a.task_id) as total
+    `SELECT COUNT(DISTINCT pt.batch_id) as total
      FROM publish_task pt
-     JOIN article a ON a.id = pt.article_id
-     WHERE pt.user_id = $1`,
+     WHERE pt.user_id = $1 AND pt.batch_id IS NOT NULL`,
     [userId]
   );
-  // 列表：按 task_id 聚合
+  // 列表：按 batch_id 聚合
   const result = await query(
     `SELECT
-       a.task_id as writing_task_id,
-       wt.task_name as writing_task_name,
+       pt.batch_id,
        COUNT(DISTINCT pt.id) as publish_task_count,
        COUNT(DISTINCT pt.article_id) as article_count,
        SUM(pt.total_count) as total_count,
@@ -4702,18 +4704,21 @@ export async function getPublishTasksGroupedByWritingTask(
        SUM(pt.failed_count) as failed_count,
        MIN(pt.create_time) as create_time,
        MAX(pt.finished_at) as finished_at,
+       MIN(pt.scheduled_at) as scheduled_at,
        bool_or(pt.status = 'processing') as has_processing,
        bool_or(pt.status = 'paused') as has_paused,
        bool_or(pt.status = 'pending') as has_pending,
        bool_or(pt.status = 'failed') as has_failed,
        bool_or(pt.status = 'completed') as all_completed,
-       array_agg(DISTINCT unnested_platform) as platforms
+       array_agg(DISTINCT unnested_platform) FILTER (WHERE unnested_platform IS NOT NULL) as platforms,
+       array_agg(DISTINCT a.task_id) FILTER (WHERE a.task_id IS NOT NULL) as writing_task_ids,
+       MAX(wt.task_name) as writing_task_name
      FROM publish_task pt
      JOIN article a ON a.id = pt.article_id
      LEFT JOIN ai_writing_task wt ON wt.id = a.task_id
      LEFT JOIN LATERAL unnest(pt.target_platforms) as unnested_platform ON true
-     WHERE pt.user_id = $1
-     GROUP BY a.task_id, wt.task_name
+     WHERE pt.user_id = $1 AND pt.batch_id IS NOT NULL
+     GROUP BY pt.batch_id
      ORDER BY MIN(pt.create_time) DESC
      LIMIT $2 OFFSET $3`,
     [userId, pageSize, offset]
@@ -4739,13 +4744,21 @@ export async function getPublishTasksGroupedByWritingTask(
     } else {
       status = 'pending';
     }
+    // writing_task_ids 取第一个作为展示用 writing_task_id
+    const writingTaskId = Array.isArray(row.writing_task_ids) && row.writing_task_ids.length > 0
+      ? row.writing_task_ids[0]
+      : null;
     return {
       ...row,
+      batch_id: row.batch_id,
+      writing_task_id: writingTaskId,
+      writing_task_ids: row.writing_task_ids || [],
       total_count: parseInt(row.total_count) || 0,
       completed_count: parseInt(row.completed_count) || 0,
       failed_count: parseInt(row.failed_count) || 0,
       publish_task_count: parseInt(row.publish_task_count) || 0,
       article_count: parseInt(row.article_count) || 0,
+      platforms: row.platforms || [],
       status,
     };
   });
@@ -4757,22 +4770,23 @@ export async function getPublishTasksGroupedByWritingTask(
 }
 
 /**
- * v1.8.4：获取写作任务下的所有 publish_task（二级详情视图）
+ * v1.8.4：获取一个批次下的所有 publish_task（二级详情视图）
  */
-export async function getPublishTasksByWritingTask(
+export async function getPublishTasksByBatch(
   userId: number,
-  writingTaskId: number
+  batchId: string
 ): Promise<any[]> {
   const result = await query(
     `SELECT pt.*,
             a.title as article_title,
             a.core_keyword as article_keyword,
-            a.target_platform as article_target_platform
+            a.target_platform as article_target_platform,
+            a.task_id as writing_task_id
      FROM publish_task pt
      JOIN article a ON a.id = pt.article_id
-     WHERE pt.user_id = $1 AND a.task_id = $2
+     WHERE pt.user_id = $1 AND pt.batch_id = $2
      ORDER BY pt.id ASC`,
-    [userId, writingTaskId]
+    [userId, batchId]
   );
   return result.rows;
 }
@@ -4817,43 +4831,39 @@ export async function resumePublishTask(id: number): Promise<void> {
 }
 
 /**
- * v1.8.4：批量暂停/恢复（按写作任务 ID）
+ * v1.8.4：批量暂停/恢复（按 batch_id）
  *
- * 对该写作任务下所有 publish_task 执行操作。
+ * 对该批次下所有 publish_task 执行操作。
  */
-export async function batchPauseResumeByWritingTask(
+export async function batchPauseResumeByBatch(
   userId: number,
-  writingTaskId: number,
+  batchId: string,
   action: 'pause' | 'resume'
 ): Promise<{ affected: number }> {
   if (action === 'pause') {
     const result = await query(
-      `UPDATE publish_task pt
+      `UPDATE publish_task
        SET status = 'paused'
-       FROM article a
-       WHERE pt.article_id = a.id
-         AND pt.user_id = $1
-         AND a.task_id = $2
-         AND pt.status IN ('pending', 'processing')`,
-      [userId, writingTaskId]
+       WHERE user_id = $1
+         AND batch_id = $2
+         AND status IN ('pending', 'processing')`,
+      [userId, batchId]
     );
     return { affected: result.rowCount || 0 };
   } else {
     const result = await query(
-      `UPDATE publish_task pt
+      `UPDATE publish_task
        SET status = CASE
-         WHEN pt.completed_count + pt.failed_count >= pt.total_count THEN
-           CASE WHEN pt.completed_count = 0 THEN 'failed'
-                WHEN pt.failed_count = 0 THEN 'completed'
+         WHEN completed_count + failed_count >= total_count THEN
+           CASE WHEN completed_count = 0 THEN 'failed'
+                WHEN failed_count = 0 THEN 'completed'
                 ELSE 'partial' END
          ELSE 'pending'
        END
-       FROM article a
-       WHERE pt.article_id = a.id
-         AND pt.user_id = $1
-         AND a.task_id = $2
-         AND pt.status = 'paused'`,
-      [userId, writingTaskId]
+       WHERE user_id = $1
+         AND batch_id = $2
+         AND status = 'paused'`,
+      [userId, batchId]
     );
     return { affected: result.rowCount || 0 };
   }
@@ -4874,20 +4884,18 @@ export async function deletePublishTask(id: number): Promise<void> {
 }
 
 /**
- * v1.8.4：批量删除（按写作任务 ID）
+ * v1.8.4：批量删除（按 batch_id）
  *
- * 删除该写作任务下所有 publish_task 及其 publish_record。
+ * 删除该批次下所有 publish_task 及其 publish_record。
  */
-export async function batchDeleteByWritingTask(
+export async function batchDeleteByBatch(
   userId: number,
-  writingTaskId: number
+  batchId: string
 ): Promise<{ deleted: number }> {
-  // 查出该写作任务下所有 publish_task.id
+  // 查出该批次下所有 publish_task.id
   const idsResult = await query(
-    `SELECT pt.id FROM publish_task pt
-     JOIN article a ON pt.article_id = a.id
-     WHERE pt.user_id = $1 AND a.task_id = $2`,
-    [userId, writingTaskId]
+    `SELECT id FROM publish_task WHERE user_id = $1 AND batch_id = $2`,
+    [userId, batchId]
   );
   const ids = idsResult.rows.map((r: any) => r.id);
   if (ids.length === 0) return { deleted: 0 };
