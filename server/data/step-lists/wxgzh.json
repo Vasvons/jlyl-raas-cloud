@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.6",
-  "description": "微信公众号图文发布流程（v1.7.6：修复 arguments is not defined——箭头函数无 arguments 对象，改为 ARG 函数参数传入；stepExecutor 把 arg 作为函数参数 ARG 传入 eval 出来的函数）",
+  "version": "1.7.7",
+  "description": "微信公众号图文发布流程（v1.7.7：点击发表改用 evaluate_edit scrollIntoView + click，解决发表按钮在视口外 Playwright click 失效问题）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -169,12 +169,10 @@
       "descript": "声明原创分支"
     },
     {
-      "type": "click",
-      "selector": "//span[text()=\"发表\"] | //button[text()=\"无需声明并发表\"]",
-      "descript": "点击发表",
-      "ai_fallback": true,
-      "ai_intent": "找到微信公众号发表按钮并点击",
-      "timeout": 5000
+      "type": "evaluate_edit",
+      "value": "const btns = Array.from(document.querySelectorAll('button, .weui-desktop-btn, a.weui-desktop-btn, span.weui-desktop-btn')); const publishBtn = btns.find(b => { const t = (b.innerText||'').trim(); return t === '发表' || t === '无需声明并发表' || t === '群发'; }); if (!publishBtn) return JSON.stringify({ ok: false, reason: '未找到发表按钮', buttonTexts: btns.map(b => (b.innerText||'').trim()).filter(Boolean).slice(0, 20) }); publishBtn.scrollIntoView({ block: 'center' }); return new Promise(r => setTimeout(() => { publishBtn.click(); r(JSON.stringify({ ok: true, clicked: (publishBtn.innerText||'').trim(), rect: publishBtn.getBoundingClientRect() })); }, 500));",
+      "descript": "点击发表（evaluate_edit: scrollIntoView + click，解决按钮在视口外 Playwright click 失效问题）",
+      "timeout": 8000
     },
     {
       "type": "timing",
