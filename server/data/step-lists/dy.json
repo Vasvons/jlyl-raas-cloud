@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.6",
-  "description": "抖音图文发布流程（v1.7.6：发布按钮改回 Playwright click 触发 React 合成事件 + 图片检测排除 36x36 占位符）",
+  "version": "1.7.7",
+  "description": "抖音图文发布流程（v1.7.7：图片上传改用 DOM 查找可见的图片上传区并派发 drop 事件 + 调试日志验证 input 命中）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
@@ -22,28 +22,40 @@
     },
     {
       "type": "timing",
-      "ms": 2500,
+      "ms": 3000,
       "descript": "等待上传组件加载完成"
     },
     {
+      "type": "evaluate_edit",
+      "value": "const inputs = Array.from(document.querySelectorAll('input[type=\"file\"]')); return inputs.map((e, i) => { const r = e.getBoundingClientRect(); return { index: i, accept: e.accept || '', className: (e.className||'').slice(0,80), visible: r.width > 0 && r.height > 0, rect: {w: Math.round(r.width), h: Math.round(r.height)}, parentClass: (e.parentElement?.className||'').slice(0,80), grandparentClass: (e.parentElement?.parentElement?.className||'').slice(0,80) }; });",
+      "descript": "调试：列出页面所有 file input（accept/class/parent），用于精准定位图片上传 input",
+      "timeout": 5000
+    },
+    {
       "type": "input_files",
-      "selector": "//input[@type='file' and (@accept='image/*' or contains(@accept,'image'))] | //input[@type='file' and contains(@class,'image')] | //div[contains(@class,'image-upload')]//input[@type='file'] | //input[@type='file' and not(contains(@accept,'video'))]",
+      "selector": "//input[@type='file' and @accept='image/*'] | //input[@type='file' and contains(@accept,'image')] | //div[contains(@class,'image-upload')]//input[@type='file'] | //div[contains(@class,'upload')]//input[@type='file' and not(contains(@accept,'video'))]",
       "files": ["{cover_image_url}"],
-      "descript": "上传图片（封面图）- 精确匹配图片 input，排除视频 input",
+      "descript": "上传图片（封面图）- 优先 accept=image/* 的 input",
       "ai_fallback": true,
       "ai_intent": "找到抖音图文上传图片的文件选择按钮（注意不要选到视频上传 input）",
       "timeout": 15000
     },
     {
       "type": "timing",
-      "ms": 2000,
-      "descript": "等待图片开始上传（setInputFiles 触发后给浏览器 2 秒读取文件）"
+      "ms": 3000,
+      "descript": "等待图片开始上传（setInputFiles 触发后给浏览器 3 秒读取文件并开始上传）"
     },
     {
       "type": "evaluate_edit",
-      "value": "const sleep = (ms) => new Promise(r => setTimeout(r, ms)); const start = Date.now(); let lastInfo = null; const isRealThumb = (i) => { const r = i.getBoundingClientRect(); if (r.width < 80 || r.height < 80) return false; const src = i.src || ''; if (src.startsWith('data:')) return false; return true; }; while (Date.now() - start < 40000) { const allImgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const realThumbs = Array.from(allImgs).filter(isRealThumb); const progressBars = document.querySelectorAll('.progress-bar, .uploading, [class*=\"progress\"], [class*=\"loading\"], [class*=\"uploading\"]'); const visibleProgress = Array.from(progressBars).filter(p => { const r = p.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); lastInfo = { realThumbCount: realThumbs.length, totalImgCount: allImgs.length, progressCount: visibleProgress.length, elapsed: Math.round((Date.now() - start) / 1000) }; if (realThumbs.length > 0 && visibleProgress.length === 0) { return { ok: true, ...lastInfo }; } await sleep(1500); } return { ok: false, ...lastInfo, reason: '等待 40 秒后图片仍未上传完成（可能上传失败或被拒绝）' };",
-      "descript": "等待图片上传完成（轮询检测真实缩略图出现 + 进度条消失，最多 40 秒，排除 36x36 占位符）",
-      "timeout": 45000
+      "value": "const uploadItems = document.querySelectorAll('[class*=\"upload-item\"], [class*=\"image-item\"], [class*=\"file-item\"], [class*=\"image\"].image-card, .image-container, [class*=\"upload-card\"]'); const allImgs = document.querySelectorAll('img'); const uploadRelatedImgs = Array.from(allImgs).filter(i => { const r = i.getBoundingClientRect(); return r.width > 50; }); return { uploadItemCount: uploadItems.length, uploadImgs: uploadRelatedImgs.map(i => ({ src: (i.src||'').slice(0, 60), w: Math.round(i.getBoundingClientRect().width), h: Math.round(i.getBoundingClientRect().height) })).slice(0, 8) };",
+      "descript": "调试：上传后 3 秒检查上传项和图片是否出现",
+      "timeout": 5000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const sleep = (ms) => new Promise(r => setTimeout(r, ms)); const start = Date.now(); let lastInfo = null; const isRealThumb = (i) => { const r = i.getBoundingClientRect(); if (r.width < 80 || r.height < 80) return false; const src = i.src || ''; if (src.startsWith('data:')) return false; return true; }; while (Date.now() - start < 45000) { const allImgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const realThumbs = Array.from(allImgs).filter(isRealThumb); const progressBars = document.querySelectorAll('.progress-bar, .uploading, [class*=\"progress\"], [class*=\"loading\"], [class*=\"uploading\"]'); const visibleProgress = Array.from(progressBars).filter(p => { const r = p.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); lastInfo = { realThumbCount: realThumbs.length, totalImgCount: allImgs.length, progressCount: visibleProgress.length, elapsed: Math.round((Date.now() - start) / 1000) }; if (realThumbs.length > 0 && visibleProgress.length === 0) { return { ok: true, ...lastInfo }; } await sleep(2000); } return { ok: false, ...lastInfo, reason: '等待 45 秒后图片仍未上传完成（可能上传失败、被拒绝或 input 命中错误）' };",
+      "descript": "等待图片上传完成（轮询检测真实缩略图出现 + 进度条消失，最多 45 秒）",
+      "timeout": 50000
     },
     {
       "type": "evaluate_edit",
