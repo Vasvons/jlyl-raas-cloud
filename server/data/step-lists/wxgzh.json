@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.15",
-  "description": "微信公众号图文发布流程（v1.7.15：点击'本地上传'前先禁用顶部工具栏 file input，确保点击后新建的 file input 是封面专用的）",
+  "version": "1.7.16",
+  "description": "微信公众号图文发布流程（v1.7.16：新增 input_files_chooser step 类型，用 page.on filechooser 事件拦截文件选择对话框，彻底解决 file input 定位问题）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -119,27 +119,10 @@
       "descript": "等待下拉菜单弹出动画"
     },
     {
-      "type": "evaluate_edit",
-      "value": "const toolbarInputs = Array.from(document.querySelectorAll('input[type=\"file\"]')).filter(inp => { const p = inp.parentElement; return p && (p.className || '').includes('tpl_dropdown_menu_item'); }); const disabledIds = []; for (const inp of toolbarInputs) { inp.setAttribute('data-jlyl-toolbar', '1'); inp.style.display = 'none'; try { inp.parentElement.removeChild(inp); } catch(e) {} disabledIds.push(1); } const allEls = Array.from(document.querySelectorAll('div, span, a, li, button, p, [role=\"menuitem\"], [role=\"option\"]')); const uploadItems = allEls.filter(el => { const t = (el.textContent||'').trim(); if (t.length === 0 || t.length > 30) return false; return t.includes('本地上传') || t.includes('上传图片') || t === '上传' || t.includes('点击上传'); }); if (uploadItems.length === 0) { return JSON.stringify({ ok: false, reason: '未找到上传图片菜单项', toolbarDisabled: disabledIds.length, remainingInputs: document.querySelectorAll('input[type=\"file\"]').length }); } const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); const coverRect = coverBtn ? coverBtn.getBoundingClientRect() : null; let best = uploadItems[0]; let bestInfo = { text: (best.textContent||'').trim().slice(0, 50), tag: best.tagName, cls: (best.className||'').slice(0, 80) }; if (coverRect) { let minDist = Infinity; for (const item of uploadItems) { const r = item.getBoundingClientRect(); const dist = Math.abs(r.top - coverRect.top) + Math.abs(r.left - coverRect.left); if (dist < minDist) { minDist = dist; best = item; bestInfo = { text: (item.textContent||'').trim().slice(0, 50), tag: item.tagName, cls: (item.className||'').slice(0, 80) }; } } } const beforeFileInputs = document.querySelectorAll('input[type=\"file\"]').length; try { best.scrollIntoView({ block: 'center' }); } catch(e) {} best.click(); return new Promise(r => setTimeout(() => { const afterFileInputs = document.querySelectorAll('input[type=\"file\"]').length; r(JSON.stringify({ ok: true, clicked: bestInfo.text, itemCount: uploadItems.length, allTexts: uploadItems.map(e => (e.textContent||'').trim().slice(0, 30)), beforeFileInputs, afterFileInputs, bestTag: bestInfo.tag, bestClass: bestInfo.cls, toolbarDisabled: disabledIds.length })); }, 1500));",
-      "descript": "点击下拉菜单中的'本地上传'菜单项（触发封面专用 file input 创建）",
-      "timeout": 8000
-    },
-    {
-      "type": "timing",
-      "ms": 2000,
-      "descript": "等待封面 file input 创建（点击'本地上传'后可能弹出新的上传弹窗）"
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "const findCoverInput = () => { const inputs = Array.from(document.querySelectorAll('input[type=\"file\"]')); const candidates = inputs.map((inp, idx) => { const parent = inp.parentElement; const parentClass = parent ? parent.className || '' : ''; const inToolbar = parentClass.includes('tpl_dropdown_menu_item'); const inCoverArea = !!inp.closest('.select-cover, .js_cover_btn_area, .cover_area, .appmsg_cover_area, .js_imagedialog, .pop-opr, .weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .dialog_wrp, .dialog_box'); return { idx, inp, parentClass, inToolbar, inCoverArea, accept: inp.accept || '' }; }); let coverInput = candidates.find(c => c.inCoverArea && !c.inToolbar)?.inp; if (!coverInput) { coverInput = candidates.find(c => !c.inToolbar)?.inp; } if (!coverInput) { coverInput = candidates.find(c => c.accept.includes('image'))?.inp; } return { coverInput, candidates }; }; let result = findCoverInput(); let retry = 0; while (!result.coverInput && retry < 6) { await new Promise(r => setTimeout(r, 500)); result = findCoverInput(); retry++; } if (result.coverInput) { result.coverInput.setAttribute('id', 'jlyl_cover_input'); return JSON.stringify({ ok: true, marked: true, accept: result.coverInput.accept, parentClass: result.coverInput.parentElement?.className || '', totalInputs: document.querySelectorAll('input[type=\"file\"]').length, retries: retry }); } return JSON.stringify({ ok: false, reason: '未找到封面 file input（已重试 ' + retry + ' 次）', inputs: result.candidates.map(c => ({ accept: c.accept, parentClass: c.parentClass, inToolbar: c.inToolbar, inCoverArea: c.inCoverArea })) });",
-      "descript": "标记封面专用 file input（重试 6 次每次 500ms，排除顶部工具栏，优先选封面区域/弹窗内的 input）",
-      "timeout": 8000
-    },
-    {
-      "type": "input_files",
-      "selector": "#jlyl_cover_input",
+      "type": "input_files_chooser",
+      "trigger_click": "const allEls = Array.from(document.querySelectorAll('div, span, a, li, button, p, [role=\"menuitem\"], [role=\"option\"]')); const uploadItems = allEls.filter(el => { const t = (el.textContent||'').trim(); if (t.length === 0 || t.length > 30) return false; return t.includes('本地上传') || t.includes('上传图片') || t === '上传' || t.includes('点击上传'); }); if (uploadItems.length === 0) { throw new Error('未找到上传图片菜单项'); } const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); const coverRect = coverBtn ? coverBtn.getBoundingClientRect() : null; let best = uploadItems[0]; if (coverRect) { let minDist = Infinity; for (const item of uploadItems) { const r = item.getBoundingClientRect(); const dist = Math.abs(r.top - coverRect.top) + Math.abs(r.left - coverRect.left); if (dist < minDist) { minDist = dist; best = item; } } } try { best.scrollIntoView({ block: 'center' }); } catch(e) {} best.click(); await new Promise(r => setTimeout(r, 1500)); const dialogBtns = Array.from(document.querySelectorAll('.weui-desktop-dialog button, .weui-desktop-modal button, [role=\"dialog\"] button, .js_imagedialog button, .pop-opr button')); const uploadBtn = dialogBtns.find(b => { const t = (b.textContent||'').trim(); return t.includes('上传') || t.includes('本地') || t.includes('选择文件'); }); if (uploadBtn) { uploadBtn.click(); }",
       "files": ["{cover_image_url}"],
-      "descript": "上传封面图片（精确指向封面专用 file input，避免命中顶部工具栏）",
+      "descript": "用 filechooser 事件拦截文件选择对话框（点击'本地上传'菜单项 → 如有弹窗再点弹窗按钮 → 浏览器原生文件选择对话框触发 → setFiles）",
       "timeout": 30000
     },
     {
