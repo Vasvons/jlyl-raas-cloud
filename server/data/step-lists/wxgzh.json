@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.18",
-  "description": "微信公众号图文发布流程（v1.7.18：改回从正文选封面方案——正文已有图片，从正文选取更可靠，避免本地下载/上传的复杂性）",
+  "version": "1.7.19",
+  "description": "微信公众号图文发布流程（v1.7.19：点击'从正文选择'后增加全页面诊断，打印所有可见弹窗/菜单/按钮，定位真正的图文封面选择入口）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -136,8 +136,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const diag = { bodyImgs: [], dialogImgs: [], dialogVisible: false }; document.querySelectorAll('.view.rich_media_content img, .ProseMirror img').forEach(img => { const r = img.getBoundingClientRect(); diag.bodyImgs.push({ src: (img.src||'').slice(0, 80), w: Math.round(r.width), h: Math.round(r.height), visible: r.width > 0 }); }); const dialogs = document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .dialog_wrp, .pop-opr'); diag.dialogVisible = Array.from(dialogs).some(d => d.getBoundingClientRect().width > 0); const dialogImgs = document.querySelectorAll('.weui-desktop-dialog img, .weui-desktop-modal img, [role=\"dialog\"] img, .js_imagedialog img, .pop-opr img, .dialog_wrp img, .img_pick img, .js_img_pick img'); dialogImgs.forEach(img => { const r = img.getBoundingClientRect(); if (r.width > 0) diag.dialogImgs.push({ src: (img.src||'').slice(0, 80), w: Math.round(r.width), h: Math.round(r.height) }); }); return JSON.stringify(diag);",
-      "descript": "诊断正文图片和弹窗图片（打印正文图片数量、弹窗图片数量、弹窗是否可见）",
+      "value": "const diag = { bodyImgs: [], dialogImgs: [], dialogVisible: false, visibleDialogs: [], visibleMenus: [], allVisibleButtons: [] }; document.querySelectorAll('.view.rich_media_content img, .ProseMirror img').forEach(img => { const r = img.getBoundingClientRect(); diag.bodyImgs.push({ src: (img.src||'').slice(0, 80), w: Math.round(r.width), h: Math.round(r.height), visible: r.width > 0 }); }); const dialogs = document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .dialog_wrp, .pop-opr, .menu, .dropdown-menu, .tpl_dropdown_menu'); dialogs.forEach(d => { const r = d.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { diag.visibleDialogs.push({ cls: (d.className||'').slice(0, 100), text: (d.innerText||'').replace(/\\s+/g, ' ').slice(0, 200), rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } }); } }); diag.dialogVisible = diag.visibleDialogs.length > 0; const dialogImgs = document.querySelectorAll('img'); dialogImgs.forEach(img => { const r = img.getBoundingClientRect(); if (r.width > 20 && r.height > 20) { const p = img.parentElement; const pp = p ? p.parentElement : null; const inDialog = !!(img.closest('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .pop-opr, .dialog_wrp, .img_pick, .js_img_pick, .menu, .dropdown-menu')); if (inDialog) diag.dialogImgs.push({ src: (img.src||'').slice(0, 80), w: Math.round(r.width), h: Math.round(r.height), parentCls: (p?.className||'').slice(0, 60) }); } }); document.querySelectorAll('button, .weui-desktop-btn, a.weui-desktop-btn, [role=\"button\"], li.tpl_dropdown_menu_item, .menu_item').forEach(b => { const t = (b.textContent||'').trim(); const r = b.getBoundingClientRect(); if (r.width > 0 && r.height > 0 && t.length > 0 && t.length < 30) { diag.allVisibleButtons.push({ text: t, cls: (b.className||'').slice(0, 60), tag: b.tagName }); } }); return JSON.stringify(diag);",
+      "descript": "全页面诊断（打印所有可见弹窗/菜单/按钮/图片，定位真正的图文封面选择入口）",
       "timeout": 5000
     },
     {
