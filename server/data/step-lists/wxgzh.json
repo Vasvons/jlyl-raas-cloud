@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.2",
-  "description": "微信公众号图文发布流程（v1.7.2：实地探查发现编辑器是 ProseMirror，标题/正文选择器改为 .ProseMirror[contenteditable=true]；原 //div[text()=\"从这里开始写正文\"] 会命中不可见的 placeholder 副本导致 press 失败）",
+  "version": "1.7.3",
+  "description": "微信公众号图文发布流程（v1.7.3：标题/正文增加多选择器回退；新增诊断步骤打印 ProseMirror/#title/ueditor 等元素位置，排查 Worker 浏览器布局差异）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -68,10 +68,16 @@
       "descript": "等待弹窗关闭动画"
     },
     {
+      "type": "evaluate_edit",
+      "value": "const pm = document.querySelectorAll('.ProseMirror'); const titlePm = document.querySelector('.ProseMirror[contenteditable=\"true\"][data-placeholder=\"请在这里输入标题\"]'); const bodyPm = document.querySelector('.view.rich_media_content .ProseMirror[contenteditable=\"true\"]'); const titleInput = document.querySelector('#title, input.js_title, textarea.js_title'); const ueditor = document.querySelector('#ueditor_replace, .edui-body-container, .ql-editor'); const layout = document.querySelector('.weui-desktop-layout__main'); const editor = document.querySelector('.appmsg_editor'); const info = { url: location.href, viewport: { w: window.innerWidth, h: window.innerHeight }, pmCount: pm.length, pmClasses: Array.from(pm).map(e => (e.className||'').slice(0,80)), titlePm: titlePm ? { rect: titlePm.getBoundingClientRect(), visible: titlePm.offsetWidth > 0 } : null, bodyPm: bodyPm ? { rect: bodyPm.getBoundingClientRect(), visible: bodyPm.offsetWidth > 0 } : null, titleInput: titleInput ? { tag: titleInput.tagName, id: titleInput.id, cls: (titleInput.className||'').slice(0,60) } : null, ueditor: ueditor ? { tag: ueditor.tagName, id: ueditor.id, cls: (ueditor.className||'').slice(0,60) } : null, layout: layout ? layout.getBoundingClientRect() : null, editor: editor ? editor.getBoundingClientRect() : null }; return JSON.stringify(info);",
+      "descript": "诊断编辑页布局（打印 URL/viewport/ProseMirror/title/ueditor 等元素位置，排查 Worker 浏览器布局差异）",
+      "timeout": 5000
+    },
+    {
       "type": "fill",
-      "selector": ".ProseMirror[contenteditable='true'][data-placeholder='请在这里输入标题']",
+      "selector": ".ProseMirror[contenteditable='true'][data-placeholder='请在这里输入标题'], #title, textarea.js_title, input.js_title",
       "value": "{title}",
-      "descript": "填写文章标题（ProseMirror 编辑器，原 //div[@data-placeholder] 选择器不可靠）",
+      "descript": "填写文章标题（ProseMirror 优先，回退 #title/textarea.js_title）",
       "ai_fallback": true,
       "ai_intent": "找到微信公众号标题输入框并填写",
       "timeout": 8000
@@ -86,9 +92,9 @@
     },
     {
       "type": "press",
-      "selector": ".view.rich_media_content .ProseMirror[contenteditable='true']",
+      "selector": ".view.rich_media_content .ProseMirror[contenteditable='true'], #ueditor_replace, .edui-body-container, .ql-editor, div[contenteditable='true'].rich_media_content",
       "value": "{content}",
-      "descript": "输入正文（ProseMirror 编辑器，原 //div[text()=\"从这里开始写正文\"] 会命中不可见的 placeholder 元素导致 press 失败）",
+      "descript": "输入正文（ProseMirror 优先，回退 ueditor/ql-editor/contenteditable）",
       "ai_fallback": true,
       "ai_intent": "找到微信公众号正文编辑区并填写内容",
       "timeout": 8000
