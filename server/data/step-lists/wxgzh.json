@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.5",
-  "description": "微信公众号图文发布流程（v1.7.5：标题/正文改用 evaluate_edit 直接 DOM API 填入，绕过 Playwright 可见性检查；stepExecutor 新增 args 字段支持参数传入）",
+  "version": "1.7.6",
+  "description": "微信公众号图文发布流程（v1.7.6：修复 arguments is not defined——箭头函数无 arguments 对象，改为 ARG 函数参数传入；stepExecutor 把 arg 作为函数参数 ARG 传入 eval 出来的函数）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -87,7 +87,7 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const titlePm = document.querySelector('.ProseMirror[contenteditable=\"true\"][data-placeholder=\"请在这里输入标题\"]'); const titleTa = document.querySelector('#title'); const TITLE = arguments[0] || ''; const result = { titlePm: !!titlePm, titleTa: !!titleTa, titleLen: TITLE.length }; if (titlePm) { titlePm.focus(); const r = titlePm.getBoundingClientRect(); result.titlePmRect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; result.titlePmVisible = r.width > 0 && r.height > 0; titlePm.innerHTML = '<h1>' + TITLE + '</h1>'; titlePm.dispatchEvent(new Event('input', { bubbles: true })); titlePm.dispatchEvent(new Event('change', { bubbles: true })); result.titleFilled = true; } if (titleTa) { titleTa.value = TITLE; titleTa.dispatchEvent(new Event('input', { bubbles: true })); titleTa.dispatchEvent(new Event('change', { bubbles: true })); result.titleTaFilled = true; } return JSON.stringify(result);",
+      "value": "const titlePm = document.querySelector('.ProseMirror[contenteditable=\"true\"][data-placeholder=\"请在这里输入标题\"]'); const titleTa = document.querySelector('#title'); const TITLE = ARG || ''; const result = { titlePm: !!titlePm, titleTa: !!titleTa, titleLen: TITLE.length }; if (titlePm) { titlePm.focus(); const r = titlePm.getBoundingClientRect(); result.titlePmRect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; result.titlePmVisible = r.width > 0 && r.height > 0; titlePm.innerHTML = '<h1>' + TITLE + '</h1>'; titlePm.dispatchEvent(new Event('input', { bubbles: true })); titlePm.dispatchEvent(new Event('change', { bubbles: true })); result.titleFilled = true; } if (titleTa) { titleTa.value = TITLE; titleTa.dispatchEvent(new Event('input', { bubbles: true })); titleTa.dispatchEvent(new Event('change', { bubbles: true })); result.titleTaFilled = true; } return JSON.stringify(result);",
       "descript": "填写文章标题（evaluate_edit 直接 DOM API 填入，绕过 Playwright 可见性检查）",
       "args": "{title}",
       "timeout": 5000
@@ -102,7 +102,7 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const bodyPm = document.querySelector('.view.rich_media_content .ProseMirror[contenteditable=\"true\"]'); const ueditor = document.querySelector('#ueditor_replace'); const CONTENT = arguments[0] || ''; const result = { bodyPm: !!bodyPm, ueditor: !!ueditor, contentLen: CONTENT.length }; if (bodyPm) { bodyPm.focus(); const r = bodyPm.getBoundingClientRect(); result.bodyPmRect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; result.bodyPmVisible = r.width > 0 && r.height > 0; bodyPm.innerHTML = CONTENT; bodyPm.dispatchEvent(new Event('input', { bubbles: true })); bodyPm.dispatchEvent(new Event('change', { bubbles: true })); result.bodyFilled = true; } else if (ueditor) { ueditor.innerHTML = CONTENT; ueditor.dispatchEvent(new Event('input', { bubbles: true })); result.ueditorFilled = true; } return JSON.stringify(result);",
+      "value": "const bodyPm = document.querySelector('.view.rich_media_content .ProseMirror[contenteditable=\"true\"]'); const ueditor = document.querySelector('#ueditor_replace'); const CONTENT = ARG || ''; const result = { bodyPm: !!bodyPm, ueditor: !!ueditor, contentLen: CONTENT.length }; if (bodyPm) { bodyPm.focus(); const r = bodyPm.getBoundingClientRect(); result.bodyPmRect = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) }; result.bodyPmVisible = r.width > 0 && r.height > 0; bodyPm.innerHTML = CONTENT; bodyPm.dispatchEvent(new Event('input', { bubbles: true })); bodyPm.dispatchEvent(new Event('change', { bubbles: true })); result.bodyFilled = true; } else if (ueditor) { ueditor.innerHTML = CONTENT; ueditor.dispatchEvent(new Event('input', { bubbles: true })); result.ueditorFilled = true; } return JSON.stringify(result);",
       "descript": "输入正文（evaluate_edit 直接 DOM API 填入，绕过 ProseMirror 可见性检查）",
       "args": "{content}",
       "timeout": 5000
