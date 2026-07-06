@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.17",
-  "description": "微信公众号图文发布流程（v1.7.17：trigger_click 增加弹窗按钮重试+诊断信息，点击'本地上传'后遍历所有可见按钮找'上传/选择文件'并点击）",
+  "version": "1.7.18",
+  "description": "微信公众号图文发布流程（v1.7.18：改回从正文选封面方案——正文已有图片，从正文选取更可靠，避免本地下载/上传的复杂性）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -108,31 +108,63 @@
       "timeout": 5000
     },
     {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待正文图片渲染完成（用于从正文选封面）"
+    },
+    {
       "type": "evaluate_edit",
-      "value": "const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); if (!coverBtn) return JSON.stringify({ ok: false, reason: '未找到封面选择器' }); coverBtn.scrollIntoView({ block: 'center' }); return new Promise(r => setTimeout(() => { coverBtn.click(); r(JSON.stringify({ ok: true, clicked: true, rect: coverBtn.getBoundingClientRect() })); }, 500));",
-      "descript": "点击封面选择器（拖拽或选择封面区域，弹出'从正文选择/上传图片'下拉菜单）",
+      "value": "const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area, .select-cover__mask'); if (!coverBtn) return JSON.stringify({ ok: false, reason: '未找到封面选择器' }); coverBtn.scrollIntoView({ block: 'center' }); return new Promise(r => setTimeout(() => { coverBtn.click(); r(JSON.stringify({ ok: true, clicked: true, rect: coverBtn.getBoundingClientRect() })); }, 500));",
+      "descript": "点击封面选择器（拖拽或选择封面区域）",
       "timeout": 5000
     },
     {
       "type": "timing",
-      "ms": 800,
-      "descript": "等待下拉菜单弹出动画"
-    },
-    {
-      "type": "input_files_chooser",
-      "trigger_click": "const findAndClick = (keywords) => { const allEls = Array.from(document.querySelectorAll('div, span, a, li, button, p, [role=\"menuitem\"], [role=\"option\"]')); const items = allEls.filter(el => { const t = (el.textContent||'').trim(); if (t.length === 0 || t.length > 50) return false; return keywords.some(kw => t.includes(kw)); }); if (items.length === 0) return null; const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); const coverRect = coverBtn ? coverBtn.getBoundingClientRect() : null; let best = items[0]; if (coverRect) { let minDist = Infinity; for (const item of items) { const r = item.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue; const dist = Math.abs(r.top - coverRect.top) + Math.abs(r.left - coverRect.left); if (dist < minDist) { minDist = dist; best = item; } } } try { best.scrollIntoView({ block: 'center' }); } catch(e) {} best.click(); return (best.textContent||'').trim().slice(0, 50); }; const r1 = findAndClick(['本地上传', '上传图片', '点击上传']); if (!r1) throw new Error('未找到上传菜单项'); await new Promise(r => setTimeout(r, 1500)); let clicked = []; for (let i = 0; i < 5; i++) { const btn = findAndClick(['上传图片', '选择文件', '点击上传', '选择图片', '本地上传', '上传']); if (btn) { clicked.push(btn); await new Promise(r => setTimeout(r, 1000)); } else { break; } } window.__jlyl_upload_diag = { menuClicked: r1, dialogBtnsClicked: clicked };",
-      "files": ["{cover_image_url}"],
-      "descript": "用 filechooser 事件拦截文件选择对话框（点击'本地上传'菜单项 → 如有弹窗再点弹窗按钮 → 浏览器原生文件选择对话框触发 → setFiles）",
-      "timeout": 30000
-    },
-    {
-      "type": "timing",
-      "ms": 3000,
-      "descript": "等待封面上传完成"
+      "ms": 1500,
+      "descript": "等待选图弹窗/菜单弹出"
     },
     {
       "type": "evaluate_edit",
-      "value": "const coverImg = document.querySelector('.select-cover__mask img, .appmsg_cover_area img, .cover_img, .select-cover img'); const errorMsg = document.querySelector('.js_cover_error, .js_error_msg'); return JSON.stringify({ coverSet: !!coverImg, coverImgSrc: coverImg ? coverImg.src.slice(0, 80) : null, errorMsg: errorMsg ? (errorMsg.innerText||'').trim() : null });",
+      "value": "const allEls = Array.from(document.querySelectorAll('div, span, a, li, button, p, [role=\"menuitem\"], [role=\"option\"]')); const items = allEls.filter(el => { const t = (el.textContent||'').trim(); if (t.length === 0 || t.length > 30) return false; const r = el.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return false; return t.includes('从正文') || t.includes('选择正文') || t.includes('正文选择') || t.includes('从文章') || t.includes('文章中选择'); }); if (items.length === 0) { const texts = allEls.map(e=>({text:(e.textContent||'').trim(), visible: e.getBoundingClientRect().width > 0})).filter(x=>x.text.length>0 && x.text.length<30 && x.visible).slice(0, 30); return JSON.stringify({ ok: false, reason: '未找到从正文选择菜单项', texts }); } let best = items[0]; try { best.scrollIntoView({ block: 'center' }); } catch(e) {} best.click(); return JSON.stringify({ ok: true, clicked: (best.textContent||'').trim().slice(0, 50), itemCount: items.length });",
+      "descript": "点击'从正文选择'菜单项（弹出正文图片选择弹窗）",
+      "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待正文图片选择弹窗加载"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const diag = { bodyImgs: [], dialogImgs: [], dialogVisible: false }; document.querySelectorAll('.view.rich_media_content img, .ProseMirror img').forEach(img => { const r = img.getBoundingClientRect(); diag.bodyImgs.push({ src: (img.src||'').slice(0, 80), w: Math.round(r.width), h: Math.round(r.height), visible: r.width > 0 }); }); const dialogs = document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .dialog_wrp, .pop-opr'); diag.dialogVisible = Array.from(dialogs).some(d => d.getBoundingClientRect().width > 0); const dialogImgs = document.querySelectorAll('.weui-desktop-dialog img, .weui-desktop-modal img, [role=\"dialog\"] img, .js_imagedialog img, .pop-opr img, .dialog_wrp img, .img_pick img, .js_img_pick img'); dialogImgs.forEach(img => { const r = img.getBoundingClientRect(); if (r.width > 0) diag.dialogImgs.push({ src: (img.src||'').slice(0, 80), w: Math.round(r.width), h: Math.round(r.height) }); }); return JSON.stringify(diag);",
+      "descript": "诊断正文图片和弹窗图片（打印正文图片数量、弹窗图片数量、弹窗是否可见）",
+      "timeout": 5000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const findDialogImgs = () => { const dialogs = document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .pop-opr, .dialog_wrp, .img_pick, .js_img_pick'); const imgs = []; for (const d of dialogs) { const r = d.getBoundingClientRect(); if (r.width === 0 || r.height === 0) continue; d.querySelectorAll('img').forEach(img => { const ir = img.getBoundingClientRect(); if (ir.width > 20 && ir.height > 20) { imgs.push({ el: img, src: img.src, w: ir.width, h: ir.height }); } }); } return imgs; }; let imgs = findDialogImgs(); let retry = 0; while (imgs.length === 0 && retry < 6) { await new Promise(r => setTimeout(r, 500)); imgs = findDialogImgs(); retry++; } if (imgs.length === 0) return JSON.stringify({ ok: false, reason: '弹窗内未找到可选图片（已重试 ' + retry + ' 次）' }); const target = imgs[0].el; target.scrollIntoView({ block: 'center' }); return new Promise(r => setTimeout(() => { target.click(); r(JSON.stringify({ ok: true, clicked: true, imgSrc: imgs[0].src.slice(0, 80), imgSize: { w: imgs[0].w, h: imgs[0].h }, totalImgs: imgs.length, retries: retry })); }, 500));",
+      "descript": "点击弹窗内第一张正文图片（作为封面）",
+      "timeout": 8000
+    },
+    {
+      "type": "timing",
+      "ms": 1500,
+      "descript": "等待图片选中"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const btns = Array.from(document.querySelectorAll('button, .weui-desktop-btn, a.weui-desktop-btn, span.weui-desktop-btn')); const confirmBtn = btns.find(b => { const t = (b.textContent||'').trim(); const r = b.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return false; return t === '完成' || t === '确定' || t === '确认' || t === '下一步' || t === '下一步' || t.includes('完成'); }); if (!confirmBtn) return JSON.stringify({ ok: false, reason: '未找到完成按钮', buttonTexts: btns.filter(b => b.getBoundingClientRect().width > 0).map(b => (b.textContent||'').trim()).filter(Boolean).slice(0, 20) }); confirmBtn.scrollIntoView({ block: 'center' }); confirmBtn.click(); return JSON.stringify({ ok: true, clicked: (confirmBtn.textContent||'').trim() });",
+      "descript": "点击'完成'按钮确认选择封面",
+      "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待封面设置完成"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const coverImg = document.querySelector('.select-cover__mask img, .appmsg_cover_area img, .cover_img, .select-cover img, .select-cover__btn img'); const errorMsg = document.querySelector('.js_cover_error, .js_error_msg'); return JSON.stringify({ coverSet: !!coverImg, coverImgSrc: coverImg ? coverImg.src.slice(0, 80) : null, errorMsg: errorMsg ? (errorMsg.innerText||'').trim() : null });",
       "descript": "验证封面是否设置成功",
       "timeout": 3000
     },
