@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.26",
-  "description": "微信公众号图文发布流程（v1.7.26：MCP 实地探查确认，图片选中必须 Playwright 真实点击，下一步后是编辑封面弹窗，按钮是'确认'非'完成'）",
+  "version": "1.7.27",
+  "description": "微信公众号图文发布流程（v1.7.27：MCP 探查发现发表需 3 步确认：同意声明→群发通知发表→继续发表，文章才能真发出）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -167,13 +167,46 @@
     {
       "type": "timing",
       "ms": 2000,
-      "descript": "等待发表完成"
+      "descript": "等待发表声明弹窗"
     },
     {
       "type": "evaluate_edit",
-      "value": "const url = window.location.href; const stillOnEditPage = url.includes('appmsg_edit_v2'); const errorEls = document.querySelectorAll('.js_error_msg, .weui-desktop-toast--warn, .frm_msg.fail, .js_cover_error, .weui-desktop-toast--error, .weui-desktop-toast__content'); const errors = Array.from(errorEls).map(e => (e.innerText || e.textContent || '').trim()).filter(Boolean).slice(0, 3); if (stillOnEditPage) { throw new Error('发表后 URL 仍为编辑页（appmsg_edit_v2），发表动作未触发。可能原因：封面图未设置/表单验证失败。错误提示: ' + (errors.join('; ') || '无')); } return url;",
-      "descript": "验证发表成功（URL 必须跳转离开编辑页，否则抛错；检测 .js_error_msg/.weui-desktop-toast--warn/.js_cover_error 等错误提示）",
-      "timeout": 3000
+      "value": "await new Promise(r => setTimeout(r, 1000)); const allEls = Array.from(document.querySelectorAll('button, a, .weui-desktop-btn, [role=button]')); const agreeBtn = allEls.find(el => { const t = (el.innerText||'').trim(); return t === '同意以上声明' && el.offsetWidth > 0; }); if (agreeBtn) { agreeBtn.click(); await new Promise(r => setTimeout(r, 1500)); return JSON.stringify({ ok: true, step: 'agree_statement', clicked: '同意以上声明' }); } const publishDialog = Array.from(document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal')).filter(d => d.offsetWidth > 0).find(d => (d.innerText||'').includes('群发通知')); if (publishDialog) { return JSON.stringify({ ok: true, step: 'already_at_publish_dialog', msg: '声明弹窗已关闭，直接到群发通知弹窗' }); } return JSON.stringify({ ok: false, step: 'no_statement', dialogs: Array.from(document.querySelectorAll('.weui-desktop-dialog')).filter(d=>d.offsetWidth>0).map(d => (d.innerText||'').trim().slice(0, 80)) });",
+      "descript": "点击同意以上声明（发表后弹出的温馨提示声明弹窗）",
+      "timeout": 8000
+    },
+    {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待群发通知弹窗"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "await new Promise(r => setTimeout(r, 1000)); const dialogs = Array.from(document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal')).filter(d => d.offsetWidth > 0); const publishDialog = dialogs.find(d => (d.innerText||'').includes('群发通知') && (d.innerText||'').includes('发表')); if (!publishDialog) { const continueDialog = dialogs.find(d => (d.innerText||'').includes('继续发表')); if (continueDialog) return JSON.stringify({ ok: true, step: 'already_at_continue', msg: '已在继续发表弹窗' }); return JSON.stringify({ ok: false, step: 'no_publish_dialog', dialogCount: dialogs.length, texts: dialogs.map(d => (d.innerText||'').trim().slice(0, 80)) }); } const publishBtn = Array.from(publishDialog.querySelectorAll('button, a')).find(b => (b.innerText||'').trim() === '发表' && b.offsetWidth > 0); if (!publishBtn) return JSON.stringify({ ok: false, step: 'no_publish_btn', btns: Array.from(publishDialog.querySelectorAll('button, a')).map(b => (b.innerText||'').trim()) }); publishBtn.click(); await new Promise(r => setTimeout(r, 2000)); return JSON.stringify({ ok: true, step: 'clicked_publish_in_dialog', clicked: '发表' });",
+      "descript": "点击群发通知弹窗的发表按钮",
+      "timeout": 10000
+    },
+    {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待继续发表确认弹窗"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "await new Promise(r => setTimeout(r, 1000)); const dialogs = Array.from(document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal')).filter(d => d.offsetWidth > 0); const continueDialog = dialogs.find(d => (d.innerText||'').includes('继续发表')); if (!continueDialog) { const hasWeixinVerify = (document.body.innerText||'').includes('微信验证') || (document.body.innerText||'').includes('扫码'); if (hasWeixinVerify) return JSON.stringify({ ok: true, step: 'weixin_verify', msg: '已到微信验证步骤（需管理员扫码），发表动作已触发' }); return JSON.stringify({ ok: true, step: 'no_continue_dialog', msg: '无继续发表弹窗，可能已发表或需验证', dialogCount: dialogs.length, texts: dialogs.map(d => (d.innerText||'').trim().slice(0, 80)) }); } const continueBtn = Array.from(continueDialog.querySelectorAll('button, a')).find(b => (b.innerText||'').trim() === '继续发表' && b.offsetWidth > 0); if (!continueBtn) return JSON.stringify({ ok: false, step: 'no_continue_btn', btns: Array.from(continueDialog.querySelectorAll('button, a')).map(b => (b.innerText||'').trim()) }); continueBtn.click(); await new Promise(r => setTimeout(r, 3000)); return JSON.stringify({ ok: true, step: 'clicked_continue_publish', clicked: '继续发表' });",
+      "descript": "点击继续发表确认按钮",
+      "timeout": 12000
+    },
+    {
+      "type": "timing",
+      "ms": 3000,
+      "descript": "等待发表动作完成"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const url = window.location.href; const stillOnEditPage = url.includes('appmsg_edit_v2'); const bodyText = document.body.innerText || ''; const hasWeixinVerify = bodyText.includes('微信验证') || bodyText.includes('扫码后'); const hasSuccess = bodyText.includes('发表成功') || bodyText.includes('已发表'); const errorEls = document.querySelectorAll('.js_error_msg, .weui-desktop-toast--warn, .frm_msg.fail, .js_cover_error, .weui-desktop-toast--error, .weui-desktop-toast__content'); const errors = Array.from(errorEls).map(e => (e.innerText || e.textContent || '').trim()).filter(Boolean).slice(0, 3); if (stillOnEditPage && !hasWeixinVerify && !hasSuccess) { throw new Error('发表后 URL 仍为编辑页（appmsg_edit_v2），发表动作未触发。错误提示: ' + (errors.join('; ') || '无')); } return JSON.stringify({ url, hasWeixinVerify, hasSuccess, errors });",
+      "descript": "验证发表成功（URL 跳转离开 appmsg_edit_v2 或出现微信验证/发表成功提示）",
+      "timeout": 5000
     }
   ]
 }
