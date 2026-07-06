@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.20",
-  "description": "微信公众号图文发布流程（v1.7.20：修复标题/正文填入——ProseMirror 是受控组件，直接 innerHTML 不更新内部状态，改用 execCommand insertHTML 触发真实输入事件）",
+  "version": "1.7.21",
+  "description": "微信公众号图文发布流程（v1.7.21：精简诊断信息，只打印弹窗数量+弹窗class+弹窗前100字+弹窗内图片数，避免日志被截断）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -136,8 +136,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const diag = { bodyImgs: [], dialogImgs: [], dialogVisible: false, visibleDialogs: [], visibleMenus: [], allVisibleButtons: [] }; document.querySelectorAll('.view.rich_media_content img, .ProseMirror img').forEach(img => { const r = img.getBoundingClientRect(); diag.bodyImgs.push({ src: (img.src||'').slice(0, 80), w: Math.round(r.width), h: Math.round(r.height), visible: r.width > 0 }); }); const dialogs = document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .dialog_wrp, .pop-opr, .menu, .dropdown-menu, .tpl_dropdown_menu'); dialogs.forEach(d => { const r = d.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { diag.visibleDialogs.push({ cls: (d.className||'').slice(0, 100), text: (d.innerText||'').replace(/\\s+/g, ' ').slice(0, 200), rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } }); } }); diag.dialogVisible = diag.visibleDialogs.length > 0; const dialogImgs = document.querySelectorAll('img'); dialogImgs.forEach(img => { const r = img.getBoundingClientRect(); if (r.width > 20 && r.height > 20) { const p = img.parentElement; const pp = p ? p.parentElement : null; const inDialog = !!(img.closest('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .pop-opr, .dialog_wrp, .img_pick, .js_img_pick, .menu, .dropdown-menu')); if (inDialog) diag.dialogImgs.push({ src: (img.src||'').slice(0, 80), w: Math.round(r.width), h: Math.round(r.height), parentCls: (p?.className||'').slice(0, 60) }); } }); document.querySelectorAll('button, .weui-desktop-btn, a.weui-desktop-btn, [role=\"button\"], li.tpl_dropdown_menu_item, .menu_item').forEach(b => { const t = (b.textContent||'').trim(); const r = b.getBoundingClientRect(); if (r.width > 0 && r.height > 0 && t.length > 0 && t.length < 30) { diag.allVisibleButtons.push({ text: t, cls: (b.className||'').slice(0, 60), tag: b.tagName }); } }); return JSON.stringify(diag);",
-      "descript": "全页面诊断（打印所有可见弹窗/菜单/按钮/图片，定位真正的图文封面选择入口）",
+      "value": "const dialogs = Array.from(document.querySelectorAll('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .dialog_wrp, .pop-opr, .menu, .dropdown-menu, .tpl_dropdown_menu')).filter(d => { const r = d.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); const diag = { dialogCount: dialogs.length, dialogs: dialogs.slice(0, 5).map(d => { const r = d.getBoundingClientRect(); return { cls: (d.className||'').slice(0, 60), text: (d.innerText||'').replace(/\\s+/g, ' ').slice(0, 80), imgCount: d.querySelectorAll('img').length, w: Math.round(r.width), h: Math.round(r.height) }; }), bodyImgCount: document.querySelectorAll('.view.rich_media_content img, .ProseMirror img').length, visibleImgsInAnyDialog: 0 }; const allDialogImgs = Array.from(document.querySelectorAll('img')).filter(img => { const r = img.getBoundingClientRect(); return r.width > 20 && r.height > 20 && img.closest('.weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .js_imagedialog, .pop-opr, .dialog_wrp, .img_pick, .js_img_pick, .menu, .dropdown-menu'); }); diag.visibleImgsInAnyDialog = allDialogImgs.length; return JSON.stringify(diag);",
+      "descript": "精简诊断（弹窗数量+前5个弹窗class/text/imgCount+正文图片数+弹窗内图片数）",
       "timeout": 5000
     },
     {
