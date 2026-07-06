@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.0",
-  "description": "微信公众号图文发布流程（基于 wxgzh.pyc 反编译的真实确定性步骤 + AI 兜底）",
+  "version": "1.7.1",
+  "description": "微信公众号图文发布流程（v1.7.1：选择文章类型后增加关闭弹窗步骤，处理公告/引导/协议弹窗遮挡标题输入框的问题）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -50,6 +50,22 @@
       "selector": "//i[@class=\"icon-svg-editor-appmsg\"] | //span[text()=\"文章\" and @class=\"weui-desktop-dropdown__list-ele__text\"]",
       "descript": "选择文章类型",
       "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 1500,
+      "descript": "等待编辑页加载（弹窗可能在此时出现）"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const SELS = ['.weui-desktop-dialog', '.weui-desktop-modal', '[role=\"dialog\"]', '.js_dialog', '.js_modal', '.weui-desktop-dialog__wrp', '.weui-desktop-modal__wrp', '[class*=\"modal\"]', '[class*=\"dialog\"]', '[class*=\"popup\"]', '[class*=\"mask\"]', '.tips_box', '.guide-popup', '.new-feature']; const BTNS_TEXT = ['我知道了', '知道了', '确定', '确认', '同意', '关闭', '取消', '暂不', '下次再说', '不再提示', '不再显示', '×', 'x', '关闭']; const BTNS_CLS = ['close', 'cancel', 'dismiss', 'js_close']; const dialogs = new Set(); for (const s of SELS) { document.querySelectorAll(s).forEach(d => dialogs.add(d)); } let closed = []; const allDialogInfo = []; for (const d of dialogs) { const r = d.getBoundingClientRect(); if (r.width <= 0 || r.height <= 0) continue; const cls = (d.className || '').slice(0, 80); const txt = (d.innerText || '').slice(0, 150).replace(/\\s+/g, ' '); allDialogInfo.push({ cls, text: txt }); const btns = d.querySelectorAll('button, [role=\"button\"], .weui-desktop-btn, .js_close, .close, .weui-desktop-icon-close, i[class*=\"close\"]'); let btnClicked = false; for (const b of btns) { const t = (b.innerText || b.textContent || '').trim(); const c = (b.className || '').toLowerCase(); const isClose = BTNS_TEXT.some(k => t.includes(k)) || BTNS_CLS.some(k => c.includes(k)) || t === '×' || t === 'x'; if (isClose) { try { b.click(); closed.push(t || c.slice(0, 40)); btnClicked = true; break; } catch {} } } if (!btnClicked) { const closeIcons = d.querySelectorAll('.weui-desktop-icon-close, i[class*=\"close\"], [class*=\"close-btn\"], [aria-label*=\"close\"], [aria-label*=\"关闭\"]'); for (const ic of closeIcons) { try { ic.click(); closed.push('icon:' + (ic.className || '').slice(0, 40)); btnClicked = true; break; } catch {} } } } return JSON.stringify({ dialogCount: allDialogInfo.length, dialogs: allDialogInfo, closedCount: closed.length, closed });",
+      "descript": "关闭公告/引导/协议弹窗（覆盖 weui-desktop-dialog/modal/popup/mask 等，点击 我知道了/确定/关闭/×/取消）",
+      "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 500,
+      "descript": "等待弹窗关闭动画"
     },
     {
       "type": "fill",
