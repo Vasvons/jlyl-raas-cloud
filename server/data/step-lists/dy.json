@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.7",
-  "description": "抖音图文发布流程（v1.7.7：图片上传改用 DOM 查找可见的图片上传区并派发 drop 事件 + 调试日志验证 input 命中）",
+  "version": "1.7.8",
+  "description": "抖音图文发布流程（v1.7.8：基于 Playwright 实地探查 DOM 重写——input accept 是具体 MIME 不是 image/*；上传后自动跳转 post/image 编辑页；正文编辑器是 editor-kit-container 不是 ql-editor；发布按钮是底部 fixed- 按钮不是顶部高清发布）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
@@ -26,46 +26,28 @@
       "descript": "等待上传组件加载完成"
     },
     {
-      "type": "evaluate_edit",
-      "value": "const inputs = Array.from(document.querySelectorAll('input[type=\"file\"]')); return inputs.map((e, i) => { const r = e.getBoundingClientRect(); return { index: i, accept: e.accept || '', className: (e.className||'').slice(0,80), visible: r.width > 0 && r.height > 0, rect: {w: Math.round(r.width), h: Math.round(r.height)}, parentClass: (e.parentElement?.className||'').slice(0,80), grandparentClass: (e.parentElement?.parentElement?.className||'').slice(0,80) }; });",
-      "descript": "调试：列出页面所有 file input（accept/class/parent），用于精准定位图片上传 input",
-      "timeout": 5000
-    },
-    {
       "type": "input_files",
-      "selector": "//input[@type='file' and @accept='image/*'] | //input[@type='file' and contains(@accept,'image')] | //div[contains(@class,'image-upload')]//input[@type='file'] | //div[contains(@class,'upload')]//input[@type='file' and not(contains(@accept,'video'))]",
+      "selector": "//input[@type='file' and contains(@accept,'image/png')]",
       "files": ["{cover_image_url}"],
-      "descript": "上传图片（封面图）- 优先 accept=image/* 的 input",
+      "descript": "上传图片（封面图）- 抖音图文上传 input accept=image/png,image/jpeg,... 具体MIME列表",
       "ai_fallback": true,
       "ai_intent": "找到抖音图文上传图片的文件选择按钮（注意不要选到视频上传 input）",
       "timeout": 15000
     },
     {
+      "type": "wait_for_url",
+      "value": "content/post/image",
+      "descript": "等待上传成功后自动跳转到 post/image 编辑页",
+      "timeout": 60000
+    },
+    {
       "type": "timing",
-      "ms": 3000,
-      "descript": "等待图片开始上传（setInputFiles 触发后给浏览器 3 秒读取文件并开始上传）"
+      "ms": 2000,
+      "descript": "等待编辑页加载完成"
     },
     {
       "type": "evaluate_edit",
-      "value": "const uploadItems = document.querySelectorAll('[class*=\"upload-item\"], [class*=\"image-item\"], [class*=\"file-item\"], [class*=\"image\"].image-card, .image-container, [class*=\"upload-card\"]'); const allImgs = document.querySelectorAll('img'); const uploadRelatedImgs = Array.from(allImgs).filter(i => { const r = i.getBoundingClientRect(); return r.width > 50; }); return { uploadItemCount: uploadItems.length, uploadImgs: uploadRelatedImgs.map(i => ({ src: (i.src||'').slice(0, 60), w: Math.round(i.getBoundingClientRect().width), h: Math.round(i.getBoundingClientRect().height) })).slice(0, 8) };",
-      "descript": "调试：上传后 3 秒检查上传项和图片是否出现",
-      "timeout": 5000
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "const sleep = (ms) => new Promise(r => setTimeout(r, ms)); const start = Date.now(); let lastInfo = null; const isRealThumb = (i) => { const r = i.getBoundingClientRect(); if (r.width < 80 || r.height < 80) return false; const src = i.src || ''; if (src.startsWith('data:')) return false; return true; }; while (Date.now() - start < 45000) { const allImgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const realThumbs = Array.from(allImgs).filter(isRealThumb); const progressBars = document.querySelectorAll('.progress-bar, .uploading, [class*=\"progress\"], [class*=\"loading\"], [class*=\"uploading\"]'); const visibleProgress = Array.from(progressBars).filter(p => { const r = p.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); lastInfo = { realThumbCount: realThumbs.length, totalImgCount: allImgs.length, progressCount: visibleProgress.length, elapsed: Math.round((Date.now() - start) / 1000) }; if (realThumbs.length > 0 && visibleProgress.length === 0) { return { ok: true, ...lastInfo }; } await sleep(2000); } return { ok: false, ...lastInfo, reason: '等待 45 秒后图片仍未上传完成（可能上传失败、被拒绝或 input 命中错误）' };",
-      "descript": "等待图片上传完成（轮询检测真实缩略图出现 + 进度条消失，最多 45 秒）",
-      "timeout": 50000
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const all = Array.from(imgs).map(i => ({ src: (i.src||'').slice(0, 80), w: Math.round(i.getBoundingClientRect().width), h: Math.round(i.getBoundingClientRect().height), isPlaceholder: i.src.startsWith('data:') || i.getBoundingClientRect().width < 80 })); return { total: all.length, realThumbs: all.filter(x => !x.isPlaceholder).length, placeholders: all.filter(x => x.isPlaceholder).length, images: all.slice(0, 8) };",
-      "descript": "调试：列出页面上所有图片（区分真实缩略图和占位符）",
-      "timeout": 5000
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "const dialogs = document.querySelectorAll('.semi-modal-content, [role=\"dialog\"], .semi-modal'); for (const d of dialogs) { const r = d.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { const btns = d.querySelectorAll('button, [role=\"button\"]'); for (const b of btns) { const t = (b.innerText||b.textContent||'').trim(); if (t.includes('我知道了') || t.includes('知道了') || t.includes('确定') || t === '×' || t === '关闭') { b.click(); return { closed: true, btnText: t }; } } } } return { closed: false, reason: '无弹窗或未找到关闭按钮' };",
+      "value": "const dialogs = document.querySelectorAll('.semi-modal-content, [role=\"dialog\"], .semi-modal, [class*=\"shepherd\"]'); for (const d of dialogs) { const r = d.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { const btns = d.querySelectorAll('button, [role=\"button\"]'); for (const b of btns) { const t = (b.innerText||b.textContent||'').trim(); if (t.includes('我知道了') || t.includes('知道了') || t.includes('确定') || t === '×' || t === '关闭') { b.click(); return { closed: true, btnText: t }; } } } } return { closed: false, reason: '无弹窗或未找到关闭按钮' };",
       "descript": "关闭「共创中心」弹窗（点击我知道了/确定/×）",
       "timeout": 5000
     },
@@ -76,7 +58,7 @@
     },
     {
       "type": "fill",
-      "selector": "//input[@placeholder='添加作品标题'] | //input[contains(@placeholder,'标题')] | //input[contains(@class,'title')]",
+      "selector": "//input[@placeholder='添加作品标题']",
       "value": "{title}",
       "descript": "填写标题",
       "ai_fallback": true,
@@ -90,9 +72,9 @@
     },
     {
       "type": "press",
-      "selector": "//div[@contenteditable='true'][contains(@class,'ql-editor')] | //div[@contenteditable='true'][contains(@data-role,'editor')] | //div[@contenteditable='true'][contains(@class,'editor')] | //div[@contenteditable='true']",
+      "selector": "//div[@contenteditable='true' and contains(@class,'editor-kit-container')] | //div[@contenteditable='true' and @data-placeholder='添加作品描述...'] | //div[@contenteditable='true']",
       "value": "{content}",
-      "descript": "在「添加作品描述」编辑器中填入正文（contenteditable 富文本，press 长字符串自动转 execContent 剪贴板粘贴）",
+      "descript": "在「添加作品描述」编辑器中填入正文（contenteditable 富文本，真实 class 是 editor-kit-container 不是 ql-editor）",
       "ai_fallback": true,
       "ai_intent": "找到抖音「添加作品描述」富文本编辑区并填入正文内容",
       "timeout": 10000
@@ -158,29 +140,23 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const realThumbs = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width >= 80 && r.height >= 80 && !i.src.startsWith('data:'); }); const dialogs = document.querySelectorAll('.semi-modal-content, [role=\"dialog\"]'); const visibleDialogs = Array.from(dialogs).filter(d => { const r = d.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); return { realThumbCount: realThumbs.length, hasDialog: visibleDialogs.length > 0, dialogCount: visibleDialogs.length };",
-      "descript": "发布前最终检查：真实缩略图数量 + 弹窗状态",
+      "value": "const imgs = document.querySelectorAll('img'); const realThumbs = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width >= 80 && r.height >= 80 && !i.src.startsWith('data:') && !i.src.includes('creator.douyinstatic.com'); }); return { realThumbCount: realThumbs.length, realThumbSrcs: realThumbs.map(i => (i.src||'').slice(0, 80)) };",
+      "descript": "发布前最终检查：真实缩略图数量（排除 CDN 图标）",
       "timeout": 5000
     },
     {
       "type": "click",
-      "selector": "//button[contains(@class,'button-primary') and normalize-space(.)='高清发布'] | //button[contains(@class,'button-primary') and normalize-space(.)='发布'] | //button[normalize-space(.)='高清发布'] | //button[normalize-space(.)='发布']",
-      "descript": "点击「高清发布」按钮（Playwright 真实点击触发 React 合成事件）",
+      "selector": "//button[contains(@class,'fixed-') and normalize-space(.)='发布'] | //button[contains(@class,'primary-') and contains(@class,'fixed-') and normalize-space(.)='发布']",
+      "descript": "点击底部「发布」按钮（真实发布按钮，class 含 fixed-，不是顶部「高清发布」导航按钮）",
       "force": true,
       "timeout": 8000,
       "ai_fallback": true,
-      "ai_intent": "找到抖音「高清发布」按钮并点击（注意不要点保存草稿按钮）"
+      "ai_intent": "找到抖音底部固定的「发布」按钮并点击（注意不要点顶部导航栏的「高清发布」按钮，那个会回到上传页）"
     },
     {
       "type": "timing",
       "ms": 2000,
       "descript": "等待发布按钮点击响应"
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "const url = window.location.href; const hasDialog = !!document.querySelector('.semi-modal-content, [role=\"dialog\"]'); const dialogText = hasDialog ? (document.querySelector('.semi-modal-content, [role=\"dialog\"]')?.innerText||'').slice(0,300) : ''; const errorMsg = (document.querySelector('.toast-error, .error-msg, .semi-toast-content, .semi-notification-content')?.innerText||'').slice(0,300); const allToasts = Array.from(document.querySelectorAll('.semi-toast, .semi-notification, [class*=\"toast\"], [class*=\"error\"]')).map(e => (e.innerText||'').slice(0,100)); return { url, hasDialog, dialogText, errorMsg, allToasts };",
-      "descript": "调试：点击发布按钮后检查页面状态（URL/弹窗/错误/toast）",
-      "timeout": 3000
     },
     {
       "type": "wait_for_url",
