@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.9",
-  "description": "抖音图文发布流程（v1.7.9：发布按钮用 evaluate_edit 先 scrollIntoView 再 click，解决按钮在视口外 Playwright click 失效问题）",
+  "version": "1.7.10",
+  "description": "抖音图文发布流程（v1.7.10：stepExecutor 内置 waitForUploadComplete 等待上传真正完成，修复 setInputFiles 后跳转过快导致 OSS 上传被中断、页面永远卡在「上传中」的问题）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
