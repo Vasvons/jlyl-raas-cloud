@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.7",
-  "description": "微信公众号图文发布流程（v1.7.7：点击发表改用 evaluate_edit scrollIntoView + click，解决发表按钮在视口外 Playwright click 失效问题）",
+  "version": "1.7.9",
+  "description": "微信公众号图文发布流程（v1.7.9：封面图改用 input_files 直接上传 + 发表成功验证 URL 变化/错误提示，修复封面缺失导致发表无效但误判成功）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -108,37 +108,28 @@
       "timeout": 5000
     },
     {
-      "type": "hover",
-      "selector": "//div[@class=\"select-cover__btn js_cover_btn_area select-cover__mask\"]",
-      "descript": "鼠标移入封面选择器",
+      "type": "evaluate_edit",
+      "value": "const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); if (!coverBtn) return JSON.stringify({ ok: false, reason: '未找到封面选择器' }); coverBtn.scrollIntoView({ block: 'center' }); return new Promise(r => setTimeout(() => { coverBtn.click(); r(JSON.stringify({ ok: true, clicked: true, rect: coverBtn.getBoundingClientRect() })); }, 500));",
+      "descript": "点击封面选择器（拖拽或选择封面区域，触发文件选择对话框）",
       "timeout": 5000
     },
     {
-      "type": "click",
-      "selector": "//div[@class=\"pop-opr__group pop-opr__group-select-cover js_cover_null_pop js_cover_opr\"]//a[text()=\"从正文选择\"]",
-      "descript": "从正文选择封面",
-      "timeout": 5000
+      "type": "input_files",
+      "selector": "input[type='file']",
+      "files": ["{cover_image_url}"],
+      "descript": "上传封面图片（input_files 直接上传，不从正文选择）",
+      "timeout": 15000
     },
     {
-      "type": "click",
-      "selector": "li.appmsg_content_img_item",
-      "descript": "选择封面图片",
-      "is_try": true,
-      "timeout": 5000
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待封面上传完成"
     },
     {
-      "type": "click",
-      "selector": "//button[text()=\"下一步\"]",
-      "descript": "确认图片",
-      "is_try": true,
-      "timeout": 5000
-    },
-    {
-      "type": "click",
-      "selector": "//button[text()=\"确认\"]",
-      "descript": "确认",
-      "is_try": true,
-      "timeout": 5000
+      "type": "evaluate_edit",
+      "value": "const coverImg = document.querySelector('.select-cover__mask img, .appmsg_cover_area img, .cover_img'); const errorMsg = document.querySelector('.js_cover_error'); return JSON.stringify({ coverSet: !!coverImg, coverImgSrc: coverImg ? coverImg.src.slice(0, 80) : null, errorMsg: errorMsg ? (errorMsg.innerText||'').trim() : null });",
+      "descript": "验证封面是否设置成功",
+      "timeout": 3000
     },
     {
       "type": "branch",
@@ -181,8 +172,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "return window.location.href;",
-      "descript": "获取发布后 URL",
+      "value": "const url = window.location.href; const stillOnEditPage = url.includes('appmsg_edit_v2'); const errorEls = document.querySelectorAll('.js_error_msg, .weui-desktop-toast--warn, .frm_msg.fail, .js_cover_error, .weui-desktop-toast--error, .weui-desktop-toast__content'); const errors = Array.from(errorEls).map(e => (e.innerText || e.textContent || '').trim()).filter(Boolean).slice(0, 3); if (stillOnEditPage) { throw new Error('发表后 URL 仍为编辑页（appmsg_edit_v2），发表动作未触发。可能原因：封面图未设置/表单验证失败。错误提示: ' + (errors.join('; ') || '无')); } return url;",
+      "descript": "验证发表成功（URL 必须跳转离开编辑页，否则抛错；检测 .js_error_msg/.weui-desktop-toast--warn/.js_cover_error 等错误提示）",
       "timeout": 3000
     }
   ]
