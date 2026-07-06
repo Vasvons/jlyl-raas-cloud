@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.8",
-  "description": "抖音图文发布流程（v1.7.8：基于 Playwright 实地探查 DOM 重写——input accept 是具体 MIME 不是 image/*；上传后自动跳转 post/image 编辑页；正文编辑器是 editor-kit-container 不是 ql-editor；发布按钮是底部 fixed- 按钮不是顶部高清发布）",
+  "version": "1.7.9",
+  "description": "抖音图文发布流程（v1.7.9：发布按钮用 evaluate_edit 先 scrollIntoView 再 click，解决按钮在视口外 Playwright click 失效问题）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
@@ -140,15 +140,14 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const imgs = document.querySelectorAll('img'); const realThumbs = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width >= 80 && r.height >= 80 && !i.src.startsWith('data:') && !i.src.includes('creator.douyinstatic.com'); }); return { realThumbCount: realThumbs.length, realThumbSrcs: realThumbs.map(i => (i.src||'').slice(0, 80)) };",
-      "descript": "发布前最终检查：真实缩略图数量（排除 CDN 图标）",
+      "value": "const btns = Array.from(document.querySelectorAll('button')).filter(b => (b.innerText||'').trim().includes('发布')); return btns.map(b => { const r = b.getBoundingClientRect(); return { text: (b.innerText||'').trim(), cls: (b.className||'').slice(0,80), disabled: b.disabled, visible: r.width > 0, rect: {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height)} }; });",
+      "descript": "调试：发布前列出所有「发布」按钮（确认底部 fixed- 按钮存在）",
       "timeout": 5000
     },
     {
-      "type": "click",
-      "selector": "//button[contains(@class,'fixed-') and normalize-space(.)='发布'] | //button[contains(@class,'primary-') and contains(@class,'fixed-') and normalize-space(.)='发布']",
-      "descript": "点击底部「发布」按钮（真实发布按钮，class 含 fixed-，不是顶部「高清发布」导航按钮）",
-      "force": true,
+      "type": "evaluate_edit",
+      "value": "const b = Array.from(document.querySelectorAll('button')).find(b => (b.innerText||'').trim() === '发布' && b.className.includes('fixed-')); if (!b) return JSON.stringify({ ok: false, reason: '未找到底部固定发布按钮', allBtns: Array.from(document.querySelectorAll('button')).map(b => (b.innerText||'').trim()).filter(t => t.includes('发布')) }); b.scrollIntoView({block: 'center'}); return new Promise(r => setTimeout(() => { b.click(); r(JSON.stringify({ ok: true, clicked: b.innerText, cls: b.className })); }, 500));",
+      "descript": "点击底部「发布」按钮（evaluate_edit: 先 scrollIntoView 再 click，解决按钮在视口外 Playwright click 失效问题）",
       "timeout": 8000,
       "ai_fallback": true,
       "ai_intent": "找到抖音底部固定的「发布」按钮并点击（注意不要点顶部导航栏的「高清发布」按钮，那个会回到上传页）"
@@ -157,6 +156,12 @@
       "type": "timing",
       "ms": 2000,
       "descript": "等待发布按钮点击响应"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const url = window.location.href; const hasDialog = !!document.querySelector('[class*=\"modal\"], [role=\"dialog\"]'); const dialogText = hasDialog ? (document.querySelector('[class*=\"modal\"], [role=\"dialog\"]')?.innerText||'').slice(0,300) : ''; const allToasts = Array.from(document.querySelectorAll('[class*=\"toast\"], [class*=\"notification\"], [class*=\"error\"]')).map(e => (e.innerText||'').slice(0,100)).filter(t => t); return { url, hasDialog, dialogText, allToasts };",
+      "descript": "调试：点击发布按钮后检查页面状态（URL/弹窗/错误/toast）",
+      "timeout": 3000
     },
     {
       "type": "wait_for_url",
