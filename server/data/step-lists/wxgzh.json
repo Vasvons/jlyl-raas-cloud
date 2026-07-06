@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.1",
-  "description": "微信公众号图文发布流程（v1.7.1：选择文章类型后增加关闭弹窗步骤，处理公告/引导/协议弹窗遮挡标题输入框的问题）",
+  "version": "1.7.2",
+  "description": "微信公众号图文发布流程（v1.7.2：实地探查发现编辑器是 ProseMirror，标题/正文选择器改为 .ProseMirror[contenteditable=true]；原 //div[text()=\"从这里开始写正文\"] 会命中不可见的 placeholder 副本导致 press 失败）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -69,12 +69,12 @@
     },
     {
       "type": "fill",
-      "selector": "//div[@data-placeholder=\"请在这里输入标题\"]",
+      "selector": ".ProseMirror[contenteditable='true'][data-placeholder='请在这里输入标题']",
       "value": "{title}",
-      "descript": "填写文章标题",
+      "descript": "填写文章标题（ProseMirror 编辑器，原 //div[@data-placeholder] 选择器不可靠）",
       "ai_fallback": true,
       "ai_intent": "找到微信公众号标题输入框并填写",
-      "timeout": 5000
+      "timeout": 8000
     },
     {
       "type": "fill",
@@ -86,12 +86,12 @@
     },
     {
       "type": "press",
-      "selector": "//div[text()=\"从这里开始写正文\"]",
+      "selector": ".view.rich_media_content .ProseMirror[contenteditable='true']",
       "value": "{content}",
-      "descript": "输入正文",
+      "descript": "输入正文（ProseMirror 编辑器，原 //div[text()=\"从这里开始写正文\"] 会命中不可见的 placeholder 元素导致 press 失败）",
       "ai_fallback": true,
       "ai_intent": "找到微信公众号正文编辑区并填写内容",
-      "timeout": 5000
+      "timeout": 8000
     },
     {
       "type": "hover",
