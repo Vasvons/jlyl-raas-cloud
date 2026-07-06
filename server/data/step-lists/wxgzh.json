@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.3",
-  "description": "微信公众号图文发布流程（v1.7.3：标题/正文增加多选择器回退；新增诊断步骤打印 ProseMirror/#title/ueditor 等元素位置，排查 Worker 浏览器布局差异）",
+  "version": "1.7.4",
+  "description": "微信公众号图文发布流程（v1.7.4：根因是 写新文章 链接 target=_blank 在新标签页打开，ctx.page 仍指向草稿箱页导致后续步骤找不到元素；改为移除 target=_blank + wait_for_url 等待跳转）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -46,15 +46,27 @@
       "timeout": 5000
     },
     {
-      "type": "click",
-      "selector": "//i[@class=\"icon-svg-editor-appmsg\"] | //span[text()=\"文章\" and @class=\"weui-desktop-dropdown__list-ele__text\"]",
-      "descript": "选择文章类型",
+      "type": "evaluate_edit",
+      "value": "const links = Array.from(document.querySelectorAll('a')); const writeLink = links.find(a => (a.innerText||'').trim() === '写新文章'); if (writeLink) { writeLink.target = '_self'; writeLink.removeAttribute('target'); return JSON.stringify({ ok: true, found: true, href: writeLink.href }); } return JSON.stringify({ ok: false, reason: '未找到 写新文章 链接（可能需要 hover 才显示）', linkCount: links.length, linkTexts: links.map(a => (a.innerText||'').trim()).filter(Boolean).slice(0, 20) });",
+      "descript": "移除 写新文章 链接的 target=_blank（改为当前页跳转，避免新标签页导致 ctx.page 失效）",
       "timeout": 5000
     },
     {
+      "type": "click",
+      "selector": "//a[text()=\"写新文章\"] | //i[@class=\"icon-svg-editor-appmsg\"] | //span[text()=\"文章\" and @class=\"weui-desktop-dropdown__list-ele__text\"]",
+      "descript": "点击 写新文章（target 已改为 _self，在当前标签页打开编辑页）",
+      "timeout": 5000
+    },
+    {
+      "type": "wait_for_url",
+      "value": "appmsg_edit_v2",
+      "descript": "等待跳转到编辑页（URL 含 appmsg_edit_v2）",
+      "timeout": 10000
+    },
+    {
       "type": "timing",
-      "ms": 1500,
-      "descript": "等待编辑页加载（弹窗可能在此时出现）"
+      "ms": 2500,
+      "descript": "等待编辑页加载（ProseMirror 初始化）"
     },
     {
       "type": "evaluate_edit",
