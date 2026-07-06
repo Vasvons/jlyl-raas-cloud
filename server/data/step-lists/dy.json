@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.5",
-  "description": "抖音图文发布流程（v1.7.5：修复图片上传等待——用 wait_for_selector 等待缩略图 + 关闭共创中心弹窗 + 发布前图片存在性检查）",
+  "version": "1.7.6",
+  "description": "抖音图文发布流程（v1.7.6：发布按钮改回 Playwright click 触发 React 合成事件 + 图片检测排除 36x36 占位符）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": ".user-info | .avatar",
@@ -41,14 +41,14 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const sleep = (ms) => new Promise(r => setTimeout(r, ms)); const start = Date.now(); let lastInfo = null; while (Date.now() - start < 30000) { const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const progressBars = document.querySelectorAll('.progress-bar, .uploading, [class*=\"progress\"], [class*=\"loading\"], [class*=\"uploading\"]'); const visibleImgs = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width > 30 && r.height > 30; }); const visibleProgress = Array.from(progressBars).filter(p => { const r = p.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); lastInfo = { imgCount: visibleImgs.length, progressCount: visibleProgress.length, elapsed: Math.round((Date.now() - start) / 1000) }; if (visibleImgs.length > 0 && visibleProgress.length === 0) { return { ok: true, ...lastInfo }; } await sleep(1000); } return { ok: false, ...lastInfo, reason: '等待 30 秒后图片仍未上传完成' };",
-      "descript": "等待图片上传完成（轮询检测缩略图出现 + 进度条消失，最多 30 秒）",
-      "timeout": 35000
+      "value": "const sleep = (ms) => new Promise(r => setTimeout(r, ms)); const start = Date.now(); let lastInfo = null; const isRealThumb = (i) => { const r = i.getBoundingClientRect(); if (r.width < 80 || r.height < 80) return false; const src = i.src || ''; if (src.startsWith('data:')) return false; return true; }; while (Date.now() - start < 40000) { const allImgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const realThumbs = Array.from(allImgs).filter(isRealThumb); const progressBars = document.querySelectorAll('.progress-bar, .uploading, [class*=\"progress\"], [class*=\"loading\"], [class*=\"uploading\"]'); const visibleProgress = Array.from(progressBars).filter(p => { const r = p.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); lastInfo = { realThumbCount: realThumbs.length, totalImgCount: allImgs.length, progressCount: visibleProgress.length, elapsed: Math.round((Date.now() - start) / 1000) }; if (realThumbs.length > 0 && visibleProgress.length === 0) { return { ok: true, ...lastInfo }; } await sleep(1500); } return { ok: false, ...lastInfo, reason: '等待 40 秒后图片仍未上传完成（可能上传失败或被拒绝）' };",
+      "descript": "等待图片上传完成（轮询检测真实缩略图出现 + 进度条消失，最多 40 秒，排除 36x36 占位符）",
+      "timeout": 45000
     },
     {
       "type": "evaluate_edit",
-      "value": "const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const visible = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width > 30 && r.height > 30; }); const info = visible.map(i => ({ src: (i.src||'').slice(0, 80), w: Math.round(i.getBoundingClientRect().width), h: Math.round(i.getBoundingClientRect().height) })); return { count: visible.length, images: info.slice(0, 5) };",
-      "descript": "调试：列出页面上所有可见的已上传图片（src/尺寸）",
+      "value": "const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const all = Array.from(imgs).map(i => ({ src: (i.src||'').slice(0, 80), w: Math.round(i.getBoundingClientRect().width), h: Math.round(i.getBoundingClientRect().height), isPlaceholder: i.src.startsWith('data:') || i.getBoundingClientRect().width < 80 })); return { total: all.length, realThumbs: all.filter(x => !x.isPlaceholder).length, placeholders: all.filter(x => x.isPlaceholder).length, images: all.slice(0, 8) };",
+      "descript": "调试：列出页面上所有图片（区分真实缩略图和占位符）",
       "timeout": 5000
     },
     {
@@ -146,31 +146,28 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const visible = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width > 30 && r.height > 30; }); const dialogs = document.querySelectorAll('.semi-modal-content, [role=\"dialog\"]'); const visibleDialogs = Array.from(dialogs).filter(d => { const r = d.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); return { imageCount: visible.length, hasDialog: visibleDialogs.length > 0, dialogCount: visibleDialogs.length };",
-      "descript": "发布前最终检查：图片数量 + 弹窗状态",
+      "value": "const imgs = document.querySelectorAll('.image-item img, .upload-item img, .image-container img, [class*=\"image\"][class*=\"item\"] img, [class*=\"upload\"] img, div[class*=\"image\"] img'); const realThumbs = Array.from(imgs).filter(i => { const r = i.getBoundingClientRect(); return r.width >= 80 && r.height >= 80 && !i.src.startsWith('data:'); }); const dialogs = document.querySelectorAll('.semi-modal-content, [role=\"dialog\"]'); const visibleDialogs = Array.from(dialogs).filter(d => { const r = d.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); return { realThumbCount: realThumbs.length, hasDialog: visibleDialogs.length > 0, dialogCount: visibleDialogs.length };",
+      "descript": "发布前最终检查：真实缩略图数量 + 弹窗状态",
       "timeout": 5000
     },
     {
-      "type": "evaluate_edit",
-      "value": "const btns = Array.from(document.querySelectorAll('button, [role=\"button\"], .btn-primary, .btn-publish')); const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; }); const info = visible.map(b => ({ tag: b.tagName, text: (b.innerText||b.textContent||'').trim().slice(0,30), cls: b.className, disabled: b.disabled, rect: { x: Math.round(b.getBoundingClientRect().x), y: Math.round(b.getBoundingClientRect().y) } })); return info;",
-      "descript": "调试：列出页面上所有可见按钮（text/class/坐标）",
-      "timeout": 5000
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "const btns = Array.from(document.querySelectorAll('button, [role=\"button\"], .btn-primary, .btn-publish, div[class*=\"publish\"] button')); const visible = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !b.disabled; }); const text = b => (b.innerText||b.textContent||'').trim(); const isDraft = b => /草稿|存为草稿|存草稿/.test(text(b)); const isPublish = b => /^发布$|^直接发布$|^高清发布$/.test(text(b)) || (text(b).includes('发布') && !isDraft(b) && text(b).length <= 6); const candidates = visible.filter(b => isPublish(b) && !isDraft(b)); if (candidates.length === 0) { return { ok: false, reason: '未找到发布按钮', all: visible.map(b => ({text: text(b).slice(0,30), cls: b.className})) }; } const preferred = candidates.find(b => /btn-primary|primary|publish/.test(b.className)) || candidates[0]; try { preferred.click(); } catch(e) { preferred.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); } return { ok: true, clicked: { text: text(preferred), cls: preferred.className, tag: preferred.tagName }, candidateCount: candidates.length, all: candidates.map(b => ({text: text(b).slice(0,30), cls: b.className})) };",
-      "descript": "用 JS 精准定位发布按钮并点击（支持「高清发布」，排除保存草稿按钮）",
-      "timeout": 8000
+      "type": "click",
+      "selector": "//button[contains(@class,'button-primary') and normalize-space(.)='高清发布'] | //button[contains(@class,'button-primary') and normalize-space(.)='发布'] | //button[normalize-space(.)='高清发布'] | //button[normalize-space(.)='发布']",
+      "descript": "点击「高清发布」按钮（Playwright 真实点击触发 React 合成事件）",
+      "force": true,
+      "timeout": 8000,
+      "ai_fallback": true,
+      "ai_intent": "找到抖音「高清发布」按钮并点击（注意不要点保存草稿按钮）"
     },
     {
       "type": "timing",
-      "ms": 1500,
+      "ms": 2000,
       "descript": "等待发布按钮点击响应"
     },
     {
       "type": "evaluate_edit",
-      "value": "const url = window.location.href; const hasDialog = !!document.querySelector('.semi-modal-content, [role=\"dialog\"]'); const dialogText = hasDialog ? (document.querySelector('.semi-modal-content, [role=\"dialog\"]')?.innerText||'').slice(0,200) : ''; const errorMsg = (document.querySelector('.toast-error, .error-msg, .semi-toast-content')?.innerText||'').slice(0,200); return { url, hasDialog, dialogText, errorMsg };",
-      "descript": "调试：点击发布按钮后检查页面状态（URL/弹窗/错误）",
+      "value": "const url = window.location.href; const hasDialog = !!document.querySelector('.semi-modal-content, [role=\"dialog\"]'); const dialogText = hasDialog ? (document.querySelector('.semi-modal-content, [role=\"dialog\"]')?.innerText||'').slice(0,300) : ''; const errorMsg = (document.querySelector('.toast-error, .error-msg, .semi-toast-content, .semi-notification-content')?.innerText||'').slice(0,300); const allToasts = Array.from(document.querySelectorAll('.semi-toast, .semi-notification, [class*=\"toast\"], [class*=\"error\"]')).map(e => (e.innerText||'').slice(0,100)); return { url, hasDialog, dialogText, errorMsg, allToasts };",
+      "descript": "调试：点击发布按钮后检查页面状态（URL/弹窗/错误/toast）",
       "timeout": 3000
     },
     {
