@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.9",
-  "description": "微信公众号图文发布流程（v1.7.9：封面图改用 input_files 直接上传 + 发表成功验证 URL 变化/错误提示，修复封面缺失导致发表无效但误判成功）",
+  "version": "1.7.10",
+  "description": "微信公众号图文发布流程（v1.7.10：封面选择器点击后弹出下拉菜单，需先点击'上传图片'菜单项再 input_files，并精确标记封面 file input 避免命中顶部工具栏'插入图片'）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -110,24 +110,46 @@
     {
       "type": "evaluate_edit",
       "value": "const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); if (!coverBtn) return JSON.stringify({ ok: false, reason: '未找到封面选择器' }); coverBtn.scrollIntoView({ block: 'center' }); return new Promise(r => setTimeout(() => { coverBtn.click(); r(JSON.stringify({ ok: true, clicked: true, rect: coverBtn.getBoundingClientRect() })); }, 500));",
-      "descript": "点击封面选择器（拖拽或选择封面区域，触发文件选择对话框）",
+      "descript": "点击封面选择器（拖拽或选择封面区域，弹出'从正文选择/上传图片'下拉菜单）",
       "timeout": 5000
     },
     {
-      "type": "input_files",
-      "selector": "input[type='file']",
-      "files": ["{cover_image_url}"],
-      "descript": "上传封面图片（input_files 直接上传，不从正文选择）",
-      "timeout": 15000
+      "type": "timing",
+      "ms": 800,
+      "descript": "等待下拉菜单弹出动画"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const allEls = Array.from(document.querySelectorAll('div, span, a, li, button, p')); const uploadItems = allEls.filter(el => { const t = (el.innerText||'').trim(); const r = el.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return false; return (t === '上传图片' || t === '本地上传' || t === '上传' || (t.includes('上传') && t.length < 20)); }); if (uploadItems.length === 0) { const uploadTexts = allEls.map(e=>(e.innerText||'').trim()).filter(t=>t.includes('上传') && t.length < 30).slice(0, 15); return JSON.stringify({ ok: false, reason: '未找到上传图片菜单项', uploadTexts }); } const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); const coverRect = coverBtn ? coverBtn.getBoundingClientRect() : null; let best = uploadItems[0]; if (coverRect) { let minDist = Infinity; for (const item of uploadItems) { const r = item.getBoundingClientRect(); const dist = Math.abs(r.top - coverRect.top) + Math.abs(r.left - coverRect.left); if (dist < minDist) { minDist = dist; best = item; } } } best.click(); return JSON.stringify({ ok: true, clicked: (best.innerText||'').trim(), itemCount: uploadItems.length });",
+      "descript": "点击下拉菜单中的'上传图片'菜单项（触发封面专用 file input 创建）",
+      "timeout": 5000
     },
     {
       "type": "timing",
-      "ms": 2000,
+      "ms": 1500,
+      "descript": "等待封面 file input 创建"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const inputs = Array.from(document.querySelectorAll('input[type=\"file\"]')); const coverInput = inputs.find(inp => { const p = inp.closest('.select-cover, .js_cover_btn_area, .cover_area, .appmsg_cover_area, .js_imagedialog, .pop-opr'); return p !== null; }) || inputs.find(inp => { const p = inp.parentElement; return p && !p.className.includes('tpl_dropdown_menu_item'); }) || inputs.find(inp => inp.accept && inp.accept.includes('image')); if (coverInput) { coverInput.setAttribute('id', 'jlyl_cover_input'); return JSON.stringify({ ok: true, marked: true, accept: coverInput.accept, parentClass: coverInput.parentElement?.className || '' }); } return JSON.stringify({ ok: false, reason: '未找到封面 file input', inputs: inputs.map(i => ({ accept: i.accept, parentClass: i.parentElement?.className || '', visible: i.offsetWidth > 0 })) });",
+      "descript": "标记封面专用 file input（排除顶部工具栏'插入图片'的 file input，避免误传到正文）",
+      "timeout": 3000
+    },
+    {
+      "type": "input_files",
+      "selector": "#jlyl_cover_input",
+      "files": ["{cover_image_url}"],
+      "descript": "上传封面图片（精确指向封面专用 file input，避免命中顶部工具栏）",
+      "timeout": 30000
+    },
+    {
+      "type": "timing",
+      "ms": 3000,
       "descript": "等待封面上传完成"
     },
     {
       "type": "evaluate_edit",
-      "value": "const coverImg = document.querySelector('.select-cover__mask img, .appmsg_cover_area img, .cover_img'); const errorMsg = document.querySelector('.js_cover_error'); return JSON.stringify({ coverSet: !!coverImg, coverImgSrc: coverImg ? coverImg.src.slice(0, 80) : null, errorMsg: errorMsg ? (errorMsg.innerText||'').trim() : null });",
+      "value": "const coverImg = document.querySelector('.select-cover__mask img, .appmsg_cover_area img, .cover_img, .select-cover img'); const errorMsg = document.querySelector('.js_cover_error, .js_error_msg'); return JSON.stringify({ coverSet: !!coverImg, coverImgSrc: coverImg ? coverImg.src.slice(0, 80) : null, errorMsg: errorMsg ? (errorMsg.innerText||'').trim() : null });",
       "descript": "验证封面是否设置成功",
       "timeout": 3000
     },
