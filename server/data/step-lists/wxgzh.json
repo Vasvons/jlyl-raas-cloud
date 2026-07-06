@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.11",
-  "description": "微信公众号图文发布流程（v1.7.11：菜单项文字是'本地上传'不是'上传图片'，修正匹配规则）",
+  "version": "1.7.12",
+  "description": "微信公众号图文发布流程（v1.7.12：点击'本地上传'后增加重试查找 file input 逻辑 + 菜单项匹配规则增强）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -120,20 +120,20 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const allEls = Array.from(document.querySelectorAll('div, span, a, li, button, p')); const uploadItems = allEls.filter(el => { const t = (el.innerText||'').trim(); const r = el.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return false; return (t === '本地上传' || t === '上传图片' || t === '上传' || t === '点击上传' || (t.includes('本地上传') && t.length < 20) || (t.includes('上传图片') && t.length < 20) || (t === '点击上传\\n                x')); }); if (uploadItems.length === 0) { const uploadTexts = allEls.map(e=>(e.innerText||'').trim()).filter(t=>t.includes('上传') && t.length < 30).slice(0, 15); return JSON.stringify({ ok: false, reason: '未找到上传图片菜单项', uploadTexts }); } const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); const coverRect = coverBtn ? coverBtn.getBoundingClientRect() : null; let best = uploadItems[0]; if (coverRect) { let minDist = Infinity; for (const item of uploadItems) { const r = item.getBoundingClientRect(); const dist = Math.abs(r.top - coverRect.top) + Math.abs(r.left - coverRect.left); if (dist < minDist) { minDist = dist; best = item; } } } best.click(); return JSON.stringify({ ok: true, clicked: (best.innerText||'').trim().slice(0, 50), itemCount: uploadItems.length, allTexts: uploadItems.map(e => (e.innerText||'').trim().slice(0, 30)) });",
-      "descript": "点击下拉菜单中的'上传图片'菜单项（触发封面专用 file input 创建）",
-      "timeout": 5000
+      "value": "const allEls = Array.from(document.querySelectorAll('div, span, a, li, button, p')); const uploadItems = allEls.filter(el => { const t = (el.innerText||'').trim(); const r = el.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return false; return (t === '本地上传' || t === '上传图片' || t === '上传' || t === '点击上传' || (t.includes('本地上传') && t.length < 20) || (t.includes('上传图片') && t.length < 20) || (t === '点击上传\\n                x')); }); if (uploadItems.length === 0) { const uploadTexts = allEls.map(e=>(e.innerText||'').trim()).filter(t=>t.includes('上传') && t.length < 30).slice(0, 15); return JSON.stringify({ ok: false, reason: '未找到上传图片菜单项', uploadTexts }); } const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area'); const coverRect = coverBtn ? coverBtn.getBoundingClientRect() : null; let best = uploadItems[0]; if (coverRect) { let minDist = Infinity; for (const item of uploadItems) { const r = item.getBoundingClientRect(); const dist = Math.abs(r.top - coverRect.top) + Math.abs(r.left - coverRect.left); if (dist < minDist) { minDist = dist; best = item; } } } const beforeFileInputs = document.querySelectorAll('input[type=\"file\"]').length; best.click(); return new Promise(r => setTimeout(() => { const afterFileInputs = document.querySelectorAll('input[type=\"file\"]').length; r(JSON.stringify({ ok: true, clicked: (best.innerText||'').trim().slice(0, 50), itemCount: uploadItems.length, allTexts: uploadItems.map(e => (e.innerText||'').trim().slice(0, 30)), beforeFileInputs, afterFileInputs })); }, 1000));",
+      "descript": "点击下拉菜单中的'本地上传'菜单项（触发封面专用 file input 创建）",
+      "timeout": 8000
     },
     {
       "type": "timing",
-      "ms": 1500,
-      "descript": "等待封面 file input 创建"
+      "ms": 2000,
+      "descript": "等待封面 file input 创建（点击'本地上传'后可能弹出新的上传弹窗）"
     },
     {
       "type": "evaluate_edit",
-      "value": "const inputs = Array.from(document.querySelectorAll('input[type=\"file\"]')); const candidates = inputs.map((inp, idx) => { const parent = inp.parentElement; const parentClass = parent ? parent.className || '' : ''; const inToolbar = parentClass.includes('tpl_dropdown_menu_item'); const inCoverArea = !!inp.closest('.select-cover, .js_cover_btn_area, .cover_area, .appmsg_cover_area, .js_imagedialog, .pop-opr, .weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"]'); return { idx, inp, parentClass, inToolbar, inCoverArea, accept: inp.accept || '' }; }); let coverInput = candidates.find(c => c.inCoverArea && !c.inToolbar)?.inp; if (!coverInput) { coverInput = candidates.find(c => !c.inToolbar)?.inp; } if (!coverInput) { coverInput = candidates.find(c => c.accept.includes('image'))?.inp; } if (coverInput) { coverInput.setAttribute('id', 'jlyl_cover_input'); return JSON.stringify({ ok: true, marked: true, accept: coverInput.accept, parentClass: coverInput.parentElement?.className || '', totalInputs: inputs.length }); } return JSON.stringify({ ok: false, reason: '未找到封面 file input', inputs: candidates.map(c => ({ accept: c.accept, parentClass: c.parentClass, inToolbar: c.inToolbar, inCoverArea: c.inCoverArea })) });",
-      "descript": "标记封面专用 file input（排除顶部工具栏'插入图片'的 file input，避免误传到正文）",
-      "timeout": 3000
+      "value": "const findCoverInput = () => { const inputs = Array.from(document.querySelectorAll('input[type=\"file\"]')); const candidates = inputs.map((inp, idx) => { const parent = inp.parentElement; const parentClass = parent ? parent.className || '' : ''; const inToolbar = parentClass.includes('tpl_dropdown_menu_item'); const inCoverArea = !!inp.closest('.select-cover, .js_cover_btn_area, .cover_area, .appmsg_cover_area, .js_imagedialog, .pop-opr, .weui-desktop-dialog, .weui-desktop-modal, [role=\"dialog\"], .dialog_wrp, .dialog_box'); return { idx, inp, parentClass, inToolbar, inCoverArea, accept: inp.accept || '' }; }); let coverInput = candidates.find(c => c.inCoverArea && !c.inToolbar)?.inp; if (!coverInput) { coverInput = candidates.find(c => !c.inToolbar)?.inp; } if (!coverInput) { coverInput = candidates.find(c => c.accept.includes('image'))?.inp; } return { coverInput, candidates }; }; let result = findCoverInput(); let retry = 0; while (!result.coverInput && retry < 6) { await new Promise(r => setTimeout(r, 500)); result = findCoverInput(); retry++; } if (result.coverInput) { result.coverInput.setAttribute('id', 'jlyl_cover_input'); return JSON.stringify({ ok: true, marked: true, accept: result.coverInput.accept, parentClass: result.coverInput.parentElement?.className || '', totalInputs: document.querySelectorAll('input[type=\"file\"]').length, retries: retry }); } return JSON.stringify({ ok: false, reason: '未找到封面 file input（已重试 ' + retry + ' 次）', inputs: result.candidates.map(c => ({ accept: c.accept, parentClass: c.parentClass, inToolbar: c.inToolbar, inCoverArea: c.inCoverArea })) });",
+      "descript": "标记封面专用 file input（重试 6 次每次 500ms，排除顶部工具栏，优先选封面区域/弹窗内的 input）",
+      "timeout": 8000
     },
     {
       "type": "input_files",
