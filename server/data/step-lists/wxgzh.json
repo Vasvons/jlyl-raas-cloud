@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.22",
-  "description": "微信公众号图文发布流程（v1.7.22：直接从正文提取第一张图片URL，用 input_files_chooser 点击封面选择器触发文件选择对话框并上传）",
+  "version": "1.7.23",
+  "description": "微信公众号图文发布流程（v1.7.23：改用 a.js_selectCoverFromContent 从正文选择封面，无需本地上传）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -109,32 +109,25 @@
     },
     {
       "type": "timing",
-      "ms": 2000,
-      "descript": "等待正文图片渲染完成（用于提取正文图片作为封面）"
+      "ms": 1500,
+      "descript": "等待正文图片渲染完成（用于'从正文选择'封面）"
     },
     {
       "type": "evaluate_edit",
-      "value": "const imgs = Array.from(document.querySelectorAll('.view.rich_media_content img, .ProseMirror img')).filter(img => { const r = img.getBoundingClientRect(); return r.width > 50 && r.height > 50 && img.src && img.src.startsWith('http'); }); if (imgs.length === 0) return JSON.stringify({ ok: false, reason: '正文未找到可用图片' }); const firstImg = imgs[0]; window.__jlyl_cover_url = firstImg.src; return JSON.stringify({ ok: true, url: firstImg.src.slice(0, 120), w: Math.round(firstImg.getBoundingClientRect().width), h: Math.round(firstImg.getBoundingClientRect().height), totalImgs: imgs.length });",
-      "descript": "提取正文第一张图片 URL（作为封面上传源）",
-      "timeout": 5000
-    },
-    {
-      "type": "input_files_chooser",
-      "trigger_click": "const coverBtn = document.querySelector('.select-cover__btn, .js_cover_btn_area, .select-cover__mask'); if (!coverBtn) throw new Error('未找到封面选择器'); coverBtn.scrollIntoView({ block: 'center' }); await new Promise(r => setTimeout(r, 300)); coverBtn.click(); await new Promise(r => setTimeout(r, 1500)); const menuItems = Array.from(document.querySelectorAll('div, span, a, li, button, [role=\"menuitem\"]')).filter(el => { const t = (el.textContent||'').trim(); const r = el.getBoundingClientRect(); if (r.width === 0 || r.height === 0) return false; return t.includes('上传图片') || t.includes('本地上传') || t.includes('从正文') || t === '上传'; }); if (menuItems.length > 0) { menuItems[0].scrollIntoView({ block: 'center' }); menuItems[0].click(); }",
-      "files": ["{cover_image_url}"],
-      "descript": "点击封面选择器触发文件选择对话框（先点封面选择器，再点菜单'上传图片/本地上传'，用 filechooser 事件拦截）",
-      "timeout": 30000
+      "value": "const fromContentBtn = document.querySelector('a.js_selectCoverFromContent'); if (!fromContentBtn) throw new Error('未找到 从正文选择 按钮（a.js_selectCoverFromContent）'); fromContentBtn.scrollIntoView({ block: 'center' }); await new Promise(r => setTimeout(r, 300)); fromContentBtn.click(); await new Promise(r => setTimeout(r, 1500)); const dialogs = Array.from(document.querySelectorAll('.weui-desktop-dialog')); const dialog = dialogs.find(d => (d.innerText || '').includes('选择图片') && (d.innerText || '').includes('正文')); if (!dialog) throw new Error('点击 从正文选择 后未弹出选择图片弹窗（dialogCount=' + dialogs.length + '）'); const imgSpans = Array.from(dialog.querySelectorAll('.appmsg_content_img_list .appmsg_content_img.cover')); if (imgSpans.length === 0) throw new Error('弹窗内未找到可选图片（可能正文未含微信服务器图片 mmecoa.qpic.cn）'); const imgSpan = imgSpans[0]; imgSpan.scrollIntoView({ block: 'center' }); imgSpan.click(); await new Promise(r => setTimeout(r, 500)); let mask = imgSpan.parentElement && imgSpan.parentElement.querySelector('.card_mask_global'); let selected = mask && mask.offsetWidth > 0; if (!selected) { imgSpan.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); await new Promise(r => setTimeout(r, 500)); mask = imgSpan.parentElement && imgSpan.parentElement.querySelector('.card_mask_global'); selected = mask && mask.offsetWidth > 0; } if (!selected) throw new Error('点击图片后未触发选中（mask 未显示）'); const nextBtn = dialog.querySelector('.weui-desktop-dialog__ft .weui-desktop-btn_primary'); if (!nextBtn) throw new Error('未找到 下一步 按钮'); if (nextBtn.classList.contains('weui-desktop-btn_disabled')) throw new Error('下一步按钮仍为禁用状态（图片未选中）'); nextBtn.click(); await new Promise(r => setTimeout(r, 1500)); const dialogs2 = Array.from(document.querySelectorAll('.weui-desktop-dialog')); const dialog2 = dialogs2.find(d => (d.innerText || '').includes('完成') || (d.innerText || '').includes('裁剪')); if (dialog2) { const finishBtn = Array.from(dialog2.querySelectorAll('button')).find(b => { const t = (b.innerText || '').trim(); return t === '完成' && !b.classList.contains('weui-desktop-btn_disabled'); }); if (finishBtn) { finishBtn.click(); await new Promise(r => setTimeout(r, 1000)); } } return JSON.stringify({ ok: true, selectedCount: imgSpans.length, nextClicked: true });",
+      "descript": "从正文选择封面（点击 a.js_selectCoverFromContent → 选中第一张图片 → 点下一步 → 如有裁剪界面点完成）",
+      "timeout": 15000
     },
     {
       "type": "timing",
-      "ms": 3000,
-      "descript": "等待封面上传完成"
+      "ms": 1500,
+      "descript": "等待封面设置生效"
     },
     {
       "type": "evaluate_edit",
-      "value": "const coverImg = document.querySelector('.select-cover__mask img, .appmsg_cover_area img, .cover_img, .select-cover img, .select-cover__btn img'); const errorMsg = document.querySelector('.js_cover_error, .js_error_msg'); return JSON.stringify({ coverSet: !!coverImg, coverImgSrc: coverImg ? coverImg.src.slice(0, 80) : null, errorMsg: errorMsg ? (errorMsg.innerText||'').trim() : null });",
-      "descript": "验证封面是否设置成功",
-      "timeout": 3000
+      "value": "const coverArea = document.querySelector('#js_cover_area'); if (!coverArea) throw new Error('封面区域 #js_cover_area 不存在'); const preview = coverArea.querySelector('.js_cover_preview_new'); const fileIdInput = coverArea.querySelector('input.js_file_id'); const cdnUrlInput = coverArea.querySelector('input.js_cdn_url'); const bgImg = preview && preview.style.backgroundImage; const result = { previewDisplay: preview ? preview.style.display : null, previewBg: bgImg ? bgImg.slice(0, 200) : null, fileId: fileIdInput ? fileIdInput.value : null, cdnUrl: cdnUrlInput ? (cdnUrlInput.value || '').slice(0, 150) : null }; const coverSet = preview && preview.style.display !== 'none' && bgImg && bgImg !== 'url(\"\")' && bgImg !== 'url()' && (fileIdInput && fileIdInput.value); if (!coverSet) { throw new Error('封面未设置成功: ' + JSON.stringify(result)); } return JSON.stringify({ ok: true, coverSet: true, fileId: result.fileId, cdnUrl: result.cdnUrl });",
+      "descript": "验证封面是否设置成功（检查 preview 显示 + background-image + file_id 有值）",
+      "timeout": 5000
     },
     {
       "type": "branch",
