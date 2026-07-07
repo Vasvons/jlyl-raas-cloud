@@ -1364,6 +1364,49 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 2, 8);
     const records = await getPendingPublishRecords(limit);
+
+    // v1.9.2：当拉取到 0 条记录时，查询诊断信息返回给 Worker，让用户知道"没反应"的原因
+    if (records.length === 0) {
+      const diagPending = await query(
+        `SELECT pr.platform,
+                COUNT(*) FILTER (WHERE pr.status = 'pending') AS pending_cnt,
+                COUNT(*) FILTER (WHERE pr.status = 'processing') AS processing_cnt
+         FROM publish_record pr
+         JOIN publish_task pt ON pt.id = pr.task_id
+         WHERE pt.status IN ('pending', 'processing')
+           AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
+         GROUP BY pr.platform`
+      );
+      const diagAccounts = await query(
+        `SELECT platform,
+                COUNT(*) AS total,
+                COUNT(*) FILTER (WHERE status = 'active' AND health_status = 'normal' AND publish_fail_count < 3) AS available
+         FROM platform_auth
+         WHERE platform_type IN ('publish', 'both')
+         GROUP BY platform`
+      );
+      const pendingRows = diagPending.rows as any[];
+      const accountRows = diagAccounts.rows as any[];
+      const reasons: string[] = [];
+      if (pendingRows.length === 0) {
+        reasons.push('无待发布任务（publish_record 无 pending 记录或 publish_task 非 pending/processing 状态）');
+      } else {
+        for (const row of pendingRows) {
+          const acc = accountRows.find(a => a.platform === row.platform);
+          const avail = acc ? Number(acc.available) : 0;
+          if (avail === 0) {
+            reasons.push(`平台 ${row.platform}：${row.pending_cnt} 条 pending，但无可用账号（需添加账号或恢复账号状态）`);
+          } else {
+            reasons.push(`平台 ${row.platform}：${row.pending_cnt} 条 pending，${avail} 个可用账号（可能配额已满或被锁）`);
+          }
+        }
+      }
+      const reason = reasons.join(' | ') || '未知原因';
+      console.log(`[dequeue] 返回 0 条记录。原因: ${reason}`);
+      res.json({ code: 200, data: [], reason });
+      return;
+    }
+    console.log(`[dequeue] 返回 ${records.length} 条记录`);
     // 为每条记录附加 step_list + account_proxy，并标记为 started（processing）
     const enriched = await Promise.all(records.map(async (r: any) => {
       try {
