@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.27",
-  "description": "微信公众号图文发布流程（v1.7.27：MCP 探查发现发表需 3 步确认：同意声明→群发通知发表→继续发表，文章才能真发出）",
+  "version": "1.7.28",
+  "description": "微信公众号/服务号图文发布流程（v1.7.28：登录后从首页 URL 提取 token 直接跳转编辑页，适配新版服务号左侧菜单；v1.7.27：发表需 3 步确认才能真正发出）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -28,40 +28,16 @@
       "timeout": 30000
     },
     {
-      "type": "click",
-      "selector": "//li[@class=\"weui-desktop-menu__item weui-desktop-menu_create menu-fold\"]",
-      "descript": "进入内容管理",
-      "timeout": 5000
-    },
-    {
-      "type": "click",
-      "selector": "//span[text()=\"草稿箱\"]",
-      "descript": "点击草稿箱",
-      "timeout": 5000
-    },
-    {
-      "type": "click",
-      "selector": "//button[text()=\"新的创作\"] | //i[@class=\"weui-desktop-card__icon-add\"]",
-      "descript": "点击新的创作",
-      "timeout": 5000
-    },
-    {
       "type": "evaluate_edit",
-      "value": "const links = Array.from(document.querySelectorAll('a')); const writeLink = links.find(a => (a.innerText||'').trim() === '写新文章'); if (writeLink) { writeLink.target = '_self'; writeLink.removeAttribute('target'); return JSON.stringify({ ok: true, found: true, href: writeLink.href }); } return JSON.stringify({ ok: false, reason: '未找到 写新文章 链接（可能需要 hover 才显示）', linkCount: links.length, linkTexts: links.map(a => (a.innerText||'').trim()).filter(Boolean).slice(0, 20) });",
-      "descript": "移除 写新文章 链接的 target=_blank（改为当前页跳转，避免新标签页导致 ctx.page 失效）",
-      "timeout": 5000
-    },
-    {
-      "type": "click",
-      "selector": "//a[text()=\"写新文章\"] | //i[@class=\"icon-svg-editor-appmsg\"] | //span[text()=\"文章\" and @class=\"weui-desktop-dropdown__list-ele__text\"]",
-      "descript": "点击 写新文章（target 已改为 _self，在当前标签页打开编辑页）",
-      "timeout": 5000
+      "value": "const tokenMatch = location.href.match(/token=([0-9a-fA-F]+)/) || document.documentElement.innerHTML.match(/token\\s*[:=]\\s*['\"]([0-9a-fA-F]+)['\"]/); const token = tokenMatch ? tokenMatch[1] : null; if (!token) throw new Error('未从页面提取到 token，无法直接打开编辑页'); const url = 'https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit&isNew=1&type=10&token=' + token + '&lang=zh_CN'; setTimeout(() => { window.location.href = url; }, 0); return JSON.stringify({ ok: true, token, url });",
+      "descript": "v1.7.28：从首页 URL 提取 token，直接跳转新建图文编辑页（新版服务号/公众号左侧菜单结构变化，绕过内容管理/草稿箱/新的创作菜单点击）",
+      "timeout": 8000
     },
     {
       "type": "wait_for_url",
       "value": "appmsg_edit_v2",
       "descript": "等待跳转到编辑页（URL 含 appmsg_edit_v2）",
-      "timeout": 10000
+      "timeout": 15000
     },
     {
       "type": "timing",
