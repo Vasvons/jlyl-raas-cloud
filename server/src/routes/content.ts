@@ -963,13 +963,18 @@ router.post('/articles/batch-publish', async (req: Request, res: Response) => {
         }
         platformsForThisArticle = platformFilter;
       }
-      const taskId = await createPublishTask({
+      const { taskId, skipped: taskSkipped } = await createPublishTask({
         user_id: userId,
         article_id: numId,
         target_platforms: platformsForThisArticle,
         scheduled_at: scheduledDate,
         batch_id: batchId,
       });
+      // 将任务内跳过的平台汇总到 skipped
+      for (const s of taskSkipped) {
+        skipped.push({ article_id: numId, reason: s.reason });
+      }
+      // 若所有平台都已发布过，total_count=0，不加入任务列表
       taskIds.push(taskId);
     }
     res.json({
@@ -1529,13 +1534,16 @@ router.post('/publish/by-writing-task', async (req: Request, res: Response) => {
         continue;
       }
       try {
-        const publishTaskId = await createPublishTask({
+        const { taskId: publishTaskId, skipped: taskSkipped } = await createPublishTask({
           user_id: userId,
           article_id: article.id,
           target_platforms: [platform],
           scheduled_at: scheduledDate,
           batch_id: batchId,
         });
+        for (const s of taskSkipped) {
+          skipped.push({ article_id: article.id, platform, reason: s.reason });
+        }
         createdTasks.push({ article_id: article.id, platform, publish_task_id: publishTaskId, title: article.title });
       } catch (err: any) {
         skipped.push({ article_id: article.id, platform, reason: err?.message || String(err) });

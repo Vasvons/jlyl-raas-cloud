@@ -4206,7 +4206,11 @@ export async function getArticles(userId: number, filters: { keyword?: string; s
   params.push(pageSize, offset);
   const result = await query(
     `SELECT id, task_id, keyword_id, core_keyword, keyword_type, title, target_platform,
-            word_count, status, cover_image_url, tags, model_used, create_time, update_time
+            word_count, status, cover_image_url, tags, model_used, create_time, update_time,
+            COALESCE((SELECT array_agg(DISTINCT pr.platform)
+                      FROM publish_record pr
+                      JOIN publish_task pt ON pt.id = pr.task_id
+                      WHERE pt.article_id = article.id AND pr.status = 'success'), '{}') as published_platforms
      FROM article WHERE ${whereClause}
      ORDER BY create_time DESC
      LIMIT $${idx} OFFSET $${idx + 1}`,
@@ -4216,7 +4220,15 @@ export async function getArticles(userId: number, filters: { keyword?: string; s
 }
 
 export async function getArticleById(id: number): Promise<any | null> {
-  const result = await query('SELECT * FROM article WHERE id = $1', [id]);
+  const result = await query(
+    `SELECT article.*,
+            COALESCE((SELECT array_agg(DISTINCT pr.platform)
+                      FROM publish_record pr
+                      JOIN publish_task pt ON pt.id = pr.task_id
+                      WHERE pt.article_id = article.id AND pr.status = 'success'), '{}') as published_platforms
+     FROM article WHERE article.id = $1`,
+    [id]
+  );
   return result.rows[0] || null;
 }
 
@@ -4433,22 +4445,43 @@ export async function createPublishTask(data: {
   target_platforms: string[];
   scheduled_at?: Date;
   batch_id?: string; // v1.8.4：批次 ID（UUID），同一次「新建发布任务」的所有 publish_task 共享
-}): Promise<number> {
+}): Promise<{ taskId: number; skipped: { platform: string; reason: string }[] }> {
   return withTransaction(async (client: PoolClient) => {
     // v1.8.4：若未提供 batch_id，自动生成一个（单条调用场景）
     const batchId = data.batch_id || crypto.randomUUID();
-    // 1. 创建任务
+
+    // 0. 检查重复发布：该文章+平台是否已有成功发布记录
+    const skipped: { platform: string; reason: string }[] = [];
+    const platformsToCreate: string[] = [];
+    for (const platform of data.target_platforms) {
+      const dupCheck = await client.query(
+        `SELECT id FROM publish_record
+         WHERE platform = $1
+           AND task_id IN (SELECT id FROM publish_task WHERE article_id = $2)
+           AND status = 'success'
+         LIMIT 1`,
+        [platform, data.article_id]
+      );
+      if (dupCheck.rows.length > 0) {
+        skipped.push({ platform, reason: `该文章已成功发布到 ${platform}，跳过重复发布` });
+        continue;
+      }
+      platformsToCreate.push(platform);
+    }
+
+    // 1. 创建任务（允许 total_count=0，表示所有平台都已发布过）
     const taskResult = await client.query(
       `INSERT INTO publish_task (user_id, article_id, target_platforms, scheduled_at, status, total_count, batch_id)
        VALUES ($1, $2, $3, $4, 'pending', $5, $6)
        RETURNING id`,
-      [data.user_id, data.article_id, data.target_platforms, data.scheduled_at || null, data.target_platforms.length, batchId]
+      [data.user_id, data.article_id, data.target_platforms, data.scheduled_at || null, platformsToCreate.length, batchId]
     );
     const taskId = taskResult.rows[0].id;
 
     // 2. 为每个平台分配一个发布型账号（platform_type IN ('publish','both') 且 status='active' 且 health_status='normal'）
+    //    使用轮询策略：每次选择 last_used_at 最久未使用的账号，并立即更新 last_used_at
     //    若无可用账号，platform_auth_id 设为 NULL，由桌面端 Worker 跳过并标记失败
-    for (const platform of data.target_platforms) {
+    for (const platform of platformsToCreate) {
       const authResult = await client.query(
         `SELECT id FROM platform_auth
          WHERE platform = $1
@@ -4460,13 +4493,19 @@ export async function createPublishTask(data: {
         [platform]
       );
       const authId = authResult.rows[0]?.id || null;
+      if (authId) {
+        await client.query(
+          `UPDATE platform_auth SET last_used_at = NOW() WHERE id = $1`,
+          [authId]
+        );
+      }
       await client.query(
         `INSERT INTO publish_record (task_id, platform, platform_auth_id, status)
          VALUES ($1, $2, $3, 'pending')`,
         [taskId, platform, authId]
       );
     }
-    return taskId;
+    return { taskId, skipped };
   });
 }
 
