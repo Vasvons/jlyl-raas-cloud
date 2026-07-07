@@ -18,7 +18,7 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          command_timeout: 30m
+          command_timeout: 60m
           script: |
             set -e
             echo "===== 开始部署 jlyl-cloud ====="
@@ -280,31 +280,37 @@ jobs:
             fi
             echo ">>> 健康检查通过！"
 
-            # 持续监控 5 分钟，确保 server 和 db 不会延迟崩溃
-            echo ">>> 持续监控所有容器 5 分钟（30 次每 10 秒），确保不会延迟崩溃..."
-            for i in $(seq 1 30); do
+            # 持续监控 15 分钟，确保 server 和 db 不会延迟崩溃
+            echo ">>> 持续监控所有容器 15 分钟（90 次每 10 秒），捕获延迟崩溃..."
+            for i in $(seq 1 90); do
               sleep 10
               # 检查所有关键容器
               for cname in jlyl-cloud-db jlyl-cloud-server jlyl-cloud-web jlyl-cloud-worker; do
                 current_state=$(docker inspect $cname --format '{{.State.Status}}' 2>/dev/null || echo "not_found")
                 if [ "$current_state" != "running" ]; then
-                  echo ">>> 监控 ($i/30): $cname 已停止！状态: $current_state"
-                  echo ">>> 输出 $cname 崩溃日志（最后 200 行）："
-                  $DC logs --tail 200 ${cname#jlyl-cloud-}
+                  echo ">>> 监控 ($i/90): $cname 已停止！状态: $current_state"
+                  echo ">>> 输出 $cname 崩溃日志（最后 300 行）："
+                  $DC logs --tail 300 ${cname#jlyl-cloud-}
                   echo ">>> 检查 OOM..."
                   docker inspect $cname 2>/dev/null | grep -i -A1 oomkilled || echo "无 OOM 信息"
+                  echo ">>> 检查系统内存..."
+                  free -h
+                  echo ">>> 检查 dmesg（最近的 OOM 事件）..."
+                  dmesg | grep -i "killed process" | tail -5 || echo "无 OOM kill 记录"
                   echo ">>> 所有容器状态："
                   $DC ps -a
+                  echo ">>> 监控时间点: $(date '+%Y-%m-%d %H:%M:%S')"
                   exit 1
                 fi
               done
-              # 每 30 秒打印一次健康状态
+              # 每 30 秒打印一次健康状态和内存
               if [ $((i % 3)) -eq 0 ]; then
                 health=$(curl -s http://localhost:3002/health 2>/dev/null | head -c 100 || echo "curl_failed")
-                echo ">>> 监控 ($i/30): 全部运行中，health=$health"
+                mem=$(free -h | grep Mem | awk '{print "used: "$3"/"$2}')
+                echo ">>> 监控 ($i/90) $(date '+%H:%M:%S'): 全部运行中，health=$health，内存 $mem"
               fi
             done
-            echo ">>> 5 分钟持续监控通过，所有容器稳定运行！"
+            echo ">>> 15 分钟持续监控通过，所有容器稳定运行！"
 
             echo "===== 部署完成 ====="
             echo ">>> 服务访问地址:"
