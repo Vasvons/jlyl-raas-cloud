@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.31",
-  "description": "微信公众号/服务号图文发布流程（v1.7.31：token 提取改为轮询 URL/链接/HTML/script 四级查找；v1.7.30：移除重复登录步骤；v1.7.29：封面选择使用真实坐标点击并轮询验证）",
+  "version": "1.7.32",
+  "description": "微信公众号/服务号图文发布流程（v1.7.32：直接导航编辑页 URL 让微信自动重定向加 token，不再从首页提取；v1.7.30：移除重复登录步骤；v1.7.29：封面选择使用真实坐标点击并轮询验证）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -10,28 +10,21 @@
   "steps": [
     {
       "type": "navigate",
-      "value": "https://mp.weixin.qq.com/cgi-bin/home",
-      "descript": "导航到微信公众号主页",
+      "value": "https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit&isNew=1&type=10&lang=zh_CN",
+      "descript": "v1.7.32：直接导航编辑页 URL（不带 token），微信自动重定向加 token",
       "timeout": 30000
-    },
-    {
-      "type": "wait_for_selector",
-      "selector": "div.weui-desktop_name | .account_info | .weui-desktop-card",
-      "descript": "等待主页已登录元素出现（确认页面完全加载，不再点击登录按钮）",
-      "is_try": true,
-      "timeout": 15000
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "let token = null; for (let attempt = 0; attempt < 10 && !token; attempt++) { const urlMatch = location.href.match(/token=(\\d+)/); if (urlMatch) { token = urlMatch[1]; break; } const links = document.querySelectorAll('a[href*=\"token=\"]'); for (const a of links) { const m = (a.href || '').match(/token=(\\d+)/); if (m) { token = m[1]; break; } } if (token) break; const htmlMatch = document.documentElement.innerHTML.match(/token[=:'\"\\s]+(\\d{6,})/); if (htmlMatch) { token = htmlMatch[1]; break; } const scripts = document.querySelectorAll('script'); for (const s of scripts) { const m = (s.textContent || '').match(/token[=:'\"\\s]+(\\d{6,})/); if (m) { token = m[1]; break; } } if (token) break; await new Promise(r => setTimeout(r, 1000)); } if (!token) throw new Error('未从页面提取到 token（URL=' + location.href + '）'); const url = 'https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit&isNew=1&type=10&token=' + token + '&lang=zh_CN'; setTimeout(() => { window.location.href = url; }, 0); return JSON.stringify({ ok: true, token, url });",
-      "descript": "v1.7.31：轮询提取 token（URL→链接href→HTML→script，最多 10 秒），跳转编辑页",
-      "timeout": 15000
     },
     {
       "type": "wait_for_url",
       "value": "appmsg_edit_v2",
-      "descript": "等待跳转到编辑页（URL 含 appmsg_edit_v2）",
+      "descript": "等待跳转到编辑页（URL 含 appmsg_edit_v2，微信重定向后含 token）",
       "timeout": 15000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const m = location.href.match(/token=(\\d+)/); if (!m) throw new Error('URL 中无 token: ' + location.href); return JSON.stringify({ ok: true, token: m[1], url: location.href });",
+      "descript": "v1.7.32：从重定向后的 URL 提取 token（仅用于日志确认）",
+      "timeout": 5000
     },
     {
       "type": "timing",
