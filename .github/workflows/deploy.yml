@@ -246,7 +246,11 @@ jobs:
 
             # 检查 server 容器是否在运行（防止 OOM 崩溃后工作流仍显示绿色）
             echo ">>> 检查 server 容器运行状态..."
-            server_state=$($DC ps -a --format json server 2>/dev/null | grep -o '"State":"[a-z]*"' | grep -o '[a-z]*$' || echo "unknown")
+            # docker compose ps --format json 输出可能多行，取第一行
+            server_json=$($DC ps -a --format json server 2>/dev/null | head -n 1 || echo "")
+            echo ">>> server 容器 JSON: $server_json"
+            # 解析 State 字段（兼容 running/exited 等状态）
+            server_state=$(echo "$server_json" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('State','unknown'))" 2>/dev/null || echo "parse_error")
             echo ">>> server 容器状态: $server_state"
             if [ "$server_state" != "running" ]; then
               echo ">>> 错误：server 容器未在运行（状态: $server_state），输出完整日志："
@@ -275,6 +279,21 @@ jobs:
               exit 1
             fi
             echo ">>> 健康检查通过！"
+
+            # 持续监控 60 秒，确保 server 不会立即崩溃
+            echo ">>> 持续监控 server 60 秒，确保不会立即崩溃..."
+            for i in $(seq 1 6); do
+              sleep 10
+              current_state=$(docker inspect jlyl-cloud-server --format '{{.State.Status}}' 2>/dev/null || echo "not_found")
+              if [ "$current_state" != "running" ]; then
+                echo ">>> 监控 ($i/6): server 容器已停止！状态: $current_state"
+                echo ">>> 输出 server 崩溃日志："
+                $DC logs --tail 200 server
+                exit 1
+              fi
+              echo ">>> 监控 ($i/6): server 运行中"
+            done
+            echo ">>> server 持续运行正常！"
 
             echo "===== 部署完成 ====="
             echo ">>> 服务访问地址:"
