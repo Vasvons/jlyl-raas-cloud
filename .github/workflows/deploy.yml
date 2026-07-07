@@ -311,18 +311,25 @@ jobs:
               fi
               echo ">>> nginx 状态:"
               systemctl status nginx 2>/dev/null | head -10 || ps aux | grep nginx | head -5
-              echo ">>> nginx 完整配置（server 块）:"
-              nginx -T 2>/dev/null | grep -vE "^#" | grep -vE "^$"
-              echo ">>> === 默认 server (server_name _) 的完整配置 ==="
-              nginx -T 2>/dev/null | awk '/server_name _/,/^}/'
-              echo ">>> === 检查 1.92.75.31 IP 访问会命中哪个 server ==="
-              curl -s -I -H "Host: 1.92.75.31" http://127.0.0.1/health 2>&1 | head -10
-              echo ">>> === 检查 localhost:3002 直接访问 ==="
+              echo ">>> === nginx 错误日志（最后 30 行）==="
+              tail -30 /var/log/nginx/error.log 2>/dev/null || echo "无错误日志"
+              echo ">>> === nginx access 日志（最后 10 行）==="
+              tail -10 /var/log/nginx/access.log 2>/dev/null || echo "无 access 日志"
+              echo ">>> === 检查 report.jlyl.net.cn:443 访问 ==="
+              curl -s -I -k -H "Host: report.jlyl.net.cn" https://127.0.0.1/api/health 2>&1 | head -10
+              echo ">>> === 检查 report.jlyl.net.cn:443 直接访问 /api/ ==="
+              curl -s -k -H "Host: report.jlyl.net.cn" https://127.0.0.1/api/users/getLoginUser 2>&1 | head -5
+              echo ">>> === 检查 127.0.0.1:3002 直接访问 ==="
               curl -s -I http://127.0.0.1:3002/health 2>&1 | head -10
-              echo ">>> === 检查 127.0.0.1:80 (nginx 默认) ==="
-              curl -s -I http://127.0.0.1/ 2>&1 | head -10
-              echo ">>> === 检查 1.92.75.31:3002 (外部 IP 访问 docker 端口) ==="
-              curl -s -I http://1.92.75.31:3002/health 2>&1 | head -10
+              echo ">>> === 检查 iptables 防火墙规则 ==="
+              iptables -L -n 2>/dev/null | head -20 || echo "无 iptables"
+              echo ">>> === 检查 ufw 状态 ==="
+              ufw status 2>/dev/null || echo "无 ufw"
+              echo ">>> === 重启 nginx 试图修复 ==="
+              systemctl restart nginx 2>/dev/null || service nginx restart 2>/dev/null || (nginx -s stop 2>/dev/null; sleep 2; nginx)
+              sleep 5
+              echo ">>> 重启后检查 report.jlyl.net.cn:443 ==="
+              curl -s -I -k -H "Host: report.jlyl.net.cn" https://127.0.0.1/api/health 2>&1 | head -10
             else
               echo ">>> nginx 未安装，检查其他反向代理..."
               ps aux | grep -E "caddy|haproxy|traefik" | grep -v grep || echo "未发现其他反向代理"
