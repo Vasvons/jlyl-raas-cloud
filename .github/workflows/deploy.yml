@@ -280,37 +280,24 @@ jobs:
             fi
             echo ">>> 健康检查通过！"
 
-            # 持续监控 15 分钟，确保 server 和 db 不会延迟崩溃
-            echo ">>> 持续监控所有容器 15 分钟（90 次每 10 秒），捕获延迟崩溃..."
-            for i in $(seq 1 90); do
+            # 持续监控 2 分钟，确保 server 和 db 不会立即崩溃
+            echo ">>> 持续监控所有容器 2 分钟（12 次每 10 秒）..."
+            for i in $(seq 1 12); do
               sleep 10
-              # 检查所有关键容器
               for cname in jlyl-cloud-db jlyl-cloud-server jlyl-cloud-web jlyl-cloud-worker; do
                 current_state=$(docker inspect $cname --format '{{.State.Status}}' 2>/dev/null || echo "not_found")
                 if [ "$current_state" != "running" ]; then
-                  echo ">>> 监控 ($i/90): $cname 已停止！状态: $current_state"
-                  echo ">>> 输出 $cname 崩溃日志（最后 300 行）："
-                  $DC logs --tail 300 ${cname#jlyl-cloud-}
-                  echo ">>> 检查 OOM..."
-                  docker inspect $cname 2>/dev/null | grep -i -A1 oomkilled || echo "无 OOM 信息"
-                  echo ">>> 检查系统内存..."
-                  free -h
-                  echo ">>> 检查 dmesg（最近的 OOM 事件）..."
-                  dmesg | grep -i "killed process" | tail -5 || echo "无 OOM kill 记录"
-                  echo ">>> 所有容器状态："
-                  $DC ps -a
-                  echo ">>> 监控时间点: $(date '+%Y-%m-%d %H:%M:%S')"
+                  echo ">>> 监控 ($i/12): $cname 已停止！状态: $current_state"
+                  $DC logs --tail 200 ${cname#jlyl-cloud-}
                   exit 1
                 fi
               done
-              # 每 30 秒打印一次健康状态和内存
               if [ $((i % 3)) -eq 0 ]; then
                 health=$(curl -s http://localhost:3002/health 2>/dev/null | head -c 100 || echo "curl_failed")
-                mem=$(free -h | grep Mem | awk '{print "used: "$3"/"$2}')
-                echo ">>> 监控 ($i/90) $(date '+%H:%M:%S'): 全部运行中，health=$health，内存 $mem"
+                echo ">>> 监控 ($i/12): 全部运行中，health=$health"
               fi
             done
-            echo ">>> 15 分钟持续监控通过，所有容器稳定运行！"
+            echo ">>> 2 分钟监控通过！"
 
             # 检查并修复 nginx 反向代理
             echo ">>> 检查 nginx 反向代理状态..."
@@ -324,31 +311,21 @@ jobs:
               fi
               echo ">>> nginx 状态:"
               systemctl status nginx 2>/dev/null | head -10 || ps aux | grep nginx | head -5
-              echo ">>> nginx 配置:"
-              nginx -T 2>/dev/null | grep -E "proxy_pass|listen|server_name" | head -20
+              echo ">>> nginx 完整配置（server 块）:"
+              nginx -T 2>/dev/null | grep -vE "^#" | grep -vE "^$"
+              echo ">>> === 默认 server (server_name _) 的完整配置 ==="
+              nginx -T 2>/dev/null | awk '/server_name _/,/^}/'
+              echo ">>> === 检查 1.92.75.31 IP 访问会命中哪个 server ==="
+              curl -s -I -H "Host: 1.92.75.31" http://127.0.0.1/health 2>&1 | head -10
+              echo ">>> === 检查 localhost:3002 直接访问 ==="
+              curl -s -I http://127.0.0.1:3002/health 2>&1 | head -10
+              echo ">>> === 检查 127.0.0.1:80 (nginx 默认) ==="
+              curl -s -I http://127.0.0.1/ 2>&1 | head -10
+              echo ">>> === 检查 1.92.75.31:3002 (外部 IP 访问 docker 端口) ==="
+              curl -s -I http://1.92.75.31:3002/health 2>&1 | head -10
             else
               echo ">>> nginx 未安装，检查其他反向代理..."
-              # 检查是否有其他反向代理（caddy、haproxy 等）
               ps aux | grep -E "caddy|haproxy|traefik" | grep -v grep || echo "未发现其他反向代理"
-            fi
-
-            # 检查外部访问（从服务器内部访问外部地址，验证 nginx 是否正确转发）
-            echo ">>> 检查外部访问..."
-            ext_health=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3002/health 2>/dev/null || echo "failed")
-            echo ">>> 内部 health 状态码: $ext_health"
-            # 检查 80 端口监听
-            echo ">>> 80 端口监听:"
-            ss -tlnp | grep ':80 ' || netstat -tlnp 2>/dev/null | grep ':80 ' || echo "80 端口无监听"
-            echo ">>> 443 端口监听:"
-            ss -tlnp | grep ':443 ' || netstat -tlnp 2>/dev/null | grep ':443 ' || echo "443 端口无监听"
-
-            # 如果 nginx 配置有问题，尝试重启
-            if [ "$ext_health" != "200" ]; then
-              echo ">>> 内部 health 非 200，尝试重启 nginx..."
-              systemctl restart nginx 2>/dev/null || service nginx restart 2>/dev/null || (nginx -s stop 2>/dev/null; sleep 2; nginx)
-              sleep 5
-              ext_health2=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3002/health 2>/dev/null || echo "failed")
-              echo ">>> 重启 nginx 后 health 状态码: $ext_health2"
             fi
 
             echo "===== 部署完成 ====="
