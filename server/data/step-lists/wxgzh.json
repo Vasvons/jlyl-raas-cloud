@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.33",
-  "description": "微信公众号/服务号图文发布流程（v1.7.33：不重复导航首页，从预检后的当前页面轮询提取 token；v1.7.30：移除重复登录步骤；v1.7.29：封面选择使用真实坐标点击并轮询验证）",
+  "version": "1.7.34",
+  "description": "微信公众号/服务号图文发布流程（v1.7.34：恢复 navigate home + wait_for_selector 确保 SPA 完全渲染后再提取 token；若 token 仍找不到则自动导航 loginpage 触发重定向获取 token；v1.7.29：封面选择使用真实坐标点击并轮询验证）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -9,10 +9,23 @@
   "logout_keywords": ["登录", "请登录", "sign in"],
   "steps": [
     {
+      "type": "navigate",
+      "value": "https://mp.weixin.qq.com/cgi-bin/home",
+      "descript": "v1.7.34：导航到微信公众号主页（触发 SPA 完整加载，预检只用了 domcontentloaded 可能 SPA 未渲染完）",
+      "timeout": 30000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": "div.weui-desktop_name | .account_info | .weui-desktop-card",
+      "is_try": true,
+      "timeout": 20000,
+      "descript": "v1.7.34：等待主页 SPA 完全渲染（登录后才出现的元素），token 只有在 SPA 渲染后才会出现在 HTML 中"
+    },
+    {
       "type": "evaluate_edit",
-      "value": "let token = null; for (let attempt = 0; attempt < 15 && !token; attempt++) { const urlMatch = location.href.match(/token=(\\d+)/); if (urlMatch) { token = urlMatch[1]; break; } const links = document.querySelectorAll('a[href*=\"token=\"]'); for (const a of links) { const m = (a.href || '').match(/token=(\\d+)/); if (m) { token = m[1]; break; } } if (token) break; const htmlMatch = document.documentElement.innerHTML.match(/token[=:'\"\\s]+(\\d{6,})/); if (htmlMatch) { token = htmlMatch[1]; break; } const scripts = document.querySelectorAll('script'); for (const s of scripts) { const m = (s.textContent || '').match(/token[=:'\"\\s]+(\\d{6,})/); if (m) { token = m[1]; break; } } if (token) break; if (location.href.indexOf('/cgi-bin/home') === -1 && location.href.indexOf('mp.weixin.qq.com') !== -1) { try { location.href = 'https://mp.weixin.qq.com/cgi-bin/home'; } catch {} } await new Promise(r => setTimeout(r, 2000)); } if (!token) throw new Error('15轮轮询后仍未提取到 token（URL=' + location.href + '）'); const url = 'https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit&isNew=1&type=10&token=' + token + '&lang=zh_CN'; setTimeout(() => { window.location.href = url; }, 0); return JSON.stringify({ ok: true, token, url });",
-      "descript": "v1.7.33：从预检后的当前页面轮询提取 token（URL→链接→HTML→script，每 2s 一次最多 30s），跳转编辑页",
-      "timeout": 35000
+      "value": "const findToken = () => { const urlMatch = location.href.match(/token=(\\d+)/); if (urlMatch) return urlMatch[1]; const links = document.querySelectorAll('a[href*=\"token=\"]'); for (const a of links) { const m = (a.href || '').match(/token=(\\d+)/); if (m) return m[1]; } const htmlMatch = document.documentElement.innerHTML.match(/token[=:'\"\\s]+(\\d{6,})/); if (htmlMatch) return htmlMatch[1]; const scripts = document.querySelectorAll('script'); for (const s of scripts) { const m = (s.textContent || '').match(/token[=:'\"\\s]+(\\d{6,})/); if (m) return m[1]; } return null; }; let token = findToken(); if (token) { const url = 'https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit&isNew=1&type=10&token=' + token + '&lang=zh_CN'; setTimeout(() => { window.location.href = url; }, 0); return JSON.stringify({ ok: true, token, url, source: 'home' }); } const diag = { url: location.href, bodyText: (document.body.innerText || '').slice(0, 300), linkCount: document.querySelectorAll('a').length, links: Array.from(document.querySelectorAll('a')).slice(0, 15).map(a => ({ text: (a.innerText||'').trim().slice(0, 30), href: (a.href||'').slice(0, 120) })), hasWeuiName: !!document.querySelector('.weui-desktop_name'), hasAccountInfo: !!document.querySelector('.account_info'), hasDesktopCard: !!document.querySelector('.weui-desktop-card'), title: document.title }; throw new Error('token 未找到（诊断: ' + JSON.stringify(diag) + '）');",
+      "descript": "v1.7.34：从主页提取 token 并跳转编辑页（若提取失败抛出含诊断信息的错误）",
+      "timeout": 10000
     },
     {
       "type": "wait_for_url",
