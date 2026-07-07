@@ -312,6 +312,45 @@ jobs:
             done
             echo ">>> 15 分钟持续监控通过，所有容器稳定运行！"
 
+            # 检查并修复 nginx 反向代理
+            echo ">>> 检查 nginx 反向代理状态..."
+            if command -v nginx > /dev/null 2>&1; then
+              echo ">>> nginx 已安装，检查状态..."
+              if ! pgrep -x nginx > /dev/null 2>&1; then
+                echo ">>> nginx 未运行，尝试启动..."
+                nginx -t 2>&1 || echo ">>> nginx 配置测试失败"
+                systemctl start nginx 2>/dev/null || service nginx start 2>/dev/null || nginx 2>&1
+                sleep 3
+              fi
+              echo ">>> nginx 状态:"
+              systemctl status nginx 2>/dev/null | head -10 || ps aux | grep nginx | head -5
+              echo ">>> nginx 配置:"
+              nginx -T 2>/dev/null | grep -E "proxy_pass|listen|server_name" | head -20
+            else
+              echo ">>> nginx 未安装，检查其他反向代理..."
+              # 检查是否有其他反向代理（caddy、haproxy 等）
+              ps aux | grep -E "caddy|haproxy|traefik" | grep -v grep || echo "未发现其他反向代理"
+            fi
+
+            # 检查外部访问（从服务器内部访问外部地址，验证 nginx 是否正确转发）
+            echo ">>> 检查外部访问..."
+            ext_health=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3002/health 2>/dev/null || echo "failed")
+            echo ">>> 内部 health 状态码: $ext_health"
+            # 检查 80 端口监听
+            echo ">>> 80 端口监听:"
+            ss -tlnp | grep ':80 ' || netstat -tlnp 2>/dev/null | grep ':80 ' || echo "80 端口无监听"
+            echo ">>> 443 端口监听:"
+            ss -tlnp | grep ':443 ' || netstat -tlnp 2>/dev/null | grep ':443 ' || echo "443 端口无监听"
+
+            # 如果 nginx 配置有问题，尝试重启
+            if [ "$ext_health" != "200" ]; then
+              echo ">>> 内部 health 非 200，尝试重启 nginx..."
+              systemctl restart nginx 2>/dev/null || service nginx restart 2>/dev/null || (nginx -s stop 2>/dev/null; sleep 2; nginx)
+              sleep 5
+              ext_health2=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3002/health 2>/dev/null || echo "failed")
+              echo ">>> 重启 nginx 后 health 状态码: $ext_health2"
+            fi
+
             echo "===== 部署完成 ====="
             echo ">>> 服务访问地址:"
             echo "    前端: http://localhost:3011"
