@@ -4772,8 +4772,9 @@ export async function updatePublishRecordResult(
 
   return withTransaction(async (client: PoolClient) => {
     // 1. 查询当前 record 和关联账号
+    // v1.9.3 修复：publish_task 表无 platform 列（只有 target_platforms 数组），改用 pr.platform
     const recordResult = await client.query(
-      `SELECT pr.*, pt.platform as task_platform, pa.id as auth_id, pa.platform as auth_platform
+      `SELECT pr.*, pa.id as auth_id, pa.platform as auth_platform
        FROM publish_record pr
        JOIN publish_task pt ON pt.id = pr.task_id
        LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
@@ -4786,7 +4787,7 @@ export async function updatePublishRecordResult(
     }
 
     const authId = record.platform_auth_id;
-    const platform = record.platform || record.task_platform;
+    const platform = record.platform;
     const today = new Date().toISOString().slice(0, 10);
 
     // 2. 成功处理
