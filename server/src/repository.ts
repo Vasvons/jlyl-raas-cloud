@@ -4478,31 +4478,13 @@ export async function createPublishTask(data: {
     );
     const taskId = taskResult.rows[0].id;
 
-    // 2. 为每个平台分配一个发布型账号（platform_type IN ('publish','both') 且 status='active' 且 health_status='normal'）
-    //    使用轮询策略：每次选择 last_used_at 最久未使用的账号，并立即更新 last_used_at
-    //    若无可用账号，platform_auth_id 设为 NULL，由桌面端 Worker 跳过并标记失败
+    // 2. v1.9.0：创建 publish_record 时不绑定 platform_auth_id，由 dequeue 时动态选择最优账号
+    //    这样可实现：账号失败自动换号、日限额轮询、最大化利用账号池
     for (const platform of platformsToCreate) {
-      const authResult = await client.query(
-        `SELECT id FROM platform_auth
-         WHERE platform = $1
-           AND platform_type IN ('publish', 'both')
-           AND status = 'active'
-           AND health_status = 'normal'
-         ORDER BY last_used_at ASC NULLS FIRST
-         LIMIT 1`,
-        [platform]
-      );
-      const authId = authResult.rows[0]?.id || null;
-      if (authId) {
-        await client.query(
-          `UPDATE platform_auth SET last_used_at = NOW() WHERE id = $1`,
-          [authId]
-        );
-      }
       await client.query(
         `INSERT INTO publish_record (task_id, platform, platform_auth_id, status)
-         VALUES ($1, $2, $3, 'pending')`,
-        [taskId, platform, authId]
+         VALUES ($1, $2, NULL, 'pending')`,
+        [taskId, platform]
       );
     }
     return { taskId, skipped };
@@ -4594,16 +4576,51 @@ export async function cancelPublishTask(id: number): Promise<void> {
 // ============ 内容中枢：publish_record ============
 
 /**
- * v1.8.4：拉取待发布记录
+ * v1.9.0：为指定平台动态选择最优发布账号
+ * 策略：
+ * 1. 只选 status=active / health_status=normal 的发布型账号
+ * 2. 连续失败 >= 3 次的账号暂时休息
+ * 3. 今日仍有剩余配额（或新的一天）
+ * 4. 优先选剩余配额多的 → 失败次数少的 → 最久未使用的
+ */
+async function selectBestAccountForPublish(
+  client: PoolClient,
+  platform: string
+): Promise<number | null> {
+  const result = await client.query(
+    `SELECT id FROM platform_auth
+     WHERE platform = $1
+       AND platform_type IN ('publish', 'both')
+       AND status = 'active'
+       AND health_status = 'normal'
+       AND publish_fail_count < 3
+       AND (
+         publish_last_used_date IS NULL
+         OR publish_last_used_date < CURRENT_DATE
+         OR publish_used_today < publish_daily_limit
+       )
+     ORDER BY
+       (publish_daily_limit - COALESCE(
+         CASE WHEN publish_last_used_date = CURRENT_DATE THEN publish_used_today ELSE 0 END,
+         0
+       )) DESC,
+       publish_fail_count ASC,
+       last_used_at ASC NULLS FIRST
+     LIMIT 1`,
+    [platform]
+  );
+  return result.rows[0]?.id || null;
+}
+
+/**
+ * v1.9.0：拉取待发布记录
  *
- * 关键修复：
- * 1. 加 FOR UPDATE SKIP LOCKED 行级锁，避免并发 dequeue 拿到相同记录
- * 2. 配合 markPublishRecordStarted 的 pending→processing 原子更新，确保同一条 record 不会被重复拉取
- * 3. 回收超时记录：started_at 超过 10 分钟且仍为 processing 的，重置为 pending 后再被拉取
- *
- * 同平台串行：每个 platform 只取 1 条最早的 pending
- * 实现方式：CTE 先用 row_number() 选出每个平台最早的 id，再 JOIN 回 publish_record 加锁
- * 注意：PostgreSQL 不允许 DISTINCT ON / 窗口函数直接与 FOR UPDATE 一起使用，必须分两步
+ * 关键改进：
+ * 1. publish_record 创建时不绑定 platform_auth_id，dequeue 时才动态选号
+ * 2. 选中账号后预扣 publish_used_today，实现日限额控制
+ * 3. 无可用账号（配额耗尽/全部封禁）时记录保持 pending，下次有账号时自动被拉取
+ * 4. 加 FOR UPDATE SKIP LOCKED 行级锁，避免并发 dequeue 拿到相同记录
+ * 5. 同平台串行：每个 platform 只取 1 条最早的 pending
  */
 export async function getPendingPublishRecords(limit: number): Promise<any[]> {
   const client = await (await import('./db')).pool.connect();
@@ -4616,24 +4633,21 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
        WHERE status = 'processing' AND started_at < NOW() - INTERVAL '10 minutes'`
     );
     // 1.1 修复存量数据：若 publish_task 状态为 failed/completed，但其下仍有 pending record，
-    //     说明是旧版单条重试 bug 遗留（record 被重置为 pending 但 task 状态未同步），
-    //     此时 dequeue 的 pt.status IN ('pending','processing') 会过滤掉这些 record，Worker 永远拉不到。
-    //     自动把这类 task 恢复为 pending，让 Worker 能正常拉取。
+    //     说明是旧版单条重试 bug 遗留，自动把这类 task 恢复为 pending。
     await client.query(
       `UPDATE publish_task
        SET status = 'pending', finished_at = NULL
        WHERE status IN ('failed', 'completed')
          AND EXISTS (SELECT 1 FROM publish_record WHERE task_id = publish_task.id AND status = 'pending')`
     );
-    // 2. CTE 选出每个平台最早的 pending record id（不直接加锁）
-    //    外层 JOIN 回 publish_record 实体表加 FOR UPDATE SKIP LOCKED
-    const result = await client.query(
+
+    // 2. 选出每个平台最早的 pending record id（先不锁，仅候选）
+    const candidateResult = await client.query(
       `WITH candidate AS (
          SELECT pr.id, pr.platform
          FROM publish_record pr
          JOIN publish_task pt ON pt.id = pr.task_id
          WHERE pr.status = 'pending'
-           AND pr.platform_auth_id IS NOT NULL
            AND pt.status IN ('pending', 'processing')
            AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
          ORDER BY pr.platform, pr.create_time ASC
@@ -4642,12 +4656,64 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
          SELECT id, platform,
                 ROW_NUMBER() OVER (PARTITION BY platform ORDER BY id) as rn
          FROM candidate
-       ),
-       picked AS (
-         SELECT id FROM ranked WHERE rn = 1
-         LIMIT $1
        )
-       SELECT
+       SELECT id, platform FROM ranked WHERE rn = 1 LIMIT $1`,
+      [limit]
+    );
+
+    if (candidateResult.rows.length === 0) {
+      await client.query('COMMIT');
+      return [];
+    }
+
+    const candidateIds = candidateResult.rows.map((r: any) => r.id);
+
+    // 3. 对候选记录加锁（SKIP LOCKED 避免等待其他 Worker）
+    const lockedResult = await client.query(
+      `SELECT id, platform FROM publish_record
+       WHERE id = ANY($1::int[]) AND status = 'pending'
+       FOR UPDATE SKIP LOCKED`,
+      [candidateIds]
+    );
+
+    // 4. 为每个成功加锁的记录选择账号并预扣配额
+    const assignedIds: number[] = [];
+    for (const row of lockedResult.rows) {
+      const authId = await selectBestAccountForPublish(client, row.platform);
+      if (!authId) {
+        // 无可用账号：保持 pending，本次不拉取
+        continue;
+      }
+      // 预扣配额
+      await client.query(
+        `UPDATE platform_auth
+         SET publish_used_today = CASE
+               WHEN publish_last_used_date < CURRENT_DATE OR publish_last_used_date IS NULL THEN 1
+               ELSE publish_used_today + 1
+             END,
+             publish_last_used_date = CURRENT_DATE,
+             last_used_at = NOW()
+         WHERE id = $1`,
+        [authId]
+      );
+      // 绑定账号
+      await client.query(
+        `UPDATE publish_record
+         SET platform_auth_id = $1, assigned_from = 'auto'
+         WHERE id = $2`,
+        [authId, row.id]
+      );
+      assignedIds.push(row.id);
+    }
+
+    if (assignedIds.length === 0) {
+      await client.query('COMMIT');
+      return [];
+    }
+
+    // 5. 读取完整记录并返回
+    const result = await client.query(
+      `SELECT
          pr.id, pr.task_id, pr.platform, pr.platform_auth_id,
          pt.article_id, pt.user_id, pt.scheduled_at,
          a.title as article_title,
@@ -4655,24 +4721,24 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
          a.tags as article_tags,
          a.cover_image_url as article_cover,
          pa.storage_state as account_storage_state,
-         pa.account_name as account_name
-       FROM picked
-       JOIN publish_record pr ON pr.id = picked.id
+         pa.account_name as account_name,
+         pa.publish_mode as account_publish_mode
+       FROM publish_record pr
        JOIN publish_task pt ON pt.id = pr.task_id
        LEFT JOIN article a ON a.id = pt.article_id
        LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
+       WHERE pr.id = ANY($1::int[])
        FOR UPDATE OF pr SKIP LOCKED`,
-      [limit]
+      [assignedIds]
     );
-    // 3. 立即把拉到的记录标记为 processing（在事务内原子完成，避免下次 poll 重复拉取）
-    const ids = result.rows.map((r: any) => r.id);
-    if (ids.length > 0) {
-      await client.query(
-        `UPDATE publish_record SET status = 'processing', started_at = NOW()
-         WHERE id = ANY($1::int[]) AND status = 'pending'`,
-        [ids]
-      );
-    }
+
+    // 6. 立即标记为 processing
+    await client.query(
+      `UPDATE publish_record SET status = 'processing', started_at = NOW()
+       WHERE id = ANY($1::int[]) AND status = 'pending'`,
+      [assignedIds]
+    );
+
     await client.query('COMMIT');
     return result.rows;
   } catch (err) {
@@ -4683,24 +4749,148 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
   }
 }
 
+/**
+ * v1.9.0：更新发布结果
+ * 核心改进：
+ * 1. 支持 error_type 区分错误类型
+ * 2. 账号类错误（banned/login_expired/limited）自动回滚配额、更新账号健康状态、并将 record 重新排队换号重试
+ * 3. 非账号类错误/超过最大重试次数时最终标记失败
+ * 4. 成功/失败时更新 publish_account_stats 统计
+ */
 export async function updatePublishRecordResult(
   id: number,
-  result: { status: string; article_id_on_platform?: string; platform_url?: string; error_msg?: string }
-): Promise<void> {
-  // 注意：$2 同时用于 SET status 和 CASE 表达式，PostgreSQL prepared statement 会因
-  // 上下文推断类型不一致（varchar vs text）抛 "inconsistent types deduced for parameter $2"。
-  // 修复：用 $6 重复传入 status 参数，避免同一参数跨上下文。
-  await query(
-    `UPDATE publish_record
-     SET status = $2,
-         article_id_on_platform = $3,
-         platform_url = $4,
-         error_msg = $5,
-         published_at = CASE WHEN $6 = 'success' THEN NOW() ELSE published_at END,
-         started_at = CASE WHEN started_at IS NULL THEN NOW() ELSE started_at END
-     WHERE id = $1`,
-    [id, result.status, result.article_id_on_platform || null, result.platform_url || null, result.error_msg || null, result.status]
-  );
+  result: {
+    status: string;
+    article_id_on_platform?: string;
+    platform_url?: string;
+    error_msg?: string;
+    error_type?: string; // account_banned / account_login_expired / account_limited / content_error / platform_error / unknown
+  }
+): Promise<{ status: string; retry_queued: boolean }> {
+  const MAX_RETRY = 3;
+  const isAccountError = ['account_banned', 'account_login_expired', 'account_limited'].includes(result.error_type || '');
+
+  return withTransaction(async (client: PoolClient) => {
+    // 1. 查询当前 record 和关联账号
+    const recordResult = await client.query(
+      `SELECT pr.*, pt.platform as task_platform, pa.id as auth_id, pa.platform as auth_platform
+       FROM publish_record pr
+       JOIN publish_task pt ON pt.id = pr.task_id
+       LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
+       WHERE pr.id = $1`,
+      [id]
+    );
+    const record = recordResult.rows[0];
+    if (!record) {
+      throw new Error(`publish_record ${id} 不存在`);
+    }
+
+    const authId = record.platform_auth_id;
+    const platform = record.platform || record.task_platform;
+    const today = new Date().toISOString().slice(0, 10);
+
+    // 2. 成功处理
+    if (result.status === 'success') {
+      await client.query(
+        `UPDATE publish_record
+         SET status = 'success',
+             article_id_on_platform = $2,
+             platform_url = $3,
+             error_msg = NULL,
+             published_at = NOW(),
+             started_at = COALESCE(started_at, NOW())
+         WHERE id = $1`,
+        [id, result.article_id_on_platform || null, result.platform_url || null]
+      );
+      // 累计成功统计
+      if (authId) {
+        await client.query(
+          `INSERT INTO publish_account_stats (platform_auth_id, platform, publish_date, success_count)
+           VALUES ($1, $2, $3, 1)
+           ON CONFLICT (platform_auth_id, publish_date) DO UPDATE SET success_count = publish_account_stats.success_count + 1`,
+          [authId, platform, today]
+        );
+      }
+      return { status: 'success', retry_queued: false };
+    }
+
+    // 3. 失败处理
+    const currentRetry = record.retry_count || 0;
+    const canRetry = isAccountError && currentRetry < MAX_RETRY;
+
+    if (canRetry) {
+      // 3.1 账号类错误且未超重试次数：回滚配额、更新账号状态、record 重新排队
+      if (authId) {
+        // 回滚今日配额
+        await client.query(
+          `UPDATE platform_auth
+           SET publish_used_today = GREATEST(COALESCE(publish_used_today, 0) - 1, 0)
+           WHERE id = $1 AND publish_last_used_date = CURRENT_DATE`,
+          [authId]
+        );
+        // 更新账号健康状态
+        if (result.error_type === 'account_banned') {
+          await client.query(
+            `UPDATE platform_auth SET health_status = 'banned', publish_last_fail_at = NOW() WHERE id = $1`,
+            [authId]
+          );
+        } else if (result.error_type === 'account_login_expired') {
+          await client.query(
+            `UPDATE platform_auth SET health_status = 'offline', publish_last_fail_at = NOW() WHERE id = $1`,
+            [authId]
+          );
+        } else if (result.error_type === 'account_limited') {
+          await client.query(
+            `UPDATE platform_auth
+             SET publish_fail_count = publish_fail_count + 1,
+                 publish_last_fail_at = NOW()
+             WHERE id = $1`,
+            [authId]
+          );
+        }
+      }
+      // record 清空账号、状态回 pending、重试次数+1
+      await client.query(
+        `UPDATE publish_record
+         SET status = 'pending',
+             platform_auth_id = NULL,
+             retry_count = retry_count + 1,
+             error_msg = $2,
+             started_at = NULL,
+             published_at = NULL
+         WHERE id = $1`,
+        [id, `[重试 ${currentRetry + 1}/${MAX_RETRY}] ${result.error_msg || ''}`.slice(0, 500)]
+      );
+      return { status: 'pending', retry_queued: true };
+    }
+
+    // 3.2 非账号类错误或超过重试次数：最终失败
+    await client.query(
+      `UPDATE publish_record
+       SET status = 'failed',
+           error_msg = $2,
+           started_at = COALESCE(started_at, NOW())
+       WHERE id = $1`,
+      [id, result.error_msg || null]
+    );
+    if (authId) {
+      await client.query(
+        `INSERT INTO publish_account_stats (platform_auth_id, platform, publish_date, fail_count)
+         VALUES ($1, $2, $3, 1)
+         ON CONFLICT (platform_auth_id, publish_date) DO UPDATE SET fail_count = publish_account_stats.fail_count + 1`,
+        [authId, platform, today]
+      );
+      // 账号类错误即使最终失败，也更新账号状态供人工排查
+      if (result.error_type === 'account_banned') {
+        await client.query(`UPDATE platform_auth SET health_status = 'banned', publish_last_fail_at = NOW() WHERE id = $1`, [authId]);
+      } else if (result.error_type === 'account_login_expired') {
+        await client.query(`UPDATE platform_auth SET health_status = 'offline', publish_last_fail_at = NOW() WHERE id = $1`, [authId]);
+      } else if (result.error_type === 'account_limited') {
+        await client.query(`UPDATE platform_auth SET publish_fail_count = publish_fail_count + 1, publish_last_fail_at = NOW() WHERE id = $1`, [authId]);
+      }
+    }
+    return { status: 'failed', retry_queued: false };
+  });
 }
 
 /**
@@ -5086,7 +5276,9 @@ export async function getPublishAccounts(
   let sql = `SELECT pa.id, pa.user_id, pa.platform, pa.account_name, pa.avatar_url,
             pa.status, pa.health_status, pa.last_used_at,
             pa.platform_type, pa.created_at, pa.updated_at,
-            pa.expires_at, pa.proxy_id, pp.name AS proxy_name
+            pa.expires_at, pa.proxy_id, pp.name AS proxy_name,
+            pa.publish_daily_limit, pa.publish_used_today, pa.publish_last_used_date,
+            pa.publish_mode, pa.publish_fail_count, pa.publish_last_fail_at
      FROM platform_auth pa
      LEFT JOIN proxy_pool pp ON pa.proxy_id = pp.id
      WHERE pa.platform_type IN ('publish', 'both')`;

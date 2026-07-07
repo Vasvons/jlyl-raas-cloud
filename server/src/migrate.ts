@@ -1258,6 +1258,37 @@ export async function migrate() {
 
     console.log('[Migrate] v1.8.4 publish_task.batch_id 字段添加完成（按写作任务+分钟聚合回填）');
 
+    // v1.9.0：发布账号池智能调度系统
+    // 1. platform_auth 新增发布专用日限额/已用/模式/失败统计字段
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS publish_daily_limit INTEGER DEFAULT 50`);
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS publish_used_today INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS publish_last_used_date DATE`);
+    // publish=不通知粉丝, mass=群发
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS publish_mode VARCHAR(16) DEFAULT 'publish'`);
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS publish_fail_count INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS publish_last_fail_at TIMESTAMP`);
+
+    // 2. publish_record 增加账号分配来源标记（用于失败换号重试审计）
+    // auto/manual/retry
+    await client.query(`ALTER TABLE publish_record ADD COLUMN IF NOT EXISTS assigned_from VARCHAR(16) DEFAULT 'auto'`);
+
+    // 3. 发布账号每日统计表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS publish_account_stats (
+        id SERIAL PRIMARY KEY,
+        platform_auth_id INTEGER REFERENCES platform_auth(id) NOT NULL,
+        platform VARCHAR(32) NOT NULL,
+        publish_date DATE NOT NULL,
+        success_count INTEGER DEFAULT 0,
+        fail_count INTEGER DEFAULT 0,
+        draft_count INTEGER DEFAULT 0,
+        UNIQUE(platform_auth_id, publish_date)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_publish_account_stats_auth_date ON publish_account_stats(platform_auth_id, publish_date)`);
+
+    console.log('[Migrate] v1.9.0 发布账号池智能调度字段/表创建完成');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

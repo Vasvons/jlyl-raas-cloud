@@ -1445,47 +1445,63 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
 router.post('/publish/records/:id/result', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { status, article_id_on_platform, platform_url, error_msg, account_health } = req.body;
+    const { status, article_id_on_platform, platform_url, error_msg, error_type, account_health } = req.body;
     if (!['success', 'failed', 'login_expired', 'banned'].includes(status)) {
       return res.status(400).json({ code: 400, message: 'status 取值非法' });
     }
 
-    // 1. 更新 record 结果
-    await updatePublishRecordResult(id, { status, article_id_on_platform, platform_url, error_msg });
-
-    // 2. 查询 record 所属 task，更新 task 进度
-    const recordResult = await query('SELECT task_id, platform_auth_id FROM publish_record WHERE id = $1', [id]);
-    if (recordResult.rows.length === 0) {
-      return res.status(404).json({ code: 404, message: 'record 不存在' });
+    // v1.9.0：兼容旧版桌面端 status 语义，映射到 error_type
+    let finalErrorType = error_type;
+    if (!finalErrorType) {
+      if (status === 'banned') finalErrorType = 'account_banned';
+      else if (status === 'login_expired') finalErrorType = 'account_login_expired';
+      else if (status === 'failed') finalErrorType = 'unknown';
     }
-    const { task_id, platform_auth_id } = recordResult.rows[0];
-    const completedDelta = status === 'success' ? 1 : 0;
-    const failedDelta = status === 'success' ? 0 : 1;
-    await updatePublishTaskStatus(task_id, 'processing', completedDelta, failedDelta);
 
-    // 3. 重新查询 task 总体状态，更新最终状态
-    const taskResult = await query('SELECT total_count, completed_count, failed_count FROM publish_task WHERE id = $1', [task_id]);
-    if (taskResult.rows.length > 0) {
-      const t = taskResult.rows[0];
-      const done = Number(t.completed_count) + Number(t.failed_count);
-      if (done >= Number(t.total_count)) {
-        const finalStatus = Number(t.failed_count) === 0 ? 'completed'
-          : Number(t.completed_count) === 0 ? 'failed'
-          : 'partial';
-        await updatePublishTaskStatus(task_id, finalStatus, 0, 0);
+    // 1. 更新 record 结果（v1.9.0 内部自动处理账号失败换号重试、配额回滚、健康状态）
+    const { retry_queued } = await updatePublishRecordResult(id, {
+      status,
+      article_id_on_platform,
+      platform_url,
+      error_msg,
+      error_type: finalErrorType,
+    });
+
+    // 2. 只有非重试排队时才更新 task 进度
+    if (!retry_queued) {
+      const recordResult = await query('SELECT task_id, platform_auth_id FROM publish_record WHERE id = $1', [id]);
+      if (recordResult.rows.length === 0) {
+        return res.status(404).json({ code: 404, message: 'record 不存在' });
+      }
+      const { task_id, platform_auth_id } = recordResult.rows[0];
+      const completedDelta = status === 'success' ? 1 : 0;
+      const failedDelta = status === 'success' ? 0 : 1;
+      await updatePublishTaskStatus(task_id, 'processing', completedDelta, failedDelta);
+
+      // 3. 重新查询 task 总体状态，更新最终状态
+      const taskResult = await query('SELECT total_count, completed_count, failed_count FROM publish_task WHERE id = $1', [task_id]);
+      if (taskResult.rows.length > 0) {
+        const t = taskResult.rows[0];
+        const done = Number(t.completed_count) + Number(t.failed_count);
+        if (done >= Number(t.total_count)) {
+          const finalStatus = Number(t.failed_count) === 0 ? 'completed'
+            : Number(t.completed_count) === 0 ? 'failed'
+            : 'partial';
+          await updatePublishTaskStatus(task_id, finalStatus, 0, 0);
+        }
+      }
+
+      // 4. 兼容旧版 account_health 参数（新版已在 updatePublishRecordResult 内处理）
+      if (platform_auth_id && account_health) {
+        if (account_health === 'offline') {
+          await updatePublishAccountStatus(platform_auth_id, 'expired', 'offline');
+        } else if (account_health === 'banned') {
+          await updatePublishAccountStatus(platform_auth_id, 'expired', 'banned');
+        }
       }
     }
 
-    // 4. 账号健康度联动：login_expired → offline，banned → banned
-    if (platform_auth_id && account_health) {
-      if (account_health === 'offline') {
-        await updatePublishAccountStatus(platform_auth_id, 'expired', 'offline');
-      } else if (account_health === 'banned') {
-        await updatePublishAccountStatus(platform_auth_id, 'expired', 'banned');
-      }
-    }
-
-    res.json({ code: 200, data: { ok: true } });
+    res.json({ code: 200, data: { ok: true, retry_queued } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
@@ -1702,7 +1718,7 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
 router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { storage_state, status, health_status, proxy_id, account_name, avatar_url, expires_at } = req.body;
+    const { storage_state, status, health_status, proxy_id, account_name, avatar_url, expires_at, publish_daily_limit, publish_mode } = req.body;
     if (storage_state) {
       await updatePublishAccountStorageState(id, storage_state, expires_at);
     } else if (expires_at !== undefined) {
@@ -1722,6 +1738,21 @@ router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
     }
     if (avatar_url !== undefined) {
       await query('UPDATE platform_auth SET avatar_url = $1 WHERE id = $2', [avatar_url || null, id]);
+    }
+    // v1.9.0：支持设置发布日限额和发布模式（publish=不通知粉丝，mass=群发）
+    if (publish_daily_limit !== undefined) {
+      const limit = Number(publish_daily_limit);
+      if (!Number.isFinite(limit) || limit < 1 || limit > 9999) {
+        return res.status(400).json({ code: 400, message: 'publish_daily_limit 必须是 1-9999 之间的整数' });
+      }
+      await query('UPDATE platform_auth SET publish_daily_limit = $1 WHERE id = $2', [limit, id]);
+    }
+    if (publish_mode !== undefined) {
+      const mode = String(publish_mode).toLowerCase();
+      if (!['publish', 'mass'].includes(mode)) {
+        return res.status(400).json({ code: 400, message: 'publish_mode 必须是 publish 或 mass' });
+      }
+      await query('UPDATE platform_auth SET publish_mode = $1 WHERE id = $2', [mode, id]);
     }
     res.json({ code: 200, data: { ok: true } });
   } catch (err: any) {
