@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.29",
-  "description": "微信公众号/服务号图文发布流程（v1.7.29：封面选择使用 evaluate_edit 探测的真实坐标点击，并轮询验证封面设置；v1.7.28：登录后从首页 URL 提取 token 直接跳转编辑页；v1.7.27：发表需 3 步确认才能真正发出）",
+  "version": "1.7.30",
+  "description": "微信公众号/服务号图文发布流程（v1.7.30：移除 step_list 内重复登录步骤，依赖 publishWorker 预检；v1.7.29：封面选择使用真实坐标点击并轮询验证；v1.7.28：从首页 URL 提取 token 直接跳转编辑页）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -15,17 +15,9 @@
       "timeout": 30000
     },
     {
-      "type": "click",
-      "selector": "//a[text()=\"登录\"]",
-      "descript": "点击登录按钮",
-      "is_try": true,
-      "timeout": 5000
-    },
-    {
-      "type": "wait_for_selector",
-      "selector": "div.weui-desktop_name",
-      "descript": "等待登录完成",
-      "timeout": 30000
+      "type": "timing",
+      "ms": 2500,
+      "descript": "等待主页加载稳定（publishWorker 预检已确认登录态有效，无需再次点击登录）"
     },
     {
       "type": "evaluate_edit",
