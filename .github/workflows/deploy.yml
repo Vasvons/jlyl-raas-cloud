@@ -238,25 +238,43 @@ jobs:
 
             # 等待服务启动
             echo ">>> 等待所有服务启动..."
-            sleep 20
+            sleep 30
 
             # 检查服务状态
             echo ">>> 检查服务状态..."
             $DC ps
 
-            # 健康检查（含数据库连接诊断）
+            # 检查 server 容器是否在运行（防止 OOM 崩溃后工作流仍显示绿色）
+            echo ">>> 检查 server 容器运行状态..."
+            server_state=$($DC ps -a --format json server 2>/dev/null | grep -o '"State":"[a-z]*"' | grep -o '[a-z]*$' || echo "unknown")
+            echo ">>> server 容器状态: $server_state"
+            if [ "$server_state" != "running" ]; then
+              echo ">>> 错误：server 容器未在运行（状态: $server_state），输出完整日志："
+              $DC logs --tail 300 server
+              echo ">>> 检查 OOM..."
+              docker inspect jlyl-cloud-server 2>/dev/null | grep -i oomkilled || echo "无 OOM 信息"
+              exit 1
+            fi
+
+            # 健康检查（严格模式：失败则 exit 1，确保工作流变红）
             echo ">>> 健康检查..."
-            curl -s http://localhost:3002/health || echo "健康检查失败"
+            health_response=$(curl -s http://localhost:3002/health || echo "CURL_FAILED")
+            echo "$health_response"
             echo ""
             echo ">>> 诊断检查..."
             curl -s http://localhost:3002/diagnose || echo "诊断检查失败"
             echo ""
 
-            # 如果健康检查失败，输出server日志
-            if ! curl -s http://localhost:3002/health | grep -q '"status":"ok"'; then
-              echo ">>> 健康检查失败，输出server日志："
-              $DC logs --tail 100 server
+            # 严格健康检查：如果不含 "ok" 则输出日志并退出
+            if ! echo "$health_response" | grep -q '"status":"ok"'; then
+              echo ">>> 健康检查失败！输出 server 完整日志（最后 300 行）："
+              $DC logs --tail 300 server
+              echo ">>> server 容器状态："
+              $DC ps -a server
+              echo ">>> 部署失败！"
+              exit 1
             fi
+            echo ">>> 健康检查通过！"
 
             echo "===== 部署完成 ====="
             echo ">>> 服务访问地址:"
