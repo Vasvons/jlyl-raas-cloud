@@ -280,20 +280,31 @@ jobs:
             fi
             echo ">>> 健康检查通过！"
 
-            # 持续监控 60 秒，确保 server 不会立即崩溃
-            echo ">>> 持续监控 server 60 秒，确保不会立即崩溃..."
-            for i in $(seq 1 6); do
+            # 持续监控 5 分钟，确保 server 和 db 不会延迟崩溃
+            echo ">>> 持续监控所有容器 5 分钟（30 次每 10 秒），确保不会延迟崩溃..."
+            for i in $(seq 1 30); do
               sleep 10
-              current_state=$(docker inspect jlyl-cloud-server --format '{{.State.Status}}' 2>/dev/null || echo "not_found")
-              if [ "$current_state" != "running" ]; then
-                echo ">>> 监控 ($i/6): server 容器已停止！状态: $current_state"
-                echo ">>> 输出 server 崩溃日志："
-                $DC logs --tail 200 server
-                exit 1
+              # 检查所有关键容器
+              for cname in jlyl-cloud-db jlyl-cloud-server jlyl-cloud-web jlyl-cloud-worker; do
+                current_state=$(docker inspect $cname --format '{{.State.Status}}' 2>/dev/null || echo "not_found")
+                if [ "$current_state" != "running" ]; then
+                  echo ">>> 监控 ($i/30): $cname 已停止！状态: $current_state"
+                  echo ">>> 输出 $cname 崩溃日志（最后 200 行）："
+                  $DC logs --tail 200 ${cname#jlyl-cloud-}
+                  echo ">>> 检查 OOM..."
+                  docker inspect $cname 2>/dev/null | grep -i -A1 oomkilled || echo "无 OOM 信息"
+                  echo ">>> 所有容器状态："
+                  $DC ps -a
+                  exit 1
+                fi
+              done
+              # 每 30 秒打印一次健康状态
+              if [ $((i % 3)) -eq 0 ]; then
+                health=$(curl -s http://localhost:3002/health 2>/dev/null | head -c 100 || echo "curl_failed")
+                echo ">>> 监控 ($i/30): 全部运行中，health=$health"
               fi
-              echo ">>> 监控 ($i/6): server 运行中"
             done
-            echo ">>> server 持续运行正常！"
+            echo ">>> 5 分钟持续监控通过，所有容器稳定运行！"
 
             echo "===== 部署完成 ====="
             echo ">>> 服务访问地址:"
