@@ -4576,6 +4576,16 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
        SET status = 'pending', started_at = NULL, error_msg = COALESCE(error_msg, '处理超时自动回收')
        WHERE status = 'processing' AND started_at < NOW() - INTERVAL '10 minutes'`
     );
+    // 1.1 修复存量数据：若 publish_task 状态为 failed/completed，但其下仍有 pending record，
+    //     说明是旧版单条重试 bug 遗留（record 被重置为 pending 但 task 状态未同步），
+    //     此时 dequeue 的 pt.status IN ('pending','processing') 会过滤掉这些 record，Worker 永远拉不到。
+    //     自动把这类 task 恢复为 pending，让 Worker 能正常拉取。
+    await client.query(
+      `UPDATE publish_task
+       SET status = 'pending', finished_at = NULL
+       WHERE status IN ('failed', 'completed')
+         AND EXISTS (SELECT 1 FROM publish_record WHERE task_id = publish_task.id AND status = 'pending')`
+    );
     // 2. CTE 选出每个平台最早的 pending record id（不直接加锁）
     //    外层 JOIN 回 publish_record 实体表加 FOR UPDATE SKIP LOCKED
     const result = await client.query(
@@ -4711,6 +4721,18 @@ export async function retryPublishRecords(
        WHERE id = $1 AND status IN ('failed', 'login_expired')`,
       [recordId]
     );
+    // 修复 v1.7.28：单条重试也必须把关联的 publish_task 状态恢复为 pending，
+    // 否则 dequeue SQL 的 pt.status IN ('pending','processing') 条件不满足，Worker 永远拉不到。
+    // （之前仅按 taskId 批量重试和按 batch_id 重试会更新 task 状态，单条重试漏了）
+    if ((result.rowCount || 0) > 0) {
+      await query(
+        `UPDATE publish_task
+         SET status = 'pending', finished_at = NULL
+         WHERE id IN (SELECT task_id FROM publish_record WHERE id = $1)
+           AND status IN ('failed', 'completed')`,
+        [recordId]
+      );
+    }
     return { reset_count: result.rowCount || 0 };
   }
   if (taskId) {
