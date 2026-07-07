@@ -5342,7 +5342,22 @@ export async function updatePublishAccountStatus(id: number, status: 'active' | 
 }
 
 export async function deletePublishAccount(id: number): Promise<void> {
-  await query(`DELETE FROM platform_auth WHERE id = $1`, [id]);
+  const client = await (await import('./db')).pool.connect();
+  try {
+    await client.query('BEGIN');
+    // 1. 解除 publish_record 外键引用（设为 NULL，保留发布记录用于审计）
+    await client.query(`UPDATE publish_record SET platform_auth_id = NULL WHERE platform_auth_id = $1`, [id]);
+    // 2. 删除 publish_account_stats 统计数据
+    await client.query(`DELETE FROM publish_account_stats WHERE platform_auth_id = $1`, [id]);
+    // 3. 删除账号本身
+    await client.query(`DELETE FROM platform_auth WHERE id = $1`, [id]);
+    await client.query('COMMIT');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    throw e;
+  } finally {
+    client.release();
+  }
 }
 
 export async function getPublishAccountById(id: number): Promise<any | null> {
