@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.7.35",
-  "description": "微信公众号/服务号图文发布流程（v1.7.35：删除 step_list 前两步重复导航+等待，直接在预检后的页面提取 token——预检导航后 URL 已含 token（302重定向），第二次导航会导致微信 JS 检测到自动化并清除 cookie，显示'请重新登录'；v1.7.29：封面选择使用真实坐标点击并轮询验证）",
+  "version": "1.9.30",
+  "description": "微信公众号/服务号图文发布流程（v1.9.30：修复群发通知弹窗未点击'发表'按钮导致文章只进草稿箱的问题，新增'继续发表'确认弹窗处理步骤，修复验证步骤误判 appmsg_edit 为已跳转离开编辑页；v1.7.35：删除 step_list 前两步重复导航+等待，直接在预检后的页面提取 token；v1.7.29：封面选择使用真实坐标点击并轮询验证）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
