@@ -1,6 +1,6 @@
 {
   "platform": "wxgzh",
-  "version": "1.9.30",
+  "version": "1.9.31",
   "description": "微信公众号/服务号图文发布流程（v1.9.30：修复群发通知弹窗未点击'发表'按钮导致文章只进草稿箱的问题，新增'继续发表'确认弹窗处理步骤，修复验证步骤误判 appmsg_edit 为已跳转离开编辑页；v1.7.35：删除 step_list 前两步重复导航+等待，直接在预检后的页面提取 token；v1.7.29：封面选择使用真实坐标点击并轮询验证）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
@@ -146,8 +146,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "await new Promise(r => setTimeout(r, 2000)); const url = window.location.href; const stillOnEditPage = url.includes('appmsg_edit'); const bodyText = document.body.innerText || ''; const hasWeixinVerify = bodyText.includes('微信验证') || bodyText.includes('扫码后'); const hasSuccess = bodyText.includes('发表成功') || bodyText.includes('发布成功') || bodyText.includes('已发表') || bodyText.includes('已发布'); const errorEls = document.querySelectorAll('.js_error_msg, .weui-desktop-toast--warn, .frm_msg.fail, .js_cover_error, .weui-desktop-toast--error, .weui-desktop-toast__content, .weui-desktop-dialog__bd'); const errors = Array.from(errorEls).map(e => (e.innerText || e.textContent || '').trim()).filter(Boolean).slice(0, 3); if (stillOnEditPage && !hasWeixinVerify && !hasSuccess) { throw new Error('发表/发布后 URL 仍为编辑页（appmsg_edit_v2），动作未触发。错误提示: ' + (errors.join('; ') || '无')); } return JSON.stringify({ url, hasWeixinVerify, hasSuccess, errors });",
-      "descript": "v1.9.0：验证发布/发表成功（URL 跳转离开 appmsg_edit_v2 或出现微信验证/成功提示）",
+      "value": "await new Promise(r => setTimeout(r, 2000)); const url = window.location.href; const stillOnEditPage = url.includes('appmsg_edit_v2') && url.includes('isNew=1'); const bodyText = document.body.innerText || ''; const hasWeixinVerify = bodyText.includes('微信验证') || bodyText.includes('扫码后'); const hasSuccess = bodyText.includes('发表成功') || bodyText.includes('发布成功') || bodyText.includes('已发表') || bodyText.includes('已发布') || (!stillOnEditPage && !url.includes('isNew=1')); const errorEls = document.querySelectorAll('.js_error_msg, .weui-desktop-toast--warn, .frm_msg.fail, .js_cover_error, .weui-desktop-toast--error, .weui-desktop-toast__content'); const errors = Array.from(errorEls).map(e => (e.innerText || e.textContent || '').trim()).filter(Boolean).slice(0, 3); if (stillOnEditPage && !hasWeixinVerify && !hasSuccess) { throw new Error('发表/发布后 URL 仍为新建编辑页（appmsg_edit_v2 + isNew=1），动作未触发。错误提示: ' + (errors.join('; ') || '无')); } return JSON.stringify({ url, hasWeixinVerify, hasSuccess, errors });",
+      "descript": "v1.9.31：验证发布/发表成功（URL 跳转离开新建编辑页 isNew=1 或出现微信验证/成功提示；移除 .weui-desktop-dialog__bd 宽泛扫描避免误报）",
       "timeout": 8000
     }
   ]
