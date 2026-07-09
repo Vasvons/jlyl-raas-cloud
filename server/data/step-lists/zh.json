@@ -1,7 +1,7 @@
 {
   "platform": "zh",
-  "version": "1.0.4",
-  "description": "知乎专栏发布流程（v1.0.4：图片转存检测改为 zhimg.com 域名 + 新增封面设置环节 + 确认发布按钮改进）",
+  "version": "1.0.5",
+  "description": "知乎专栏发布流程（v1.0.5：图片转存检测修复——pic-private.zhihu.com 也算已转存，避免误判导致 90 秒超时）",
   "login_check_url": "https://zhuanlan.zhihu.com/write",
   "login_check_selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
   "logout_keywords": ["登录", "注册", "加入知乎"],
@@ -49,14 +49,14 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const findEditor = () => document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][class*=\"DraftEditor\"]') || document.querySelector('[contenteditable=\"true\"]'); const ed = findEditor(); if (!ed) return JSON.stringify({ reason: '编辑器未找到' }); const imgs = ed.querySelectorAll('img'); const info = []; let transferred = 0; let pending = 0; imgs.forEach(img => { const src = img.src || ''; if (src.includes('zhimg.com')) { transferred++; } else { pending++; } info.push(src.slice(0, 80)); }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); return JSON.stringify({ totalImgs: imgs.length, transferred, pending, loadingEls: loadingEls.length, imgSrcs: info.slice(0,5), editorCls: (ed.className||'').slice(0,80) });",
-      "descript": "诊断：检查图片转存状态（zhimg.com=已转存，其他=未转存）",
+      "value": "const findEditor = () => document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][class*=\"DraftEditor\"]') || document.querySelector('[contenteditable=\"true\"]'); const ed = findEditor(); if (!ed) return JSON.stringify({ reason: '编辑器未找到' }); const imgs = ed.querySelectorAll('img'); const info = []; let transferred = 0; let pending = 0; imgs.forEach(img => { const src = img.src || ''; if (src.includes('zhimg.com') || src.includes('zhihu.com')) { transferred++; } else { pending++; } info.push(src.slice(0, 80)); }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); return JSON.stringify({ totalImgs: imgs.length, transferred, pending, loadingEls: loadingEls.length, imgSrcs: info.slice(0,5), editorCls: (ed.className||'').slice(0,80) });",
+      "descript": "诊断：检查图片转存状态（zhihu.com/zhimg.com=已转存，其他=未转存）",
       "timeout": 3000
     },
     {
       "type": "evaluate_edit",
-      "value": "const findEditor = () => document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][class*=\"DraftEditor\"]') || document.querySelector('[contenteditable=\"true\"]'); const editor = findEditor(); if (!editor) return JSON.stringify({ ok: true, reason: '编辑器未找到，跳过等待' }); const startTime = Date.now(); const maxWait = 90000; while (Date.now() - startTime < maxWait) { const ed = findEditor(); if (!ed) { await new Promise(r => setTimeout(r, 2000)); continue; } const imgs = ed.querySelectorAll('img'); if (imgs.length === 0) { const loadingEls0 = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); if (loadingEls0.length === 0) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: 0, reason: '无图片，无需等待' }); } await new Promise(r => setTimeout(r, 2000)); continue; } let notTransferred = 0; imgs.forEach(img => { const src = img.src || ''; if (!src.includes('zhimg.com')) notTransferred++; }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); if (notTransferred === 0 && loadingEls.length === 0) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: imgs.length, reason: '所有图片已转存到 zhimg.com' }); } await new Promise(r => setTimeout(r, 3000)); } return JSON.stringify({ ok: false, waited: maxWait, reason: '等待超时，仍有图片未转存到 zhimg.com' });",
-      "descript": "等待图片转存完成（v1.0.4：检测 zhimg.com 域名，每 3 秒检测一次，最多 90 秒）",
+      "value": "const findEditor = () => document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][class*=\"DraftEditor\"]') || document.querySelector('[contenteditable=\"true\"]'); const editor = findEditor(); if (!editor) return JSON.stringify({ ok: true, reason: '编辑器未找到，跳过等待' }); const startTime = Date.now(); const maxWait = 90000; while (Date.now() - startTime < maxWait) { const ed = findEditor(); if (!ed) { await new Promise(r => setTimeout(r, 2000)); continue; } const imgs = ed.querySelectorAll('img'); if (imgs.length === 0) { const loadingEls0 = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); if (loadingEls0.length === 0) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: 0, reason: '无图片，无需等待' }); } await new Promise(r => setTimeout(r, 2000)); continue; } let notTransferred = 0; imgs.forEach(img => { const src = img.src || ''; if (!src.includes('zhimg.com') && !src.includes('zhihu.com')) notTransferred++; }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); if (notTransferred === 0 && loadingEls.length === 0) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: imgs.length, reason: '所有图片已转存到知乎域名' }); } await new Promise(r => setTimeout(r, 3000)); } return JSON.stringify({ ok: false, waited: maxWait, reason: '等待超时，仍有图片未转存到知乎域名' });",
+      "descript": "等待图片转存完成（v1.0.5：检测 zhihu.com/zhimg.com 域名，每 3 秒检测一次，最多 90 秒）",
       "timeout": 100000
     },
     {
@@ -80,16 +80,9 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "const coverEls = []; document.querySelectorAll('[class*=\"cover\"], [class*=\"Cover\"], [class*=\"thumbnail\"], [class*=\"thumb\"]').forEach(el => { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { coverEls.push({ tag: el.tagName, cls: (el.className||'').slice(0,100), text: (el.innerText||'').trim().slice(0,50), ph: el.getAttribute('data-placeholder')||'', w: Math.round(r.width), h: Math.round(r.height) }); } }); const uploadInputs = Array.from(document.querySelectorAll('input[type=\"file\"]')).map(inp => { const r = inp.getBoundingClientRect(); return { accept: inp.accept, ph: inp.getAttribute('data-placeholder')||'', w: Math.round(r.width), h: Math.round(r.height) }; }); return JSON.stringify({ coverEls: coverEls.slice(0, 8), uploadInputs: uploadInputs.slice(0, 4) });",
+      "value": "const coverEls = []; document.querySelectorAll('[class*=\"cover\"], [class*=\"Cover\"], [class*=\"thumbnail\"], [class*=\"thumb\"]').forEach(el => { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { coverEls.push({ tag: el.tagName, cls: (el.className||'').slice(0,100), text: (el.innerText||'').trim().slice(0,50), ph: el.getAttribute('data-placeholder')||'', w: Math.round(r.width), h: Math.round(r.height) }); } }); const uploadInputs = Array.from(document.querySelectorAll('input[type=\"file\"]')).map(inp => { const r = inp.getBoundingClientRect(); return { accept: inp.accept, ph: inp.getAttribute('data-placeholder')||'', w: Math.round(r.width), h: Math.round(r.height), parentCls: (inp.parentElement?.className||'').slice(0,80) }; }); return JSON.stringify({ coverEls: coverEls.slice(0, 8), uploadInputs: uploadInputs.slice(0, 4) });",
       "descript": "诊断：查找发布面板中的封面设置区域",
       "timeout": 3000
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "const coverArea = Array.from(document.querySelectorAll('[class*=\"cover\"], [class*=\"Cover\"]')).find(el => { const r = el.getBoundingClientRect(); return r.width > 50 && r.height > 50; }); if (!coverArea) return JSON.stringify({ ok: false, reason: '未找到封面区域' }); const uploadBtn = coverArea.querySelector('input[type=\"file\"]') || coverArea.querySelector('[class*=\"upload\"], [class*=\"add\"]'); if (uploadBtn && uploadBtn.tagName === 'INPUT' && uploadBtn.type === 'file') { return JSON.stringify({ ok: true, reason: '找到封面 file input', accept: uploadBtn.accept }); } const clickBtn = coverArea.querySelector('button, [role=\"button\"], [class*=\"upload\"], [class*=\"add\"]'); if (clickBtn) { clickBtn.click(); return JSON.stringify({ ok: true, reason: '已点击封面上传按钮', cls: (clickBtn.className||'').slice(0,80) }); } return JSON.stringify({ ok: false, reason: '封面区域无可点击的上传按钮', coverCls: (coverArea.className||'').slice(0,80) });",
-      "descript": "尝试点击封面上传按钮（v1.0.4 新增）",
-      "is_try": true,
-      "timeout": 5000
     },
     {
       "type": "branch",
@@ -97,9 +90,9 @@
       "branch_steps": [
         {
           "type": "input_files_chooser",
-          "trigger_click": "const coverArea = Array.from(document.querySelectorAll('[class*=\"cover\"], [class*=\"Cover\"]')).find(el => { const r = el.getBoundingClientRect(); return r.width > 50 && r.height > 50; }); if (coverArea) { const btn = coverArea.querySelector('button, [role=\"button\"], [class*=\"upload\"], [class*=\"add\"]'); if (btn) { btn.click(); return true; } } return false;",
+          "trigger_click": "const findCoverInput = () => { const coverArea = Array.from(document.querySelectorAll('[class*=\"cover\"], [class*=\"Cover\"]')).find(el => { const r = el.getBoundingClientRect(); return r.width > 50 && r.height > 50; }); if (coverArea) { const btn = coverArea.querySelector('button, [role=\"button\"], [class*=\"upload\"], [class*=\"add\"]'); if (btn) { btn.click(); return true; } } const imgInput = Array.from(document.querySelectorAll('input[type=\"file\"]')).find(inp => (inp.accept||'').includes('image/')); if (imgInput) { const wrap = imgInput.closest('[class*=\"upload\"], [class*=\"cover\"], [class*=\"Cover\"], [class*=\"image\"], label, button') || imgInput.parentElement; const btn = wrap?.querySelector('button, [role=\"button\"], [class*=\"upload\"], [class*=\"add\"]'); if (btn) { btn.click(); return true; } } return false; }; return findCoverInput();",
           "files": ["{cover_image_url}"],
-          "descript": "上传封面图（触发文件选择对话框并上传）",
+          "descript": "上传封面图（v1.0.5：兜底查找 image accept 的 file input）",
           "is_try": true,
           "timeout": 15000
         },
