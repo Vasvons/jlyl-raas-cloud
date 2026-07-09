@@ -1,12 +1,12 @@
 {
   "platform": "dy",
-  "version": "1.7.10",
-  "description": "抖音图文发布流程（v1.7.10：stepExecutor 内置 waitForUploadComplete 等待上传真正完成，修复 setInputFiles 后跳转过快导致 OSS 上传被中断、页面永远卡在「上传中」的问题）",
+  "version": "1.7.11",
+  "description": "抖音图文发布流程（v1.7.11：修复登录态误判——原 .user-info/.avatar 在抖音创作者中心页面不存在，改为 XPath 文本匹配「内容管理」「作品管理」「发布图文」等登录后才有的导航/Tab 元素）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
-  "login_check_selector": ".user-info | .avatar",
+  "login_check_selector": "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')] | //div[contains(@class,'avatar')]",
   "login_check_url_pattern": "^https://creator\\.douyin\\.com/.*login.*",
-  "logout_keywords": ["登录", "请登录", "sign in"],
+  "logout_keywords": ["请登录", "请先登录", "sign in"],
   "steps": [
     {
       "type": "navigate",
