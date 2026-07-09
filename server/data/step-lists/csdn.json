@@ -1,10 +1,10 @@
 {
   "platform": "csdn",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "CSDN 博客发布流程：editor.csdn.net/md?not_checkout=1",
   "login_check_url": "https://editor.csdn.net/md?not_checkout=1",
   "login_check_selector": "//div[contains(@class,'toolbar-main')] | //input[@id='articleTitle']",
-  "logout_keywords": ["登录", "sign in", "请登录"],
+  "logout_keywords": ["请登录", "sign in"],
   "steps": [
     {
       "type": "navigate",

@@ -1,12 +1,12 @@
 {
   "platform": "wxgzh",
-  "version": "1.9.32",
+  "version": "1.9.33",
   "description": "微信公众号/服务号图文发布流程（v1.9.30：修复群发通知弹窗未点击'发表'按钮导致文章只进草稿箱的问题，新增'继续发表'确认弹窗处理步骤，修复验证步骤误判 appmsg_edit 为已跳转离开编辑页；v1.7.35：删除 step_list 前两步重复导航+等待，直接在预检后的页面提取 token；v1.7.29：封面选择使用真实坐标点击并轮询验证）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
   "login_check_url_pattern": "^https://mp\\.weixin\\.qq\\.com/cgi-bin/loginpage",
-  "logout_keywords": ["登录", "请登录", "sign in"],
+  "logout_keywords": ["请登录", "请重新登录", "sign in"],
   "steps": [
     {
       "type": "evaluate_edit",

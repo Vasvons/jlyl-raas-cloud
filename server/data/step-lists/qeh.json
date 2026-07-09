@@ -1,6 +1,6 @@
 {
   "platform": "qeh",
-  "version": "1.7.5",
+  "version": "1.7.6",
   "description": "企鹅号图文发布流程（v1.7.5：新增 AI 生成声明弹窗处理——有图片时点击'进行补充'→'提交'完成声明，再点发布）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",

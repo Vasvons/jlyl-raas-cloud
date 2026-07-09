@@ -1,10 +1,10 @@
 {
   "platform": "zh",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "知乎专栏发布流程（v1.0.5：图片转存检测修复——pic-private.zhihu.com 也算已转存，避免误判导致 90 秒超时）",
   "login_check_url": "https://zhuanlan.zhihu.com/write",
   "login_check_selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
-  "logout_keywords": ["登录", "注册", "加入知乎"],
+  "logout_keywords": ["请登录", "注册", "加入知乎"],
   "steps": [
     {
       "type": "navigate",

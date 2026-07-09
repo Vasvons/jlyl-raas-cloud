@@ -1,10 +1,10 @@
 {
   "platform": "js",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "简书文章发布流程：www.jianshu.com/writer#/articles/new",
   "login_check_url": "https://www.jianshu.com/writer#/articles/new",
   "login_check_selector": "//textarea[contains(@class,'title-input')] | //input[@placeholder='请输入文章标题']",
-  "logout_keywords": ["登录", "注册", "sign in"],
+  "logout_keywords": ["请登录", "注册", "sign in"],
   "steps": [
     {
       "type": "navigate",
