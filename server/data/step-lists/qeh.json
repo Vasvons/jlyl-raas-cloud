@@ -1,54 +1,68 @@
 {
   "platform": "qeh",
-  "version": "1.7.2",
-  "description": "企鹅号图文发布流程（v1.7.2：修复每次进入编辑页而非新建页的问题）",
+  "version": "1.7.3",
+  "description": "企鹅号图文发布流程（v1.7.3：修复标题/正文被追加到草稿的问题——导航到列表页点写文章 + 填入前清空已有内容 + 标题用 evaluate_edit 直接设置避免剪贴板粘贴追加）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": ".user-info | .user-avatar",
   "login_check_url_pattern": "^https://om\\.qq\\.com/userAuth/index",
-  "logout_keywords": ["登录", "请登录", "sign in"],
+  "logout_keywords": ["请登录", "sign in"],
   "steps": [
     {
       "type": "navigate",
-      "value": "https://om.qq.com/main/creation/article?refer=create",
-      "descript": "导航到企鹅号图文新建页（带 refer=create 强制新建，避免加载上次草稿）",
+      "value": "https://om.qq.com/main/creation/articleManage",
+      "descript": "导航到文章管理列表页（避免直接进入编辑页加载草稿）",
       "timeout": 30000
     },
     {
-      "type": "wait_for_url",
-      "value": "creation/article",
-      "descript": "等待进入发布页",
-      "timeout": 15000
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待列表页加载"
     },
     {
       "type": "click",
-      "selector": "//a[text()=\"写文章\"] | //a[text()=\"图文\"] | //button[text()=\"写文章\"] | //span[text()=\"写文章\"] | //a[contains(@href,\"articleCreate\")] | //a[contains(@href,\"refer=create\")]",
-      "descript": "点击「写文章」按钮进入新建状态（兜底：若页面停在管理列表页则点击进入编辑器）",
-      "is_try": true,
-      "timeout": 5000
+      "selector": "//a[text()=\"写文章\"] | //a[contains(text(),\"写文章\")] | //a[contains(@href,\"articleCreate\")] | //a[contains(@href,\"refer=create\")] | //button[text()=\"写文章\"] | //span[text()=\"写文章\"]/ancestor-or-self::*[1]",
+      "descript": "点击「写文章」按钮进入新建状态",
+      "timeout": 8000
+    },
+    {
+      "type": "wait_for_selector",
+      "selector": "//span[@data-placeholder=\"请输入标题（5-64个字）\"] | //span[@data-placeholder=\"请输入标题\"] | //input[@placeholder=\"请输入标题\"] | //textarea[@placeholder=\"请输入标题\"] | //div[@contenteditable=\"true\"]",
+      "descript": "等待编辑器加载（标题输入框或正文编辑区出现）",
+      "timeout": 15000
     },
     {
       "type": "timing",
       "ms": 1500,
-      "descript": "等待编辑器加载完成"
+      "descript": "等待编辑器完全加载"
     },
     {
-      "type": "press",
-      "selector": "//span[@data-placeholder=\"请输入标题（5-64个字）\"] | //span[@data-placeholder=\"请输入标题\"] | //input[@placeholder=\"请输入标题\"] | //textarea[@placeholder=\"请输入标题\"]",
-      "value": "{title}",
-      "descript": "填写文章标题",
-      "ai_fallback": true,
-      "ai_intent": "找到企鹅号标题输入框并填写",
-      "timeout": 8000
+      "type": "evaluate_edit",
+      "value": "const titleEl = document.querySelector('span[data-placeholder*=\"请输入标题\"]') || document.querySelector('input[placeholder*=\"请输入标题\"]') || document.querySelector('textarea[placeholder*=\"请输入标题\"]'); const bodyEd = document.querySelector('div[contenteditable=\"true\"]'); if (titleEl) { titleEl.focus(); if (titleEl.contentEditable === 'true') { titleEl.textContent = ''; } else { titleEl.value = ''; } titleEl.dispatchEvent(new Event('input', { bubbles: true })); } if (bodyEd) { bodyEd.focus(); bodyEd.innerHTML = ''; bodyEd.dispatchEvent(new Event('input', { bubbles: true })); } return JSON.stringify({ titleCleared: !!titleEl, bodyCleared: !!bodyEd });",
+      "descript": "清空标题和正文已有内容（避免追加到草稿）",
+      "timeout": 5000
     },
     {
-      "type": "press",
+      "type": "evaluate_edit",
+      "value": "const titleEl = document.querySelector('span[data-placeholder*=\"请输入标题\"]') || document.querySelector('input[placeholder*=\"请输入标题\"]') || document.querySelector('textarea[placeholder*=\"请输入标题\"]'); if (!titleEl) return JSON.stringify({ ok: false, reason: '标题元素未找到' }); titleEl.focus(); if (titleEl.contentEditable === 'true') { titleEl.textContent = ARG; } else { titleEl.value = ARG; } titleEl.dispatchEvent(new Event('input', { bubbles: true })); titleEl.dispatchEvent(new Event('change', { bubbles: true })); titleEl.dispatchEvent(new Event('blur', { bubbles: true })); return JSON.stringify({ ok: true, title: ARG.slice(0, 30) });",
+      "args": "{title}",
+      "descript": "直接设置标题文本（避免剪贴板粘贴追加或插入HTML格式）",
+      "timeout": 5000
+    },
+    {
+      "type": "click",
+      "selector": "//div[@contenteditable=\"true\"]",
+      "descript": "点击正文编辑区聚焦",
+      "timeout": 5000
+    },
+    {
+      "type": "content",
       "selector": "//div[@contenteditable=\"true\"]",
       "value": "{content}",
-      "descript": "输入正文",
+      "descript": "粘贴正文HTML",
       "ai_fallback": true,
       "ai_intent": "找到企鹅号正文编辑区并填写内容",
-      "timeout": 5000
+      "timeout": 10000
     },
     {
       "type": "branch",
