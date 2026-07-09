@@ -1,7 +1,7 @@
 {
   "platform": "zh",
-  "version": "1.0.2",
-  "description": "知乎专栏发布流程（v1.0.2：粘贴正文后等待图片上传完成，确认发布前诊断面板按钮 + 扩展选择器 + is_try 容错）",
+  "version": "1.0.3",
+  "description": "知乎专栏发布流程（v1.0.3：图片等待逻辑修复——先等 5 秒让知乎处理粘贴再检测上传，精准定位正文编辑器避免选到标题）",
   "login_check_url": "https://zhuanlan.zhihu.com/write",
   "login_check_selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
   "logout_keywords": ["登录", "注册", "加入知乎"],
@@ -49,15 +49,20 @@
       "timeout": 10000
     },
     {
+      "type": "timing",
+      "ms": 5000,
+      "descript": "等待 5 秒让知乎处理粘贴内容（图片开始转存上传）"
+    },
+    {
       "type": "evaluate_edit",
-      "value": "const editor = document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"]'); if (!editor) return JSON.stringify({ hasImages: false, reason: '编辑器未找到' }); const imgs = editor.querySelectorAll('img'); let uploading = 0; let dataUrl = 0; let uploaded = 0; imgs.forEach(img => { const src = img.src || ''; if (src.startsWith('data:') || src.startsWith('blob:')) { uploading++; if (src.startsWith('data:')) dataUrl++; } else { uploaded++; } }); const loadingEls = editor.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); return JSON.stringify({ totalImgs: imgs.length, uploading, dataUrl, uploaded, loadingEls: loadingEls.length, editorCls: editor.className.slice(0,80) });",
+      "value": "const editor = document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][data-placeholder*=\"正文\"], [contenteditable=\"true\"][class*=\"DraftEditor\"]'); if (!editor) { const fallback = document.querySelector('[contenteditable=\"true\"]'); if (!fallback) return JSON.stringify({ hasImages: false, reason: '编辑器未找到' }); } const ed = editor || document.querySelector('[contenteditable=\"true\"]'); const imgs = ed.querySelectorAll('img'); let uploading = 0; let dataUrl = 0; let uploaded = 0; imgs.forEach(img => { const src = img.src || ''; if (src.startsWith('data:') || src.startsWith('blob:')) { uploading++; if (src.startsWith('data:')) dataUrl++; } else if (src.startsWith('http')) { uploaded++; } }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"], img[src^=\"data:\"], img[src^=\"blob:\"]'); return JSON.stringify({ totalImgs: imgs.length, uploading, dataUrl, uploaded, loadingEls: loadingEls.length, editorCls: (ed.className||'').slice(0,80) });",
       "descript": "诊断：检查正文编辑器内图片上传状态（data:/blob: 为未上传，https 为已上传）",
       "timeout": 3000
     },
     {
       "type": "evaluate_edit",
-      "value": "const editor = document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"]'); if (!editor) return JSON.stringify({ ok: true, reason: '编辑器未找到，跳过等待' }); const startTime = Date.now(); const maxWait = 60000; while (Date.now() - startTime < maxWait) { const imgs = editor.querySelectorAll('img'); let stillUploading = 0; imgs.forEach(img => { const src = img.src || ''; if (src.startsWith('data:') || src.startsWith('blob:')) stillUploading++; }); const loadingEls = editor.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); if (stillUploading === 0 && loadingEls.length === 0) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: imgs.length, reason: '所有图片上传完成' }); } await new Promise(r => setTimeout(r, 1000)); } return JSON.stringify({ ok: false, waited: maxWait, reason: '等待超时，仍有图片未上传完成', stillUploading });",
-      "descript": "等待图片上传完成（最多 60 秒，每秒检测一次 data:/blob: 图片和 loading 元素）",
+      "value": "const findEditor = () => document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][data-placeholder*=\"正文\"], [contenteditable=\"true\"][class*=\"DraftEditor\"]') || document.querySelector('[contenteditable=\"true\"]'); const editor = findEditor(); if (!editor) return JSON.stringify({ ok: true, reason: '编辑器未找到，跳过等待' }); const startTime = Date.now(); const maxWait = 60000; while (Date.now() - startTime < maxWait) { const ed = findEditor(); if (!ed) { await new Promise(r => setTimeout(r, 1000)); continue; } const imgs = ed.querySelectorAll('img'); let stillUploading = 0; imgs.forEach(img => { const src = img.src || ''; if (src.startsWith('data:') || src.startsWith('blob:')) stillUploading++; }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); const hasLoading = loadingEls.length > 0; if (imgs.length > 0 && stillUploading === 0 && !hasLoading) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: imgs.length, reason: '所有图片上传完成' }); } if (imgs.length === 0 && !hasLoading) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: 0, reason: '无图片，无需等待' }); } await new Promise(r => setTimeout(r, 2000)); } return JSON.stringify({ ok: false, waited: maxWait, reason: '等待超时，仍有图片未上传完成', stillUploading });",
+      "descript": "等待图片上传完成（v1.0.3：每 2 秒检测一次，要求有图片且全部上传完才通过，最多 60 秒）",
       "timeout": 70000
     },
     {
