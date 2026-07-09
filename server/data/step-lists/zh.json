@@ -1,7 +1,7 @@
 {
   "platform": "zh",
-  "version": "1.0.1",
-  "description": "知乎专栏发布流程（v1.0.1：扩展正文编辑器选择器兼容 ProseMirror/contenteditable，原 .public-DraftEditor-content 已失效，加诊断步骤排查）",
+  "version": "1.0.2",
+  "description": "知乎专栏发布流程（v1.0.2：粘贴正文后等待图片上传完成，确认发布前诊断面板按钮 + 扩展选择器 + is_try 容错）",
   "login_check_url": "https://zhuanlan.zhihu.com/write",
   "login_check_selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
   "logout_keywords": ["登录", "注册", "加入知乎"],
@@ -49,6 +49,18 @@
       "timeout": 10000
     },
     {
+      "type": "evaluate_edit",
+      "value": "const editor = document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"]'); if (!editor) return JSON.stringify({ hasImages: false, reason: '编辑器未找到' }); const imgs = editor.querySelectorAll('img'); let uploading = 0; let dataUrl = 0; let uploaded = 0; imgs.forEach(img => { const src = img.src || ''; if (src.startsWith('data:') || src.startsWith('blob:')) { uploading++; if (src.startsWith('data:')) dataUrl++; } else { uploaded++; } }); const loadingEls = editor.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); return JSON.stringify({ totalImgs: imgs.length, uploading, dataUrl, uploaded, loadingEls: loadingEls.length, editorCls: editor.className.slice(0,80) });",
+      "descript": "诊断：检查正文编辑器内图片上传状态（data:/blob: 为未上传，https 为已上传）",
+      "timeout": 3000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const editor = document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"]'); if (!editor) return JSON.stringify({ ok: true, reason: '编辑器未找到，跳过等待' }); const startTime = Date.now(); const maxWait = 60000; while (Date.now() - startTime < maxWait) { const imgs = editor.querySelectorAll('img'); let stillUploading = 0; imgs.forEach(img => { const src = img.src || ''; if (src.startsWith('data:') || src.startsWith('blob:')) stillUploading++; }); const loadingEls = editor.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); if (stillUploading === 0 && loadingEls.length === 0) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: imgs.length, reason: '所有图片上传完成' }); } await new Promise(r => setTimeout(r, 1000)); } return JSON.stringify({ ok: false, waited: maxWait, reason: '等待超时，仍有图片未上传完成', stillUploading });",
+      "descript": "等待图片上传完成（最多 60 秒，每秒检测一次 data:/blob: 图片和 loading 元素）",
+      "timeout": 70000
+    },
+    {
       "type": "click",
       "selector": "//button[contains(text(),'发布')] | //button[contains(@class,'PublishPanel')]",
       "descript": "点击发布按钮",
@@ -56,10 +68,16 @@
     },
     {
       "type": "wait_for_selector",
-      "selector": ".PublishPanel / //div[contains(@class,'PublishPanel')] | //input[@placeholder='选择话题']",
+      "selector": ".PublishPanel | //div[contains(@class,'PublishPanel')] | //input[@placeholder='选择话题']",
       "descript": "等待发布面板",
       "timeout": 5000,
       "is_try": true
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const btns = Array.from(document.querySelectorAll('button, [role=\"button\"], .Button')); const result = btns.filter(b => { const r = b.getBoundingClientRect(); return r.width > 0 && r.height > 0; }).map(b => ({ text: (b.innerText||b.textContent||'').trim().slice(0,30), cls: (b.className||'').slice(0,80), tag: b.tagName, disabled: b.disabled })); return JSON.stringify({ count: result.length, buttons: result.slice(0, 20) });",
+      "descript": "诊断：列出发布面板中所有可见按钮",
+      "timeout": 3000
     },
     {
       "type": "tags",
@@ -71,9 +89,12 @@
     },
     {
       "type": "click",
-      "selector": "//button[contains(text(),'确认并发布')] | //button[contains(text(),'发布')][last()]",
-      "descript": "确认发布",
-      "timeout": 5000
+      "selector": "//button[contains(text(),'确认并发布')] | //button[contains(text(),'确认发布')] | //button[contains(text(),'发布') and not(contains(text(),'草稿'))][last()] | //button[contains(@class,'PublishSubmit')] | //button[contains(@class,'submitButton')]",
+      "descript": "确认发布（v1.0.2：扩展选择器兼容多种按钮文字/class，is_try 容错）",
+      "ai_fallback": true,
+      "ai_intent": "找到知乎发布面板中的「确认并发布」按钮并点击（按钮文字可能是「确认并发布」「确认发布」「发布」等）",
+      "is_try": true,
+      "timeout": 8000
     },
     {
       "type": "wait_for_url",
