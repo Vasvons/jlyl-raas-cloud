@@ -271,13 +271,13 @@ function buildLayer6OutputSpec(task: any, keywords: string[]): string {
   lines.push(``);
   lines.push(`一、输出格式`);
   lines.push(`必须按以下格式输出，不要输出任何其他内容（不要输出思考过程、分析过程、解释说明）：`);
-  lines.push(`<title>文章标题（15-30字，不要包含"文章"二字，不要包含书名号）</title>`);
+  lines.push(`<title>文章标题（不要包含"文章"二字，不要包含书名号）</title>`);
   lines.push(`<body>`);
   lines.push(`正文HTML内容`);
   lines.push(`</body>`);
   lines.push(``);
   lines.push(`二、字数要求`);
-  lines.push(`字数以写作指令中的要求为准（如果指令中指定了字数范围，严格遵守该范围）。`);
+  lines.push(`字数优先级：若已指定目标平台约束，按平台字数限制创作；否则以写作指令中的要求为准。`);
   lines.push(`字数统计基于纯文本（不含 HTML 标签），写完后自行核对字数。`);
   lines.push(``);
   lines.push(`三、排版规范（必须使用语义化 HTML 标签）`);

@@ -3781,6 +3781,7 @@ export async function getWritingTaskById(id: number): Promise<any | null> {
   const result = await query(
     `SELECT t.*, i.name as instruction_name, i.article_prompt, i.title_prompt,
             i.category as instruction_category, i.content_types, i.random_mode,
+            i.target_word_count,
             k.company_full_name, k.company_short_name, k.city, k.industry, k.business_scope,
             k.entity_triples, k.intro_text, k.cases_text,
             k.products_services, k.product_features, k.user_pain_points, k.trust_endorsement, k.other_info,
