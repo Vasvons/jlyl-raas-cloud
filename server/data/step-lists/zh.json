@@ -1,7 +1,7 @@
 {
   "platform": "zh",
-  "version": "1.0.3",
-  "description": "知乎专栏发布流程（v1.0.3：图片等待逻辑修复——先等 5 秒让知乎处理粘贴再检测上传，精准定位正文编辑器避免选到标题）",
+  "version": "1.0.4",
+  "description": "知乎专栏发布流程（v1.0.4：图片转存检测改为 zhimg.com 域名 + 新增封面设置环节 + 确认发布按钮改进）",
   "login_check_url": "https://zhuanlan.zhihu.com/write",
   "login_check_selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
   "logout_keywords": ["登录", "注册", "加入知乎"],
@@ -26,24 +26,18 @@
       "timeout": 5000
     },
     {
-      "type": "evaluate_edit",
-      "value": "const result = []; document.querySelectorAll('[contenteditable=\"true\"], [contenteditable=\"\"], .public-DraftEditor-content, .ProseMirror, [data-placeholder]').forEach(el => { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { result.push({ tag: el.tagName, cls: (el.className||'').slice(0,100), ph: el.getAttribute('data-placeholder')||'', editable: el.isContentEditable, w: Math.round(r.width), h: Math.round(r.height) }); } }); return JSON.stringify({ count: result.length, editors: result.slice(0,8) });",
-      "descript": "诊断：列出页面上所有可见的编辑器元素（contenteditable/DraftEditor/ProseMirror）",
-      "timeout": 3000
-    },
-    {
       "type": "click",
-      "selector": ".public-DraftEditor-content | //div[contains(@class,'public-DraftEditor-content')] | //div[contains(@class,'ProseMirror')] | //div[@contenteditable='true' and contains(@data-placeholder,'正文')] | //div[@contenteditable='true' and contains(@class,'editable')] | //div[@contenteditable='true'][last()]",
-      "descript": "点击正文区（v1.0.1：扩展选择器兼容 ProseMirror/contenteditable）",
+      "selector": ".public-DraftEditor-content | //div[contains(@class,'public-DraftEditor-content')] | //div[contains(@class,'ProseMirror')] | //div[@contenteditable='true' and contains(@data-placeholder,'正文')] | //div[@contenteditable='true'][last()]",
+      "descript": "点击正文区",
       "ai_fallback": true,
-      "ai_intent": "找到知乎专栏写作页的正文编辑区并点击（可能是 DraftEditor/ProseMirror/contenteditable div）",
+      "ai_intent": "找到知乎专栏写作页的正文编辑区并点击",
       "timeout": 8000
     },
     {
       "type": "content",
-      "selector": ".public-DraftEditor-content | //div[contains(@class,'public-DraftEditor-content')] | //div[contains(@class,'ProseMirror')] | //div[@contenteditable='true' and contains(@data-placeholder,'正文')] | //div[@contenteditable='true' and contains(@class,'editable')] | //div[@contenteditable='true'][last()]",
+      "selector": ".public-DraftEditor-content | //div[contains(@class,'public-DraftEditor-content')] | //div[contains(@class,'ProseMirror')] | //div[@contenteditable='true' and contains(@data-placeholder,'正文')] | //div[@contenteditable='true'][last()]",
       "value": "{content}",
-      "descript": "粘贴正文（v1.0.1：扩展选择器兼容 ProseMirror/contenteditable）",
+      "descript": "粘贴正文",
       "ai_fallback": true,
       "ai_intent": "找到知乎专栏写作页的正文编辑区并填入正文内容",
       "timeout": 10000
@@ -51,19 +45,19 @@
     {
       "type": "timing",
       "ms": 5000,
-      "descript": "等待 5 秒让知乎处理粘贴内容（图片开始转存上传）"
+      "descript": "等待 5 秒让知乎处理粘贴内容（图片开始转存）"
     },
     {
       "type": "evaluate_edit",
-      "value": "const editor = document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][data-placeholder*=\"正文\"], [contenteditable=\"true\"][class*=\"DraftEditor\"]'); if (!editor) { const fallback = document.querySelector('[contenteditable=\"true\"]'); if (!fallback) return JSON.stringify({ hasImages: false, reason: '编辑器未找到' }); } const ed = editor || document.querySelector('[contenteditable=\"true\"]'); const imgs = ed.querySelectorAll('img'); let uploading = 0; let dataUrl = 0; let uploaded = 0; imgs.forEach(img => { const src = img.src || ''; if (src.startsWith('data:') || src.startsWith('blob:')) { uploading++; if (src.startsWith('data:')) dataUrl++; } else if (src.startsWith('http')) { uploaded++; } }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"], img[src^=\"data:\"], img[src^=\"blob:\"]'); return JSON.stringify({ totalImgs: imgs.length, uploading, dataUrl, uploaded, loadingEls: loadingEls.length, editorCls: (ed.className||'').slice(0,80) });",
-      "descript": "诊断：检查正文编辑器内图片上传状态（data:/blob: 为未上传，https 为已上传）",
+      "value": "const findEditor = () => document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][class*=\"DraftEditor\"]') || document.querySelector('[contenteditable=\"true\"]'); const ed = findEditor(); if (!ed) return JSON.stringify({ reason: '编辑器未找到' }); const imgs = ed.querySelectorAll('img'); const info = []; let transferred = 0; let pending = 0; imgs.forEach(img => { const src = img.src || ''; if (src.includes('zhimg.com')) { transferred++; } else { pending++; } info.push(src.slice(0, 80)); }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); return JSON.stringify({ totalImgs: imgs.length, transferred, pending, loadingEls: loadingEls.length, imgSrcs: info.slice(0,5), editorCls: (ed.className||'').slice(0,80) });",
+      "descript": "诊断：检查图片转存状态（zhimg.com=已转存，其他=未转存）",
       "timeout": 3000
     },
     {
       "type": "evaluate_edit",
-      "value": "const findEditor = () => document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][data-placeholder*=\"正文\"], [contenteditable=\"true\"][class*=\"DraftEditor\"]') || document.querySelector('[contenteditable=\"true\"]'); const editor = findEditor(); if (!editor) return JSON.stringify({ ok: true, reason: '编辑器未找到，跳过等待' }); const startTime = Date.now(); const maxWait = 60000; while (Date.now() - startTime < maxWait) { const ed = findEditor(); if (!ed) { await new Promise(r => setTimeout(r, 1000)); continue; } const imgs = ed.querySelectorAll('img'); let stillUploading = 0; imgs.forEach(img => { const src = img.src || ''; if (src.startsWith('data:') || src.startsWith('blob:')) stillUploading++; }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); const hasLoading = loadingEls.length > 0; if (imgs.length > 0 && stillUploading === 0 && !hasLoading) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: imgs.length, reason: '所有图片上传完成' }); } if (imgs.length === 0 && !hasLoading) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: 0, reason: '无图片，无需等待' }); } await new Promise(r => setTimeout(r, 2000)); } return JSON.stringify({ ok: false, waited: maxWait, reason: '等待超时，仍有图片未上传完成', stillUploading });",
-      "descript": "等待图片上传完成（v1.0.3：每 2 秒检测一次，要求有图片且全部上传完才通过，最多 60 秒）",
-      "timeout": 70000
+      "value": "const findEditor = () => document.querySelector('.public-DraftEditor-content, .ProseMirror, [contenteditable=\"true\"][class*=\"DraftEditor\"]') || document.querySelector('[contenteditable=\"true\"]'); const editor = findEditor(); if (!editor) return JSON.stringify({ ok: true, reason: '编辑器未找到，跳过等待' }); const startTime = Date.now(); const maxWait = 90000; while (Date.now() - startTime < maxWait) { const ed = findEditor(); if (!ed) { await new Promise(r => setTimeout(r, 2000)); continue; } const imgs = ed.querySelectorAll('img'); if (imgs.length === 0) { const loadingEls0 = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); if (loadingEls0.length === 0) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: 0, reason: '无图片，无需等待' }); } await new Promise(r => setTimeout(r, 2000)); continue; } let notTransferred = 0; imgs.forEach(img => { const src = img.src || ''; if (!src.includes('zhimg.com')) notTransferred++; }); const loadingEls = ed.querySelectorAll('[class*=\"upload\"], [class*=\"loading\"], [class*=\"progress\"], [class*=\"pending\"]'); if (notTransferred === 0 && loadingEls.length === 0) { return JSON.stringify({ ok: true, waited: Date.now() - startTime, totalImgs: imgs.length, reason: '所有图片已转存到 zhimg.com' }); } await new Promise(r => setTimeout(r, 3000)); } return JSON.stringify({ ok: false, waited: maxWait, reason: '等待超时，仍有图片未转存到 zhimg.com' });",
+      "descript": "等待图片转存完成（v1.0.4：检测 zhimg.com 域名，每 3 秒检测一次，最多 90 秒）",
+      "timeout": 100000
     },
     {
       "type": "click",
@@ -85,6 +79,39 @@
       "timeout": 3000
     },
     {
+      "type": "evaluate_edit",
+      "value": "const coverEls = []; document.querySelectorAll('[class*=\"cover\"], [class*=\"Cover\"], [class*=\"thumbnail\"], [class*=\"thumb\"]').forEach(el => { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { coverEls.push({ tag: el.tagName, cls: (el.className||'').slice(0,100), text: (el.innerText||'').trim().slice(0,50), ph: el.getAttribute('data-placeholder')||'', w: Math.round(r.width), h: Math.round(r.height) }); } }); const uploadInputs = Array.from(document.querySelectorAll('input[type=\"file\"]')).map(inp => { const r = inp.getBoundingClientRect(); return { accept: inp.accept, ph: inp.getAttribute('data-placeholder')||'', w: Math.round(r.width), h: Math.round(r.height) }; }); return JSON.stringify({ coverEls: coverEls.slice(0, 8), uploadInputs: uploadInputs.slice(0, 4) });",
+      "descript": "诊断：查找发布面板中的封面设置区域",
+      "timeout": 3000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "const coverArea = Array.from(document.querySelectorAll('[class*=\"cover\"], [class*=\"Cover\"]')).find(el => { const r = el.getBoundingClientRect(); return r.width > 50 && r.height > 50; }); if (!coverArea) return JSON.stringify({ ok: false, reason: '未找到封面区域' }); const uploadBtn = coverArea.querySelector('input[type=\"file\"]') || coverArea.querySelector('[class*=\"upload\"], [class*=\"add\"]'); if (uploadBtn && uploadBtn.tagName === 'INPUT' && uploadBtn.type === 'file') { return JSON.stringify({ ok: true, reason: '找到封面 file input', accept: uploadBtn.accept }); } const clickBtn = coverArea.querySelector('button, [role=\"button\"], [class*=\"upload\"], [class*=\"add\"]'); if (clickBtn) { clickBtn.click(); return JSON.stringify({ ok: true, reason: '已点击封面上传按钮', cls: (clickBtn.className||'').slice(0,80) }); } return JSON.stringify({ ok: false, reason: '封面区域无可点击的上传按钮', coverCls: (coverArea.className||'').slice(0,80) });",
+      "descript": "尝试点击封面上传按钮（v1.0.4 新增）",
+      "is_try": true,
+      "timeout": 5000
+    },
+    {
+      "type": "branch",
+      "condition": "data_item.cover_image_url",
+      "branch_steps": [
+        {
+          "type": "input_files_chooser",
+          "trigger_click": "const coverArea = Array.from(document.querySelectorAll('[class*=\"cover\"], [class*=\"Cover\"]')).find(el => { const r = el.getBoundingClientRect(); return r.width > 50 && r.height > 50; }); if (coverArea) { const btn = coverArea.querySelector('button, [role=\"button\"], [class*=\"upload\"], [class*=\"add\"]'); if (btn) { btn.click(); return true; } } return false;",
+          "files": ["{cover_image_url}"],
+          "descript": "上传封面图（触发文件选择对话框并上传）",
+          "is_try": true,
+          "timeout": 15000
+        },
+        {
+          "type": "timing",
+          "ms": 3000,
+          "descript": "等待封面上传完成"
+        }
+      ],
+      "descript": "封面设置分支（有 cover_image_url 时执行）"
+    },
+    {
       "type": "tags",
       "selector": "//input[@placeholder='选择话题']",
       "value": "{tags}",
@@ -95,7 +122,7 @@
     {
       "type": "click",
       "selector": "//button[contains(text(),'确认并发布')] | //button[contains(text(),'确认发布')] | //button[contains(text(),'发布') and not(contains(text(),'草稿'))][last()] | //button[contains(@class,'PublishSubmit')] | //button[contains(@class,'submitButton')]",
-      "descript": "确认发布（v1.0.2：扩展选择器兼容多种按钮文字/class，is_try 容错）",
+      "descript": "确认发布",
       "ai_fallback": true,
       "ai_intent": "找到知乎发布面板中的「确认并发布」按钮并点击（按钮文字可能是「确认并发布」「确认发布」「发布」等）",
       "is_try": true,
