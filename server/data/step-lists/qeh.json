@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.7.4",
-  "description": "企鹅号图文发布流程（v1.7.4：基于实地登录验证——编辑页会加载草稿，标题/正文需用 clear_first 清空已有内容；标题选择器 span.omui-inputautogrowing__inner，正文选择器 .ProseMirror.ExEditor-basic）",
+  "version": "1.7.5",
+  "description": "企鹅号图文发布流程（v1.7.5：新增 AI 生成声明弹窗处理——有图片时点击'进行补充'→'提交'完成声明，再点发布）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -44,6 +44,42 @@
       "type": "timing",
       "ms": 1000,
       "descript": "等待表单稳定"
+    },
+    {
+      "type": "branch",
+      "condition": "!!Array.from(document.querySelectorAll('[class*=ai__declaration] a')).find(a => (a.innerText||'').includes('进行补充'))",
+      "descript": "检查是否存在AI生成声明提示（有图片时才会出现'进行补充'链接）",
+      "branch_steps": [
+        {
+          "type": "evaluate_edit",
+          "value": "const links = Array.from(document.querySelectorAll('[class*=ai__declaration] a')); const link = links.find(a => (a.innerText||'').includes('进行补充')); if (link) { link.scrollIntoView({block:'center'}); link.click(); return 'clicked'; } return 'not found';",
+          "descript": "点击AI声明'进行补充'链接打开声明弹窗",
+          "timeout": 5000
+        },
+        {
+          "type": "wait_for_selector",
+          "selector": "[class*=aidialog] button.omui-button--primary",
+          "descript": "等待AI声明弹窗的提交按钮出现",
+          "timeout": 8000
+        },
+        {
+          "type": "timing",
+          "ms": 500,
+          "descript": "等待弹窗稳定"
+        },
+        {
+          "type": "evaluate_edit",
+          "value": "const dialog = document.querySelector('[class*=aidialog]'); if (!dialog) return 'dialog not found'; const btn = Array.from(dialog.querySelectorAll('button.omui-button--primary')).find(b => (b.innerText||'').trim() === '提交'); if (btn) { btn.click(); return 'submitted'; } return 'submit button not found';",
+          "descript": "点击AI声明弹窗的'提交'按钮",
+          "timeout": 5000
+        },
+        {
+          "type": "timing",
+          "ms": 1500,
+          "descript": "等待AI声明提交完成、弹窗关闭"
+        }
+      ],
+      "else_list": []
     },
     {
       "type": "click",
