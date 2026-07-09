@@ -1,7 +1,7 @@
 {
   "platform": "zh",
-  "version": "1.0.0",
-  "description": "知乎专栏发布流程：zhuanlan.zhihu.com/write",
+  "version": "1.0.1",
+  "description": "知乎专栏发布流程（v1.0.1：扩展正文编辑器选择器兼容 ProseMirror/contenteditable，原 .public-DraftEditor-content 已失效，加诊断步骤排查）",
   "login_check_url": "https://zhuanlan.zhihu.com/write",
   "login_check_selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
   "logout_keywords": ["登录", "注册", "加入知乎"],
@@ -26,16 +26,26 @@
       "timeout": 5000
     },
     {
+      "type": "evaluate_edit",
+      "value": "const result = []; document.querySelectorAll('[contenteditable=\"true\"], [contenteditable=\"\"], .public-DraftEditor-content, .ProseMirror, [data-placeholder]').forEach(el => { const r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { result.push({ tag: el.tagName, cls: (el.className||'').slice(0,100), ph: el.getAttribute('data-placeholder')||'', editable: el.isContentEditable, w: Math.round(r.width), h: Math.round(r.height) }); } }); return JSON.stringify({ count: result.length, editors: result.slice(0,8) });",
+      "descript": "诊断：列出页面上所有可见的编辑器元素（contenteditable/DraftEditor/ProseMirror）",
+      "timeout": 3000
+    },
+    {
       "type": "click",
-      "selector": ".public-DraftEditor-content / //div[contains(@class,'public-DraftEditor-content')]",
-      "descript": "点击正文区",
-      "timeout": 5000
+      "selector": ".public-DraftEditor-content | //div[contains(@class,'public-DraftEditor-content')] | //div[contains(@class,'ProseMirror')] | //div[@contenteditable='true' and contains(@data-placeholder,'正文')] | //div[@contenteditable='true' and contains(@class,'editable')] | //div[@contenteditable='true'][last()]",
+      "descript": "点击正文区（v1.0.1：扩展选择器兼容 ProseMirror/contenteditable）",
+      "ai_fallback": true,
+      "ai_intent": "找到知乎专栏写作页的正文编辑区并点击（可能是 DraftEditor/ProseMirror/contenteditable div）",
+      "timeout": 8000
     },
     {
       "type": "content",
-      "selector": ".public-DraftEditor-content / //div[contains(@class,'public-DraftEditor-content')]",
+      "selector": ".public-DraftEditor-content | //div[contains(@class,'public-DraftEditor-content')] | //div[contains(@class,'ProseMirror')] | //div[@contenteditable='true' and contains(@data-placeholder,'正文')] | //div[@contenteditable='true' and contains(@class,'editable')] | //div[@contenteditable='true'][last()]",
       "value": "{content}",
-      "descript": "粘贴正文",
+      "descript": "粘贴正文（v1.0.1：扩展选择器兼容 ProseMirror/contenteditable）",
+      "ai_fallback": true,
+      "ai_intent": "找到知乎专栏写作页的正文编辑区并填入正文内容",
       "timeout": 10000
     },
     {
