@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.11",
-  "description": "抖音图文发布流程（v1.7.11：修复登录态误判——原 .user-info/.avatar 在抖音创作者中心页面不存在，改为 XPath 文本匹配「内容管理」「作品管理」「发布图文」等登录后才有的导航/Tab 元素）",
+  "version": "1.7.12",
+  "description": "抖音图文发布流程（v1.7.12：改进话题添加——扩展选择器支持 contenteditable div 话题框，execTags 函数支持 contenteditable 元素用键盘输入，添加话题前诊断步骤帮助排查）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
   "login_check_selector": "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')] | //div[contains(@class,'avatar')]",
@@ -85,10 +85,18 @@
       "descript": "等待正文渲染完成"
     },
     {
+      "type": "evaluate_edit",
+      "value": "const candidates = []; const inputs = document.querySelectorAll('input[placeholder*=\"话题\"], input[placeholder*=\"tag\"], input[class*=\"tag\"], input[class*=\"topic\"]'); inputs.forEach(el => { const r = el.getBoundingClientRect(); candidates.push({ tag: el.tagName, placeholder: el.getAttribute('placeholder')||'', cls: (el.className||'').slice(0,80), visible: r.width>0&&r.height>0, editable: false }); }); const editables = document.querySelectorAll('[contenteditable=\"true\"], [contenteditable=\"\"]'); editables.forEach(el => { const r = el.getBoundingClientRect(); const ph = el.getAttribute('data-placeholder')||''; const cls = (el.className||'').slice(0,80); const txt = (el.textContent||'').trim().slice(0,30); if (cls.toLowerCase().includes('tag') || cls.toLowerCase().includes('topic') || ph.includes('话题') || ph.includes('tag') || ph.includes('#')) { candidates.push({ tag: el.tagName, placeholder: ph, cls: cls, visible: r.width>0&&r.height>0, editable: true, text: txt }); } }); return JSON.stringify({ count: candidates.length, candidates: candidates.slice(0,10) });",
+      "descript": "诊断：列出页面上所有可能的话题输入框（input 和 contenteditable）",
+      "timeout": 3000
+    },
+    {
       "type": "tags",
-      "selector": "//input[@placeholder='添加话题'] | //input[contains(@class,'tag')]//input | //div[contains(@class,'tag')]//input | //input[contains(@placeholder,'话题')]",
+      "selector": "//input[@placeholder='添加话题'] | //input[contains(@placeholder,'话题')] | //input[contains(@class,'tag') and not(contains(@type,'file'))] | //div[contains(@class,'tag') and @contenteditable='true'] | //div[contains(@class,'topic') and @contenteditable='true'] | //div[@contenteditable='true' and contains(@data-placeholder,'话题')] | //div[@contenteditable='true' and contains(@data-placeholder,'#')]",
       "value": "{tags}",
-      "descript": "添加话题（每个话题回车确认）",
+      "descript": "添加话题（v1.9.36：扩展选择器支持 contenteditable div，每个话题回车确认）",
+      "ai_fallback": true,
+      "ai_intent": "找到抖音图文发布页的「添加话题」输入框并添加话题标签（可能是 input 或 contenteditable div）",
       "is_try": true,
       "timeout": 8000
     },
