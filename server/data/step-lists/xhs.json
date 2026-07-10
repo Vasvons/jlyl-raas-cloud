@@ -1,6 +1,6 @@
 {
   "platform": "xhs",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "description": "小红书图文发布流程（基于 red.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
@@ -66,9 +66,16 @@
       "descript": "等待表单稳定"
     },
     {
+      "type": "evaluate_edit",
+      "value": "var container = document.querySelector('.publish-page'); if (container) { container.scrollTop = container.scrollHeight; } await new Promise(function(r) { setTimeout(r, 300); }); var btn = document.querySelector('xhs-publish-btn'); if (!btn) { return JSON.stringify({ error: 'xhs-publish-btn not found' }); } var r = btn.getBoundingClientRect(); window.__jlyl_cover_img_x = r.x + r.width * 0.8; window.__jlyl_cover_img_y = r.y + r.height / 2; return JSON.stringify({ x: Math.round(window.__jlyl_cover_img_x), y: Math.round(window.__jlyl_cover_img_y), w: Math.round(r.width), h: Math.round(r.height) });",
+      "descript": "滚动到底部并计算发布按钮坐标（xhs-publish-btn 闭合 Shadow DOM，用 page.mouse.click 穿透）",
+      "timeout": 5000
+    },
+    {
       "type": "get_by_xy",
-      "selector": "shadow:.publish-btn",
-      "descript": "点击发布按钮（Shadow DOM）",
+      "selector": "xhs-publish-btn",
+      "use_window_coords": true,
+      "descript": "点击发布按钮（通过 window 坐标穿透 closed Shadow DOM）",
       "ai_fallback": true,
       "ai_intent": "找到小红书发布按钮并点击",
       "timeout": 5000
