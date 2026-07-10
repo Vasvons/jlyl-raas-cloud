@@ -1152,8 +1152,9 @@ export async function migrate() {
       )
     `);
 
-    // 12 平台种子数据（UPSERT，每次启动幂等）
+    // 12 平台种子数据（仅首次插入，不覆盖用户自定义配置）
     // 字数限制参考各平台官方文档；style_prompt 注入 AI prompt 控制风格
+    // 注意：用 ON CONFLICT DO NOTHING，避免每次部署覆盖用户修改的规则
     const platformRules = [
       { platform: 'dy', name: '抖音', title_min: 1, title_max: 20, content_min: 100, content_max: 1000, style: '口语化、接地气、强情绪表达、适合短视频文案风格、多用短句、节奏感强', require_tags: true, tags_min: 1, tags_max: 5, cover: 'single', sort: 1 },
       { platform: 'xhs', name: '小红书', title_min: 1, title_max: 20, content_min: 100, content_max: 1000, style: 'emoji表情丰富、口语化种草风、多用感叹号、适合图文笔记、标题要吸睛、分段清晰', require_tags: true, tags_min: 1, tags_max: 10, cover: 'single', sort: 2 },
@@ -1174,20 +1175,7 @@ export async function migrate() {
           (platform, name, title_min_length, title_max_length, content_min_length, content_max_length,
            style_prompt, require_tags, tags_min_count, tags_max_count, cover_image_required, cover_image_mode, is_active, sort_order)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13)
-         ON CONFLICT (platform) DO UPDATE SET
-           name = EXCLUDED.name,
-           title_min_length = EXCLUDED.title_min_length,
-           title_max_length = EXCLUDED.title_max_length,
-           content_min_length = EXCLUDED.content_min_length,
-           content_max_length = EXCLUDED.content_max_length,
-           style_prompt = EXCLUDED.style_prompt,
-           require_tags = EXCLUDED.require_tags,
-           tags_min_count = EXCLUDED.tags_min_count,
-           tags_max_count = EXCLUDED.tags_max_count,
-           cover_image_required = EXCLUDED.cover_image_required,
-           cover_image_mode = EXCLUDED.cover_image_mode,
-           sort_order = EXCLUDED.sort_order,
-           update_time = NOW()`,
+         ON CONFLICT (platform) DO NOTHING`,
         [
           r.platform, r.name, r.title_min, r.title_max, r.content_min, r.content_max,
           r.style, r.require_tags, r.tags_min, r.tags_max,
