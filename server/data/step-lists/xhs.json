@@ -1,6 +1,6 @@
 {
   "platform": "xhs",
-  "version": "1.7.7",
+  "version": "1.7.8",
   "description": "小红书图文发布流程（基于 red.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
@@ -74,8 +74,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var container = document.querySelector('.publish-page'); if (container) { container.scrollTop = container.scrollHeight; } await new Promise(function(r) { setTimeout(r, 300); }); var btn = document.querySelector('xhs-publish-btn'); if (!btn) { return JSON.stringify({ error: 'xhs-publish-btn not found' }); } var r = btn.getBoundingClientRect(); window.__jlyl_cover_img_x = r.x + r.width * 0.9; window.__jlyl_cover_img_y = r.y + r.height / 2; return JSON.stringify({ x: Math.round(window.__jlyl_cover_img_x), y: Math.round(window.__jlyl_cover_img_y), w: Math.round(r.width), h: Math.round(r.height), btnLeft: Math.round(r.x), btnRight: Math.round(r.right) });",
-      "descript": "滚动到底部并计算发布按钮坐标（xhs-publish-btn 闭合 Shadow DOM，用 page.mouse.click 穿透）",
+      "value": "var container = document.querySelector('.publish-page'); if (container) { container.scrollTop = container.scrollHeight; } await new Promise(function(r) { setTimeout(r, 300); }); var btn = document.querySelector('xhs-publish-btn'); if (!btn) { return JSON.stringify({ error: 'xhs-publish-btn not found' }); } btn.scrollIntoView({ block: 'center', behavior: 'instant' }); await new Promise(function(r) { setTimeout(r, 500); }); var r = btn.getBoundingClientRect(); var clickX = r.x + r.width * 0.95; var clickY = r.y + r.height / 2; window.__jlyl_cover_img_x = clickX; window.__jlyl_cover_img_y = clickY; var elsAtPoint = document.elementsFromPoint(clickX, clickY).map(function(e) { return e.tagName + (e.className && typeof e.className === 'string' ? '.' + e.className.split(' ').join('.') : ''); }).slice(0, 5); var cs = window.getComputedStyle(btn); var textContent = btn.textContent ? btn.textContent.trim().substring(0, 100) : '(empty)'; return JSON.stringify({ x: Math.round(clickX), y: Math.round(clickY), w: Math.round(r.width), h: Math.round(r.height), btnLeft: Math.round(r.x), btnRight: Math.round(r.right), btnTop: Math.round(r.y), btnBottom: Math.round(r.bottom), elementsAtPoint: elsAtPoint, pointerEvents: cs.pointerEvents, visibility: cs.visibility, display: cs.display, opacity: cs.opacity, textContent: textContent });",
+      "descript": "滚动按钮到视口中央并计算点击坐标（95%位置）+ 诊断 elementsFromPoint 和按钮样式",
       "timeout": 5000
     },
     {
@@ -86,6 +86,18 @@
       "ai_fallback": true,
       "ai_intent": "找到小红书发布按钮并点击",
       "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "等待2秒后检查是否有确认弹窗"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var dialogs = document.querySelectorAll('.el-dialog, .ant-modal, .modal, [role=\"dialog\"], .el-message-box'); var clicked = false; for (var i = 0; i < dialogs.length; i++) { var d = dialogs[i]; if (d.offsetParent !== null) { var btns = d.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var text = btns[j].textContent.trim(); if (text.indexOf('确认') >= 0 || text.indexOf('确定') >= 0 || text.indexOf('发布') >= 0 || text.indexOf('继续') >= 0) { btns[j].click(); clicked = true; break; } } } } return clicked ? 'clicked confirm in dialog' : 'no dialog';",
+      "descript": "检查并处理确认弹窗（如有）",
+      "is_try": true,
+      "timeout": 3000
     },
     {
       "type": "evaluate_edit",
