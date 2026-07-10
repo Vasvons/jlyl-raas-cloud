@@ -1,6 +1,6 @@
 {
   "platform": "bjh",
-  "version": "1.7.5",
+  "version": "1.7.6",
   "description": "百家号图文发布流程（基于实地探查的真实确定性步骤）",
   "is_placeholder": false,
   "login_check_url": "https://baijiahao.baidu.com/builder/rc/home",
@@ -85,7 +85,7 @@
     },
     {
       "type": "timing",
-      "ms": 1000,
+      "ms": 300,
       "descript": "等待封面弹窗关闭"
     },
     {
