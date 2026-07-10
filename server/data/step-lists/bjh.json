@@ -1,6 +1,6 @@
 {
   "platform": "bjh",
-  "version": "1.7.3",
+  "version": "1.7.4",
   "description": "百家号图文发布流程（基于 baidu.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://baijiahao.baidu.com/builder/rc/home",
@@ -54,16 +54,21 @@
       "timeout": 5000
     },
     {
-      "type": "click",
-      "selector": "div.DraggableTags-tag-drag div.coverUploaderView",
-      "descript": "点击上传图片焦点",
-      "is_try": true,
-      "timeout": 5000
+      "type": "input_files",
+      "selector": "//div[contains(@class,'coverUploader')]//input[@type='file'] | //div[contains(@class,'cover')]//input[@type='file']",
+      "files": ["{cover_image_url}"],
+      "descript": "上传封面图片",
+      "timeout": 30000
+    },
+    {
+      "type": "timing",
+      "ms": 3000,
+      "descript": "等待封面上传完成"
     },
     {
       "type": "click",
-      "selector": "//button//span[text()=\"确定 (1)\"]",
-      "descript": "确认图片",
+      "selector": "//button//span[text()=\"确定 (1)\"] | //button//span[text()=\"确定\"]",
+      "descript": "确认封面图片",
       "is_try": true,
       "timeout": 5000
     },
@@ -120,17 +125,15 @@
       "timeout": 5000
     },
     {
-      "type": "wait_for_selector",
-      "selector": "//p[text()=\"提交成功，正在审核中...\"] | //p[contains(text(),\"提交成功\")] | //p[contains(text(),\"发布成功\")] | //div[contains(text(),\"审核中\")] | //div[contains(@class,\"success\")]",
-      "descript": "等待发布成功",
-      "is_try": true,
-      "timeout": 60000
+      "type": "timing",
+      "ms": 3000,
+      "descript": "等待发布请求完成"
     },
     {
       "type": "evaluate_edit",
-      "value": "return window.location.href;",
-      "descript": "获取发布后 URL",
-      "timeout": 3000
+      "value": "var bodyText = document.body.innerText; var hasError = bodyText.indexOf('请添加封面') >= 0 || bodyText.indexOf('封面不能为空') >= 0 || bodyText.indexOf('请上传封面') >= 0 || bodyText.indexOf('发布失败') >= 0 || bodyText.indexOf('不能为空') >= 0 || bodyText.indexOf('请填写') >= 0; if (hasError) { var errorTips = ['请添加封面','封面不能为空','请上传封面','发布失败','不能为空','请填写'].filter(function(s) { return bodyText.indexOf(s) >= 0; }); throw new Error('百家号发布失败: ' + errorTips.join(',')); } var hasSuccess = bodyText.indexOf('提交成功') >= 0 || bodyText.indexOf('发布成功') >= 0 || bodyText.indexOf('审核中') >= 0; var url = window.location.href; var urlChanged = url.indexOf('edit?type=news') < 0; if (!hasSuccess && !urlChanged) { throw new Error('百家号发布未成功: 未检测到成功提示且URL未跳转, url=' + url); } return JSON.stringify({ success: true, url: url, hasSuccess: hasSuccess });",
+      "descript": "验证发布成功（检测错误提示如'请添加封面'，或成功提示/URL跳转）",
+      "timeout": 5000
     }
   ]
 }

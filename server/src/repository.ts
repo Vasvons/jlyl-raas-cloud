@@ -4942,14 +4942,14 @@ export async function retryPublishRecords(
   recordId?: number
 ): Promise<{ reset_count: number }> {
   if (recordId) {
-    // 单条记录重试
+    // 单条记录重试（支持重置 failed/login_expired/completed 状态，completed 用于误判重发）
     const result = await query(
       `UPDATE publish_record
        SET status = 'pending',
            error_msg = NULL,
            started_at = NULL,
            published_at = NULL
-       WHERE id = $1 AND status IN ('failed', 'login_expired')`,
+       WHERE id = $1 AND status IN ('failed', 'login_expired', 'completed')`,
       [recordId]
     );
     // 修复 v1.7.28：单条重试也必须把关联的 publish_task 状态恢复为 pending，
@@ -4967,14 +4967,14 @@ export async function retryPublishRecords(
     return { reset_count: result.rowCount || 0 };
   }
   if (taskId) {
-    // 按任务批量重试
+    // 按任务批量重试（支持重置 failed/login_expired/completed 状态）
     const result = await query(
       `UPDATE publish_record
        SET status = 'pending',
            error_msg = NULL,
            started_at = NULL,
            published_at = NULL
-       WHERE task_id = $1 AND status IN ('failed', 'login_expired')`,
+       WHERE task_id = $1 AND status IN ('failed', 'login_expired', 'completed')`,
       [taskId]
     );
     // 同时把任务状态恢复为 pending
