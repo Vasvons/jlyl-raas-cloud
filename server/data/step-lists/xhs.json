@@ -1,10 +1,10 @@
 {
   "platform": "xhs",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "小红书图文发布流程（基于 red.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
-  "login_check_selector": ".creator-header .user-info | .account-name",
+  "login_check_selector": "input[placeholder='填写标题会有更多赞哦'] | input[type='file'] | div[contenteditable='true']",
   "login_check_url_pattern": "^https://creator\\.xiaohongshu\\.com/login\\?source=.*",
   "logout_keywords": ["请登录", "sign in"],
   "steps": [
