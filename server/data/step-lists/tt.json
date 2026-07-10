@@ -1,10 +1,10 @@
 {
   "platform": "tt",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "今日头条图文发布流程（基于 toutiao.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
-  "login_check_selector": ".user-avatar | .account-info",
+  "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
   "login_check_url_pattern": "^https://mp\\.toutiao\\.com/auth/page/login\\?redirect_url=.*",
   "logout_keywords": ["请登录", "sign in"],
   "steps": [
