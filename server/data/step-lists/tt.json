@@ -1,6 +1,6 @@
 {
   "platform": "tt",
-  "version": "1.7.5",
+  "version": "1.7.6",
   "description": "今日头条图文发布流程（基于 toutiao.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
@@ -81,10 +81,17 @@
     },
     {
       "type": "click",
-      "selector": ".byte-drawer .byte-drawer-close | .byte-drawer [class*=\"close\"] | .mp-ic-img-drawer [class*=\"close\"]",
+      "selector": ".byte-drawer .byte-drawer-close | .byte-drawer .byte-icon-close | .byte-drawer button[aria-label=\"close\"] | .mp-ic-img-drawer .byte-icon-close | .mp-ic-img-drawer [class*=\"close\"]",
       "descript": "点击右上角×关闭图片预览抽屉",
       "is_try": true,
       "timeout": 2000
+    },
+    {
+      "type": "press",
+      "value": "Escape",
+      "descript": "ESC兜底关闭抽屉",
+      "is_try": true,
+      "timeout": 1000
     },
     {
       "type": "timing",
@@ -97,8 +104,7 @@
       "descript": "预览并发布",
       "ai_fallback": true,
       "ai_intent": "找到头条发布按钮并点击",
-      "timeout": 5000,
-      "force": true
+      "timeout": 5000
     },
     {
       "type": "timing",
