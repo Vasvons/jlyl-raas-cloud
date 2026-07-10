@@ -1,6 +1,6 @@
 {
   "platform": "xhs",
-  "version": "1.7.10",
+  "version": "1.7.11",
   "description": "小红书图文发布流程（基于 red.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
@@ -74,34 +74,27 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var btn = document.querySelector('xhs-publish-btn'); if (!btn) { throw new Error('xhs-publish-btn not found'); } btn.scrollIntoView({ block: 'center', behavior: 'instant' }); await new Promise(function(r) { setTimeout(r, 500); }); var r = btn.getBoundingClientRect(); var cs = window.getComputedStyle(btn); var bodyText = document.body.innerText; var pageErrors = []; ['请选择封面', '请填写标题', '不能为空', '请上传', '发布失败', '至少选择', '请添加'].forEach(function(s) { if (bodyText.indexOf(s) >= 0) { pageErrors.push(s); } }); var diag = { textContent: btn.textContent ? btn.textContent.trim().substring(0, 200) : '(empty)', innerHTML: btn.innerHTML.substring(0, 500), childElementCount: btn.childElementCount, children: Array.from(btn.children).map(function(c) { return c.tagName + (c.className ? '.' + c.className : ''); }), disabled: btn.disabled, disabledAttr: btn.getAttribute('disabled'), ariaDisabled: btn.getAttribute('aria-disabled'), shadowRoot: btn.shadowRoot ? 'open' : 'closed/null', pointerEvents: cs.pointerEvents, cursor: cs.cursor, visibility: cs.visibility, display: cs.display, opacity: cs.opacity, pageErrors: pageErrors, bodyTextTail: bodyText.substring(bodyText.length - 300), btnRect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height), bottom: Math.round(r.bottom) } }; window.__jlyl_xhs_diag = diag; return JSON.stringify(diag);",
-      "descript": "全面诊断 xhs-publish-btn 状态（textContent/innerHTML/disabled/shadowRoot/页面错误提示）",
+      "value": "var btn = document.querySelector('xhs-publish-btn'); if (!btn) { throw new Error('xhs-publish-btn not found'); } btn.scrollIntoView({ block: 'center', behavior: 'instant' }); await new Promise(function(r) { setTimeout(r, 500); }); var r = btn.getBoundingClientRect(); window.__jlyl_cover_img_x = r.x + r.width * 0.5; window.__jlyl_cover_img_y = r.y + r.height / 2; return JSON.stringify({ x: Math.round(window.__jlyl_cover_img_x), y: Math.round(window.__jlyl_cover_img_y), w: Math.round(r.width), h: Math.round(r.height) });",
+      "descript": "滚动按钮到视口中央并准备点击坐标（50%中心位置）",
       "timeout": 5000
-    },
-    {
-      "type": "evaluate_edit",
-      "value": "var btn = document.querySelector('xhs-publish-btn'); if (!btn) { throw new Error('xhs-publish-btn not found'); } var r = btn.getBoundingClientRect(); var methods = []; var checkSuccess = function() { var url = window.location.href; var bt = document.body.innerText; return url.indexOf('publish/success') >= 0 || url.indexOf('publish/result') >= 0 || bt.indexOf('发布成功') >= 0 || bt.indexOf('笔记已发布') >= 0; }; try { btn.click(); methods.push('btn.click()'); } catch(e) { methods.push('btn.click() error: ' + e.message); } await new Promise(function(r) { setTimeout(r, 1000); }); if (checkSuccess()) { return JSON.stringify({ success: true, method: 'btn.click()' }); } try { btn.focus(); await new Promise(function(r) { setTimeout(r, 200); }); var ke = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }); btn.dispatchEvent(ke); var kp = new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }); btn.dispatchEvent(kp); var ku = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }); btn.dispatchEvent(ku); methods.push('focus+Enter keys'); } catch(e) { methods.push('focus+Enter error: ' + e.message); } await new Promise(function(r) { setTimeout(r, 1000); }); if (checkSuccess()) { return JSON.stringify({ success: true, method: 'focus+Enter' }); } var cx = r.x + r.width * 0.95; var cy = r.y + r.height / 2; try { btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, pointerId: 1, pointerType: 'mouse' })); btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, pointerId: 1, pointerType: 'mouse' })); btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy })); btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy })); btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy })); methods.push('full pointer+mouse events at 95%'); } catch(e) { methods.push('pointer events error: ' + e.message); } await new Promise(function(r) { setTimeout(r, 1000); }); if (checkSuccess()) { return JSON.stringify({ success: true, method: 'full pointer+mouse events' }); } window.__jlyl_cover_img_x = r.x + r.width * 0.5; window.__jlyl_cover_img_y = r.y + r.height / 2; methods.push('prepared mouse.click coords at 50% for fallback'); return JSON.stringify({ success: false, methods: methods, needMouseClick: true });",
-      "descript": "尝试3种JS点击方式（btn.click/focus+Enter/full pointer events），都失败则准备 page.mouse.click 坐标",
-      "timeout": 10000
     },
     {
       "type": "get_by_xy",
       "selector": "xhs-publish-btn",
       "use_window_coords": true,
-      "descript": "page.mouse.click 穿透 closed Shadow DOM（50%位置）",
+      "descript": "点击发布按钮（3层策略穿透 closed Shadow DOM：mouse.click → locator.click → ElementHandle.click）",
       "ai_fallback": true,
       "ai_intent": "找到小红书发布按钮并点击",
-      "is_try": true,
-      "timeout": 5000
+      "timeout": 15000
     },
     {
       "type": "timing",
-      "ms": 2000,
-      "descript": "等待2秒后检查是否有确认弹窗"
+      "ms": 3000,
+      "descript": "等待3秒让发布请求完成"
     },
     {
       "type": "evaluate_edit",
-      "value": "var dialogs = document.querySelectorAll('.el-dialog, .ant-modal, .modal, [role=\"dialog\"], .el-message-box, .toast, . RedsPublishModal'); var clicked = false; for (var i = 0; i < dialogs.length; i++) { var d = dialogs[i]; if (d.offsetParent !== null) { var btns = d.querySelectorAll('button, a, span, div[role=\"button\"]'); for (var j = 0; j < btns.length; j++) { var text = btns[j].textContent.trim(); if (text.indexOf('确认') >= 0 || text.indexOf('确定') >= 0 || text.indexOf('发布') >= 0 || text.indexOf('继续') >= 0) { btns[j].click(); clicked = true; break; } } } } return clicked ? 'clicked confirm in dialog' : 'no dialog';",
+      "value": "var dialogs = document.querySelectorAll('.el-dialog, .ant-modal, .modal, [role=\"dialog\"], .el-message-box, .toast'); var clicked = false; for (var i = 0; i < dialogs.length; i++) { var d = dialogs[i]; if (d.offsetParent !== null) { var btns = d.querySelectorAll('button, a, span, div[role=\"button\"]'); for (var j = 0; j < btns.length; j++) { var text = btns[j].textContent.trim(); if (text.indexOf('确认') >= 0 || text.indexOf('确定') >= 0 || text.indexOf('发布') >= 0 || text.indexOf('继续') >= 0) { btns[j].click(); clicked = true; break; } } } } return clicked ? 'clicked confirm in dialog' : 'no dialog';",
       "descript": "检查并处理确认弹窗（如有）",
       "is_try": true,
       "timeout": 3000
