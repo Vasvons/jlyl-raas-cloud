@@ -1,6 +1,6 @@
 {
   "platform": "tt",
-  "version": "1.7.4",
+  "version": "1.7.5",
   "description": "今日头条图文发布流程（基于 toutiao.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
@@ -80,15 +80,15 @@
       "descript": "等待选项生效"
     },
     {
-      "type": "press",
-      "value": "Escape",
-      "descript": "按 ESC 关闭图片预览抽屉（如有）",
+      "type": "click",
+      "selector": ".byte-drawer .byte-drawer-close | .byte-drawer [class*=\"close\"] | .mp-ic-img-drawer [class*=\"close\"]",
+      "descript": "点击右上角×关闭图片预览抽屉",
       "is_try": true,
       "timeout": 2000
     },
     {
       "type": "timing",
-      "ms": 800,
+      "ms": 500,
       "descript": "等待抽屉消失"
     },
     {
@@ -103,7 +103,15 @@
     {
       "type": "timing",
       "ms": 2000,
-      "descript": "等待发布请求处理"
+      "descript": "等待手机预览弹窗和确认发布按钮出现"
+    },
+    {
+      "type": "click",
+      "selector": "//span[text()=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\")]//span[text()=\"确认发布\"] | //button[normalize-space(.)=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\") and contains(normalize-space(.),\"确认\")]",
+      "descript": "确认发布",
+      "ai_fallback": true,
+      "ai_intent": "找到确认发布按钮并点击",
+      "timeout": 8000
     },
     {
       "type": "wait_for_url",
