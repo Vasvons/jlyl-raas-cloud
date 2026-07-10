@@ -1,6 +1,6 @@
 {
   "platform": "tt",
-  "version": "1.7.3",
+  "version": "1.7.4",
   "description": "今日头条图文发布流程（基于 toutiao.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
@@ -102,14 +102,8 @@
     },
     {
       "type": "timing",
-      "ms": 1500,
-      "descript": "等待确认弹窗出现"
-    },
-    {
-      "type": "click",
-      "selector": "//span[text()=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\")]//span[text()=\"确认\"] | //button[contains(@class,\"byte-btn-primary\") and normalize-space(.)=\"确认\"]",
-      "descript": "确认发布",
-      "timeout": 8000
+      "ms": 2000,
+      "descript": "等待发布请求处理"
     },
     {
       "type": "wait_for_url",
