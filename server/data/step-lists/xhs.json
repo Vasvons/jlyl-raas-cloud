@@ -1,6 +1,6 @@
 {
   "platform": "xhs",
-  "version": "1.7.4",
+  "version": "1.7.5",
   "description": "小红书图文发布流程（基于 red.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
@@ -29,7 +29,7 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var container = document.querySelector('.publish-page'); if (container) { container.scrollTop = 0; } await new Promise(function(r) { setTimeout(r, 300); }); 'scrolled to top'",
+      "value": "var container = document.querySelector('.publish-page'); if (container) { container.scrollTop = 0; } await new Promise(function(r) { setTimeout(r, 300); }); return 'scrolled to top';",
       "descript": "滚动到表单顶部（确保标题输入框在视口内）",
       "timeout": 3000
     },
