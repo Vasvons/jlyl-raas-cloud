@@ -73,6 +73,8 @@ import {
   // v2.0.0：时间维度报告（周/月报）
   getAeoPeriodReports,
   getAeoPeriodReportById,
+  // v2.0.1：AEO 数据大屏聚合
+  getAeoDashboardData,
   // 智能体角色同步
   upsertAgentProfile,
   getAgentProfiles,
@@ -2195,6 +2197,20 @@ router.get('/aeo-period-reports/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ code: 404, message: '报告不存在' });
     }
     res.json({ code: 200, data: report });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v2.0.1: AEO 数据大屏（按客户聚合） ============
+
+// 获取 AEO 数据大屏数据（一次加载所有图表数据）
+router.get('/aeo-dashboard', async (req: Request, res: Response) => {
+  try {
+    const customerId = getCustomerId(req);
+    const days = req.query.days ? Math.min(Math.max(Number(req.query.days), 1), 90) : 30;
+    const data = await getAeoDashboardData(String(customerId), days);
+    res.json({ code: 200, data });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

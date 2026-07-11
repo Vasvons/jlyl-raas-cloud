@@ -3473,6 +3473,288 @@ export async function getInclusionStatsByTimeRange(
   };
 }
 
+/**
+ * v2.0.1: AEO 数据大屏聚合查询
+ *
+ * 一次查询返回大屏所需的所有数据，从 real_collect_record + aeo_shard_report + aeo_period_report 聚合
+ * 不调用 AI，纯 SQL 聚合，响应 < 500ms
+ *
+ * @param userId 客户 ID（users.id 转字符串）
+ * @param days 时间范围天数（默认 30 天）
+ */
+export async function getAeoDashboardData(userId: string, days: number = 30): Promise<any> {
+  const endTime = new Date();
+  const startTime = new Date(endTime.getTime() - days * 24 * 60 * 60 * 1000);
+  // 上一周期（用于环比）
+  const prevStartTime = new Date(startTime.getTime() - days * 24 * 60 * 60 * 1000);
+
+  // ---- 1. KPI：总记录数、品牌命中、关键词覆盖（当前周期） ----
+  const kpiResult = await query(
+    `SELECT
+       COUNT(*) AS total_records,
+       SUM(CASE WHEN brand_matched = true THEN 1 ELSE 0 END) AS brand_matched,
+       COUNT(DISTINCT keyword) AS keywords_covered
+     FROM real_collect_record
+     WHERE user_id = $1 AND query_time >= $2 AND query_time <= $3`,
+    [userId, startTime, endTime]
+  );
+
+  // ---- 2. KPI：上一周期（环比） ----
+  const prevKpiResult = await query(
+    `SELECT
+       COUNT(*) AS total_records,
+       SUM(CASE WHEN brand_matched = true THEN 1 ELSE 0 END) AS brand_matched,
+       COUNT(DISTINCT keyword) AS keywords_covered
+     FROM real_collect_record
+     WHERE user_id = $1 AND query_time >= $2 AND query_time < $3`,
+    [userId, prevStartTime, startTime]
+  );
+
+  // ---- 3. KPI：分片报告聚合（可见度、情感、提及数） ----
+  const shardKpi = await query(
+    `SELECT
+       COALESCE(AVG(visibility_score), 0) AS avg_visibility,
+       COALESCE(AVG(positive_ratio), 0) AS avg_positive,
+       COALESCE(AVG(negative_ratio), 0) AS avg_negative,
+       COALESCE(AVG(neutral_ratio), 0) AS avg_neutral,
+       COALESCE(SUM(brand_matched_count), 0) AS total_mentions
+     FROM aeo_shard_report
+     WHERE user_id = $1 AND created_at >= $2`,
+    [userId, startTime]
+  );
+
+  // ---- 4. 上一周期分片报告（环比） ----
+  const prevShardKpi = await query(
+    `SELECT
+       COALESCE(AVG(visibility_score), 0) AS avg_visibility,
+       COALESCE(AVG(negative_ratio), 0) AS avg_negative,
+       COALESCE(SUM(brand_matched_count), 0) AS total_mentions
+     FROM aeo_shard_report
+     WHERE user_id = $1 AND created_at >= $2 AND created_at < $3`,
+    [userId, prevStartTime, startTime]
+  );
+
+  // ---- 5. 当前轮次 ----
+  const roundResult = await query(
+    `SELECT MAX(round_no) AS current_round
+     FROM real_collect_task
+     WHERE user_id = $1 AND status = 'active'`,
+    [userId]
+  );
+
+  // ---- 6. 关键词总数 ----
+  const keywordTotal = await query(
+    `SELECT COUNT(*) AS total FROM zlgjc WHERE user_id = $1`,
+    [userId]
+  );
+
+  // ---- 7. 趋势：分片级收录率 + 可见度 + 情感序列 ----
+  const shardTrend = await query(
+    `SELECT
+       shard_end_time,
+       record_count,
+       brand_matched_count,
+       visibility_score,
+       positive_ratio,
+       neutral_ratio,
+       negative_ratio,
+       round_no
+     FROM aeo_shard_report
+     WHERE user_id = $1 AND created_at >= $2 AND shard_end_time IS NOT NULL
+     ORDER BY shard_end_time ASC`,
+    [userId, startTime]
+  );
+
+  // ---- 8. 趋势：周期级收录率序列 ----
+  const periodTrend = await query(
+    `SELECT
+       period_type,
+       period_start,
+       period_end,
+       inclusion_summary,
+       rank_summary
+     FROM aeo_period_report
+     WHERE user_id = $1 AND period_end >= $2
+     ORDER BY period_end ASC`,
+    [userId, startTime.toISOString().slice(0, 10)]
+  );
+
+  // ---- 9. 平台分布 ----
+  const platformDist = await query(
+    `SELECT platform,
+       COUNT(*) AS total,
+       SUM(CASE WHEN brand_matched = true THEN 1 ELSE 0 END) AS matched
+     FROM real_collect_record
+     WHERE user_id = $1 AND query_time >= $2 AND query_time <= $3
+     GROUP BY platform
+     ORDER BY total DESC`,
+    [userId, startTime, endTime]
+  );
+
+  // ---- 10. 品牌提及热力图（最近 50 条分片报告的 brand_mentions） ----
+  const brandMentions = await query(
+    `SELECT brand_mentions
+     FROM aeo_shard_report
+     WHERE user_id = $1 AND created_at >= $2 AND brand_mentions IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 50`,
+    [userId, startTime]
+  );
+
+  // ---- 11. 写作建议池（最近 5 条周期报告） ----
+  const writingSuggestions = await query(
+    `SELECT writing_suggestions, period_type, period_end
+     FROM aeo_period_report
+     WHERE user_id = $1 AND writing_suggestions IS NOT NULL
+     ORDER BY period_end DESC
+     LIMIT 5`,
+    [userId]
+  );
+
+  // ---- 聚合结果 ----
+  const totalRecords = parseInt(kpiResult.rows[0]?.total_records || '0', 10);
+  const brandMatched = parseInt(kpiResult.rows[0]?.brand_matched || '0', 10);
+  const keywordsCovered = parseInt(kpiResult.rows[0]?.keywords_covered || '0', 10);
+  const keywordTotalCount = parseInt(keywordTotal.rows[0]?.total || '0', 10);
+
+  const prevTotalRecords = parseInt(prevKpiResult.rows[0]?.total_records || '0', 10);
+  const prevBrandMatched = parseInt(prevKpiResult.rows[0]?.brand_matched || '0', 10);
+  const prevKeywordsCovered = parseInt(prevKpiResult.rows[0]?.keywords_covered || '0', 10);
+
+  const avgVisibility = parseFloat(shardKpi.rows[0]?.avg_visibility || '0');
+  const avgPositive = parseFloat(shardKpi.rows[0]?.avg_positive || '0');
+  const avgNegative = parseFloat(shardKpi.rows[0]?.avg_negative || '0');
+  const avgNeutral = parseFloat(shardKpi.rows[0]?.avg_neutral || '0');
+  const totalMentions = parseInt(shardKpi.rows[0]?.total_mentions || '0', 10);
+
+  const prevAvgVisibility = parseFloat(prevShardKpi.rows[0]?.avg_visibility || '0');
+  const prevAvgNegative = parseFloat(prevShardKpi.rows[0]?.avg_negative || '0');
+  const prevTotalMentions = parseInt(prevShardKpi.rows[0]?.total_mentions || '0', 10);
+
+  const inclusionRate = totalRecords > 0 ? Math.round((brandMatched / totalRecords) * 10000) / 100 : 0;
+  const prevInclusionRate = prevTotalRecords > 0 ? Math.round((prevBrandMatched / prevTotalRecords) * 10000) / 100 : 0;
+  const keywordCoverage = keywordTotalCount > 0 ? Math.round((keywordsCovered / keywordTotalCount) * 10000) / 100 : 0;
+  const prevKeywordCoverage = keywordTotalCount > 0 ? Math.round((prevKeywordsCovered / keywordTotalCount) * 10000) / 100 : 0;
+
+  // 计算环比 delta
+  const delta = (curr: number, prev: number) => prev === 0 ? 0 : Math.round((curr - prev) * 100) / 100;
+
+  // 构建分片级趋势序列
+  const inclusionRateSeries = shardTrend.rows.map((r: any) => ({
+    time: r.shard_end_time,
+    value: r.record_count > 0 ? Math.round((r.brand_matched_count / r.record_count) * 10000) / 100 : 0,
+    granularity: 'shard' as const,
+    round_no: r.round_no,
+  }));
+
+  // 追加周期级点
+  for (const p of periodTrend.rows) {
+    const inclusionSummary = typeof p.inclusion_summary === 'string' ? JSON.parse(p.inclusion_summary) : p.inclusion_summary;
+    if (inclusionSummary?.inclusion_rate !== undefined) {
+      inclusionRateSeries.push({
+        time: p.period_end,
+        value: parseFloat(inclusionSummary.inclusion_rate),
+        granularity: p.period_type as 'weekly' | 'monthly',
+        round_no: null,
+      });
+    }
+  }
+
+  // 可见度趋势序列
+  const visibilitySeries = shardTrend.rows.map((r: any) => ({
+    time: r.shard_end_time,
+    value: parseFloat(r.visibility_score || '0'),
+    round_no: r.round_no,
+  }));
+
+  // 情感趋势序列
+  const sentimentSeries = shardTrend.rows.map((r: any) => ({
+    time: r.shard_end_time,
+    positive: parseFloat(r.positive_ratio || '0'),
+    neutral: parseFloat(r.neutral_ratio || '0'),
+    negative: parseFloat(r.negative_ratio || '0'),
+  }));
+
+  // 平台分布
+  const platformRecords = platformDist.rows.map((r: any) => ({
+    platform: r.platform,
+    total: parseInt(r.total, 10),
+    matched: parseInt(r.matched, 10),
+  }));
+
+  // 品牌提及热力图数据
+  const heatmapData: Array<{ keyword: string; platform: string; count: number }> = [];
+  const heatmapMap = new Map<string, number>();
+  for (const row of brandMentions.rows) {
+    const mentions = typeof row.brand_mentions === 'string' ? JSON.parse(row.brand_mentions) : row.brand_mentions;
+    if (!Array.isArray(mentions)) continue;
+    for (const m of mentions) {
+      const kw = m.keyword || m.keyword_text || '';
+      const plat = m.platform || '';
+      if (!kw || !plat) continue;
+      const key = `${kw}|||${plat}`;
+      heatmapMap.set(key, (heatmapMap.get(key) || 0) + 1);
+    }
+  }
+  for (const [key, count] of heatmapMap) {
+    const [keyword, platform] = key.split('|||');
+    heatmapData.push({ keyword, platform, count });
+  }
+
+  // 写作建议池
+  const suggestionsPool: any[] = [];
+  for (const row of writingSuggestions.rows) {
+    const suggestions = typeof row.writing_suggestions === 'string' ? JSON.parse(row.writing_suggestions) : row.writing_suggestions;
+    if (!Array.isArray(suggestions)) continue;
+    for (const s of suggestions) {
+      suggestionsPool.push({
+        topic: s.topic || s.title || '',
+        priority: s.priority || 'medium',
+        platforms: s.platforms || [],
+        reason: s.reason || s.direction || '',
+        period_type: row.period_type,
+        period_end: row.period_end,
+      });
+    }
+  }
+
+  return {
+    kpi: {
+      inclusion_rate: inclusionRate,
+      inclusion_rate_delta: delta(inclusionRate, prevInclusionRate),
+      avg_visibility: Math.round(avgVisibility * 100) / 100,
+      avg_visibility_delta: delta(avgVisibility, prevAvgVisibility),
+      brand_mentions: totalMentions,
+      brand_mentions_delta: delta(totalMentions, prevTotalMentions),
+      negative_ratio: Math.round(avgNegative * 100) / 100,
+      negative_ratio_delta: delta(avgNegative, prevAvgNegative),
+      keyword_coverage: keywordCoverage,
+      keyword_coverage_delta: delta(keywordCoverage, prevKeywordCoverage),
+      current_round: parseInt(roundResult.rows[0]?.current_round || '0', 10),
+      total_records: totalRecords,
+      total_keywords: keywordTotalCount,
+    },
+    trends: {
+      inclusion_rate: inclusionRateSeries,
+      visibility: visibilitySeries,
+      sentiment: sentimentSeries,
+    },
+    distributions: {
+      platform_records: platformRecords,
+      sentiment_pie: {
+        positive: Math.round(avgPositive * 100) / 100,
+        neutral: Math.round(avgNeutral * 100) / 100,
+        negative: Math.round(avgNegative * 100) / 100,
+      },
+    },
+    deep_analysis: {
+      brand_heatmap: heatmapData.slice(0, 200),
+      writing_suggestions: suggestionsPool.slice(0, 50),
+    },
+    last_updated: new Date().toISOString(),
+  };
+}
+
 /** 检查今日是否已生成 AEO 报告 */
 export async function checkAeoReportExists(taskId: number, reportDate: string): Promise<boolean> {
   const result = await query(
