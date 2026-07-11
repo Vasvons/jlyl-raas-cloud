@@ -1277,6 +1277,176 @@ export async function migrate() {
 
     console.log('[Migrate] v1.9.0 发布账号池智能调度字段/表创建完成');
 
+    // ============ v2.0.0: AI平台流量权重层（AEO闭环基础） ============
+
+    // ai_platform_weight: AI平台流量权重表（查询平台，如 kimi/wenxin/zhipu 等）
+    // 用于指导内容投放的平台侧重：高用户量AI平台的信源平台应多投放
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_platform_weight (
+        id SERIAL PRIMARY KEY,
+        platform VARCHAR(50) NOT NULL UNIQUE,
+        display_name VARCHAR(100),
+        user_volume_level INTEGER DEFAULT 3,
+        traffic_weight DECIMAL(3,2) DEFAULT 1.0,
+        is_enabled BOOLEAN DEFAULT true,
+        notes TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // ai_platform_source_mapping: AI平台 → 信源自媒体平台映射
+    // 描述每个AI平台主要从哪些自媒体平台获取内容，用于计算各自媒体平台的综合投放权重
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_platform_source_mapping (
+        id SERIAL PRIMARY KEY,
+        ai_platform VARCHAR(50) NOT NULL,
+        source_platform VARCHAR(50) NOT NULL,
+        source_weight DECIMAL(3,2) DEFAULT 1.0,
+        notes TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(ai_platform, source_platform)
+      )
+    `);
+
+    // AI平台流量权重默认数据（用户可在后台调整）
+    const aiPlatformWeights = [
+      { platform: 'kimi',     display_name: 'Kimi',      user_volume_level: 5, traffic_weight: 2.0 },
+      { platform: 'wenxin',   display_name: '文心一言',   user_volume_level: 5, traffic_weight: 2.0 },
+      { platform: 'doubao',   display_name: '豆包',      user_volume_level: 5, traffic_weight: 2.0 },
+      { platform: 'zhipu',    display_name: '智谱清言',   user_volume_level: 4, traffic_weight: 1.5 },
+      { platform: 'qwen',     display_name: '通义千问',   user_volume_level: 4, traffic_weight: 1.5 },
+      { platform: 'deepseek', display_name: 'DeepSeek',  user_volume_level: 4, traffic_weight: 1.5 },
+      { platform: 'hunyuan',  display_name: '腾讯混元',   user_volume_level: 3, traffic_weight: 1.0 },
+      { platform: 'spark',    display_name: '讯飞星火',   user_volume_level: 3, traffic_weight: 1.0 },
+    ];
+    for (const p of aiPlatformWeights) {
+      await client.query(
+        `INSERT INTO ai_platform_weight (platform, display_name, user_volume_level, traffic_weight, is_enabled)
+         VALUES ($1, $2, $3, $4, true)
+         ON CONFLICT (platform) DO NOTHING`,
+        [p.platform, p.display_name, p.user_volume_level, p.traffic_weight]
+      );
+    }
+
+    // AI平台 → 信源自媒体平台映射默认数据（用户可在后台调整）
+    // 基于一般经验：文心一言→百度系权重高，Kimi→微信公众号/知乎权重高，豆包→头条/抖音系权重高
+    const sourceMappings: Array<{ ai: string; source: string; weight: number }> = [
+      // 文心一言：百度系权重高
+      { ai: 'wenxin', source: 'bjh',   weight: 2.0 },
+      { ai: 'wenxin', source: 'zh',    weight: 1.5 },
+      { ai: 'wenxin', source: 'xhs',   weight: 1.0 },
+      { ai: 'wenxin', source: 'wxgzh', weight: 1.5 },
+      { ai: 'wenxin', source: 'tt',    weight: 1.0 },
+      { ai: 'wenxin', source: 'sohu',  weight: 0.8 },
+      { ai: 'wenxin', source: 'qeh',   weight: 0.8 },
+      { ai: 'wenxin', source: 'wy',    weight: 0.8 },
+      { ai: 'wenxin', source: 'csdn',  weight: 1.0 },
+      { ai: 'wenxin', source: 'js',    weight: 0.5 },
+      { ai: 'wenxin', source: 'bili',  weight: 1.0 },
+      { ai: 'wenxin', source: 'dy',    weight: 1.0 },
+      // Kimi：微信公众号、知乎权重高
+      { ai: 'kimi', source: 'wxgzh', weight: 2.0 },
+      { ai: 'kimi', source: 'zh',    weight: 1.8 },
+      { ai: 'kimi', source: 'xhs',   weight: 1.5 },
+      { ai: 'kimi', source: 'bjh',   weight: 1.5 },
+      { ai: 'kimi', source: 'csdn',  weight: 1.2 },
+      { ai: 'kimi', source: 'tt',    weight: 1.0 },
+      { ai: 'kimi', source: 'sohu',  weight: 0.8 },
+      { ai: 'kimi', source: 'qeh',   weight: 0.8 },
+      { ai: 'kimi', source: 'wy',    weight: 0.8 },
+      { ai: 'kimi', source: 'js',    weight: 0.5 },
+      { ai: 'kimi', source: 'bili',  weight: 1.0 },
+      { ai: 'kimi', source: 'dy',    weight: 1.0 },
+      // 豆包：今日头条、抖音系权重高
+      { ai: 'doubao', source: 'tt',    weight: 2.0 },
+      { ai: 'doubao', source: 'dy',    weight: 1.8 },
+      { ai: 'doubao', source: 'xhs',   weight: 1.5 },
+      { ai: 'doubao', source: 'wxgzh', weight: 1.5 },
+      { ai: 'doubao', source: 'zh',    weight: 1.3 },
+      { ai: 'doubao', source: 'bjh',   weight: 1.2 },
+      { ai: 'doubao', source: 'csdn',  weight: 1.0 },
+      { ai: 'doubao', source: 'sohu',  weight: 0.8 },
+      { ai: 'doubao', source: 'qeh',   weight: 0.8 },
+      { ai: 'doubao', source: 'wy',    weight: 0.8 },
+      { ai: 'doubao', source: 'js',    weight: 0.5 },
+      { ai: 'doubao', source: 'bili',  weight: 1.0 },
+      // 智谱清言：较均衡，知乎/微信公众号稍高
+      { ai: 'zhipu', source: 'zh',    weight: 1.5 },
+      { ai: 'zhipu', source: 'wxgzh', weight: 1.5 },
+      { ai: 'zhipu', source: 'bjh',   weight: 1.2 },
+      { ai: 'zhipu', source: 'xhs',   weight: 1.2 },
+      { ai: 'zhipu', source: 'tt',    weight: 1.0 },
+      { ai: 'zhipu', source: 'csdn',  weight: 1.0 },
+      { ai: 'zhipu', source: 'sohu',  weight: 0.8 },
+      { ai: 'zhipu', source: 'qeh',   weight: 0.8 },
+      { ai: 'zhipu', source: 'wy',    weight: 0.8 },
+      { ai: 'zhipu', source: 'js',    weight: 0.5 },
+      { ai: 'zhipu', source: 'bili',  weight: 1.0 },
+      { ai: 'zhipu', source: 'dy',    weight: 1.0 },
+      // 通义千问：较均衡
+      { ai: 'qwen', source: 'zh',    weight: 1.3 },
+      { ai: 'qwen', source: 'wxgzh', weight: 1.3 },
+      { ai: 'qwen', source: 'bjh',   weight: 1.2 },
+      { ai: 'qwen', source: 'xhs',   weight: 1.2 },
+      { ai: 'qwen', source: 'tt',    weight: 1.2 },
+      { ai: 'qwen', source: 'csdn',  weight: 1.0 },
+      { ai: 'qwen', source: 'sohu',  weight: 0.8 },
+      { ai: 'qwen', source: 'qeh',   weight: 0.8 },
+      { ai: 'qwen', source: 'wy',    weight: 0.8 },
+      { ai: 'qwen', source: 'js',    weight: 0.5 },
+      { ai: 'qwen', source: 'bili',  weight: 1.0 },
+      { ai: 'qwen', source: 'dy',    weight: 1.0 },
+      // DeepSeek：较均衡
+      { ai: 'deepseek', source: 'zh',    weight: 1.3 },
+      { ai: 'deepseek', source: 'wxgzh', weight: 1.3 },
+      { ai: 'deepseek', source: 'bjh',   weight: 1.2 },
+      { ai: 'deepseek', source: 'xhs',   weight: 1.2 },
+      { ai: 'deepseek', source: 'tt',    weight: 1.0 },
+      { ai: 'deepseek', source: 'csdn',  weight: 1.2 },
+      { ai: 'deepseek', source: 'sohu',  weight: 0.8 },
+      { ai: 'deepseek', source: 'qeh',   weight: 0.8 },
+      { ai: 'deepseek', source: 'wy',    weight: 0.8 },
+      { ai: 'deepseek', source: 'js',    weight: 0.5 },
+      { ai: 'deepseek', source: 'bili',  weight: 1.0 },
+      { ai: 'deepseek', source: 'dy',    weight: 1.0 },
+      // 腾讯混元：企鹅号权重稍高（腾讯系）
+      { ai: 'hunyuan', source: 'qeh',   weight: 1.5 },
+      { ai: 'hunyuan', source: 'wxgzh', weight: 1.3 },
+      { ai: 'hunyuan', source: 'zh',    weight: 1.2 },
+      { ai: 'hunyuan', source: 'bjh',   weight: 1.0 },
+      { ai: 'hunyuan', source: 'xhs',   weight: 1.0 },
+      { ai: 'hunyuan', source: 'tt',    weight: 1.0 },
+      { ai: 'hunyuan', source: 'csdn',  weight: 1.0 },
+      { ai: 'hunyuan', source: 'sohu',  weight: 0.8 },
+      { ai: 'hunyuan', source: 'wy',    weight: 0.8 },
+      { ai: 'hunyuan', source: 'js',    weight: 0.5 },
+      { ai: 'hunyuan', source: 'bili',  weight: 1.0 },
+      { ai: 'hunyuan', source: 'dy',    weight: 1.0 },
+      // 讯飞星火：较均衡
+      { ai: 'spark', source: 'zh',    weight: 1.2 },
+      { ai: 'spark', source: 'wxgzh', weight: 1.2 },
+      { ai: 'spark', source: 'bjh',   weight: 1.2 },
+      { ai: 'spark', source: 'xhs',   weight: 1.0 },
+      { ai: 'spark', source: 'tt',    weight: 1.0 },
+      { ai: 'spark', source: 'csdn',  weight: 1.0 },
+      { ai: 'spark', source: 'sohu',  weight: 0.8 },
+      { ai: 'spark', source: 'qeh',   weight: 0.8 },
+      { ai: 'spark', source: 'wy',    weight: 0.8 },
+      { ai: 'spark', source: 'js',    weight: 0.5 },
+      { ai: 'spark', source: 'bili',  weight: 1.0 },
+      { ai: 'spark', source: 'dy',    weight: 1.0 },
+    ];
+    for (const m of sourceMappings) {
+      await client.query(
+        `INSERT INTO ai_platform_source_mapping (ai_platform, source_platform, source_weight)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (ai_platform, source_platform) DO NOTHING`,
+        [m.ai, m.source, m.weight]
+      );
+    }
+
+    console.log('[Migrate] v2.0.0 AI平台流量权重层创建完成（ai_platform_weight + ai_platform_source_mapping）');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

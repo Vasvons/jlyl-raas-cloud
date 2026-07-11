@@ -94,6 +94,16 @@ import {
   getDefaultModelConfig,
   // v1.8.2：发布专用模型配置
   getPublishModelConfig,
+  // v2.0.0：AI平台流量权重层
+  getAiPlatformWeights,
+  getAiPlatformWeight,
+  upsertAiPlatformWeight,
+  deleteAiPlatformWeight,
+  getAiPlatformSourceMappings,
+  upsertAiPlatformSourceMapping,
+  deleteAiPlatformSourceMapping,
+  calcSourcePlatformWeights,
+  allocateArticlesByWeight,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
@@ -1159,6 +1169,146 @@ router.delete('/platform-rules/:platform', adminMiddleware, async (req: Request,
   try {
     await deletePlatformRule(req.params.platform);
     res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v2.0.0: AI平台流量权重管理 ============
+
+// 获取所有AI平台流量权重
+router.get('/ai-platform-weights', async (req: Request, res: Response) => {
+  try {
+    const onlyEnabled = req.query.only_enabled === 'true' || req.query.onlyEnabled === 'true';
+    const list = await getAiPlatformWeights(onlyEnabled);
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 获取单个AI平台流量权重
+router.get('/ai-platform-weights/:platform', async (req: Request, res: Response) => {
+  try {
+    const data = await getAiPlatformWeight(req.params.platform);
+    if (!data) {
+      return res.status(404).json({ code: 404, message: `AI平台 ${req.params.platform} 不存在` });
+    }
+    res.json({ code: 200, data });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 新增/更新AI平台流量权重（管理员）
+router.post('/ai-platform-weights', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { platform, display_name } = req.body;
+    if (!platform || !display_name) {
+      return res.status(400).json({ code: 400, message: 'platform 和 display_name 必填' });
+    }
+    await upsertAiPlatformWeight(req.body);
+    res.json({ code: 200, data: { platform } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 更新AI平台流量权重（管理员）
+router.put('/ai-platform-weights/:platform', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const platform = req.params.platform;
+    const existing = await getAiPlatformWeight(platform);
+    if (!existing) {
+      return res.status(404).json({ code: 404, message: `AI平台 ${platform} 不存在` });
+    }
+    await upsertAiPlatformWeight({
+      platform,
+      display_name: req.body.display_name ?? existing.display_name,
+      user_volume_level: req.body.user_volume_level ?? existing.user_volume_level,
+      traffic_weight: req.body.traffic_weight ?? existing.traffic_weight,
+      is_enabled: req.body.is_enabled ?? existing.is_enabled,
+      notes: req.body.notes ?? existing.notes,
+    });
+    res.json({ code: 200, data: { platform } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 删除AI平台流量权重（管理员）
+router.delete('/ai-platform-weights/:platform', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    await deleteAiPlatformWeight(req.params.platform);
+    res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 获取AI平台 → 信源映射列表（可按 ai_platform 过滤）
+router.get('/ai-platform-sources', async (req: Request, res: Response) => {
+  try {
+    const aiPlatform = req.query.ai_platform as string | undefined;
+    const list = await getAiPlatformSourceMappings(aiPlatform);
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 新增/更新AI平台 → 信源映射（管理员）
+router.post('/ai-platform-sources', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { ai_platform, source_platform } = req.body;
+    if (!ai_platform || !source_platform) {
+      return res.status(400).json({ code: 400, message: 'ai_platform 和 source_platform 必填' });
+    }
+    await upsertAiPlatformSourceMapping(req.body);
+    res.json({ code: 200, data: { ai_platform, source_platform } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 删除AI平台 → 信源映射（管理员）
+router.delete('/ai-platform-sources', adminMiddleware, async (req: Request, res: Response) => {
+  try {
+    const aiPlatform = req.query.ai_platform as string;
+    const sourcePlatform = req.query.source_platform as string;
+    if (!aiPlatform || !sourcePlatform) {
+      return res.status(400).json({ code: 400, message: 'ai_platform 和 source_platform 查询参数必填' });
+    }
+    await deleteAiPlatformSourceMapping(aiPlatform, sourcePlatform);
+    res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 计算各自媒体平台的综合投放权重（核心查询）
+router.get('/source-platform-weights', async (req: Request, res: Response) => {
+  try {
+    const weights = await calcSourcePlatformWeights();
+    res.json({ code: 200, data: weights });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 按综合权重分配文章数量（供前端预览投放分配）
+router.post('/allocate-articles', async (req: Request, res: Response) => {
+  try {
+    const { total_articles, candidate_platforms } = req.body;
+    const total = Number(total_articles) || 0;
+    if (total <= 0) {
+      return res.status(400).json({ code: 400, message: 'total_articles 必须大于 0' });
+    }
+    const allocation = await allocateArticlesByWeight(
+      total,
+      Array.isArray(candidate_platforms) ? candidate_platforms : undefined
+    );
+    res.json({ code: 200, data: allocation });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

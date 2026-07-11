@@ -5467,6 +5467,213 @@ export async function deletePlatformRule(platform: string): Promise<void> {
   await query(`DELETE FROM platform_content_rule WHERE platform = $1`, [platform]);
 }
 
+// ============ v2.0.0: AI平台流量权重层（ai_platform_weight + ai_platform_source_mapping） ============
+
+/** AI平台流量权重记录 */
+export interface AiPlatformWeight {
+  id: number;
+  platform: string;
+  display_name: string;
+  user_volume_level: number;
+  traffic_weight: number;
+  is_enabled: boolean;
+  notes: string | null;
+  updated_at: string;
+}
+
+/** AI平台 → 信源映射记录 */
+export interface AiPlatformSourceMapping {
+  id: number;
+  ai_platform: string;
+  source_platform: string;
+  source_weight: number;
+  notes: string | null;
+  updated_at: string;
+}
+
+/** 获取所有AI平台流量权重 */
+export async function getAiPlatformWeights(onlyEnabled: boolean = false): Promise<AiPlatformWeight[]> {
+  const sql = onlyEnabled
+    ? `SELECT * FROM ai_platform_weight WHERE is_enabled = true ORDER BY user_volume_level DESC, platform ASC`
+    : `SELECT * FROM ai_platform_weight ORDER BY user_volume_level DESC, platform ASC`;
+  const result = await query(sql);
+  return result.rows as AiPlatformWeight[];
+}
+
+/** 获取单个AI平台流量权重 */
+export async function getAiPlatformWeight(platform: string): Promise<AiPlatformWeight | null> {
+  const result = await query(
+    `SELECT * FROM ai_platform_weight WHERE platform = $1`,
+    [platform]
+  );
+  return (result.rows[0] as AiPlatformWeight) || null;
+}
+
+/** 新增/更新AI平台流量权重（UPSERT） */
+export async function upsertAiPlatformWeight(data: {
+  platform: string;
+  display_name: string;
+  user_volume_level?: number;
+  traffic_weight?: number;
+  is_enabled?: boolean;
+  notes?: string;
+}): Promise<void> {
+  await query(
+    `INSERT INTO ai_platform_weight
+      (platform, display_name, user_volume_level, traffic_weight, is_enabled, notes)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     ON CONFLICT (platform) DO UPDATE SET
+       display_name = EXCLUDED.display_name,
+       user_volume_level = EXCLUDED.user_volume_level,
+       traffic_weight = EXCLUDED.traffic_weight,
+       is_enabled = EXCLUDED.is_enabled,
+       notes = EXCLUDED.notes,
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      data.platform,
+      data.display_name,
+      data.user_volume_level ?? 3,
+      data.traffic_weight ?? 1.0,
+      data.is_enabled ?? true,
+      data.notes || null,
+    ]
+  );
+}
+
+/** 删除AI平台流量权重 */
+export async function deleteAiPlatformWeight(platform: string): Promise<void> {
+  await query(`DELETE FROM ai_platform_weight WHERE platform = $1`, [platform]);
+}
+
+/** 获取所有AI平台 → 信源映射 */
+export async function getAiPlatformSourceMappings(aiPlatform?: string): Promise<AiPlatformSourceMapping[]> {
+  const sql = aiPlatform
+    ? `SELECT * FROM ai_platform_source_mapping WHERE ai_platform = $1 ORDER BY source_weight DESC, source_platform ASC`
+    : `SELECT * FROM ai_platform_source_mapping ORDER BY ai_platform ASC, source_weight DESC, source_platform ASC`;
+  const params = aiPlatform ? [aiPlatform] : [];
+  const result = await query(sql, params);
+  return result.rows as AiPlatformSourceMapping[];
+}
+
+/** 新增/更新AI平台 → 信源映射（UPSERT） */
+export async function upsertAiPlatformSourceMapping(data: {
+  ai_platform: string;
+  source_platform: string;
+  source_weight?: number;
+  notes?: string;
+}): Promise<void> {
+  await query(
+    `INSERT INTO ai_platform_source_mapping
+      (ai_platform, source_platform, source_weight, notes)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (ai_platform, source_platform) DO UPDATE SET
+       source_weight = EXCLUDED.source_weight,
+       notes = EXCLUDED.notes,
+       updated_at = CURRENT_TIMESTAMP`,
+    [
+      data.ai_platform,
+      data.source_platform,
+      data.source_weight ?? 1.0,
+      data.notes || null,
+    ]
+  );
+}
+
+/** 删除AI平台 → 信源映射 */
+export async function deleteAiPlatformSourceMapping(aiPlatform: string, sourcePlatform: string): Promise<void> {
+  await query(
+    `DELETE FROM ai_platform_source_mapping WHERE ai_platform = $1 AND source_platform = $2`,
+    [aiPlatform, sourcePlatform]
+  );
+}
+
+/**
+ * 计算各自媒体平台的综合投放权重（v2.0.0 核心函数）
+ *
+ * 公式：自媒体平台X的投放权重 = Σ(启用的AI平台流量权重 × 该AI平台→X的信源权重)
+ *
+ * 高用户量AI平台的信源平台会自动获得更高的综合投放权重，
+ * 用于指导周报/月报投放建议、写作任务平台侧重、发布任务平台分配。
+ *
+ * @returns { sourcePlatform: weight } 按权重降序排列
+ */
+export async function calcSourcePlatformWeights(): Promise<Record<string, number>> {
+  // 一次查询完成聚合计算：JOIN ai_platform_weight 和 ai_platform_source_mapping
+  const sql = `
+    SELECT
+      m.source_platform,
+      SUM(w.traffic_weight * m.source_weight) AS total_weight
+    FROM ai_platform_source_mapping m
+    INNER JOIN ai_platform_weight w ON w.platform = m.ai_platform
+    WHERE w.is_enabled = true
+    GROUP BY m.source_platform
+    ORDER BY total_weight DESC
+  `;
+  const result = await query(sql);
+  const weights: Record<string, number> = {};
+  for (const row of result.rows) {
+    weights[row.source_platform] = parseFloat(row.total_weight);
+  }
+  return weights;
+}
+
+/**
+ * 按综合投放权重分配文章数量（v2.0.0）
+ *
+ * 根据各自媒体平台的综合权重比例，将 totalArticles 篇文章分配到各平台。
+ * 权重高的平台分配更多文章，权重为 0 或极低的平台不分配。
+ *
+ * @param totalArticles 本批计划投放的总文章数
+ * @param candidatePlatforms 候选平台列表（可选，不传则使用所有有权重的平台）
+ * @returns { platform: articleCount } 各平台分配的文章数（总和≈totalArticles）
+ */
+export async function allocateArticlesByWeight(
+  totalArticles: number,
+  candidatePlatforms?: string[]
+): Promise<Record<string, number>> {
+  const allWeights = await calcSourcePlatformWeights();
+
+  // 过滤候选平台
+  const weights: Record<string, number> = {};
+  for (const [platform, weight] of Object.entries(allWeights)) {
+    if (candidatePlatforms && !candidatePlatforms.includes(platform)) continue;
+    if (weight <= 0) continue;
+    weights[platform] = weight;
+  }
+
+  const platforms = Object.keys(weights);
+  if (platforms.length === 0 || totalArticles <= 0) return {};
+
+  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
+
+  // 先按比例计算浮点数分配量，再向下取整
+  const rawAllocation: Record<string, number> = {};
+  for (const [platform, weight] of Object.entries(weights)) {
+    rawAllocation[platform] = (weight / totalWeight) * totalArticles;
+  }
+
+  // 向下取整
+  const allocation: Record<string, number> = {};
+  for (const [platform, raw] of Object.entries(rawAllocation)) {
+    allocation[platform] = Math.floor(raw);
+  }
+
+  // 将取整余数分配给小数部分最大的平台（保证总数一致）
+  let allocated = Object.values(allocation).reduce((a, b) => a + b, 0);
+  const remainder = totalArticles - allocated;
+  if (remainder > 0) {
+    // 按小数部分降序排列
+    const fractional = Object.entries(rawAllocation)
+      .map(([platform, raw]) => ({ platform, frac: raw - Math.floor(raw) }))
+      .sort((a, b) => b.frac - a.frac);
+    for (let i = 0; i < remainder && i < fractional.length; i++) {
+      allocation[fractional[i].platform] += 1;
+    }
+  }
+
+  return allocation;
+}
+
 /**
  * v1.8.0：按写作任务查询平台专属文章（target_platform IS NOT NULL）
  * 用于「按写作任务发布」：每篇文章已有平台归属，发布时按文章的平台创建 publish_task
