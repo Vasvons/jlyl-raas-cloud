@@ -3640,10 +3640,10 @@ export async function getAeoDashboardData(userId: string, days: number = 30): Pr
   const delta = (curr: number, prev: number) => prev === 0 ? 0 : Math.round((curr - prev) * 100) / 100;
 
   // 构建分片级趋势序列
-  const inclusionRateSeries = shardTrend.rows.map((r: any) => ({
+  const inclusionRateSeries: Array<{ time: any; value: number; granularity: string; round_no: any }> = shardTrend.rows.map((r: any) => ({
     time: r.shard_end_time,
     value: r.record_count > 0 ? Math.round((r.brand_matched_count / r.record_count) * 10000) / 100 : 0,
-    granularity: 'shard' as const,
+    granularity: 'shard',
     round_no: r.round_no,
   }));
 
@@ -3654,7 +3654,7 @@ export async function getAeoDashboardData(userId: string, days: number = 30): Pr
       inclusionRateSeries.push({
         time: p.period_end,
         value: parseFloat(inclusionSummary.inclusion_rate),
-        granularity: p.period_type as 'weekly' | 'monthly',
+        granularity: p.period_type,
         round_no: null,
       });
     }
