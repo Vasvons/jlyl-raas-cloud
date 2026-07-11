@@ -1,6 +1,6 @@
 {
   "platform": "bjh",
-  "version": "1.7.6",
+  "version": "1.7.7",
   "description": "百家号图文发布流程（基于实地探查的真实确定性步骤）",
   "is_placeholder": false,
   "login_check_url": "https://baijiahao.baidu.com/builder/rc/home",
@@ -70,12 +70,14 @@
       "selector": "//div[contains(@class,'cheetah-modal')]//input[@type='file' and contains(@accept,'image')]",
       "files": ["{cover_image_url}"],
       "descript": "在封面弹窗中上传封面图片（本地上传 Tab）",
+      "upload_complete_selector": "//div[contains(@class,'cheetah-modal')]//img[contains(@src,'bdimg')]",
+      "upload_complete_timeout": 15000,
       "timeout": 30000
     },
     {
       "type": "timing",
-      "ms": 3000,
-      "descript": "等待封面上传完成"
+      "ms": 500,
+      "descript": "等待封面预览稳定"
     },
     {
       "type": "click",
