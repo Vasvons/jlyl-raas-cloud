@@ -63,6 +63,9 @@ import {
   // 云接口配置
   getCloudApiConfig,
   upsertCloudApiConfig,
+  // v2.0.0：AEO闭环配额配置
+  getAeoQuotaConfig,
+  upsertAeoQuotaConfig,
   // 智能体角色同步
   upsertAgentProfile,
   getAgentProfiles,
@@ -2094,6 +2097,30 @@ router.put('/cloud-api', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     await upsertCloudApiConfig(userId, req.body || {});
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v2.0.0: AEO闭环配额配置 ============
+
+// 获取当前用户的 AEO 配额配置
+router.get('/aeo-quota', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const config = await getAeoQuotaConfig(userId);
+    res.json({ code: 200, data: config || {} });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 更新当前用户的 AEO 配额配置
+router.put('/aeo-quota', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    await upsertAeoQuotaConfig(userId, req.body || {});
     res.json({ code: 200 });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });

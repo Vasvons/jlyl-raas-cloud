@@ -946,6 +946,40 @@ export async function migrate() {
     // v1.5: 新增 OSS endpoint 字段（区域端点，如 oss-cn-hangzhou.aliyuncs.com）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS aliyun_oss_endpoint TEXT DEFAULT ''`);
 
+    // v2.0.0: AEO闭环配额字段（客户投放量控制 + 竞品开关）
+    // weekly_article_quota: 每周自动创建写作任务数（0=不自动创建，仅生成周报建议）
+    // monthly_article_quota: 每月自动创建写作任务数（0=不自动创建）
+    // auto_publish_enabled: 写作完成后是否自动创建发布任务
+    // aeo_report_start_date: AEO报告周期起始日（默认为客户创建日，按此日计算周/月周期）
+    // enable_competitor_geo: 竞品反向GEO开关（仅高价值客户开启）
+    // competitor_brands: 关注的竞品品牌列表（JSON数组）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS weekly_article_quota INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS monthly_article_quota INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_publish_enabled BOOLEAN DEFAULT false`);
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS aeo_report_start_date DATE`);
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS enable_competitor_geo BOOLEAN DEFAULT false`);
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS competitor_brands JSONB`);
+
+    // v2.0.0: ai_writing_task 表新增 AEO 驱动字段
+    // aeo_context: AEO综合建议池（周/月报汇总后注入，直接驱动写作方向）
+    // auto_publish: 写作完成后自动创建发布任务（覆盖客户级 auto_publish_enabled）
+    // auto_generated: 标记由 AEO 闭环自动生成的写作任务（区别于手动创建）
+    // trigger_period_report_id: 关联的周/月报ID（追溯触发来源）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS aeo_context JSONB`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS auto_publish BOOLEAN DEFAULT false`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS auto_generated BOOLEAN DEFAULT false`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS trigger_period_report_id BIGINT`);
+
+    // v2.0.0: aeo_full_report 表增强字段
+    // competitor_analysis: 竞品收录情况分析（JSON）
+    // inclusion_rate_summary: 整体收录率汇总（JSON）
+    // strategy_suggestions: 下一轮策略建议（JSON）
+    await client.query(`ALTER TABLE aeo_full_report ADD COLUMN IF NOT EXISTS competitor_analysis JSONB`);
+    await client.query(`ALTER TABLE aeo_full_report ADD COLUMN IF NOT EXISTS inclusion_rate_summary JSONB`);
+    await client.query(`ALTER TABLE aeo_full_report ADD COLUMN IF NOT EXISTS strategy_suggestions JSONB`);
+
+    console.log('[Migrate] v2.0.0 AEO闭环配额字段创建完成（cloud_api_config + ai_writing_task + aeo_full_report）');
+
     // 8.4 智能体角色同步表（agent_profile）
     // 用于内容中枢写作任务复用 AGENT 人事部中配置的专家智能体
     // 桌面端在保存角色时同步 systemPrompt + 启用的技能内容到云端

@@ -3416,6 +3416,77 @@ export async function upsertCloudApiConfig(userId: number, data: any): Promise<v
   );
 }
 
+// ============ v2.0.0: AEO闭环配额字段（cloud_api_config 扩展） ============
+
+/** AEO 配额字段列表（类型不同于 CLOUD_API_FIELDS，单独管理） */
+const AEO_QUOTA_FIELDS = [
+  'weekly_article_quota',
+  'monthly_article_quota',
+  'auto_publish_enabled',
+  'aeo_report_start_date',
+  'enable_competitor_geo',
+  'competitor_brands',
+] as const;
+
+/** 获取当前用户的 AEO 配额配置 */
+export async function getAeoQuotaConfig(userId: number): Promise<any | null> {
+  const result = await query(
+    `SELECT user_id, ${AEO_QUOTA_FIELDS.join(', ')}
+     FROM cloud_api_config
+     WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows[0] || null;
+}
+
+/** 更新当前用户的 AEO 配额配置（upsert，按 user_id 唯一） */
+export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<void> {
+  // 先确保 cloud_api_config 行存在（如果没有则创建空行）
+  await query(
+    `INSERT INTO cloud_api_config (user_id)
+     VALUES ($1)
+     ON CONFLICT (user_id) DO NOTHING`,
+    [userId]
+  );
+
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+
+  if (data.weekly_article_quota !== undefined) {
+    fields.push(`weekly_article_quota = $${idx++}`);
+    values.push(Number(data.weekly_article_quota) || 0);
+  }
+  if (data.monthly_article_quota !== undefined) {
+    fields.push(`monthly_article_quota = $${idx++}`);
+    values.push(Number(data.monthly_article_quota) || 0);
+  }
+  if (data.auto_publish_enabled !== undefined) {
+    fields.push(`auto_publish_enabled = $${idx++}`);
+    values.push(!!data.auto_publish_enabled);
+  }
+  if (data.aeo_report_start_date !== undefined) {
+    fields.push(`aeo_report_start_date = $${idx++}`);
+    values.push(data.aeo_report_start_date || null);
+  }
+  if (data.enable_competitor_geo !== undefined) {
+    fields.push(`enable_competitor_geo = $${idx++}`);
+    values.push(!!data.enable_competitor_geo);
+  }
+  if (data.competitor_brands !== undefined) {
+    fields.push(`competitor_brands = $${idx++}`);
+    values.push(JSON.stringify(data.competitor_brands || []));
+  }
+
+  if (fields.length === 0) return;
+
+  values.push(userId);
+  await query(
+    `UPDATE cloud_api_config SET ${fields.join(', ')}, update_time = NOW() WHERE user_id = $${idx}`,
+    values
+  );
+}
+
 // ============ 内容中枢：写作指令 ============
 
 export async function getWritingInstructions(userId: number, category?: string): Promise<any[]> {
