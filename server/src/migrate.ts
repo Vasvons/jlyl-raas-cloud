@@ -947,8 +947,11 @@ export async function migrate() {
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS aliyun_oss_endpoint TEXT DEFAULT ''`);
 
     // v2.0.0: AEO闭环配额字段（客户投放量控制 + 竞品开关）
-    // weekly_article_quota: 每周自动创建写作任务数（0=不自动创建，仅生成周报建议）
-    // monthly_article_quota: 每月自动创建写作任务数（0=不自动创建）
+    // weekly_article_quota: 每周自动创建写作任务数（0=不自动创建，仅生成周报建议）[已废弃，保留兼容]
+    // monthly_article_quota: 每月自动创建写作任务数（0=不自动创建）[已废弃，保留兼容]
+    // v2.0.2: 合并为 article_quota + quota_cycle，避免双配额冲突
+    // article_quota: 自动创建写作任务数（0=不自动创建）
+    // quota_cycle: 配额周期 'weekly' | 'monthly'，决定何时触发自动写作
     // auto_publish_enabled: 写作完成后是否自动创建发布任务
     // aeo_report_start_date: AEO报告周期起始日（默认为客户创建日，按此日计算周/月周期）
     // enable_competitor_geo: 竞品反向GEO开关（仅高价值客户开启）
@@ -959,6 +962,9 @@ export async function migrate() {
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS aeo_report_start_date DATE`);
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS enable_competitor_geo BOOLEAN DEFAULT false`);
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS competitor_brands JSONB`);
+    // v2.0.2: 统一配额字段（替代 weekly/monthly 双配额）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS article_quota INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS quota_cycle VARCHAR(10) DEFAULT 'weekly'`);
 
     // v2.0.0: ai_writing_task 表新增 AEO 驱动字段
     // aeo_context: AEO综合建议池（周/月报汇总后注入，直接驱动写作方向）

@@ -4103,6 +4103,8 @@ export async function upsertCloudApiConfig(userId: number, data: any): Promise<v
 const AEO_QUOTA_FIELDS = [
   'weekly_article_quota',
   'monthly_article_quota',
+  'article_quota',
+  'quota_cycle',
   'auto_publish_enabled',
   'aeo_report_start_date',
   'enable_competitor_geo',
@@ -4141,6 +4143,15 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
   if (data.monthly_article_quota !== undefined) {
     fields.push(`monthly_article_quota = $${idx++}`);
     values.push(Number(data.monthly_article_quota) || 0);
+  }
+  // v2.0.2: 统一配额字段
+  if (data.article_quota !== undefined) {
+    fields.push(`article_quota = $${idx++}`);
+    values.push(Number(data.article_quota) || 0);
+  }
+  if (data.quota_cycle !== undefined) {
+    fields.push(`quota_cycle = $${idx++}`);
+    values.push(data.quota_cycle === 'monthly' ? 'monthly' : 'weekly');
   }
   if (data.auto_publish_enabled !== undefined) {
     fields.push(`auto_publish_enabled = $${idx++}`);

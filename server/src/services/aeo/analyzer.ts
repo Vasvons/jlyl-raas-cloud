@@ -771,11 +771,19 @@ export async function generatePeriodReport(
     // 4. AI 平台信源权重
     const sourceWeights = await calcSourcePlatformWeights();
 
-    // 5. 客户配额
+    // 5. 客户配额（v2.0.2: 统一配额字段，向后兼容旧字段）
     const quotaConfig = await getAeoQuotaConfig(Number(userId));
-    const quota = periodType === 'weekly'
-      ? (quotaConfig?.weekly_article_quota || 0)
-      : (quotaConfig?.monthly_article_quota || 0);
+    const configCycle = quotaConfig?.quota_cycle || 'weekly';
+    // 新字段优先：article_quota + quota_cycle
+    // 旧字段兼容：当 article_quota 为 0 但旧字段有值时回退
+    const articleQuota = Number(quotaConfig?.article_quota) || 0;
+    const legacyQuota = periodType === 'weekly'
+      ? (Number(quotaConfig?.weekly_article_quota) || 0)
+      : (Number(quotaConfig?.monthly_article_quota) || 0);
+    // 只有当当前周期类型 === 配置的周期时才触发自动写作
+    const quota = periodType === configCycle
+      ? (articleQuota > 0 ? articleQuota : legacyQuota)
+      : 0;
 
     // 6. 汇总分片建议
     const shardSuggestionsSummary = summarizeShardSuggestions(shardReports);

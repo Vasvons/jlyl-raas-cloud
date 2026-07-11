@@ -2114,22 +2114,22 @@ router.put('/cloud-api', async (req: Request, res: Response) => {
 
 // ============ v2.0.0: AEO闭环配额配置 ============
 
-// 获取当前用户的 AEO 配额配置
+// 获取 AEO 配额配置（支持 ?customer_id=N 管理员模式）
 router.get('/aeo-quota', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
-    const config = await getAeoQuotaConfig(userId);
+    const customerId = getCustomerId(req);
+    const config = await getAeoQuotaConfig(customerId);
     res.json({ code: 200, data: config || {} });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
 });
 
-// 更新当前用户的 AEO 配额配置
+// 更新 AEO 配额配置（支持 ?customer_id=N 管理员模式）
 router.put('/aeo-quota', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
-    await upsertAeoQuotaConfig(userId, req.body || {});
+    const customerId = getCustomerId(req);
+    await upsertAeoQuotaConfig(customerId, req.body || {});
     res.json({ code: 200 });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
