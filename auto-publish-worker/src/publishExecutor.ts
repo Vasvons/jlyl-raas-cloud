@@ -1,0 +1,436 @@
+/**
+ * 云端发布执行器（v2.0.0 P6）
+ *
+ * 从桌面端 publishWorker.ts 迁移，适配云端环境：
+ *  - 不依赖 Electron（无 getJlylServerPort / electron.app）
+ *  - HTTP 调用直接走 SERVER_URL（不走本地代理）
+ *  - 使用 X-Worker-Secret 头认证（不走 JWT）
+ *  - 使用 chromium.launch() + newContext({ storageState }) 替代 launchPersistentContext
+ *  - 不支持 refreshLoginWithPlaywright（云端无法交互式登录）
+ *  - 不支持平台适配器（使用基础登录检查）
+ *  - 同平台串行锁（避免 Chrome 崩溃）
+ */
+import { chromium, BrowserContext } from 'playwright';
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import { getStealthScript, getAntiDetectionArgs, shouldUseHeadless } from './stealthLoader';
+import { getStableFingerprint, fingerprintToContextOptions } from './fingerprintManager';
+import { normalizeToPlaywrightStorageState, injectStorageState, captureStorageState } from './storageStateManager';
+import { checkLoginState, detectBanSignal, PlatformLoginCheck } from './loginDetector';
+import { executeSteps, Step, StepExecutionContext } from './stepExecutor';
+import * as logger from './logger';
+
+const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
+const WORKER_SECRET = process.env.WORKER_SECRET || '';
+
+// 同平台串行锁（与桌面端一致，避免同一平台多个 record 共用资源导致 Chrome 崩溃）
+const platformLocks: Map<string, Promise<void>> = new Map();
+
+export interface PublishRecord {
+  record_id: number;
+  task_id: number;
+  platform: string;
+  platform_auth_id: number;
+  account_name?: string;
+  account_storage_state: any;
+  account_proxy?: any;
+  article: {
+    id: number;
+    title: string;
+    content_html: string;
+    tags: string[];
+    cover_image_url?: string;
+  };
+  scheduled_at?: string;
+  step_list: {
+    platform: string;
+    version?: string;
+    login_check_url?: string;
+    login_check_url_pattern?: string;
+    login_check_selector?: string;
+    logout_keywords?: string[];
+    steps: Step[];
+    is_placeholder?: boolean;
+  } | null;
+}
+
+export interface PublishResult {
+  status: 'success' | 'failed' | 'login_expired' | 'banned';
+  error_type?: string;
+  article_id_on_platform?: string;
+  platform_url?: string;
+  error_msg?: string;
+  screenshot_path?: string;
+}
+
+/**
+ * 处理单条发布记录（完整流程）
+ */
+export async function processRecord(record: PublishRecord): Promise<void> {
+  const recordId = record.record_id;
+  const platform = record.platform;
+  const articleTitle = record.article?.title || '(无标题)';
+  logger.setRecordId(recordId);
+  logger.info(`开始处理 [${platform}] "${articleTitle}"`);
+
+  // 同平台串行锁
+  const prevLock = platformLocks.get(platform) || Promise.resolve();
+  let releaseLock!: () => void;
+  const thisLock = new Promise<void>((resolve) => { releaseLock = resolve; });
+  platformLocks.set(platform, prevLock.then(() => thisLock));
+  await prevLock;
+
+  let context: BrowserContext | null = null;
+
+  try {
+    // ---- 前置校验 ----
+    if (!record.step_list) {
+      throw new Error(`平台 ${platform} 无 step_list 配置`);
+    }
+    if (record.step_list.is_placeholder) {
+      logger.warn(`平台 ${platform} 的 step_list 为模板（is_placeholder=true），将尝试执行但可能失败`);
+    }
+    if (!record.step_list.steps || record.step_list.steps.length === 0) {
+      throw new Error(`平台 ${platform} 的 step_list 无有效步骤`);
+    }
+    if (!record.account_storage_state) {
+      throw new Error(`账号 ${record.account_name || record.platform_auth_id} 无 storage_state，请先登录`);
+    }
+
+    // ---- 1. 启动 Playwright ----
+    const useHeadless = shouldUseHeadless();
+    const launchArgs = getAntiDetectionArgs();
+    if (useHeadless) {
+      launchArgs.push('--headless=new');
+    }
+
+    const fingerprint = getStableFingerprint(record.platform || record.platform_auth_id || recordId);
+    logger.info(`启动浏览器（launch + newContext + stealth + ${launchArgs.length} 个反检测参数 + headless: ${useHeadless ? 'new' : 'false'}）`);
+
+    // 代理配置
+    const proxyConfig = record.account_proxy ? {
+      server: record.account_proxy.endpoint,
+      username: record.account_proxy.username || undefined,
+      password: record.account_proxy.password || undefined,
+    } : undefined;
+
+    if (proxyConfig) {
+      logger.info(`使用代理: ${record.account_proxy.name} (${record.account_proxy.endpoint})`);
+    }
+
+    // storageState 预处理
+    const storageStateRaw = parseStorageState(record.account_storage_state);
+    const normalizedStorageState = normalizeToPlaywrightStorageState(storageStateRaw);
+    const lsCount = normalizedStorageState?.origins?.reduce((sum: number, o: any) => sum + (o.localStorage?.length || 0), 0) || 0;
+    logger.info(`注入 storage_state（cookies=${normalizedStorageState?.cookies?.length || 0}条, origins=${normalizedStorageState?.origins?.length || 0}个, localStorage=${lsCount}条）`);
+
+    // 构建 context 选项
+    const contextOptions: any = {
+      ...fingerprintToContextOptions(fingerprint),
+      permissions: ['clipboard-read', 'clipboard-write'],
+    };
+
+    // 使用原生 storageState 注入（首个请求即带登录态 cookie）
+    if (normalizedStorageState) {
+      contextOptions.storageState = normalizedStorageState;
+    }
+
+    // 注入代理
+    if (proxyConfig) {
+      contextOptions.proxy = proxyConfig;
+    }
+
+    const browser = await chromium.launch({
+      headless: useHeadless,
+      args: launchArgs,
+      executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+    });
+
+    context = await browser.newContext(contextOptions);
+
+    // 注入 stealth.min.js
+    await context.addInitScript(getStealthScript());
+
+    const page = await context.newPage();
+
+    // 兜底：若原生 storageState 注入失败，用补丁式注入
+    if (!normalizedStorageState) {
+      const injected = await injectStorageState(context, page, storageStateRaw);
+      if (!injected) {
+        logger.warn(`storage_state 注入失败，所有策略均失败`);
+      }
+    }
+
+    // ---- 2. 登录预检 ----
+    const loginCheckConfig: PlatformLoginCheck = {
+      login_check_url: record.step_list.login_check_url,
+      login_check_selector: record.step_list.login_check_selector,
+      logout_keywords: record.step_list.logout_keywords,
+      login_check_url_pattern: record.step_list.login_check_url_pattern,
+    };
+
+    if (loginCheckConfig.login_check_url) {
+      logger.info(`登录预检: 导航到 ${loginCheckConfig.login_check_url}`);
+      await page.goto(loginCheckConfig.login_check_url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e: any) => {
+        logger.warn(`预检导航失败: ${e.message}`);
+      });
+
+      // 等待页面稳定
+      await page.waitForTimeout(5000);
+
+      // 诊断信息
+      try {
+        const diagUrl = page.url();
+        const diagCookies = await context.cookies();
+        const diagTitle = await page.title().catch(() => '(无标题)');
+        const diagBody = await page.evaluate(() => (document.body?.innerText || '').slice(0, 300)).catch(() => '(无法读取)');
+        const stealthCheck = await page.evaluate(() => JSON.stringify({
+          webdriver: navigator.webdriver,
+          hasChrome: !!(window as any).chrome,
+          plugins: navigator.plugins.length,
+        })).catch(() => '(无法读取)');
+        logger.info(`预检诊断: stealth=${stealthCheck}`);
+        logger.info(`预检诊断: URL=${diagUrl}, cookies=${diagCookies.length}条, title="${diagTitle}"`);
+        logger.info(`预检诊断: body="${diagBody.replace(/\n/g, ' ').slice(0, 200)}"`);
+      } catch (e: any) {
+        logger.warn(`预检诊断失败: ${e.message}`);
+      }
+
+      const loginCheck = await checkLoginState(page, platform, loginCheckConfig);
+      if (!loginCheck.valid) {
+        // 云端不支持交互式登录恢复，直接报 login_expired
+        logger.error(`登录态失效: ${loginCheck.reason}（云端不支持自动恢复，请重新登录账号）`);
+        await reportPublishResult(recordId, {
+          status: 'login_expired',
+          error_msg: `登录态失效: ${loginCheck.reason}（云端发布 Worker 不支持自动登录恢复，请在桌面端重新登录该账号）`,
+        });
+        return;
+      }
+      logger.info(`登录态有效`);
+
+      // 封禁信号检测
+      const banCheck = await detectBanSignal(page, platform);
+      if (banCheck.banned) {
+        logger.error(`检测到封禁信号: ${banCheck.reason}`);
+        await reportPublishResult(recordId, {
+          status: 'banned',
+          error_msg: banCheck.reason,
+        });
+        return;
+      }
+    }
+
+    // ---- 3. 执行 step_list ----
+    const ctx: StepExecutionContext = {
+      page,
+      platform,
+      article: {
+        title: record.article.title || '',
+        content_html: record.article.content_html || '',
+        tags: Array.isArray(record.article.tags) ? record.article.tags : [],
+        cover_image_url: record.article.cover_image_url,
+      },
+      scheduledAt: record.scheduled_at ? new Date(record.scheduled_at) : undefined,
+      onLog: (msg, level) => logger.info(msg),
+    };
+
+    logger.info(`开始执行 step_list（${record.step_list.steps.length} 步）`);
+    await executeSteps(record.step_list.steps as Step[], ctx);
+
+    // ---- 4. 截图存证 ----
+    const screenshotPath = await takeScreenshot(page, recordId);
+
+    // ---- 5. 获取发布后文章 URL ----
+    const platformUrl = extractPlatformUrl(ctx.lastEvalResult);
+
+    // ---- 6. 再次检测封禁信号（发布后） ----
+    const postBanCheck = await detectBanSignal(page, platform).catch(() => ({ banned: false, reason: undefined } as { banned: boolean; reason?: string }));
+    if (postBanCheck.banned) {
+      logger.error(`发布后检测到封禁: ${postBanCheck.reason}`);
+      await reportPublishResult(recordId, {
+        status: 'banned',
+        error_msg: postBanCheck.reason,
+        screenshot_path: screenshotPath,
+      });
+      return;
+    }
+
+    // ---- 7. 回写成功 ----
+    await reportPublishResult(recordId, {
+      status: 'success',
+      platform_url: platformUrl,
+      screenshot_path: screenshotPath,
+    });
+    logger.info(`发布成功${platformUrl ? ' → ' + platformUrl : ''}`);
+
+    // ---- 8. 抓取最新 storage_state 回传（保持账号新鲜） ----
+    try {
+      const latestState = await captureStorageState(context);
+      if (latestState) {
+        await reportAccountStorageStateUpdate(record.platform_auth_id, latestState);
+      }
+    } catch {
+      // 不阻断流程
+    }
+
+  } catch (err: any) {
+    let errorMsg = err.message || String(err);
+    logger.error(`发布失败: ${errorMsg}`);
+
+    if (record.step_list?.is_placeholder) {
+      errorMsg = `[模板需调整] ${errorMsg}。该平台 step_list 为模板，请基于失败截图调整选择器后重试。`;
+    }
+
+    const result = classifyError(errorMsg);
+    await reportPublishResult(recordId, {
+      status: result.status,
+      error_type: result.error_type,
+      error_msg: errorMsg,
+    }).catch(() => {});
+  } finally {
+    if (context) {
+      try {
+        const browser = context.browser();
+        for (const p of context.pages()) {
+          await p.close().catch(() => {});
+        }
+        await context.close().catch(() => {});
+        if (browser) {
+          await browser.close().catch(() => {});
+        }
+      } catch {}
+    }
+    logger.setRecordId(undefined);
+    releaseLock();
+  }
+}
+
+// ============ 辅助函数 ============
+
+function parseStorageState(raw: any): any {
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
+}
+
+function extractPlatformUrl(evalResult: any): string | undefined {
+  if (!evalResult) return undefined;
+  if (typeof evalResult === 'string') {
+    if (evalResult.startsWith('http')) return evalResult;
+    return undefined;
+  }
+  if (typeof evalResult === 'object' && evalResult.url) {
+    return String(evalResult.url);
+  }
+  return undefined;
+}
+
+function classifyError(errorMsg: string): { status: PublishResult['status']; error_type: string } {
+  const lower = errorMsg.toLowerCase();
+
+  if (
+    errorMsg.includes('登录') || errorMsg.includes('未登录') ||
+    lower.includes('login') || lower.includes('sign in') ||
+    errorMsg.includes('登录态失效')
+  ) {
+    return { status: 'login_expired', error_type: 'account_login_expired' };
+  }
+
+  if (
+    errorMsg.includes('封禁') || errorMsg.includes('封号') ||
+    lower.includes('banned') || lower.includes('blocked') ||
+    errorMsg.includes('账号异常') || errorMsg.includes('账号已被限制')
+  ) {
+    return { status: 'banned', error_type: 'account_banned' };
+  }
+
+  if (
+    errorMsg.includes('上限') || errorMsg.includes('限额') ||
+    errorMsg.includes('限流') || errorMsg.includes('配额') ||
+    errorMsg.includes('太频繁') || errorMsg.includes('过于频繁') ||
+    lower.includes('limit') || lower.includes('quota') ||
+    lower.includes('too many requests') || lower.includes('rate limited')
+  ) {
+    return { status: 'failed', error_type: 'account_limited' };
+  }
+
+  if (
+    errorMsg.includes('标题') || errorMsg.includes('正文') ||
+    errorMsg.includes('图片') || errorMsg.includes('封面') ||
+    errorMsg.includes('违规') || errorMsg.includes('敏感') ||
+    errorMsg.includes('审核') || errorMsg.includes('不通过') ||
+    lower.includes('content') || lower.includes('violate') ||
+    lower.includes('invalid') || lower.includes('forbidden')
+  ) {
+    return { status: 'failed', error_type: 'content_error' };
+  }
+
+  if (
+    errorMsg.includes('平台') || errorMsg.includes('服务器') ||
+    errorMsg.includes('服务繁忙') || errorMsg.includes('系统繁忙') ||
+    lower.includes('server') || lower.includes('platform') ||
+    lower.includes('503') || lower.includes('502') ||
+    lower.includes('bad gateway') || lower.includes('service unavailable')
+  ) {
+    return { status: 'failed', error_type: 'platform_error' };
+  }
+
+  return { status: 'failed', error_type: 'unknown' };
+}
+
+async function takeScreenshot(page: any, recordId: number): Promise<string | undefined> {
+  try {
+    const screenshotDir = path.join(process.cwd(), 'publish-screenshots');
+    if (!fs.existsSync(screenshotDir)) {
+      fs.mkdirSync(screenshotDir, { recursive: true });
+    }
+    const filename = `record-${recordId}-${Date.now()}.png`;
+    const filepath = path.join(screenshotDir, filename);
+    await page.screenshot({ path: filepath, fullPage: false });
+    return filepath;
+  } catch (e: any) {
+    logger.warn(`截图失败: ${e.message}`);
+    return undefined;
+  }
+}
+
+/**
+ * 回写发布结果到云端
+ */
+async function reportPublishResult(recordId: number, result: PublishResult): Promise<void> {
+  await axios.post(
+    `${SERVER_URL}/content/publish/records/${recordId}/result`,
+    result,
+    {
+      headers: { 'X-Worker-Secret': WORKER_SECRET },
+      timeout: 10000,
+    }
+  );
+  logger.info(`已回写: ${result.status}`);
+}
+
+/**
+ * 回传账号最新 storage_state
+ */
+async function reportAccountStorageStateUpdate(accountId: number, storageState: any): Promise<void> {
+  try {
+    await axios.put(
+      `${SERVER_URL}/content/publish-accounts/${accountId}`,
+      { storage_state: storageState },
+      {
+        headers: { 'X-Worker-Secret': WORKER_SECRET },
+        timeout: 10000,
+      }
+    );
+    logger.info(`账号 ${accountId} storage_state 已更新`);
+  } catch (e: any) {
+    logger.warn(`账号 ${accountId} storage_state 更新失败: ${e.message}`);
+  }
+}

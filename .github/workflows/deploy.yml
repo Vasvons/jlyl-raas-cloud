@@ -45,6 +45,7 @@ jobs:
             DB_PASSWORD=${{ secrets.DB_PASSWORD }}
             JWT_SECRET=${{ secrets.JWT_SECRET }}
             ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
+            WORKER_SECRET=${{ secrets.WORKER_SECRET }}
             EOF
             else
               echo ">>> .env 文件已存在，跳过创建"
@@ -134,7 +135,7 @@ jobs:
               # 先用 docker compose down 清理
               $DC down --remove-orphans 2>/dev/null || true
               # 再强制删除指定容器
-              docker rm -f jlyl-cloud-server jlyl-cloud-db jlyl-cloud-auto-collect-worker jlyl-cloud-web 2>/dev/null || true
+              docker rm -f jlyl-cloud-server jlyl-cloud-db jlyl-cloud-auto-collect-worker jlyl-cloud-publish-worker jlyl-cloud-web 2>/dev/null || true
               # 用 ps -a 查询是否还有残留
               remaining=$(docker ps -a --filter "name=jlyl-cloud-" --format '{{.Names}}' 2>/dev/null || echo "")
               if [ -z "$remaining" ]; then
@@ -186,7 +187,7 @@ jobs:
               echo ">>> 构建尝试 $attempt/3..."
               # auto-collect-worker 单独 --no-cache 构建（避免 Docker 层缓存命中旧 Playwright 版本，
               # 导致 headless: 'new' 报 "expected boolean, got string" 错误）
-              if $DC build --no-cache auto-collect-worker && $DC build; then
+              if $DC build --no-cache auto-collect-worker && $DC build --no-cache auto-publish-worker && $DC build; then
                 echo ">>> 构建成功"
                 build_success=true
                 break
@@ -284,7 +285,7 @@ jobs:
             echo ">>> 持续监控所有容器 2 分钟（12 次每 10 秒）..."
             for i in $(seq 1 12); do
               sleep 10
-              for cname in jlyl-cloud-db jlyl-cloud-server jlyl-cloud-web jlyl-cloud-worker; do
+              for cname in jlyl-cloud-db jlyl-cloud-server jlyl-cloud-web jlyl-cloud-worker jlyl-cloud-publish-worker; do
                 current_state=$(docker inspect $cname --format '{{.State.Status}}' 2>/dev/null || echo "not_found")
                 if [ "$current_state" != "running" ]; then
                   echo ">>> 监控 ($i/12): $cname 已停止！状态: $current_state"

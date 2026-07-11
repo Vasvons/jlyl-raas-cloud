@@ -61,6 +61,8 @@ services:
       ADMIN_USERNAME: admin
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       CORS_ORIGIN: "*"
+      # v2.0.0 P6：云端发布 Worker 内部认证密钥
+      WORKER_SECRET: ${WORKER_SECRET:-jlyl-cloud-worker-secret-2024}
     ports:
       - "127.0.0.1:3002:3002"
     mem_limit: 512m
@@ -135,6 +137,42 @@ services:
         max-file: "3"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3003/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - jlyl-cloud-network
+
+  # v2.0.0 P6：云端自动发布 Worker 服务
+  auto-publish-worker:
+    build:
+      context: ./auto-publish-worker
+      dockerfile: Dockerfile
+    container_name: jlyl-cloud-publish-worker
+    restart: always
+    depends_on:
+      server:
+        condition: service_healthy
+    environment:
+      WORKER_PORT: 3004
+      SERVER_URL: http://server:3002
+      WORKER_SECRET: ${WORKER_SECRET:-jlyl-cloud-worker-secret-2024}
+      POLL_INTERVAL: "30000"
+      MAX_CONCURRENT: "2"
+      STEALTH_HEADLESS: "true"
+    ports:
+      - "127.0.0.1:3004:3004"
+    mem_limit: 1g
+    memswap_limit: 1g
+    shm_size: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3004/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3

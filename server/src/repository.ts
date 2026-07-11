@@ -1762,13 +1762,16 @@ export async function insertAeoFullReport(params: {
   recordIds: number[];
   roundStartTime: Date;
   roundEndTime: Date;
+  inclusionRateSummary?: any;
+  strategySuggestions?: any;
 }): Promise<number> {
   const result = await query(
     `INSERT INTO aeo_full_report
      (task_id, user_id, round_no, total_keywords, total_records, brand_matched_count,
       visibility_score, mention_count, positive_ratio, neutral_ratio, negative_ratio,
-      competitor_analysis, suggestions, raw_analysis, record_ids, round_start_time, round_end_time)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      competitor_analysis, suggestions, raw_analysis, record_ids, round_start_time, round_end_time,
+      inclusion_rate_summary, strategy_suggestions)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      ON CONFLICT (task_id, round_no) DO UPDATE SET
       total_keywords = EXCLUDED.total_keywords,
       total_records = EXCLUDED.total_records,
@@ -1782,14 +1785,18 @@ export async function insertAeoFullReport(params: {
       suggestions = EXCLUDED.suggestions,
       raw_analysis = EXCLUDED.raw_analysis,
       record_ids = EXCLUDED.record_ids,
-      round_end_time = EXCLUDED.round_end_time
+      round_end_time = EXCLUDED.round_end_time,
+      inclusion_rate_summary = EXCLUDED.inclusion_rate_summary,
+      strategy_suggestions = EXCLUDED.strategy_suggestions
      RETURNING id`,
     [
       params.taskId, params.userId, params.roundNo, params.totalKeywords,
       params.totalRecords, params.brandMatchedCount, params.visibilityScore,
       params.mentionCount, params.positiveRatio, params.neutralRatio,
       params.negativeRatio, params.competitorAnalysis, params.suggestions,
-      params.rawAnalysis, params.recordIds, params.roundStartTime, params.roundEndTime
+      params.rawAnalysis, params.recordIds, params.roundStartTime, params.roundEndTime,
+      params.inclusionRateSummary ? JSON.stringify(params.inclusionRateSummary) : null,
+      params.strategySuggestions ? JSON.stringify(params.strategySuggestions) : null,
     ]
   );
   return result.rows[0].id;

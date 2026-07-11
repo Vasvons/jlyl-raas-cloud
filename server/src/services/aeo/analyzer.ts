@@ -273,6 +273,12 @@ export async function generateAeoFullReport(
     // 统计本轮总记录数和品牌命中数
     const brandMatchedCount = records.length;
 
+    // v2.0.0 P5：计算收录率汇总（按平台分布）
+    const inclusionRateSummary = buildInclusionRateSummary(records, totalKeywords);
+
+    // v2.0.0 P5：生成策略建议（基于本轮数据 + 飞轮反馈）
+    const strategySuggestions = buildStrategySuggestions(analysis, records, totalKeywords, roundNo);
+
     // 入库
     const reportId = await insertAeoFullReport({
       taskId,
@@ -292,13 +298,13 @@ export async function generateAeoFullReport(
       recordIds: records.map(r => r.id),
       roundStartTime,
       roundEndTime,
+      inclusionRateSummary,
+      strategySuggestions,
     });
 
     console.log(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮报告生成成功 reportId=${reportId} mentions=${brandMatchedCount} keywords=${totalKeywords}`);
 
     // ===== 阶段3.2：填充 article_performance 效果数据 =====
-    // 将本轮 AEO 分析结果回写到本轮时间窗口内生成的文章效果表
-    // L3 效果记忆层的数据来源，供下一轮写作上下文使用
     try {
       await fillArticlePerformanceFromAeo(
         userId, roundStartTime, roundEndTime, reportId,
@@ -309,7 +315,6 @@ export async function generateAeoFullReport(
     }
 
     // ===== 阶段3.3：飞轮策略生成 =====
-    // 基于本轮文章效果统计，用 LLM 生成创作策略，注入下一轮写作上下文
     try {
       await generateWritingStrategyFromRound(userId, roundNo, roundStartTime, roundEndTime);
     } catch (e: any) {
@@ -321,6 +326,97 @@ export async function generateAeoFullReport(
     console.error(`[AEO] 任务 ${taskId} 第 ${roundNo} 轮报告生成失败:`, e.message);
     return null;
   }
+}
+
+/**
+ * P5：构建收录率汇总（按平台分布 + 整体收录率）
+ */
+function buildInclusionRateSummary(records: any[], totalKeywords: number): any {
+  // 按平台分组统计
+  const platformStats: Record<string, { total: number; brands: Set<string>; keywords: Set<string> }> = {};
+  for (const r of records) {
+    const platform = r.platform || 'unknown';
+    if (!platformStats[platform]) {
+      platformStats[platform] = { total: 0, brands: new Set(), keywords: new Set() };
+    }
+    platformStats[platform].total++;
+    if (Array.isArray(r.matched_brands)) {
+      r.matched_brands.forEach((b: string) => platformStats[platform].brands.add(b));
+    }
+    if (r.keyword) platformStats[platform].keywords.add(r.keyword);
+  }
+
+  const platformBreakdown = Object.entries(platformStats).map(([platform, stats]) => ({
+    platform,
+    record_count: stats.total,
+    brand_count: stats.brands.size,
+    keyword_count: stats.keywords.size,
+  }));
+
+  const totalRecords = records.length;
+  const allBrands = new Set<string>();
+  const allKeywords = new Set<string>();
+  for (const r of records) {
+    if (Array.isArray(r.matched_brands)) {
+      r.matched_brands.forEach((b: string) => allBrands.add(b));
+    }
+    if (r.keyword) allKeywords.add(r.keyword);
+  }
+
+  return {
+    total_records: totalRecords,
+    total_brands_mentioned: allBrands.size,
+    total_keywords_covered: allKeywords.size,
+    total_keywords_in_library: totalKeywords,
+    keyword_coverage_rate: totalKeywords > 0 ? Math.round((allKeywords.size / totalKeywords) * 10000) / 100 : 0,
+    platform_breakdown: platformBreakdown,
+    best_platform: platformBreakdown.sort((a, b) => b.record_count - a.record_count)[0]?.platform || null,
+    worst_platform: platformBreakdown.sort((a, b) => a.record_count - b.record_count)[0]?.platform || null,
+  };
+}
+
+/**
+ * P5：构建策略建议（基于分析结果 + 数据统计）
+ */
+function buildStrategySuggestions(analysis: any, records: any[], totalKeywords: number, roundNo: number): any {
+  const suggestions: string[] = [];
+
+  // 基于可见度
+  if (analysis.visibilityScore < 40) {
+    suggestions.push(`可见度评分 ${analysis.visibilityScore} 偏低，下一轮需增加内容投放量，聚焦核心品牌词。`);
+  } else if (analysis.visibilityScore >= 70) {
+    suggestions.push(`可见度评分 ${analysis.visibilityScore} 良好，保持当前内容输出频率和方向。`);
+  }
+
+  // 基于负面情感
+  if (analysis.negativeRatio > 20) {
+    suggestions.push(`负面情感占比 ${analysis.negativeRatio}%，需加强正面品牌内容投放，对冲负面舆情。`);
+  }
+
+  // 基于平台覆盖
+  const platforms = new Set(records.map(r => r.platform));
+  if (platforms.size < 3) {
+    suggestions.push(`仅覆盖 ${platforms.size} 个平台，建议扩展到更多 AI 平台以提升品牌可见度。`);
+  }
+
+  // 基于关键词覆盖
+  const coveredKeywords = new Set(records.map(r => r.keyword));
+  if (totalKeywords > 0 && coveredKeywords.size < totalKeywords * 0.3) {
+    suggestions.push(`关键词覆盖率仅 ${Math.round((coveredKeywords.size / totalKeywords) * 100)}%，下一轮应扩展长尾关键词内容。`);
+  }
+
+  // 基于轮次
+  if (roundNo > 1) {
+    suggestions.push(`已完成 ${roundNo} 轮查询，建议复盘历史数据，调整内容策略中表现不佳的方向。`);
+  }
+
+  return {
+    round_no: roundNo,
+    visibility_score: analysis.visibilityScore,
+    suggestions,
+    next_round_focus: analysis.negativeRatio > 20 ? '正面舆情对冲' : '品牌词覆盖扩展',
+    content_volume_adjustment: analysis.visibilityScore < 40 ? 'increase' : analysis.visibilityScore >= 70 ? 'maintain' : 'slight_increase',
+  };
 }
 
 /**
@@ -694,6 +790,16 @@ export async function generatePeriodReport(
     const writingSuggestions = await generateWritingSuggestionsPool(
       shardReports, inclusionStats, sourceWeights, periodType
     );
+
+    // v2.0.0 P7：竞品反向 GEO — 若客户开启该功能，注入竞品对比文章建议
+    if (quotaConfig?.enable_competitor_geo === true) {
+      const competitorBrands = parseCompetitorBrands(quotaConfig.competitor_brands);
+      if (competitorBrands.length > 0) {
+        const competitorSuggestions = generateCompetitorGeoSuggestions(competitorBrands, sourceWeights, shardReports);
+        writingSuggestions.push(...competitorSuggestions);
+        console.log(`[AEO-Period] 用户 ${userId} 竞品反向GEO已启用，注入 ${competitorSuggestions.length} 条竞品对比建议，竞品: [${competitorBrands.join(', ')}]`);
+      }
+    }
 
     // 10. 建议文章数
     const suggestedArticleCount = quota > 0
@@ -1105,4 +1211,125 @@ async function autoCreateWritingTasksFromPeriod(
   }
 
   return quota;
+}
+
+// ============ v2.0.0 P7: 竞品反向 GEO ============
+
+/**
+ * 解析竞品品牌列表
+ * 支持字符串数组、逗号分隔字符串、JSON 字符串
+ */
+function parseCompetitorBrands(raw: any): string[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) {
+    return raw.filter((b: any) => typeof b === 'string' && b.trim()).map((b: string) => b.trim());
+  }
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((b: any) => typeof b === 'string' && b.trim()).map((b: string) => b.trim());
+      }
+    } catch {
+      // 非 JSON，按逗号分隔
+      return raw.split(/[,，、]/).map((s: string) => s.trim()).filter(Boolean);
+    }
+  }
+  return [];
+}
+
+/**
+ * P7：生成竞品反向 GEO 写作建议
+ *
+ * 策略：为每个竞品生成客观对比类文章建议，帮助用户品牌在 AI 平台搜索竞品时也获得曝光。
+ * 文章方向：客观对比、行业评测、选型指南等，避免恶意贬低。
+ *
+ * @param competitorBrands 竞品品牌列表
+ * @param sourceWeights AI平台信源权重
+ * @param shardReports 本周期分片报告（用于分析竞品在本轮的提及情况）
+ * @returns 写作建议数组
+ */
+function generateCompetitorGeoSuggestions(
+  competitorBrands: string[],
+  sourceWeights: Record<string, number>,
+  shardReports: any[]
+): any[] {
+  const suggestions: any[] = [];
+
+  // 排名前3的信源平台
+  const topPlatforms = Object.entries(sourceWeights)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([platform]) => platform);
+
+  // 分析竞品在本轮分片报告中的提及情况
+  const competitorMentions: Record<string, number> = {};
+  for (const brand of competitorBrands) {
+    competitorMentions[brand] = 0;
+    for (const sr of shardReports) {
+      const mentions = Array.isArray(sr.brand_mentions) ? sr.brand_mentions : [];
+      for (const m of mentions) {
+        const content = (m.contentPreview || '').toLowerCase();
+        const keywords = (m.keyword || '').toLowerCase();
+        if (content.includes(brand.toLowerCase()) || keywords.includes(brand.toLowerCase())) {
+          competitorMentions[brand]++;
+        }
+      }
+    }
+  }
+
+  // 建议1：客观对比类文章（用户品牌 vs 竞品）
+  const topCompetitors = competitorBrands.slice(0, 3);
+  if (topCompetitors.length > 0) {
+    suggestions.push({
+      topic: `品牌与竞品客观对比（${topCompetitors.join('、')}）`,
+      direction: '竞品对比分析',
+      keywords: topCompetitors,
+      platforms: topPlatforms,
+      priority: 'high',
+      reason: `竞品反向GEO：当用户搜索竞品 "${topCompetitors.join('、')}" 时，通过客观对比文章让用户品牌也获得曝光。文章应客观公正，突出差异化优势。`,
+    });
+  }
+
+  // 建议2：行业选型指南
+  suggestions.push({
+    topic: '行业选型指南（含竞品对比）',
+    direction: '选型指南',
+    keywords: [...competitorBrands, '选型', '对比', '评测'],
+    platforms: topPlatforms,
+    priority: 'medium',
+    reason: '竞品反向GEO：通过行业选型指南类内容，在用户调研阶段就植入品牌认知，覆盖竞品搜索流量。',
+  });
+
+  // 建议3：针对提及量高的竞品，加强对比内容
+  const hotCompetitors = Object.entries(competitorMentions)
+    .filter(([, count]) => count > 0)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 2)
+    .map(([brand]) => brand);
+
+  for (const brand of hotCompetitors) {
+    suggestions.push({
+      topic: `${brand} 深度对比评测`,
+      direction: '竞品深度评测',
+      keywords: [brand, '评测', '优缺点', '对比'],
+      platforms: topPlatforms.slice(0, 2),
+      priority: 'high',
+      reason: `竞品 "${brand}" 在本轮查询中被提及 ${competitorMentions[brand]} 次，需加强对比内容投放，抢占该竞品的搜索流量。`,
+    });
+  }
+
+  // 建议4：差异化优势内容
+  if (competitorBrands.length > 0) {
+    suggestions.push({
+      topic: '品牌差异化优势分析',
+      direction: '差异化定位',
+      keywords: competitorBrands.slice(0, 2),
+      platforms: topPlatforms,
+      priority: 'medium',
+      reason: '竞品反向GEO：通过差异化优势内容，在不贬低竞品的前提下，突出用户品牌的独特价值主张。',
+    });
+  }
+
+  return suggestions;
 }

@@ -19,8 +19,11 @@ import {
   getRandomImages,
   getImageById,
   getPlatformRulesByPlatforms,
+  getPlatformArticlesByTask,
+  createPublishTask,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
+import crypto from 'crypto';
 
 /**
  * 解析指令的 category（创作方向）字段
@@ -807,6 +810,59 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
 
   const status = failCount === 0 ? 'completed' : (successCount === 0 ? 'failed' : 'partial');
   await completeWritingTask(taskId, status as any, errors.length > 0 ? errors.join('\n') : undefined);
+
+  // v2.0.0 P4：写作任务完成后，若 auto_publish=true 且有成功生成的文章，自动创建发布任务
+  if (status !== 'failed' && task.auto_publish === true) {
+    try {
+      await autoCreatePublishTasksFromWriting(taskId, userId);
+    } catch (e: any) {
+      console.warn(`[ArticleGen] 任务 ${taskId} 自动创建发布任务失败:`, e.message);
+    }
+  }
+}
+
+/**
+ * P4：写作任务完成后自动创建发布任务
+ * 复用 publishByWritingTask 路由的核心逻辑，内部直接调用
+ */
+async function autoCreatePublishTasksFromWriting(taskId: number, userId: number): Promise<void> {
+  const articles = await getPlatformArticlesByTask(taskId);
+  if (articles.length === 0) {
+    console.log(`[ArticleGen-P4] 任务 ${taskId} 无平台专属文章，跳过自动发布`);
+    return;
+  }
+
+  const batchId = crypto.randomUUID();
+  let createdCount = 0;
+  const skipped: { article_id: number; platform: string; reason: string }[] = [];
+
+  for (const article of articles) {
+    const platform = article.target_platform;
+    if (!platform) {
+      skipped.push({ article_id: article.id, platform: '', reason: 'target_platform 为空' });
+      continue;
+    }
+    try {
+      const { skipped: taskSkipped } = await createPublishTask({
+        user_id: userId,
+        article_id: article.id,
+        target_platforms: [platform],
+        batch_id: batchId,
+      });
+      if (taskSkipped.length > 0) {
+        skipped.push(...taskSkipped.map(s => ({ article_id: article.id, platform, reason: s.reason })));
+      } else {
+        createdCount++;
+      }
+    } catch (err: any) {
+      skipped.push({ article_id: article.id, platform, reason: err?.message || String(err) });
+    }
+  }
+
+  console.log(`[ArticleGen-P4] 任务 ${taskId} 自动发布: 创建 ${createdCount} 个发布任务, 跳过 ${skipped.length} 个, batchId=${batchId}`);
+  if (skipped.length > 0) {
+    console.warn(`[ArticleGen-P4] 跳过详情:`, skipped.slice(0, 5).map(s => `article=${s.article_id} platform=${s.platform} reason=${s.reason}`).join('; '));
+  }
 }
 
 /**
