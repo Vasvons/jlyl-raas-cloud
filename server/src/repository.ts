@@ -3544,7 +3544,7 @@ export async function getAeoDashboardData(userId: string, days: number = 30): Pr
 
   // ---- 6. 关键词总数 ----
   const keywordTotal = await query(
-    `SELECT COUNT(*) AS total FROM zlgjc WHERE user_id = $1`,
+    `SELECT COUNT(*) AS total FROM zlgjc WHERE userid = $1`,
     [userId]
   );
 
