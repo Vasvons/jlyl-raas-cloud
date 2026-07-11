@@ -3240,12 +3240,230 @@ export async function getBrandMentionRecordsForAeo(taskId: number, limit: number
 /** 获取所有需要生成 AEO 日报的活跃任务 */
 export async function getActiveTasksForAeo(): Promise<any[]> {
   const result = await query(
-    `SELECT t.id, t.user_id, t.task_name, t.keyword_type
+    `SELECT t.id, t.user_id, t.task_name, t.keyword_type, t.create_time
      FROM real_collect_task t
      WHERE t.status = 'active'
      ORDER BY t.id`
   );
   return result.rows;
+}
+
+// ============ v2.0.0: 时间维度报告（周/月报） ============
+
+/** 时间维度报告记录 */
+export interface AeoPeriodReport {
+  id: number;
+  task_id: number | null;
+  user_id: string | null;
+  period_type: string;
+  period_start: string;
+  period_end: string;
+  inclusion_summary: any;
+  rank_summary: any;
+  platform_comparison: any;
+  shard_suggestions_summary: string | null;
+  writing_suggestions: any;
+  suggested_article_count: number;
+  actual_article_count: number;
+  status: string;
+  created_at: string;
+}
+
+/** 获取客户的 AEO 报告周期起始日（aeo_report_start_date 或任务创建日） */
+export async function getAeoReportStartDate(userId: string): Promise<Date> {
+  // 优先从 cloud_api_config 读取 aeo_report_start_date
+  const configResult = await query(
+    `SELECT aeo_report_start_date FROM cloud_api_config WHERE user_id = $1`,
+    [userId]
+  );
+  if (configResult.rows[0]?.aeo_report_start_date) {
+    return new Date(configResult.rows[0].aeo_report_start_date);
+  }
+  // 回退到该用户的第一个任务创建日
+  const taskResult = await query(
+    `SELECT create_time FROM real_collect_task WHERE user_id = $1 ORDER BY create_time ASC LIMIT 1`,
+    [userId]
+  );
+  if (taskResult.rows[0]?.create_time) {
+    return new Date(taskResult.rows[0].create_time);
+  }
+  // 最终回退到今天
+  return new Date();
+}
+
+/** 检查客户今天是否需要生成周报（按创建日计算周期） */
+export async function shouldGenerateWeeklyReport(userId: string, now: Date = new Date()): Promise<boolean> {
+  const startDate = await getAeoReportStartDate(userId);
+  const daysSinceStart = Math.floor((now.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000));
+  return daysSinceStart >= 7 && daysSinceStart % 7 === 0;
+}
+
+/** 检查客户今天是否需要生成月报（按创建日的日期，每月该日） */
+export async function shouldGenerateMonthlyReport(userId: string, now: Date = new Date()): Promise<boolean> {
+  const startDate = await getAeoReportStartDate(userId);
+  const todayDay = now.getDate();
+  const startDay = startDate.getDate();
+  // 如果起始日在28日之后，取每月最后一天
+  if (startDay > 28) {
+    const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    return todayDay === lastDayOfMonth;
+  }
+  return todayDay === startDay;
+}
+
+/** 检查周期报告是否已存在（防重复） */
+export async function checkPeriodReportExists(
+  userId: string,
+  periodType: string,
+  periodStart: Date,
+  periodEnd: Date
+): Promise<boolean> {
+  const result = await query(
+    `SELECT 1 FROM aeo_period_report
+     WHERE user_id = $1 AND period_type = $2
+       AND period_start = $3 AND period_end = $4
+     LIMIT 1`,
+    [userId, periodType, periodStart, periodEnd]
+  );
+  return result.rows.length > 0;
+}
+
+/** 插入时间维度报告 */
+export async function insertAeoPeriodReport(data: {
+  task_id?: number;
+  user_id?: string;
+  period_type: string;
+  period_start: Date;
+  period_end: Date;
+  inclusion_summary?: any;
+  rank_summary?: any;
+  platform_comparison?: any;
+  shard_suggestions_summary?: string;
+  writing_suggestions?: any;
+  suggested_article_count?: number;
+  actual_article_count?: number;
+  status?: string;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO aeo_period_report
+      (task_id, user_id, period_type, period_start, period_end,
+       inclusion_summary, rank_summary, platform_comparison,
+       shard_suggestions_summary, writing_suggestions,
+       suggested_article_count, actual_article_count, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     RETURNING id`,
+    [
+      data.task_id || null,
+      data.user_id || null,
+      data.period_type,
+      data.period_start,
+      data.period_end,
+      data.inclusion_summary ? JSON.stringify(data.inclusion_summary) : null,
+      data.rank_summary ? JSON.stringify(data.rank_summary) : null,
+      data.platform_comparison ? JSON.stringify(data.platform_comparison) : null,
+      data.shard_suggestions_summary || null,
+      data.writing_suggestions ? JSON.stringify(data.writing_suggestions) : null,
+      data.suggested_article_count || 0,
+      data.actual_article_count || 0,
+      data.status || 'generated',
+    ]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新周期报告的实际创建文章数 */
+export async function updatePeriodReportArticleCount(reportId: number, count: number): Promise<void> {
+  await query(
+    `UPDATE aeo_period_report SET actual_article_count = $1 WHERE id = $2`,
+    [count, reportId]
+  );
+}
+
+/** 查询时间维度报告列表（分页） */
+export async function getAeoPeriodReports(
+  userId?: string,
+  periodType?: string,
+  limit: number = 50,
+  offset: number = 0
+): Promise<{ list: AeoPeriodReport[]; total: number }> {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (userId) {
+    params.push(userId);
+    conditions.push(`user_id = $${params.length}`);
+  }
+  if (periodType) {
+    params.push(periodType);
+    conditions.push(`period_type = $${params.length}`);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const countResult = await query(`SELECT COUNT(*) AS total FROM aeo_period_report ${where}`, params);
+  const total = parseInt(countResult.rows[0].total, 10);
+
+  params.push(limit, offset);
+  const result = await query(
+    `SELECT * FROM aeo_period_report ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  return { list: result.rows as AeoPeriodReport[], total };
+}
+
+/** 获取单个时间维度报告详情 */
+export async function getAeoPeriodReportById(id: number): Promise<AeoPeriodReport | null> {
+  const result = await query(`SELECT * FROM aeo_period_report WHERE id = $1`, [id]);
+  return (result.rows[0] as AeoPeriodReport) || null;
+}
+
+/** 获取用户的所有活跃任务（用于周期报告汇总） */
+export async function getActiveTasksByUser(userId: string): Promise<any[]> {
+  const result = await query(
+    `SELECT id, user_id, task_name, keyword_type, create_time
+     FROM real_collect_task
+     WHERE user_id = $1 AND status = 'active'
+     ORDER BY id`,
+    [userId]
+  );
+  return result.rows;
+}
+
+/** 获取用户在指定时间范围内的收录统计（用于周期报告） */
+export async function getInclusionStatsByTimeRange(
+  userId: string,
+  startTime: Date,
+  endTime: Date
+): Promise<any> {
+  // 总查询记录数
+  const totalResult = await query(
+    `SELECT COUNT(*) AS total FROM real_collect_record
+     WHERE user_id = $1 AND query_time >= $2 AND query_time <= $3`,
+    [userId, startTime, endTime]
+  );
+  // 品牌命中数
+  const brandResult = await query(
+    `SELECT COUNT(*) AS brand_matched FROM real_collect_record
+     WHERE user_id = $1 AND query_time >= $2 AND query_time <= $3 AND brand_matched = true`,
+    [userId, startTime, endTime]
+  );
+  // 各平台收录分布
+  const platformResult = await query(
+    `SELECT platform, COUNT(*) AS count,
+            SUM(CASE WHEN brand_matched = true THEN 1 ELSE 0 END) AS brand_count
+     FROM real_collect_record
+     WHERE user_id = $1 AND query_time >= $2 AND query_time <= $3
+     GROUP BY platform
+     ORDER BY count DESC`,
+    [userId, startTime, endTime]
+  );
+
+  const total = parseInt(totalResult.rows[0]?.total || '0', 10);
+  const brandMatched = parseInt(brandResult.rows[0]?.brand_matched || '0', 10);
+  return {
+    total,
+    brand_matched: brandMatched,
+    inclusion_rate: total > 0 ? Math.round((brandMatched / total) * 10000) / 100 : 0,
+    platform_breakdown: platformResult.rows,
+  };
 }
 
 /** 检查今日是否已生成 AEO 报告 */

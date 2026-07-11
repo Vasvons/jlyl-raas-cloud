@@ -1517,6 +1517,36 @@ export async function migrate() {
 
     console.log('[Migrate] v2.0.0 分片级AEO报告表创建完成（aeo_shard_report）');
 
+    // ============ v2.0.0: 时间维度报告（周/月报，写作驱动核心） ============
+
+    // aeo_period_report: 时间维度报告
+    // 按客户创建日计算周期（非固定周一/1日），汇总该周期内分片报告建议 + 收录/排名数据
+    // 生成综合写作建议池，按客户配额自动创建写作任务
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS aeo_period_report (
+        id BIGSERIAL PRIMARY KEY,
+        task_id BIGINT,
+        user_id TEXT,
+        period_type VARCHAR(20) NOT NULL,
+        period_start DATE NOT NULL,
+        period_end DATE NOT NULL,
+        inclusion_summary JSONB,
+        rank_summary JSONB,
+        platform_comparison JSONB,
+        shard_suggestions_summary TEXT,
+        writing_suggestions JSONB,
+        suggested_article_count INTEGER DEFAULT 0,
+        actual_article_count INTEGER DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'generated',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_period_report_user ON aeo_period_report(user_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_period_report_type ON aeo_period_report(period_type, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_period_report_user_type_time ON aeo_period_report(user_id, period_type, period_start DESC)`);
+
+    console.log('[Migrate] v2.0.0 时间维度报告表创建完成（aeo_period_report）');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

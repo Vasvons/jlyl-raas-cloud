@@ -1,9 +1,11 @@
 /**
- * AEO 调度器：每天为所有活跃任务生成一次 AEO 日报
+ * AEO 调度器：
+ * - 每天凌晨 2 点为所有活跃任务生成 AEO 日报
+ * - 每小时检查是否需要生成周报/月报（按客户创建日计算周期，依次执行非并发）
  */
 import cron from 'node-cron';
-import { getActiveTasksForAeo } from '../../repository';
-import { generateAeoReport } from './analyzer';
+import { getActiveTasksForAeo, shouldGenerateWeeklyReport, shouldGenerateMonthlyReport } from '../../repository';
+import { generateAeoReport, generatePeriodReport } from './analyzer';
 
 let aeoSchedulerStarted = false;
 
@@ -40,5 +42,60 @@ export function startAeoScheduler(): void {
     }
   });
 
-  console.log('[AEO] 调度器已启动(每天凌晨2点生成AEO日报)');
+  // v2.0.0: 每小时检查是否需要生成周报/月报（按客户创建日计算周期）
+  // 依次执行（非并发），避免资源压力
+  cron.schedule('0 * * * *', async () => {
+    try {
+      await checkAndGeneratePeriodReports();
+    } catch (e: any) {
+      console.error('[AEO-Period] 周期报告调度异常:', e.message);
+    }
+  });
+
+  console.log('[AEO] 调度器已启动(每天凌晨2点生成AEO日报 + 每小时检查周/月报)');
+}
+
+/**
+ * 检查所有用户是否需要生成周报/月报，依次执行（非并发）
+ */
+async function checkAndGeneratePeriodReports(): Promise<void> {
+  // 获取所有活跃任务，提取 distinct user_id
+  const tasks = await getActiveTasksForAeo();
+  const userIds = [...new Set(tasks.map(t => t.user_id).filter(Boolean))];
+
+  if (userIds.length === 0) return;
+
+  const now = new Date();
+  let weeklyCount = 0;
+  let monthlyCount = 0;
+
+  // 依次处理每个用户（非并发，避免 LLM 调用和写作任务创建同时进行导致资源压力）
+  for (const userId of userIds) {
+    try {
+      // 检查周报
+      if (await shouldGenerateWeeklyReport(userId, now)) {
+        const periodEnd = now;
+        const periodStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        console.log(`[AEO-Period] 用户 ${userId} 需要生成周报 (${periodStart.toISOString().slice(0,10)}~${periodEnd.toISOString().slice(0,10)})`);
+        const reportId = await generatePeriodReport(userId, 'weekly', periodStart, periodEnd);
+        if (reportId) weeklyCount++;
+      }
+
+      // 检查月报
+      if (await shouldGenerateMonthlyReport(userId, now)) {
+        const periodEnd = now;
+        const periodStart = new Date(now);
+        periodStart.setMonth(periodStart.getMonth() - 1);
+        console.log(`[AEO-Period] 用户 ${userId} 需要生成月报 (${periodStart.toISOString().slice(0,10)}~${periodEnd.toISOString().slice(0,10)})`);
+        const reportId = await generatePeriodReport(userId, 'monthly', periodStart, periodEnd);
+        if (reportId) monthlyCount++;
+      }
+    } catch (e: any) {
+      console.error(`[AEO-Period] 用户 ${userId} 周期报告生成失败:`, e.message);
+    }
+  }
+
+  if (weeklyCount > 0 || monthlyCount > 0) {
+    console.log(`[AEO-Period] 周期报告检查完成: 生成 ${weeklyCount} 份周报, ${monthlyCount} 份月报`);
+  }
 }

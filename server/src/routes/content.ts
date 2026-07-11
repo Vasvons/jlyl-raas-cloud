@@ -70,6 +70,9 @@ import {
   getAeoShardReports,
   getAeoShardReportById,
   getShardReportsByTimeRange,
+  // v2.0.0：时间维度报告（周/月报）
+  getAeoPeriodReports,
+  getAeoPeriodReportById,
   // 智能体角色同步
   upsertAgentProfile,
   getAgentProfiles,
@@ -2155,6 +2158,39 @@ router.get('/aeo-shard-reports/:id', async (req: Request, res: Response) => {
       return res.status(400).json({ code: 400, message: '非法的 ID' });
     }
     const report = await getAeoShardReportById(id);
+    if (!report) {
+      return res.status(404).json({ code: 404, message: '报告不存在' });
+    }
+    res.json({ code: 200, data: report });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v2.0.0: 时间维度报告（周/月报）查询 ============
+
+// 获取周期报告列表（分页，可按 period_type 过滤）
+router.get('/aeo-period-reports', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const periodType = req.query.period_type as string | undefined;
+    const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    const result = await getAeoPeriodReports(String(userId), periodType, limit, offset);
+    res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 获取单个周期报告详情
+router.get('/aeo-period-reports/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ code: 400, message: '非法的 ID' });
+    }
+    const report = await getAeoPeriodReportById(id);
     if (!report) {
       return res.status(404).json({ code: 404, message: '报告不存在' });
     }

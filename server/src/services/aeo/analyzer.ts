@@ -22,7 +22,21 @@ import {
   getRecordsByTimeWindow,
   insertAeoShardReport,
   checkShardReportExists,
+  // v2.0.0 时间维度报告（周/月报）
+  getShardReportsByTimeRange,
+  getInclusionStatsByTimeRange,
+  checkPeriodReportExists,
+  insertAeoPeriodReport,
+  updatePeriodReportArticleCount,
+  getAeoQuotaConfig,
+  calcSourcePlatformWeights,
+  allocateArticlesByWeight,
+  createWritingTask,
+  getDefaultModelConfig,
+  getEnterpriseKnowledges,
+  getAllWritingInstructions,
 } from '../../repository';
+import { query as dbQuery } from '../../db';
 
 const LLM_API_URL = process.env.LLM_API_URL || '';
 const LLM_API_KEY = process.env.LLM_API_KEY || '';
@@ -615,4 +629,480 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
     console.error(`[AEO-Shard] 分片 ${queueId} AEO分析失败:`, err.message);
     return null;
   }
+}
+
+// ============ v2.0.0: 时间维度报告（周/月报）+ 写作驱动 ============
+
+/**
+ * 生成时间维度报告（周报/月报）并按配额自动创建写作任务（v2.0.0）
+ *
+ * 按客户创建日计算周期，汇总该周期内：
+ * - 分片级 AEO 建议（所有分片的 content_suggestions 汇总）
+ * - 收录统计（总记录数、品牌命中数、收录率、各平台分布）
+ * - AI 平台信源权重投放建议（calcSourcePlatformWeights）
+ * 生成综合写作建议池，按客户配额（weekly/monthly_article_quota）自动创建写作任务。
+ *
+ * 失败不阻断：各环节独立运行，报告生成失败不影响其他客户，写作任务创建失败不影响报告。
+ *
+ * @param userId 客户 ID
+ * @param periodType 'weekly' | 'monthly'
+ * @param periodStart 周期开始日期
+ * @param periodEnd 周期结束日期
+ * @returns 报告 ID（失败返回 null）
+ */
+export async function generatePeriodReport(
+  userId: string,
+  periodType: 'weekly' | 'monthly',
+  periodStart: Date,
+  periodEnd: Date
+): Promise<number | null> {
+  try {
+    // 1. 防重复
+    const exists = await checkPeriodReportExists(userId, periodType, periodStart, periodEnd);
+    if (exists) {
+      console.log(`[AEO-Period] 用户 ${userId} ${periodType} 报告已存在 (${periodStart.toISOString().slice(0,10)}~${periodEnd.toISOString().slice(0,10)})，跳过`);
+      return null;
+    }
+
+    console.log(`[AEO-Period] 开始生成用户 ${userId} ${periodType} 报告 (${periodStart.toISOString().slice(0,10)}~${periodEnd.toISOString().slice(0,10)})`);
+
+    // 2. 汇总该周期内的分片报告
+    const shardReports = await getShardReportsByTimeRange(userId, periodStart, periodEnd);
+
+    // 3. 收录统计
+    const inclusionStats = await getInclusionStatsByTimeRange(userId, periodStart, periodEnd);
+
+    // 4. AI 平台信源权重
+    const sourceWeights = await calcSourcePlatformWeights();
+
+    // 5. 客户配额
+    const quotaConfig = await getAeoQuotaConfig(Number(userId));
+    const quota = periodType === 'weekly'
+      ? (quotaConfig?.weekly_article_quota || 0)
+      : (quotaConfig?.monthly_article_quota || 0);
+
+    // 6. 汇总分片建议
+    const shardSuggestionsSummary = summarizeShardSuggestions(shardReports);
+
+    // 7. 排名汇总（从分片报告中提取可见度和情感分布）
+    const rankSummary = buildRankSummary(shardReports);
+
+    // 8. 平台对比（收录分布 + 信源权重）
+    const platformComparison = buildPlatformComparison(inclusionStats, sourceWeights);
+
+    // 9. 生成写作建议池
+    const writingSuggestions = await generateWritingSuggestionsPool(
+      shardReports, inclusionStats, sourceWeights, periodType
+    );
+
+    // 10. 建议文章数
+    const suggestedArticleCount = quota > 0
+      ? quota
+      : (shardReports.length > 0 ? Math.min(5, shardReports.length) : 0);
+
+    // 11. 入库
+    const reportId = await insertAeoPeriodReport({
+      user_id: userId,
+      period_type: periodType,
+      period_start: periodStart,
+      period_end: periodEnd,
+      inclusion_summary: inclusionStats,
+      rank_summary: rankSummary,
+      platform_comparison: platformComparison,
+      shard_suggestions_summary: shardSuggestionsSummary,
+      writing_suggestions: writingSuggestions,
+      suggested_article_count: suggestedArticleCount,
+      actual_article_count: 0,
+      status: 'generated',
+    });
+
+    console.log(`[AEO-Period] 用户 ${userId} ${periodType} 报告生成成功 reportId=${reportId}, 分片数=${shardReports.length}, 建议文章数=${suggestedArticleCount}`);
+
+    // 12. 按配额自动创建写作任务（P3-5）
+    if (quota > 0) {
+      try {
+        const createdCount = await autoCreateWritingTasksFromPeriod(
+          userId, reportId, quota, writingSuggestions, sourceWeights, periodType
+        );
+        await updatePeriodReportArticleCount(reportId, createdCount);
+        console.log(`[AEO-Period] 用户 ${userId} ${periodType} 自动创建 ${createdCount}/${quota} 篇写作任务`);
+      } catch (e: any) {
+        console.warn(`[AEO-Period] 用户 ${userId} ${periodType} 自动创建写作任务失败:`, e.message);
+      }
+    }
+
+    return reportId;
+  } catch (err: any) {
+    console.error(`[AEO-Period] 用户 ${userId} ${periodType} 报告生成失败:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * 汇总所有分片报告的内容建议
+ */
+function summarizeShardSuggestions(shardReports: any[]): string {
+  if (shardReports.length === 0) return '本周期内无分片报告数据。';
+
+  const allSuggestions: string[] = [];
+  const negativeCount = { total: 0, negative: 0 };
+
+  for (const sr of shardReports) {
+    if (sr.content_suggestions) {
+      allSuggestions.push(`[分片${sr.queue_id}] ${sr.content_suggestions}`);
+    }
+    const sentiment = sr.sentiment_summary || {};
+    negativeCount.total += sentiment.total || 0;
+    negativeCount.negative += sentiment.negative || 0;
+  }
+
+  const lines: string[] = [];
+  lines.push(`本周期共 ${shardReports.length} 个分片报告，涉及 ${negativeCount.total} 条品牌提及记录。`);
+  if (negativeCount.negative > 0) {
+    lines.push(`负面情感记录 ${negativeCount.negative} 条，需重点关注并优化内容方向。`);
+  }
+  if (allSuggestions.length > 0) {
+    lines.push('各分片优化建议汇总：');
+    lines.push(...allSuggestions.slice(0, 20)); // 限制最多20条避免过长
+  }
+  return lines.join('\n');
+}
+
+/**
+ * 构建排名/可见度/情感汇总
+ */
+function buildRankSummary(shardReports: any[]): any {
+  if (shardReports.length === 0) {
+    return { shard_count: 0, avg_visibility: 0, sentiment_distribution: { positive: 0, neutral: 0, negative: 0 } };
+  }
+
+  const totalVisibility = shardReports.reduce((sum, sr) => sum + (sr.visibility_score || 0), 0);
+  const avgVisibility = Math.round(totalVisibility / shardReports.length);
+
+  const sentimentDist = { positive: 0, neutral: 0, negative: 0 };
+  for (const sr of shardReports) {
+    sentimentDist.positive += sr.positive_ratio || 0;
+    sentimentDist.neutral += sr.neutral_ratio || 0;
+    sentimentDist.negative += sr.negative_ratio || 0;
+  }
+  // 取平均
+  sentimentDist.positive = Math.round(sentimentDist.positive / shardReports.length);
+  sentimentDist.neutral = Math.round(sentimentDist.neutral / shardReports.length);
+  sentimentDist.negative = Math.round(sentimentDist.negative / shardReports.length);
+
+  return {
+    shard_count: shardReports.length,
+    avg_visibility: avgVisibility,
+    sentiment_distribution: sentimentDist,
+    best_shard: shardReports.reduce((best, sr) => (sr.visibility_score > (best?.visibility_score || 0) ? sr : best), null)?.queue_id,
+    worst_shard: shardReports.reduce((worst, sr) => (sr.visibility_score < (worst?.visibility_score || 999) ? sr : worst), null)?.queue_id,
+  };
+}
+
+/**
+ * 构建平台对比（收录分布 + AI平台信源权重）
+ */
+function buildPlatformComparison(inclusionStats: any, sourceWeights: Record<string, number>): any {
+  const platformBreakdown = inclusionStats.platform_breakdown || [];
+  return {
+    inclusion_by_platform: platformBreakdown.map((p: any) => ({
+      platform: p.platform,
+      total: parseInt(p.count, 10),
+      brand_matched: parseInt(p.brand_count, 10),
+      brand_rate: p.count > 0 ? Math.round((parseInt(p.brand_count, 10) / parseInt(p.count, 10)) * 10000) / 100 : 0,
+    })),
+    ai_source_weights: sourceWeights,
+    top_platforms_by_weight: Object.entries(sourceWeights)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([platform, weight]) => ({ platform, weight: Math.round(weight * 100) / 100 })),
+  };
+}
+
+/**
+ * 生成写作建议池（调用 LLM 或规则汇总）
+ *
+ * 建议池结构：
+ * [{
+ *   topic: 建议主题,
+ *   direction: 创作方向,
+ *   keywords: 建议关键词,
+ *   platforms: 建议投放平台,
+ *   priority: 'high' | 'medium' | 'low',
+ *   reason: 建议原因
+ * }]
+ */
+async function generateWritingSuggestionsPool(
+  shardReports: any[],
+  inclusionStats: any,
+  sourceWeights: Record<string, number>,
+  periodType: string
+): Promise<any[]> {
+  // 收集负面发现和品牌提及关键词
+  const negativeFindings: any[] = [];
+  const brandMentionKeywords = new Set<string>();
+  for (const sr of shardReports) {
+    if (Array.isArray(sr.negative_findings)) {
+      negativeFindings.push(...sr.negative_findings);
+    }
+    if (Array.isArray(sr.brand_mentions)) {
+      for (const bm of sr.brand_mentions) {
+        if (bm.keyword) brandMentionKeywords.add(bm.keyword);
+      }
+    }
+  }
+
+  // 排名前3的信源平台
+  const topPlatforms = Object.entries(sourceWeights)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([platform]) => platform);
+
+  // 无 LLM 配置时用规则生成建议池
+  if (!LLM_API_URL || !LLM_API_KEY) {
+    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
+  }
+
+  // 调用 LLM 生成建议池
+  const prompt = `你是 AEO（Answer Engine Optimization）内容策略专家。请基于以下本${periodType === 'weekly' ? '周' : '月'}数据，生成 5-10 条具体的写作建议。
+
+分片报告数：${shardReports.length}
+收录统计：总记录 ${inclusionStats.total}，品牌命中 ${inclusionStats.brand_matched}，收录率 ${inclusionStats.inclusion_rate}%
+负面发现数：${negativeFindings.length}
+品牌命中关键词：${Array.from(brandMentionKeywords).slice(0, 30).join('、') || '无'}
+推荐投放平台（按AI平台信源权重）：${topPlatforms.join('、') || '无'}
+
+各平台收录分布：
+${JSON.stringify(inclusionStats.platform_breakdown || [], null, 2)}
+
+负面发现详情（前5条）：
+${JSON.stringify(negativeFindings.slice(0, 5), null, 2)}
+
+请返回 JSON 数组（不要 markdown 代码块），每条建议包含：
+{
+  "topic": "建议主题（简短）",
+  "direction": "创作方向（如：品牌优势强化/负面舆情应对/行业知识科普等）",
+  "keywords": ["建议关键词1", "关键词2"],
+  "platforms": ["平台1", "平台2"],
+  "priority": "high|medium|low",
+  "reason": "建议原因（基于数据分析）"
+}`;
+
+  try {
+    const resp = await axios.post(
+      LLM_API_URL,
+      {
+        model: LLM_MODEL,
+        messages: [
+          { role: 'system', content: '你是 AEO 内容策略专家，只返回 JSON 数组格式数据。' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.5,
+      },
+      {
+        headers: { 'Authorization': `Bearer ${LLM_API_KEY}`, 'Content-Type': 'application/json' },
+        timeout: 60000,
+      }
+    );
+
+    const content = (resp.data as any)?.choices?.[0]?.message?.content || '';
+    const jsonStr = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(jsonStr);
+
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
+  } catch (e: any) {
+    console.warn('[AEO-Period] LLM 生成写作建议失败，使用规则兜底:', e.message);
+    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
+  }
+}
+
+/**
+ * 无 LLM 时的规则兜底写作建议池
+ */
+function fallbackWritingSuggestions(
+  shardReports: any[],
+  inclusionStats: any,
+  topPlatforms: string[],
+  negativeFindings: any[],
+  brandMentionKeywords: Set<string>
+): any[] {
+  const suggestions: any[] = [];
+
+  // 建议1：负面舆情应对（如果有负面发现）
+  if (negativeFindings.length > 0) {
+    suggestions.push({
+      topic: '负面舆情应对内容',
+      direction: '负面舆情应对',
+      keywords: Array.from(brandMentionKeywords).slice(0, 3),
+      platforms: topPlatforms.slice(0, 2),
+      priority: 'high',
+      reason: `本周期检测到 ${negativeFindings.length} 条负面提及，需优先发布正面内容对冲`,
+    });
+  }
+
+  // 建议2：品牌优势强化
+  suggestions.push({
+    topic: '品牌核心优势强化',
+    direction: '品牌优势强化',
+    keywords: Array.from(brandMentionKeywords).slice(0, 5),
+    platforms: topPlatforms,
+    priority: negativeFindings.length > 0 ? 'medium' : 'high',
+    reason: '持续强化品牌在AI平台中的正面可见度，提升品牌词命中率',
+  });
+
+  // 建议3：低收录平台补强
+  const platformBreakdown = inclusionStats.platform_breakdown || [];
+  if (platformBreakdown.length > 0) {
+    const lowInclusionPlatforms = platformBreakdown
+      .filter((p: any) => parseInt(p.count, 10) < 5)
+      .map((p: any) => p.platform);
+    if (lowInclusionPlatforms.length > 0) {
+      suggestions.push({
+        topic: '低收录平台内容补强',
+        direction: '平台覆盖扩展',
+        keywords: Array.from(brandMentionKeywords).slice(0, 3),
+        platforms: lowInclusionPlatforms.slice(0, 3),
+        priority: 'medium',
+        reason: `平台 ${lowInclusionPlatforms.join('、')} 收录量偏低，需增加针对性内容投放`,
+      });
+    }
+  }
+
+  // 建议4：高权重平台加大投放
+  if (topPlatforms.length > 0) {
+    suggestions.push({
+      topic: '高AI信源权重平台加大投放',
+      direction: '高权重平台深耕',
+      keywords: Array.from(brandMentionKeywords).slice(0, 5),
+      platforms: topPlatforms.slice(0, 2),
+      priority: 'high',
+      reason: `平台 ${topPlatforms.slice(0, 2).join('、')} 在AI平台信源中权重最高，应优先投放以提升AI收录`,
+    });
+  }
+
+  // 建议5：行业知识科普
+  suggestions.push({
+    topic: '行业知识科普内容',
+    direction: '行业知识科普',
+    keywords: Array.from(brandMentionKeywords).slice(0, 3),
+    platforms: topPlatforms,
+    priority: 'low',
+    reason: '通过行业科普内容扩大长尾关键词覆盖，间接提升品牌可见度',
+  });
+
+  return suggestions;
+}
+
+/**
+ * 按配额自动创建写作任务（P3-5）
+ *
+ * 流程：
+ * 1. 获取用户的默认知识库、写作指令、模型配置
+ * 2. 按AI平台信源权重分配文章数到各平台（allocateArticlesByWeight）
+ * 3. 注入 AEO 建议池作为 aeo_context
+ * 4. 创建写作任务，标记 auto_generated=true, trigger_period_report_id=reportId
+ *
+ * @returns 实际创建的写作任务数
+ */
+async function autoCreateWritingTasksFromPeriod(
+  userId: string,
+  periodReportId: number,
+  quota: number,
+  writingSuggestions: any[],
+  sourceWeights: Record<string, number>,
+  periodType: string
+): Promise<number> {
+  const userIdNum = Number(userId);
+  if (!userIdNum || quota <= 0) return 0;
+
+  // 1. 获取用户的默认知识库（取第一个活跃的）
+  const knowledges = await getEnterpriseKnowledges(userIdNum);
+  if (knowledges.length === 0) {
+    console.warn(`[AEO-Period] 用户 ${userId} 无企业知识库，跳过自动创建写作任务`);
+    return 0;
+  }
+  const knowledge = knowledges[0];
+
+  // 2. 获取默认写作指令（取第一个活跃的）
+  const instructions = await getAllWritingInstructions();
+  if (instructions.length === 0) {
+    console.warn(`[AEO-Period] 无可用写作指令，跳过自动创建写作任务`);
+    return 0;
+  }
+  const instruction = instructions[0];
+
+  // 3. 获取默认模型配置
+  const modelConfig = await getDefaultModelConfig(userIdNum);
+  if (!modelConfig) {
+    console.warn(`[AEO-Period] 用户 ${userId} 无可用写作模型配置，跳过自动创建写作任务`);
+    return 0;
+  }
+
+  // 4. 按权重分配文章数
+  const allocation = await allocateArticlesByWeight(quota);
+
+  // 5. 构造 AEO 上下文（注入写作建议池）
+  const aeoContext = JSON.stringify({
+    period_report_id: periodReportId,
+    period_type: periodType,
+    suggestions: writingSuggestions,
+    source_weights: sourceWeights,
+    generated_at: new Date().toISOString(),
+  });
+
+  // 6. 汇总各平台分配的文章数，创建一个总的写作任务
+  // （写作任务支持 target_platforms 字段，一个任务可覆盖多个平台）
+  const targetPlatforms = Object.keys(allocation).filter(p => allocation[p] > 0);
+  if (targetPlatforms.length === 0) {
+    console.warn(`[AEO-Period] 用户 ${userId} 文章分配结果为空，跳过`);
+    return 0;
+  }
+
+  const taskName = `[AEO自动] ${periodType === 'weekly' ? '周报' : '月报'}驱动写作任务 ${new Date().toISOString().slice(0, 10)}`;
+
+  // 创建写作任务
+  const taskId = await createWritingTask({
+    user_id: userIdNum,
+    task_name: taskName,
+    keyword_ids: null, // 自动任务不指定关键词，由写作指令和AEO建议驱动
+    instruction_id: instruction.id,
+    knowledge_id: knowledge.id,
+    model_config_id: modelConfig.id,
+    generation_mode: 'expert',
+    agent_profile_id: null,
+    total_count: quota,
+    cover_image_mode: 'none',
+    cover_image_id: null,
+    illustration_count: 0,
+    target_platforms: targetPlatforms,
+  });
+
+  // 7. 补充 AEO 相关字段（createWritingTask 未包含这些字段）
+  await dbQuery(
+    `UPDATE ai_writing_task
+     SET aeo_context = $1,
+         auto_publish = false,
+         auto_generated = true,
+         trigger_period_report_id = $2
+     WHERE id = $3`,
+    [aeoContext, periodReportId, taskId]
+  );
+
+  console.log(`[AEO-Period] 写作任务已创建: taskId=${taskId}, name="${taskName}", total=${quota}, platforms=[${targetPlatforms.join(',')}]`);
+
+  // 8. 异步触发写作任务执行（复用现有 executeWritingTask）
+  //    使用动态 import 避免循环依赖
+  try {
+    const { executeWritingTask } = await import('../content/articleGenerator');
+    executeWritingTask(taskId, userIdNum).catch((e: any) => {
+      console.error(`[AEO-Period] 写作任务 ${taskId} 异步执行失败:`, e.message);
+    });
+  } catch (e: any) {
+    console.warn(`[AEO-Period] 无法触发写作任务执行（articleGenerator 未加载）:`, e.message);
+  }
+
+  return quota;
 }
