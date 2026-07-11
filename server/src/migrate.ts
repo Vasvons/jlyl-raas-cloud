@@ -1481,6 +1481,42 @@ export async function migrate() {
 
     console.log('[Migrate] v2.0.0 AI平台流量权重层创建完成（ai_platform_weight + ai_platform_source_mapping）');
 
+    // ============ v2.0.0: 分片级 AEO 报告（只存储，不触发写作） ============
+
+    // aeo_shard_report: 分片级 AEO 报告
+    // 每个分片查询完成后自动分析该分片的 AI 情感倾向、品牌提及情况
+    // 分析结果只入库，不触发写作任务。等待周/月报汇总后统一驱动写作。
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS aeo_shard_report (
+        id BIGSERIAL PRIMARY KEY,
+        task_id BIGINT NOT NULL,
+        queue_id BIGINT NOT NULL,
+        user_id TEXT,
+        round_no INTEGER,
+        shard_keywords JSONB,
+        sentiment_summary JSONB,
+        brand_mentions JSONB,
+        negative_findings JSONB,
+        content_suggestions TEXT,
+        record_count INTEGER DEFAULT 0,
+        brand_matched_count INTEGER DEFAULT 0,
+        visibility_score DECIMAL(5,2) DEFAULT 0,
+        positive_ratio DECIMAL(5,2) DEFAULT 0,
+        negative_ratio DECIMAL(5,2) DEFAULT 0,
+        neutral_ratio DECIMAL(5,2) DEFAULT 0,
+        raw_analysis JSONB,
+        shard_start_time TIMESTAMP,
+        shard_end_time TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_shard_report_task ON aeo_shard_report(task_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_shard_report_queue ON aeo_shard_report(queue_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_shard_report_task_round ON aeo_shard_report(task_id, round_no)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_shard_report_user_time ON aeo_shard_report(user_id, created_at DESC)`);
+
+    console.log('[Migrate] v2.0.0 分片级AEO报告表创建完成（aeo_shard_report）');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

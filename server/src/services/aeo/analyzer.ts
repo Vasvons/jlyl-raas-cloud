@@ -2,6 +2,7 @@
  * AEO 分析器：调用大模型对品牌提及记录进行分析，生成日报和轮次报告
  * - 日报：每个任务每天生成一次（保留原有功能）
  * - 轮次报告：每轮100%完成后生成，基于完整关键词库的分析结果
+ * - 分片报告（v2.0.0）：每个分片查询完成后生成，只存储不触发写作，等待周/月报汇总
  */
 import axios from 'axios';
 import {
@@ -16,6 +17,11 @@ import {
   upsertArticlePerformance,
   insertWritingStrategy,
   getArticlePerformanceStatsByKnowledge,
+  // v2.0.0 分片级 AEO
+  getQueueInfoForShardReport,
+  getRecordsByTimeWindow,
+  insertAeoShardReport,
+  checkShardReportExists,
 } from '../../repository';
 
 const LLM_API_URL = process.env.LLM_API_URL || '';
@@ -476,4 +482,137 @@ function fallbackStrategy(stats: { total: number; goodCount: number; poorCount: 
     lines.push(`表现好的方向：${stats.goodExamples.map(g => g.direction || '未分类').join('、')}，下一轮优先选用。`);
   }
   return lines.join('\n') || '保持当前创作节奏，持续监控品牌可见度变化。';
+}
+
+// ============ v2.0.0: 分片级 AEO 分析 ============
+
+/**
+ * 生成分片级 AEO 报告（v2.0.0）
+ *
+ * 每个分片查询完成后触发，分析该分片内品牌命中记录的 AI 情感倾向。
+ * 分析结果只入库 aeo_shard_report，不触发写作任务。
+ * 等待周/月报汇总后统一驱动写作。
+ *
+ * @param queueId 分片队列 ID
+ * @returns 报告 ID（失败返回 null）
+ */
+export async function generateAeoShardReport(queueId: number): Promise<number | null> {
+  try {
+    // 1. 检查是否已生成过报告（避免重复分析）
+    const exists = await checkShardReportExists(queueId);
+    if (exists) {
+      console.log(`[AEO-Shard] 分片 ${queueId} 已有报告，跳过`);
+      return null;
+    }
+
+    // 2. 获取分片队列信息
+    const queueInfo = await getQueueInfoForShardReport(queueId);
+    if (!queueInfo) {
+      console.log(`[AEO-Shard] 分片 ${queueId} 队列信息不存在`);
+      return null;
+    }
+
+    // 仅对成功完成且有品牌命中的分片进行分析
+    if (queueInfo.status !== 'done') {
+      console.log(`[AEO-Shard] 分片 ${queueId} 状态非 done（${queueInfo.status}），跳过`);
+      return null;
+    }
+    if ((queueInfo.result_brand_count || 0) === 0) {
+      console.log(`[AEO-Shard] 分片 ${queueId} 无品牌命中，跳过`);
+      return null;
+    }
+
+    // 3. 确定分片时间窗口
+    const startTime = queueInfo.start_time ? new Date(queueInfo.start_time) : new Date(Date.now() - 30 * 60 * 1000);
+    const endTime = queueInfo.end_time ? new Date(queueInfo.end_time) : new Date();
+
+    // 4. 按时间窗口查询品牌命中记录
+    const records = await getRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
+    if (records.length === 0) {
+      console.log(`[AEO-Shard] 分片 ${queueId} 时间窗口内无品牌命中记录，跳过`);
+      return null;
+    }
+
+    // 5. 获取品牌词
+    const userId = queueInfo.user_id || '';
+    const brandKeywords = await getBrandKeywords(userId);
+    if (brandKeywords.length === 0) {
+      console.log(`[AEO-Shard] 用户 ${userId} 无品牌词配置，跳过`);
+      return null;
+    }
+
+    // 6. 准备分析输入（截取内容前 500 字）
+    const analysisInput = records.map(r => ({
+      platform: r.platform,
+      keyword: r.keyword,
+      content: (r.raw_content || '').substring(0, 500),
+      matchedBrands: r.matched_brands,
+      shareUrl: r.share_url,
+    }));
+
+    // 7. 调用 LLM 分析（复用现有 callLlmForAeo）
+    const analysis = await callLlmForAeo(analysisInput, brandKeywords);
+
+    // 8. 提取负面发现和品牌提及详情
+    const brandMentions = records.map(r => ({
+      keyword: r.keyword,
+      platform: r.platform,
+      matchedBrands: r.matched_brands,
+      shareUrl: r.share_url,
+      contentPreview: (r.raw_content || '').substring(0, 200),
+    }));
+
+    // 9. 识别负面发现（内容含负面词的记录）
+    const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷'];
+    const negativeFindings = records
+      .filter(r => {
+        const text = (r.raw_content || '').toLowerCase();
+        return negativeWords.some(w => text.includes(w));
+      })
+      .map(r => ({
+        keyword: r.keyword,
+        platform: r.platform,
+        contentPreview: (r.raw_content || '').substring(0, 300),
+        negativeWords: negativeWords.filter(w => (r.raw_content || '').toLowerCase().includes(w)),
+      }));
+
+    // 10. 情感汇总
+    const sentimentSummary = {
+      total: records.length,
+      positive: Math.round(records.length * analysis.positiveRatio / 100),
+      neutral: Math.round(records.length * analysis.neutralRatio / 100),
+      negative: Math.round(records.length * analysis.negativeRatio / 100),
+      positiveRatio: analysis.positiveRatio,
+      neutralRatio: analysis.neutralRatio,
+      negativeRatio: analysis.negativeRatio,
+    };
+
+    // 11. 入库
+    const reportId = await insertAeoShardReport({
+      task_id: queueInfo.task_id,
+      queue_id: queueId,
+      user_id: userId,
+      round_no: queueInfo.round_no,
+      shard_keywords: queueInfo.keywords,
+      sentiment_summary: sentimentSummary,
+      brand_mentions: brandMentions,
+      negative_findings: negativeFindings,
+      content_suggestions: analysis.suggestions,
+      record_count: queueInfo.result_record_count || records.length,
+      brand_matched_count: queueInfo.result_brand_count || records.length,
+      visibility_score: analysis.visibilityScore,
+      positive_ratio: analysis.positiveRatio,
+      negative_ratio: analysis.negativeRatio,
+      neutral_ratio: analysis.neutralRatio,
+      raw_analysis: { raw: analysis.raw, competitorAnalysis: analysis.competitorAnalysis },
+      shard_start_time: startTime,
+      shard_end_time: endTime,
+    });
+
+    console.log(`[AEO-Shard] 分片 ${queueId} AEO报告已生成: reportId=${reportId}, 品牌命中=${records.length}, 负面发现=${negativeFindings.length}`);
+    return reportId;
+  } catch (err: any) {
+    console.error(`[AEO-Shard] 分片 ${queueId} AEO分析失败:`, err.message);
+    return null;
+  }
 }

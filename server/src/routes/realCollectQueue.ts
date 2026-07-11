@@ -11,6 +11,7 @@ import {
   updateTaskRunStatus,
   updateQueueProgress
 } from '../repository';
+import { generateAeoShardReport } from '../services/aeo/analyzer';
 
 const router = Router();
 
@@ -46,6 +47,20 @@ router.post('/complete', async (req, res) => {
         status: 'running',
         error: error
       });
+    }
+
+    // v2.0.0: 分片成功完成且有品牌命中时，异步触发分片级 AEO 分析
+    // 分析结果只入库 aeo_shard_report，不触发写作任务（等待周/月报汇总）
+    if (!error && (brandCount || 0) > 0) {
+      generateAeoShardReport(queueId)
+        .then(reportId => {
+          if (reportId) {
+            console.log(`[RealCollectQueue] 分片 ${queueId} AEO报告已生成: reportId=${reportId}`);
+          }
+        })
+        .catch(e => {
+          console.error(`[RealCollectQueue] 分片 ${queueId} AEO分析失败:`, e.message);
+        });
     }
 
     console.log(`[RealCollectQueue] 队列任务完成 queueId=${queueId} records=${recordCount} brands=${brandCount} error=${error || '无'}`);

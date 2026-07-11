@@ -1220,6 +1220,180 @@ export async function completeQueueTask(queueId: number, recordCount: number, br
   );
 }
 
+// ============ v2.0.0: 分片级 AEO 报告 ============
+
+/** 分片级 AEO 报告记录 */
+export interface AeoShardReport {
+  id: number;
+  task_id: number;
+  queue_id: number;
+  user_id: string | null;
+  round_no: number | null;
+  shard_keywords: any;
+  sentiment_summary: any;
+  brand_mentions: any;
+  negative_findings: any;
+  content_suggestions: string | null;
+  record_count: number;
+  brand_matched_count: number;
+  visibility_score: number;
+  positive_ratio: number;
+  negative_ratio: number;
+  neutral_ratio: number;
+  raw_analysis: any;
+  shard_start_time: string | null;
+  shard_end_time: string | null;
+  created_at: string;
+}
+
+/** 获取分片队列信息（含 start_time/end_time/keywords/task_id/user_id/round_no） */
+export async function getQueueInfoForShardReport(queueId: number): Promise<any | null> {
+  const result = await query(
+    `SELECT id, task_id, user_id, round_no, keywords, start_time, end_time, status,
+            result_record_count, result_brand_count
+     FROM real_collect_queue
+     WHERE id = $1`,
+    [queueId]
+  );
+  return result.rows[0] || null;
+}
+
+/** 按时间窗口查询品牌命中记录（分片级 AEO 分析用） */
+export async function getRecordsByTimeWindow(
+  taskId: number,
+  startTime: Date,
+  endTime: Date
+): Promise<any[]> {
+  const result = await query(
+    `SELECT id, task_id, user_id, keyword, platform, brand_matched, matched_brands,
+            share_url, raw_content, query_time
+     FROM real_collect_record
+     WHERE task_id = $1
+       AND query_time >= $2
+       AND query_time <= $3
+       AND brand_matched = true
+     ORDER BY query_time ASC`,
+    [taskId, startTime, endTime]
+  );
+  return result.rows;
+}
+
+/** 插入分片级 AEO 报告 */
+export async function insertAeoShardReport(data: {
+  task_id: number;
+  queue_id: number;
+  user_id?: string;
+  round_no?: number;
+  shard_keywords?: any;
+  sentiment_summary?: any;
+  brand_mentions?: any;
+  negative_findings?: any;
+  content_suggestions?: string;
+  record_count?: number;
+  brand_matched_count?: number;
+  visibility_score?: number;
+  positive_ratio?: number;
+  negative_ratio?: number;
+  neutral_ratio?: number;
+  raw_analysis?: any;
+  shard_start_time?: Date;
+  shard_end_time?: Date;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO aeo_shard_report
+      (task_id, queue_id, user_id, round_no, shard_keywords,
+       sentiment_summary, brand_mentions, negative_findings, content_suggestions,
+       record_count, brand_matched_count, visibility_score,
+       positive_ratio, negative_ratio, neutral_ratio,
+       raw_analysis, shard_start_time, shard_end_time)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+     RETURNING id`,
+    [
+      data.task_id,
+      data.queue_id,
+      data.user_id || null,
+      data.round_no || null,
+      data.shard_keywords ? JSON.stringify(data.shard_keywords) : null,
+      data.sentiment_summary ? JSON.stringify(data.sentiment_summary) : null,
+      data.brand_mentions ? JSON.stringify(data.brand_mentions) : null,
+      data.negative_findings ? JSON.stringify(data.negative_findings) : null,
+      data.content_suggestions || null,
+      data.record_count || 0,
+      data.brand_matched_count || 0,
+      data.visibility_score || 0,
+      data.positive_ratio || 0,
+      data.negative_ratio || 0,
+      data.neutral_ratio || 0,
+      data.raw_analysis ? JSON.stringify(data.raw_analysis) : null,
+      data.shard_start_time || null,
+      data.shard_end_time || null,
+    ]
+  );
+  return result.rows[0].id;
+}
+
+/** 检查分片是否已生成过 AEO 报告（避免重复分析） */
+export async function checkShardReportExists(queueId: number): Promise<boolean> {
+  const result = await query(
+    `SELECT 1 FROM aeo_shard_report WHERE queue_id = $1 LIMIT 1`,
+    [queueId]
+  );
+  return result.rows.length > 0;
+}
+
+/** 查询分片级 AEO 报告列表（分页） */
+export async function getAeoShardReports(
+  taskId?: number,
+  userId?: number,
+  limit: number = 50,
+  offset: number = 0
+): Promise<{ list: AeoShardReport[]; total: number }> {
+  const conditions: string[] = [];
+  const params: any[] = [];
+  if (taskId) {
+    params.push(taskId);
+    conditions.push(`task_id = $${params.length}`);
+  }
+  if (userId) {
+    params.push(userId);
+    conditions.push(`user_id = $${params.length}`);
+  }
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  const countResult = await query(`SELECT COUNT(*) AS total FROM aeo_shard_report ${where}`, params);
+  const total = parseInt(countResult.rows[0].total, 10);
+
+  params.push(limit, offset);
+  const result = await query(
+    `SELECT * FROM aeo_shard_report ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  return { list: result.rows as AeoShardReport[], total };
+}
+
+/** 获取单个分片级 AEO 报告详情 */
+export async function getAeoShardReportById(id: number): Promise<AeoShardReport | null> {
+  const result = await query(`SELECT * FROM aeo_shard_report WHERE id = $1`, [id]);
+  return (result.rows[0] as AeoShardReport) || null;
+}
+
+/** 获取指定时间范围内的分片报告（周/月报汇总用） */
+export async function getShardReportsByTimeRange(
+  userId: string,
+  startTime: Date,
+  endTime: Date
+): Promise<AeoShardReport[]> {
+  const result = await query(
+    `SELECT * FROM aeo_shard_report
+     WHERE user_id = $1
+       AND created_at >= $2
+       AND created_at <= $3
+     ORDER BY created_at ASC`,
+    [userId, startTime, endTime]
+  );
+  return result.rows as AeoShardReport[];
+}
+
 // Worker更新分片处理进度（记录已处理到的关键词索引，重启后从断点续查）
 export async function updateQueueProgress(queueId: number, lastKeywordIndex: number): Promise<void> {
   await query(

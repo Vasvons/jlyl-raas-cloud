@@ -66,6 +66,10 @@ import {
   // v2.0.0：AEO闭环配额配置
   getAeoQuotaConfig,
   upsertAeoQuotaConfig,
+  // v2.0.0：分片级 AEO 报告
+  getAeoShardReports,
+  getAeoShardReportById,
+  getShardReportsByTimeRange,
   // 智能体角色同步
   upsertAgentProfile,
   getAgentProfiles,
@@ -2122,6 +2126,39 @@ router.put('/aeo-quota', async (req: Request, res: Response) => {
     const userId = getUserId(req);
     await upsertAeoQuotaConfig(userId, req.body || {});
     res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v2.0.0: 分片级 AEO 报告查询 ============
+
+// 获取分片级 AEO 报告列表（分页）
+router.get('/aeo-shard-reports', async (req: Request, res: Response) => {
+  try {
+    const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
+    const userId = getUserId(req);
+    const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    const result = await getAeoShardReports(taskId as number | undefined, userId, limit, offset);
+    res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 获取单个分片级 AEO 报告详情
+router.get('/aeo-shard-reports/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ code: 400, message: '非法的 ID' });
+    }
+    const report = await getAeoShardReportById(id);
+    if (!report) {
+      return res.status(404).json({ code: 404, message: '报告不存在' });
+    }
+    res.json({ code: 200, data: report });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
