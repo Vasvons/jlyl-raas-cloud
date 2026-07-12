@@ -637,14 +637,20 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         currentPromptTotalLen = writingCtx.systemMessage.length + articlePrompt.length;
 
         // 调AI生成文章正文
-        // 注意：不传 maxTokens，让平台用默认值（豆包等平台对 max_tokens 有硬截断行为，
-        // 传 4096 会导致 finish_reason=length 被截断成几个字符）
+        // v2.0.3：根据 target_word_count 计算 maxTokens，限制输出长度
+        // 背景：文心一言（百度千帆原生 API）不传 max_output_tokens 时会按模型最大能力输出，
+        //       导致生成 3 万+ 字超长内容；且文心一言不严格遵守 prompt 中的 {word_count} 字数指令
+        // 计算：1 个中文字符 ≈ 1.5 tokens，留 50% 余量（×2.25），范围 [512, 8192]
+        // 注意：aiClient.ts 会针对文心一言平台自动将 max_tokens 转换为 max_output_tokens
+        const targetWordCount = Number(task.target_word_count) || 1500;
+        const calculatedMaxTokens = Math.max(512, Math.min(8192, Math.ceil(targetWordCount * 2.25)));
         const articleResult = await chatCompletion({
           baseUrl: modelConfig.base_url,
           apiKey,
           model: modelConfig.model_name,
           messages,
           temperature: Number(modelConfig.temperature) || 0.7,
+          maxTokens: calculatedMaxTokens,
           timeout: 120000,
           webSearch: !!modelConfig.web_search,
         });

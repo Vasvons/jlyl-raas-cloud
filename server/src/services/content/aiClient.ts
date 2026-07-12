@@ -78,7 +78,14 @@ export async function chatCompletion(params: ChatCompletionParams): Promise<Chat
   };
   // 仅在显式指定 maxTokens 时才传 max_tokens（不限制输出长度）
   if (params.maxTokens != null) {
-    body.max_tokens = params.maxTokens;
+    // v2.0.3：百度千帆原生 API 使用 max_output_tokens 而非 max_tokens（OpenAI 标准）
+    // 文心一言若不传此参数，会按模型最大能力输出，导致生成 3 万+ 字超长内容
+    const platform = detectPlatform(params.baseUrl, params.model);
+    if (platform === 'wenxin') {
+      body.max_output_tokens = params.maxTokens;
+    } else {
+      body.max_tokens = params.maxTokens;
+    }
   }
 
   // 联网搜索：按平台动态注入（v1.4.1 修正三家平台参数错误）
