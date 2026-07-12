@@ -626,6 +626,10 @@ export async function migrate() {
     // 仅对蒸馏词库（keyword_type=0）生效
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS exclude_prefixes TEXT DEFAULT NULL`);
 
+    // 查询模式：auto（默认，优先API降级爬虫）/ api（仅API）/ crawler（仅爬虫，可获取分享链接）
+    // 用于按任务单独控制查询方式，在智能巡检页面的任务列表操作栏切换
+    await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS query_mode VARCHAR(20) DEFAULT 'auto'`);
+
     // ============ 一次性清理：删除 GEO 搜索详情中的脏数据 ============
     // 问题：baseAdapter 的 extractContent 兜底逻辑曾用 document.body.textContent 拿整页文本，
     // 导致营销页/导航内容被误识别为 brand_matched=true，生成错误的"查看详情"跳转链接。

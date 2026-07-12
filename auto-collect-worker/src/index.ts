@@ -90,6 +90,7 @@ async function pollAndExecute(): Promise<void> {
         concurrency,
         workerId: WORKER_ID,
         lastKeywordIndex: task.lastKeywordIndex ?? -1,
+        queryMode: task.queryMode,
       });
       recordCount = result.totalRecords;
       brandCount = result.brandMatched;

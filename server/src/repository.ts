@@ -1199,6 +1199,12 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
   );
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
+  // 查询任务级别的 query_mode 配置（透传给 Worker 决定走 API 还是爬虫）
+  const taskRow = await query(
+    `SELECT query_mode FROM real_collect_task WHERE id = $1`,
+    [row.task_id]
+  );
+  const queryMode = taskRow.rows.length > 0 ? (taskRow.rows[0].query_mode || 'auto') : 'auto';
   return {
     queueId: row.id,
     taskId: row.task_id,
@@ -1207,6 +1213,7 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
     platforms: row.platforms,
     keywords: typeof row.keywords === 'string' ? JSON.parse(row.keywords) : row.keywords,
     lastKeywordIndex: row.last_keyword_index ?? -1,
+    queryMode,
   };
 }
 
@@ -2412,6 +2419,7 @@ export async function createRealCollectTask(params: {
   cronExpr?: string;
   shardSize?: number;
   excludePrefixes?: string[];
+  queryMode?: string;
 }): Promise<number> {
   // cronExpr 可选：循环模式下不传，默认 '0 0 * * *' 保持兼容
   const cronExpr = params.cronExpr || '0 0 * * *';
@@ -2419,10 +2427,11 @@ export async function createRealCollectTask(params: {
   const excludePrefixesJson = (params.keywordType === 0 && params.excludePrefixes && params.excludePrefixes.length > 0)
     ? JSON.stringify(params.excludePrefixes.filter(p => p && p.trim()))
     : null;
+  const queryMode = params.queryMode || 'auto';
   const result = await query(
-    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status, shard_size, exclude_prefixes)
-     VALUES ($1, $2, $3, $4, $5, 'active', $6, $7) RETURNING id`,
-    [params.userId, params.taskName, params.keywordType, params.platforms, cronExpr, params.shardSize || 50, excludePrefixesJson]
+    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status, shard_size, exclude_prefixes, query_mode)
+     VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8) RETURNING id`,
+    [params.userId, params.taskName, params.keywordType, params.platforms, cronExpr, params.shardSize || 50, excludePrefixesJson, queryMode]
   );
   return result.rows[0].id;
 }
@@ -2436,6 +2445,7 @@ export async function updateRealCollectTask(id: number, params: {
   status?: string;
   shardSize?: number;
   excludePrefixes?: string[];
+  queryMode?: string;
 }): Promise<void> {
   const sets: string[] = [];
   const values: any[] = [id];
@@ -2446,6 +2456,7 @@ export async function updateRealCollectTask(id: number, params: {
   if (params.cronExpr !== undefined) { sets.push(`cron_expr = $${paramIdx++}`); values.push(params.cronExpr); }
   if (params.status !== undefined) { sets.push(`status = $${paramIdx++}`); values.push(params.status); }
   if (params.shardSize !== undefined) { sets.push(`shard_size = $${paramIdx++}`); values.push(params.shardSize); }
+  if (params.queryMode !== undefined) { sets.push(`query_mode = $${paramIdx++}`); values.push(params.queryMode); }
   if (params.excludePrefixes !== undefined) {
     // 仅蒸馏词库（keyword_type=0）保存前缀屏蔽，品牌词库清空
     const kp = params.keywordType !== undefined ? params.keywordType : 0;

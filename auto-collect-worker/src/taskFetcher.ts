@@ -47,6 +47,7 @@ export interface ExecuteTaskParams {
   concurrency?: number;
   workerId: string;
   lastKeywordIndex?: number; // 断点续查：从此索引之后开始处理（-1 表示从头开始）
+  queryMode?: string; // 查询模式：auto（默认，优先API降级爬虫）/ api（仅API）/ crawler（仅爬虫，可获取分享链接）
 }
 
 export interface ExecuteTaskResult {
@@ -229,7 +230,8 @@ async function executeSingleQuery(
   keyword: string,
   platform: string,
   adapter: PlatformAdapter,
-  workerId: string
+  workerId: string,
+  queryMode?: string
 ): Promise<{ success: boolean; brandMatched: boolean }> {
   // 熔断检查：连续失败的平台跳过
   if (isPlatformInCircuitBreaker(platform)) {
@@ -237,10 +239,21 @@ async function executeSingleQuery(
     return { success: false, brandMatched: false };
   }
 
+  const mode = queryMode || 'auto';
+
+  // ============ 查询模式决策（v2.0.4：支持任务级单独设置）============
+  // auto（默认）：优先用大模型 API 查询，API 失败降级爬虫
+  // api：强制走 API 模式（不降级爬虫，API 失败直接报错）
+  // crawler：强制走爬虫模式（借用账号 + 隐身浏览器，可获取分享链接）
+  if (mode === 'crawler') {
+    // 直接跳到爬虫模式，不走 API
+    logger.info(`[模式] ${platform}/${keyword.substring(0, 20)} 强制爬虫模式（queryMode=crawler）`);
+  } else
   // ============ v1.4: 优先用大模型 API 查询（完整内容、无封号风险）============
   // 该平台在「生文模型配置」勾选了"用于巡检"且配置了 API KEY 时，走 API 模式
   // API 失败时降级到爬虫模式（借用账号 + 隐身浏览器）
-  try {
+  if (mode === 'auto' || mode === 'api') {
+    try {
     const apiConfig = await getApiConfig(platform);
     if (apiConfig) {
       logger.info(`[API] 查询: ${platform}/${keyword.substring(0, 30)}`);
@@ -268,10 +281,23 @@ async function executeSingleQuery(
       logger.info(`[API] 查询成功 ${platform}/${keyword.substring(0, 30)} 内容长度=${apiResult.content.length}${shareInfo}`);
       return { success: true, brandMatched: false };
     }
+    // apiConfig 为 null（该平台未配置 API），api 模式下报错，auto 模式降级爬虫
+    if (mode === 'api') {
+      logger.warn(`[API] ${platform} 未配置巡检 API（queryMode=api 不降级），跳过: ${keyword.substring(0, 20)}`);
+      recordPlatformResult(platform, false);
+      return { success: false, brandMatched: false };
+    }
+    logger.info(`[API] ${platform} 未配置巡检 API，降级爬虫模式`);
   } catch (e: any) {
-    // API 调用失败（KEY 失效、限流、网络等），降级到爬虫模式
+    // API 调用失败（KEY 失效、限流、网络等）
+    if (mode === 'api') {
+      logger.warn(`[API] 调用失败（queryMode=api 不降级）: ${platform}/${keyword.substring(0, 30)} - ${e.message}`);
+      recordPlatformResult(platform, false);
+      return { success: false, brandMatched: false };
+    }
     logger.warn(`[API] 调用失败，降级爬虫: ${platform}/${keyword.substring(0, 30)} - ${e.message}`);
   }
+  } // end if (mode === 'auto' || mode === 'api')
 
   // ============ 爬虫模式（兜底）============
   // 从账号池借用账号
@@ -420,7 +446,7 @@ async function executeSingleQuery(
 }
 
 export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTaskResult> {
-  const { taskId, queueId, userId, keywordType, keywords, platforms, concurrency, workerId, lastKeywordIndex } = params;
+  const { taskId, queueId, userId, keywordType, keywords, platforms, concurrency, workerId, lastKeywordIndex, queryMode } = params;
   // 并发数钳制：不超过硬上限
   const maxConcurrency = Math.min(concurrency || MAX_CONCURRENCY_HARD_LIMIT, MAX_CONCURRENCY_HARD_LIMIT);
 
@@ -494,7 +520,7 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
         logger.info(`  关键词 "${keyword.substring(0, 20)}" 平台批次 ${i + 1}/${batches.length}: ${batch.map(b => b.platform).join(', ')}`);
 
         const promises = batch.map(({ platform, adapter }) => {
-          return executeSingleQuery(browser, taskId, userId, keywordType, keyword, platform, adapter, workerId);
+          return executeSingleQuery(browser, taskId, userId, keywordType, keyword, platform, adapter, workerId, queryMode);
         });
 
         const results = await Promise.allSettled(promises);
