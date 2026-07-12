@@ -274,11 +274,15 @@ export async function smartFindLongestContent(
       'div, section, article, [class*="answer"], [class*="response"], [class*="message"], [class*="markdown"]'
     )) as HTMLElement[];
 
-    let bestText = '';
-    let bestHtml = '';
-
     // 导航/侧边栏关键词 — class/id 包含这些的元素一律跳过
-    const navPatterns = /sidebar|side-bar|sidenav|side-nav|navigation|nav-bar|navbar|menu|aside|left-bar|leftbar|right-bar|rightbar/i;
+    const navPatterns = /sidebar|side-bar|sidenav|side-nav|navigation|nav-bar|navbar|menu|aside|left-bar|leftbar|right-bar|rightbar|history|conversation-list|chat-list|session/i;
+
+    interface Candidate {
+      text: string;
+      html: string;
+      score: number;
+    }
+    const scored: Candidate[] = [];
 
     for (const el of candidates) {
       // 跳过不可见
@@ -298,33 +302,77 @@ export async function smartFindLongestContent(
       if (navPatterns.test(className) || navPatterns.test(id) || role === 'navigation' || role === 'menu') continue;
 
       // 提取文本时排除 <style>/<script> 子元素的内容
-      // 之前 bug：Kimi 页面有内联 <style> 含大量 CSS 动画代码（33K 字符），
-      // el.textContent 会把 CSS 文本也算进去，导致抓到 33223 字符的垃圾内容
       const clone = el.cloneNode(true) as HTMLElement;
       clone.querySelectorAll('style, script, noscript').forEach(e => e.remove());
       const text = (clone.textContent || '').trim();
-      // 跳过过短文本（通常是占位符、按钮文字等）
       if (text.length < minLen) continue;
-      // 跳过 CSS/JS 代码特征（大括号+分号密度高，如 "#LeftBar{transform-box:...}"）
+
+      // 跳过 CSS/JS 代码特征
       const cssCharRatio = (text.match(/[{};:]/g) || []).length / text.length;
       if (cssCharRatio > 0.15 && text.length > 500) continue;
-      // 跳过包含过多子元素重复文本的容器（如整个页面 body）
-      // 启发式：如果文本长度 / 子元素数量 > 20，认为是内容容器
-      const childCount = el.querySelectorAll('*').length;
-      if (childCount > 0 && text.length / childCount < 5) continue;
 
-      // 跳过高链接密度元素（导航栏有很多 <a> 标签）
-      const linkCount = el.querySelectorAll('a').length;
-      if (linkCount > 5 && text.length / linkCount < 50) continue;
+      // ===== 评分系统 =====
+      let score = text.length;
 
-      if (text.length > bestText.length) {
-        bestText = text;
-        bestHtml = clone.innerHTML || '';
+      // [加分] 含 <p> 标签 = 散文内容（AI 回答的核心特征）
+      const pCount = el.querySelectorAll('p').length;
+      if (pCount > 0) {
+        score *= 3; // 3 倍加权
       }
+
+      // [加分] 含 markdown 相关 class
+      if (/markdown|prose|content-body|message-content|answer-content|response-content/i.test(className)) {
+        score *= 2;
+      }
+
+      // [加分] 含标题标签（h1-h6 = 结构化内容）
+      const headingCount = el.querySelectorAll('h1, h2, h3, h4, h5, h6').length;
+      if (headingCount > 0) {
+        score *= 1.5;
+      }
+
+      // [加分] 含列表标签（ul/ol = 结构化内容）
+      const listCount = el.querySelectorAll('ul, ol').length;
+      if (listCount > 0) {
+        score *= 1.3;
+      }
+
+      // [减分] 链接密度高 = 导航/侧边栏
+      const linkCount = el.querySelectorAll('a').length;
+      if (linkCount > 3) {
+        const linkTextLen = Array.from(el.querySelectorAll('a'))
+          .reduce((sum, a) => sum + (a.textContent || '').length, 0);
+        const linkRatio = linkTextLen / text.length;
+        score *= (1 - linkRatio * 0.8); // 链接文本占比越高，扣分越多
+      }
+
+      // [减分] 子元素过多但文本少 = UI 容器（如下拉菜单、工具栏）
+      const childCount = el.querySelectorAll('*').length;
+      if (childCount > 0 && text.length / childCount < 10) {
+        score *= 0.3;
+      }
+
+      // [减分] 屏幕左边缘或右边缘 = 侧边栏位置
+      if (rect.left < 50 || rect.right > window.innerWidth - 50) {
+        score *= 0.5;
+      }
+
+      // [减分] 含表单元素 = 输入区
+      if (el.querySelector('textarea, input[type="text"], [contenteditable="true"]')) {
+        score *= 0.3;
+      }
+
+      scored.push({ text, html: clone.innerHTML || '', score });
     }
 
-    if (bestText.length < minLen) return null;
-    return { text: bestText, html: bestHtml };
+    if (scored.length === 0) return null;
+
+    // 按评分排序，取最高分
+    scored.sort((a, b) => b.score - a.score);
+    const best = scored[0];
+
+    if (best.text.length < minLen) return null;
+    return { text: best.text, html: best.html };
   }, minLength);
 
   return result || null;

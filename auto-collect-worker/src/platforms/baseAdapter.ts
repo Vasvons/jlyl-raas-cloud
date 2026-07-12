@@ -709,12 +709,21 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       await this.scrollToBottom(page);
       // 取最后一个匹配的元素（最新的回答）
       const elements = await page.$$(this.responseSelector);
-      // 从后往前找第一个有内容的元素（最新的回答）
+
+      // 收集所有候选元素及其质量评分
+      interface MatchCandidate {
+        text: string;
+        html: string;
+        score: number;
+        index: number;
+      }
+      const candidates: MatchCandidate[] = [];
+
       for (let i = elements.length - 1; i >= 0; i--) {
         const el = elements[i];
         // 跳过导航/侧边栏元素（class/id/role 匹配）
         const isNav = await el.evaluate((node: HTMLElement) => {
-          const navPatterns = /sidebar|side-bar|sidenav|side-nav|navigation|nav-bar|navbar|menu|aside|left-bar|leftbar|right-bar|rightbar/i;
+          const navPatterns = /sidebar|side-bar|sidenav|side-nav|navigation|nav-bar|navbar|menu|aside|left-bar|leftbar|right-bar|rightbar|history|conversation-list|chat-list|session/i;
           const cls = node.className || '';
           const id = node.id || '';
           const role = node.getAttribute('role') || '';
@@ -723,39 +732,64 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         if (isNav) continue;
 
         const text = (await el.textContent()) || '';
-        if (text.trim().length > 0) {
-          // v1.4.2：清理 HTML，移除图片/脚本/样式/按钮等非内容元素
-          // 之前 bug：直接用 innerHTML，把整个页面的图片、UI、侧边栏都装进静态页（7 万字符）
-          const cleanedHtml = await el.evaluate((node: HTMLElement) => {
-            // 克隆节点避免影响原页面
-            const clone = node.cloneNode(true) as HTMLElement;
-            // 移除非内容元素
-            const removeSelectors = [
-              'script', 'style', 'noscript', 'iframe', 'svg', 'canvas',
-              'img', 'video', 'audio', 'source',
-              'button', 'input', 'textarea', 'select', 'form',
-              '.btn', '.button', '.action', '.toolbar', '.menu', '.sidebar',
-              '.navigation', '.nav', '.header', '.footer',
-              '[class*="btn"]', '[class*="button"]', '[class*="action"]',
-              '[class*="toolbar"]', '[class*="menu"]', '[class*="sidebar"]',
-              '[class*="navigation"]', '[class*="nav-"]', '[class*="header"]',
-              '[class*="footer"]', '[class*="copy"]', '[class*="share"]',
-              '[class*="like"]', '[class*="feedback"]', '[class*="rating"]',
-              '[role="button"]', '[role="navigation"]', '[role="toolbar"]',
-              '[aria-hidden="true"]',
-            ];
-            for (const sel of removeSelectors) {
-              clone.querySelectorAll(sel).forEach(e => e.remove());
-            }
-            return clone.innerHTML;
-          }).catch(() => '');
-          const cleanedText = cleanedHtml.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
-          console.log(`[${this.platformName}] 提取内容成功: 原文=${text.trim().length} 字符, 清理后=${cleanedText.length} 字符 (selector: ${this.responseSelector.split(',')[0]}...)`);
-          return { text: text.trim(), html: cleanedHtml || `<div>${escapeHtml(text.trim())}</div>` };
+        if (text.trim().length === 0) continue;
+
+        // 清理 HTML
+        const cleanedHtml = await el.evaluate((node: HTMLElement) => {
+          const clone = node.cloneNode(true) as HTMLElement;
+          clone.querySelectorAll('style, script, noscript').forEach(e => e.remove());
+          const removeSelectors = [
+            'script', 'style', 'noscript', 'iframe', 'svg', 'canvas',
+            'img', 'video', 'audio', 'source',
+            'button', 'input', 'textarea', 'select', 'form',
+            '.btn', '.button', '.action', '.toolbar', '.menu', '.sidebar',
+            '.navigation', '.nav', '.header', '.footer',
+            '[class*="btn"]', '[class*="button"]', '[class*="action"]',
+            '[class*="toolbar"]', '[class*="menu"]', '[class*="sidebar"]',
+            '[class*="navigation"]', '[class*="nav-"]', '[class*="header"]',
+            '[class*="footer"]', '[class*="copy"]', '[class*="share"]',
+            '[class*="like"]', '[class*="feedback"]', '[class*="rating"]',
+            '[role="button"]', '[role="navigation"]', '[role="toolbar"]',
+            '[aria-hidden="true"]',
+          ];
+          for (const sel of removeSelectors) {
+            clone.querySelectorAll(sel).forEach(e => e.remove());
+          }
+          return clone.innerHTML;
+        }).catch(() => '');
+
+        const cleanedText = cleanedHtml.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+
+        // 评分：优先散文内容（含 <p> 标签）
+        const quality = await el.evaluate((node: HTMLElement) => {
+          const pCount = node.querySelectorAll('p').length;
+          const linkCount = node.querySelectorAll('a').length;
+          const textLen = (node.textContent || '').length;
+          const hasMarkdown = /markdown|prose|content-body|message-content|answer-content|response-content/i.test(node.className || '');
+          return { pCount, linkCount, textLen, hasMarkdown };
+        }).catch(() => ({ pCount: 0, linkCount: 0, textLen: text.length, hasMarkdown: false }));
+
+        let score = cleanedText.length;
+        if (quality.pCount > 0) score *= 3; // 含 <p> 标签 = 散文，3 倍加权
+        if (quality.hasMarkdown) score *= 2;
+        if (quality.linkCount > 3) {
+          const linkRatio = quality.linkCount / Math.max(cleanedText.length, 1);
+          score *= (1 - Math.min(linkRatio * 10, 0.8));
         }
+
+        candidates.push({ text: text.trim(), html: cleanedHtml || `<div>${escapeHtml(text.trim())}</div>`, score, index: i });
       }
+
+      // 按评分排序，取最高分
+      if (candidates.length > 0) {
+        candidates.sort((a, b) => b.score - a.score);
+        const best = candidates[0];
+        console.log(`[${this.platformName}] 提取内容成功: ${best.text.length} 字符 (score=${Math.round(best.score)}, 从 ${candidates.length} 个候选中选择, selector: ${this.responseSelector.split(',')[0]}...)`);
+        return { text: best.text, html: best.html };
+      }
+
       // 选择器匹配到元素但内容为空，走兜底
-      console.log(`[${this.platformName}] responseSelector 匹配到 ${elements.length} 个元素但内容为空，走兜底`);
+      console.log(`[${this.platformName}] responseSelector 匹配到 ${elements.length} 个元素但无有效内容，走兜底`);
     } catch (e) {
       console.log(`[${this.platformName}] responseSelector 等待超时: ${(e as Error).message}，走兜底`);
     }

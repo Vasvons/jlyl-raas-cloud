@@ -1,6 +1,5 @@
 import { Page } from 'playwright';
 import { BasePlatformAdapter } from './baseAdapter';
-import { smartFindLongestContent } from '../indexedInteractor';
 
 /** 纳米搜索适配器
  *
@@ -40,72 +39,14 @@ export class NanoAdapter extends BasePlatformAdapter {
     // 滚动到底部触发懒加载
     await this.scrollToBottom(page);
 
-    // 策略1：优先匹配明确的 AI 总结容器
-    const preciseSelectors = [
-      '.answer-content',
-      '.ai-summary',
-      '.result-content',
-      '.summary-content',
-      '.ai-answer',
-      '.bot-answer',
-      '.reply-content',
-      '[class*="ai-summary"]',
-      '[class*="answer-content"]',
-      '[class*="summary-content"]',
-      '[class*="ai-answer"]',
-      '[class*="bot-answer"]',
-    ];
-
-    for (const sel of preciseSelectors) {
-      try {
-        const elements = await page.$$(sel);
-        // 从后往前找（最新的回答通常在后面）
-        for (let i = elements.length - 1; i >= 0; i--) {
-          const text = (await elements[i].textContent()) || '';
-          if (text.trim().length > 200) {
-            // 找到足够长的内容，清理 HTML 后返回
-            const cleanedHtml = await elements[i].evaluate((node: HTMLElement) => {
-              const clone = node.cloneNode(true) as HTMLElement;
-              const removeSelectors = [
-                'script', 'style', 'noscript', 'iframe', 'svg', 'canvas',
-                'img', 'video', 'audio', 'button', 'input', 'textarea',
-                '.btn', '.button', '.toolbar', '.menu', '.sidebar',
-                '[class*="btn"]', '[class*="button"]', '[class*="toolbar"]',
-                '[class*="menu"]', '[class*="sidebar"]', '[class*="nav"]',
-                '[role="button"]', '[aria-hidden="true"]',
-              ];
-              for (const r of removeSelectors) {
-                clone.querySelectorAll(r).forEach(e => e.remove());
-              }
-              return clone.innerHTML;
-            }).catch(() => '');
-            console.log(`[纳米] 精确选择器 ${sel} 提取成功: ${text.trim().length} 字符`);
-            return { text: text.trim(), html: cleanedHtml || `<div>${text.trim()}</div>` };
-          }
-        }
-      } catch {}
-    }
-
-    // 策略2：用 smartFindLongestContent 找最长文本块（兜底）
-    try {
-      const smart = await smartFindLongestContent(page, 200);
-      if (smart && smart.text.length > 200) {
-        console.log(`[纳米] smartFindLongestContent 兜底提取: ${smart.text.length} 字符`);
-        return smart;
-      }
-    } catch (e: any) {
-      console.log(`[纳米] smartFindLongestContent 失败: ${e.message}`);
-    }
-
-    // 策略3：最终降级，取 body 文本
-    try {
-      const text = await page.evaluate(() => document.body.textContent || '');
-      if (text.trim().length > 0) {
-        console.log(`[纳米] body.textContent 兜底: ${text.trim().length} 字符`);
-        return { text: text.trim(), html: `<div>${text.trim()}</div>` };
-      }
-    } catch {}
-
-    return { text: '', html: '' };
+    // 纳米页面结构（2026-07-12 实地观察）：
+    // - 顶部：搜索框
+    // - 左侧栏：推荐智能体列表（"首页大模型智能体知识库AI写作AI修图..."）
+    // - 中部：AI 回答（含 markdown 格式，有 <p> 标签）
+    // - 底部：相关搜索推荐
+    // 之前 bug：smartFindLongestContent 抓到左侧栏（3.4K 字符）而非 AI 回答（1-2K 字符）
+    // 修复：跳过自有 extractContent，直接用 baseAdapter 的评分版 extractContent
+    // （baseAdapter 现在会优先选择含 <p> 标签的散文内容）
+    return await super.extractContent(page);
   }
 }
