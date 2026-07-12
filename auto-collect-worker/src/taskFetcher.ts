@@ -379,12 +379,14 @@ async function executeSingleQuery(
     // 判断是否风控（多维度检测）
     const errMsg = String(e?.message || '');
 
-    // 登录态失效单独处理：必须走 failed 路径，让云端标记 offline
+    // 登录态失效/账号异常 单独处理：必须走 failed 路径，让云端标记 offline
     // 不能放入 isRateLimited，否则会走 rate_limited 路径而不标记 offline
+    // v1.8+：新增"账号异常"类型（内容过短、token 过期等，由 detectAccountAnomaly 抛出）
     const isLoginExpired = errMsg.includes('登录态失效') ||
       errMsg.includes('登录失效') ||
       errMsg.includes('请重新登录') ||
-      errMsg.includes('登录已失效');
+      errMsg.includes('登录已失效') ||
+      errMsg.includes('账号异常');
 
     const isRateLimited = !isLoginExpired && (
       errMsg.includes('429') ||
@@ -425,14 +427,20 @@ async function executeSingleQuery(
       }
     } catch {}
 
-    // 登录态失效 → failed + detail='登录态失效'，云端会标记 offline
+    // 登录态失效/账号异常 → failed + detail='登录态失效'，云端会标记 offline
     // 风控/封禁 → rate_limited + detail=风控关键词，云端会判断是否 banned
     // 其他失败 → failed + detail=错误消息，不改状态
     const finalResult = isLoginExpired ? 'failed' : (isRateLimited || pageRiskDetected ? 'rate_limited' : 'failed');
     const detail = isLoginExpired ? '登录态失效' : (detectedKeyword || (isRateLimited ? errMsg.substring(0, 200) : errMsg.substring(0, 200)));
     await releaseAccount(account.authId, finalResult, detail);
     recordPlatformResult(platform, false);
-    logger.error(`查询失败: ${platform}/${keyword.substring(0, 30)} - ${e.message}${pageRiskDetected ? ' [检测到页面风控提示]' : ''}${isLoginExpired ? ' [登录态失效]' : ''}`);
+
+    // v1.8+：账号异常使用更醒目的日志格式（⚠️ 前缀 + 独立标签）
+    if (isLoginExpired) {
+      logger.error(`⚠️ [账号异常] ${platform}/${keyword.substring(0, 30)} - ${errMsg}`);
+    } else {
+      logger.error(`查询失败: ${platform}/${keyword.substring(0, 30)} - ${e.message}${pageRiskDetected ? ' [检测到页面风控提示]' : ''}${isLoginExpired ? ' [登录态失效]' : ''}`);
+    }
     return { success: false, brandMatched: false };
   } finally {
     // 显式关闭 page 再关闭 context，避免 page 泄漏

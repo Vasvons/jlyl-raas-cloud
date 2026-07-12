@@ -316,12 +316,109 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     const { text, html } = await this.extractContent(page);
     const shareUrl = await this.extractShareLink(page);
 
+    // ============ 账号异常检测（v1.8+ 重要）============
+    // 查询成功但内容异常短，通常意味着账号登录态失效或 token 过期
+    // 之前 bug：这种情况被当作正常查询成功处理，只在日志中通过"内容长度=12"间接体现
+    // 现在改为明确检测并抛出异常，让上层标记账号 offline
+    const anomaly = await this.detectAccountAnomaly(page, text);
+    if (anomaly) {
+      throw new Error(anomaly);
+    }
+
     return {
       content: text,
       shareUrl,
       htmlContent: html,
       supportsShare: this.supportsShare,
     };
+  }
+
+  /**
+   * 检测账号异常（登录态失效、token 过期、被封禁等）
+   *
+   * 触发条件：内容长度 < 200 字符（正常 AI 回答至少 500+ 字符）
+   * 检测策略：
+   * 1. 页面文本包含明确的登录失效/token 过期关键词 → 抛"登录态失效"
+   * 2. 内容极短（< 50 字符）且不含查询关键词 → 抛"账号异常：内容过短"
+   * 3. 页面 URL 被重定向到登录页 → 抛"登录态失效"
+   *
+   * @returns 错误消息（如"登录态失效: token 过期"）或 null（正常）
+   */
+  protected async detectAccountAnomaly(page: Page, content: string): Promise<string | null> {
+    const contentLen = content.trim().length;
+
+    // 正常内容长度（> 200 字符）直接放行
+    if (contentLen >= 200) return null;
+
+    // ===== 1. 检测页面中的登录失效/token 过期关键词 =====
+    try {
+      const pageText = await page.evaluate(() => document.body?.innerText?.substring(0, 3000) || '').catch(() => '');
+      const pageLower = pageText.toLowerCase();
+
+      // 明确的登录失效关键词
+      const loginExpiredKeywords = [
+        'token is expired', 'token expired', '登录已失效', '登录失效',
+        '请重新登录', '请先登录', '未登录', 'login expired',
+        '会话已过期', 'session expired', '认证失败', 'authentication failed',
+        '请扫码登录', '请登录后',
+      ];
+      for (const kw of loginExpiredKeywords) {
+        if (pageLower.includes(kw.toLowerCase())) {
+          const msg = `登录态失效: 检测到页面关键词"${kw}" (内容长度=${contentLen})`;
+          console.warn(`[${this.platformName}] ⚠️ ${msg}`);
+          return msg;
+        }
+      }
+
+      // 智谱AI 特有：token 过期会显示"本次回答已被终止 重新回答"
+      // Kimi 特有：登录态失效会显示"© 2026 北京月之暗面科技有限公司"页脚
+      // 这些是平台特定的登录失效信号
+      const platformSignals: Record<string, string[]> = {
+        '智谱AI': ['本次回答已被终止', 'token is expired', 'ChatGLM语音梦幻杰'],
+        'Kimi': ['北京月之暗面科技有限公司', '京ICP备'],
+        '豆包': ['登录抖音', '请登录', '未登录'],
+        '通义千问': ['请登录', '登录阿里', '未登录'],
+        '腾讯元宝': ['请登录', '登录腾讯', '未登录'],
+        '文心一言': ['请登录', '登录百度', '未登录'],
+        'DeepSeek': ['sign in', 'sign_in', '请登录'],
+        '纳米': ['请登录', '360登录', '未登录'],
+      };
+      const signals = platformSignals[this.platformName] || [];
+      for (const sig of signals) {
+        if (pageText.includes(sig)) {
+          const msg = `登录态失效: 检测到平台信号"${sig}" (内容长度=${contentLen})`;
+          console.warn(`[${this.platformName}] ⚠️ ${msg}`);
+          return msg;
+        }
+      }
+    } catch { /* 忽略 evaluate 失败 */ }
+
+    // ===== 2. 检测页面 URL 被重定向到登录页 =====
+    try {
+      const currentUrl = page.url().toLowerCase();
+      if (currentUrl.includes('login') || currentUrl.includes('sign_in') || currentUrl.includes('signin')) {
+        const msg = `登录态失效: 查询后页面被重定向到登录页 (URL=${page.url()}, 内容长度=${contentLen})`;
+        console.warn(`[${this.platformName}] ⚠️ ${msg}`);
+        return msg;
+      }
+    } catch { /* 忽略 */ }
+
+    // ===== 3. 内容极短但未检测到明确信号 → 仍标记为可疑 =====
+    // 内容 < 50 字符，几乎可以肯定不是正常的 AI 回答
+    if (contentLen < 50) {
+      const preview = content.trim().substring(0, 50).replace(/\n/g, ' ');
+      const msg = `账号异常：内容过短(${contentLen}字符) 预览="${preview}" 可能登录态失效或token过期`;
+      console.warn(`[${this.platformName}] ⚠️ ${msg}`);
+      return msg;
+    }
+
+    // 内容 50-200 字符，可能是占位符或错误提示，记录警告但不抛异常
+    if (contentLen < 200) {
+      const preview = content.trim().substring(0, 80).replace(/\n/g, ' ');
+      console.warn(`[${this.platformName}] ⚠️ 内容较短(${contentLen}字符) 预览="${preview}" 可疑，但未达到异常阈值`);
+    }
+
+    return null;
   }
 
   /**
