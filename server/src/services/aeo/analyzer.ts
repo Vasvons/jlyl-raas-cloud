@@ -519,7 +519,7 @@ async function generateWritingStrategyFromRound(
       if (stats.total === 0) continue;
 
       // 用 LLM 生成策略（无 LLM 配置时用规则兜底）
-      const strategyText = await callLlmForStrategy(stats, roundNo);
+      const strategyText = await callLlmForStrategy(stats, roundNo, userId);
       if (!strategyText) continue;
 
       await insertWritingStrategy(
@@ -548,12 +548,25 @@ async function generateWritingStrategyFromRound(
  */
 async function callLlmForStrategy(
   stats: { total: number; goodCount: number; poorCount: number; neutralCount: number; goodExamples: any[] },
-  roundNo: number
+  roundNo: number,
+  userId: string
 ): Promise<string> {
-  // 无 LLM 配置时用规则生成
-  if (!LLM_API_URL || !LLM_API_KEY) {
+  // v2.0.5：从 ai_model_config 表读取 AEO 专用模型（use_for_aeo=true）
+  const modelConfig = await getAeoModelConfig(userId);
+  if (!modelConfig || !modelConfig.api_key_encrypted) {
     return fallbackStrategy(stats);
   }
+
+  let apiKey: string;
+  try {
+    apiKey = decrypt(modelConfig.api_key_encrypted);
+  } catch (e: any) {
+    console.error(`[AEO] 策略 LLM API-KEY 解密失败 platform=${modelConfig.platform}:`, e.message);
+    return fallbackStrategy(stats);
+  }
+
+  const apiUrl = modelConfig.base_url;
+  const model = modelConfig.model_name;
 
   const prompt = `你是内容营销策略专家。请基于以下本轮（第 ${roundNo} 轮）文章效果数据，生成 2-3 条可执行的自媒体创作策略建议。
 
@@ -568,9 +581,9 @@ async function callLlmForStrategy(
 
   try {
     const resp = await axios.post(
-      LLM_API_URL,
+      apiUrl,
       {
-        model: LLM_MODEL,
+        model,
         messages: [
           { role: 'system', content: '你是内容营销策略专家，输出简洁可执行的建议。' },
           { role: 'user', content: prompt },
@@ -578,7 +591,7 @@ async function callLlmForStrategy(
         temperature: 0.5,
       },
       {
-        headers: { 'Authorization': `Bearer ${LLM_API_KEY}`, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         timeout: 30000,
       }
     );
@@ -811,7 +824,7 @@ export async function generatePeriodReport(
 
     // 9. 生成写作建议池
     const writingSuggestions = await generateWritingSuggestionsPool(
-      shardReports, inclusionStats, sourceWeights, periodType
+      shardReports, inclusionStats, sourceWeights, periodType, userId
     );
 
     // v2.0.0 P7：竞品反向 GEO — 若客户开启该功能，注入竞品对比文章建议
@@ -965,7 +978,8 @@ async function generateWritingSuggestionsPool(
   shardReports: any[],
   inclusionStats: any,
   sourceWeights: Record<string, number>,
-  periodType: string
+  periodType: string,
+  userId: string
 ): Promise<any[]> {
   // 收集负面发现和品牌提及关键词
   const negativeFindings: any[] = [];
@@ -987,10 +1001,24 @@ async function generateWritingSuggestionsPool(
     .slice(0, 3)
     .map(([platform]) => platform);
 
-  // 无 LLM 配置时用规则生成建议池
-  if (!LLM_API_URL || !LLM_API_KEY) {
+  // v2.0.5：从 ai_model_config 表读取 AEO 专用模型（use_for_aeo=true）
+  const modelConfig = await getAeoModelConfig(userId);
+  if (!modelConfig || !modelConfig.api_key_encrypted) {
+    console.warn(`[AEO-Period] 用户 ${userId} 未配置 AEO 模型（use_for_aeo=true），使用规则兜底生成写作建议`);
     return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
   }
+
+  let apiKey: string;
+  try {
+    apiKey = decrypt(modelConfig.api_key_encrypted);
+  } catch (e: any) {
+    console.error(`[AEO-Period] API-KEY 解密失败 platform=${modelConfig.platform}:`, e.message);
+    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
+  }
+
+  const apiUrl = modelConfig.base_url;
+  const model = modelConfig.model_name;
+  console.log(`[AEO-Period] 使用模型生成写作建议: platform=${modelConfig.platform} model=${model}`);
 
   // 调用 LLM 生成建议池
   const prompt = `你是 AEO（Answer Engine Optimization）内容策略专家。请基于以下本${periodType === 'weekly' ? '周' : '月'}数据，生成 5-10 条具体的写作建议。
@@ -1019,9 +1047,9 @@ ${JSON.stringify(negativeFindings.slice(0, 5), null, 2)}
 
   try {
     const resp = await axios.post(
-      LLM_API_URL,
+      apiUrl,
       {
-        model: LLM_MODEL,
+        model,
         messages: [
           { role: 'system', content: '你是 AEO 内容策略专家，只返回 JSON 数组格式数据。' },
           { role: 'user', content: prompt },
@@ -1029,7 +1057,7 @@ ${JSON.stringify(negativeFindings.slice(0, 5), null, 2)}
         temperature: 0.5,
       },
       {
-        headers: { 'Authorization': `Bearer ${LLM_API_KEY}`, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         timeout: 60000,
       }
     );
