@@ -659,6 +659,47 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     if (found2) return true;
 
     logger.warn(`[${this.platformName}] 未找到分享按钮（hover 后仍失败）`);
+
+    // 诊断日志：扫描页面上所有含"分享"/"share"的元素，帮助排查
+    try {
+      const diagnostics = await page.evaluate(() => {
+        const results: string[] = [];
+        const allElements = document.querySelectorAll('button, a, [role="button"], [class*="icon"], [class*="btn"], [data-testid], [aria-label]');
+        for (const el of allElements) {
+          const text = (el.textContent || '').trim().substring(0, 30);
+          const ariaLabel = el.getAttribute('aria-label') || '';
+          const className = (el.className || '').toString().substring(0, 60);
+          const testid = el.getAttribute('data-testid') || '';
+          const title = el.getAttribute('title') || '';
+          const tag = el.tagName.toLowerCase();
+
+          const hasShare = text.includes('分享') || text.toLowerCase().includes('share') ||
+                           ariaLabel.includes('分享') || ariaLabel.toLowerCase().includes('share') ||
+                           className.toLowerCase().includes('share') ||
+                           testid.toLowerCase().includes('share') ||
+                           title.includes('分享') || title.toLowerCase().includes('share');
+          if (!hasShare) continue;
+
+          const rect = el.getBoundingClientRect();
+          const visible = rect.width > 0 && rect.height > 0;
+          const style = window.getComputedStyle(el as HTMLElement);
+          const displayVisible = style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+
+          results.push(`<${tag}> text="${text}" aria="${ariaLabel}" class="${className}" testid="${testid}" title="${title}" visible=${visible && displayVisible} pos=(${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)})`);
+        }
+        return results;
+      }).catch(() => []);
+
+      if (diagnostics.length > 0) {
+        logger.warn(`[${this.platformName}] 页面上含"分享/share"的元素共 ${diagnostics.length} 个：`);
+        for (const d of diagnostics.slice(0, 10)) {
+          logger.warn(`  ${d}`);
+        }
+      } else {
+        logger.warn(`[${this.platformName}] 页面上未找到任何含"分享/share"的元素`);
+      }
+    } catch { /* 忽略 */ }
+
     return false;
   }
 
@@ -683,7 +724,30 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       } catch { /* 继续 */ }
     }
 
-    // 策略2：用 Playwright Locator filter({ hasText }) 按文本匹配
+    // 策略2a：精确文本匹配（textContent.trim() === "分享" 或 "Share"）
+    // 避免"小程序分享问题排查"等含"分享"但非分享按钮的元素被误匹配
+    try {
+      for (const text of shareTexts) {
+        const exactMatches = page.locator('button, a, [role="button"], [class*="icon"]')
+          .filter({ hasText: new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+        const exactCount = await exactMatches.count().catch(() => 0);
+        if (exactCount > 0) {
+          for (let i = exactCount - 1; i >= 0; i--) {
+            try {
+              const el = exactMatches.nth(i);
+              const visible = await el.isVisible().catch(() => false);
+              if (!visible) continue;
+              await el.click({ timeout: 3000 }).catch(() => {});
+              await page.waitForTimeout(1500);
+              logger.info(`[${this.platformName}] 点击分享按钮成功(精确文本): text="${text}"`);
+              return true;
+            } catch { /* 继续 */ }
+          }
+        }
+      }
+    } catch { /* 继续 */ }
+
+    // 策略2b：包含文本匹配（兜底，但排除明显非按钮的元素）
     try {
       const textRegex = new RegExp(shareTexts.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
       const textMatches = page.locator('button, a, [role="button"], [class*="icon"]')
@@ -695,10 +759,14 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
             const el = textMatches.nth(i);
             const visible = await el.isVisible().catch(() => false);
             if (!visible) continue;
-            const text = (await el.textContent().catch(() => '') || '').trim().substring(0, 30);
+            const text = (await el.textContent().catch(() => '') || '').trim().substring(0, 50);
+            // 排除明显非分享按钮的元素（文案过长或含"问题排查"等）
+            if (text.length > 20 || text.includes('问题') || text.includes('排查') || text.includes('帮助')) {
+              continue;
+            }
             await el.click({ timeout: 3000 }).catch(() => {});
             await page.waitForTimeout(1500);
-            logger.info(`[${this.platformName}] 点击分享按钮成功(hasText): text="${text}"`);
+            logger.info(`[${this.platformName}] 点击分享按钮成功(包含文本): text="${text}"`);
             return true;
           } catch { /* 继续 */ }
         }
