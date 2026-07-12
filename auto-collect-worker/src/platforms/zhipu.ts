@@ -47,116 +47,36 @@ export class ZhipuAdapter extends BasePlatformAdapter {
    */
   async extractShareLink(page: Page): Promise<string | null> {
     // 步骤1: 注入 clipboard.writeText 拦截脚本
-    // 把捕获到的 URL 存到 window.__capturedShareUrl__
-    await page.evaluate(() => {
-      (window as any).__capturedShareUrl__ = null;
-      const originalWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
-      navigator.clipboard.writeText = (text: string) => {
-        if (text && (text.startsWith('http') || text.includes('/share/'))) {
-          (window as any).__capturedShareUrl__ = text;
-          console.log('[智谱AI] 拦截到 clipboard.writeText:', text);
-        }
-        return originalWriteText(text);
-      };
-    }).catch(() => {});
+    await this.injectClipboardInterceptor(page, ['/share/', 'chatglm.cn', 'http']);
 
-    // 步骤2: 多策略查找"复制对话链接"按钮
-    // 用户反馈按钮在右上角，文案可能是"复制对话链接"/"复制链接"/"分享"
-    const btnSelectors = [
-      // 优先按文案精确匹配
+    // 步骤2: 健壮地查找并点击"复制对话链接"按钮
+    const clickedBtn = await this.findAndClickShareButton(page, [
       'button:has-text("复制对话链接")',
       'button:has-text("复制链接")',
       '[class*="share"]:has-text("复制")',
-      // 按 aria-label
       '[aria-label*="复制"]',
       '[aria-label*="分享"]',
       '[aria-label*="链接"]',
-      // 按 class 模糊匹配
       '[class*="share"]:not([class*="shared"])',
       '[class*="copy-link"]',
       '[class*="copyLink"]',
-      // 按 data-testid
       '[data-testid*="share"]',
       '[data-testid*="copy"]',
-    ];
-
-    let clickedBtn = false;
-    for (const sel of btnSelectors) {
-      try {
-        const btn = await page.$(sel).catch(() => null);
-        if (btn) {
-          const isVisible = await btn.isVisible().catch(() => false);
-          if (!isVisible) continue;
-          console.log(`[智谱AI] 找到分享按钮: ${sel}`);
-          await btn.click({ timeout: 3000 }).catch(() => {});
-          await page.waitForTimeout(1500);
-          clickedBtn = true;
-          break;
-        }
-      } catch {
-        // 继续
-      }
-    }
+    ], ['复制对话链接', '复制链接', '分享', 'share', 'copy']);
 
     // 步骤3: 如果按钮点击成功，检查拦截到的 URL
     if (clickedBtn) {
-      const capturedUrl = await page.evaluate(() => (window as any).__capturedShareUrl__ as string | null).catch(() => null);
-      if (capturedUrl && capturedUrl.startsWith('http')) {
+      const capturedUrl = await this.getCapturedShareUrl(page, '/share/');
+      if (capturedUrl) {
         console.log(`[智谱AI] 从 clipboard 拦截到分享链接: ${capturedUrl}`);
         return capturedUrl;
       }
-
-      // 步骤4: 检查是否弹出了对话框，从对话框提取 URL
-      const dialogSelectors = [
-        '[role="dialog"]',
-        '[class*="dialog"]',
-        '[class*="modal"]',
-        '[class*="popup"]',
-        '[class*="share"]',
-      ];
-      for (const dlgSel of dialogSelectors) {
-        try {
-          const dlg = await page.$(dlgSel).catch(() => null);
-          if (!dlg) continue;
-          const isVisible = await dlg.isVisible().catch(() => false);
-          if (!isVisible) continue;
-
-          // 从对话框的 input 提取 URL
-          const inputUrl = await page.evaluate((sel) => {
-            const inputs = document.querySelectorAll(`${sel} input, ${sel} [class*="link"], ${sel} [class*="url"]`);
-            for (const inp of Array.from(inputs)) {
-              const val = (inp as HTMLInputElement).value || inp.textContent || '';
-              if (val && val.startsWith('http')) return val.trim();
-            }
-            return null;
-          }, dlgSel).catch(() => null);
-          if (inputUrl) {
-            console.log(`[智谱AI] 从对话框 input 提取到分享链接: ${inputUrl}`);
-            return inputUrl;
-          }
-
-          // 从对话框文本中匹配 URL
-          const textUrl = await page.evaluate((sel) => {
-            const el = document.querySelector(sel);
-            if (!el) return null;
-            const text = el.textContent || '';
-            const match = text.match(/https?:\/\/[^\s<>"']+/);
-            return match ? match[0] : null;
-          }, dlgSel).catch(() => null);
-          if (textUrl) {
-            console.log(`[智谱AI] 从对话框文本提取到分享链接: ${textUrl}`);
-            return textUrl;
-          }
-
-          // 关闭对话框
-          await page.keyboard.press('Escape').catch(() => {});
-        } catch {
-          // 继续
-        }
-      }
+      // 检查是否弹出了对话框
+      const dialogUrl = await this.extractShareUrlFromDialog(page, '/share/');
+      if (dialogUrl) return dialogUrl;
     }
 
-    // 步骤5: 兜底从当前页面 URL 提取 /share/{短码}
+    // 步骤4: 兜底从当前页面 URL 提取 /share/{短码}
     const currentUrl = await this.getCurrentPageShareUrl(page);
     if (currentUrl) {
       console.log(`[智谱AI] 从当前 URL 提取到分享链接: ${currentUrl}`);

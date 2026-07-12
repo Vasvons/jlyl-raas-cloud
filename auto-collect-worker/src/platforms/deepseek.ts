@@ -272,52 +272,17 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
     // 流程：点击"Share" → 弹窗 → 点击"Create and copy" → 链接复制到剪贴板 → Toast"Link copied."
 
     // 步骤1: 注入 clipboard + execCommand 拦截
-    await page.evaluate(() => {
-      (window as any).__capturedShareUrl__ = null;
-      const origWrite = navigator.clipboard.writeText.bind(navigator.clipboard);
-      navigator.clipboard.writeText = (text: string) => {
-        if (text && text.includes('/share/')) {
-          (window as any).__capturedShareUrl__ = text;
-        }
-        return origWrite(text);
-      };
-      const origExec = document.execCommand.bind(document);
-      document.execCommand = (cmd: string) => {
-        if (cmd === 'copy') {
-          const selection = window.getSelection();
-          if (selection && selection.toString().includes('/share/')) {
-            (window as any).__capturedShareUrl__ = selection.toString();
-          }
-        }
-        return origExec(cmd);
-      };
-    }).catch(() => {});
+    await this.injectClipboardInterceptor(page, ['/share/', 'deepseek.com']);
 
-    // 步骤2: 查找并点击分享按钮（英文界面，文案是"Share"）
-    const shareBtnSelectors = [
+    // 步骤2: 健壮地查找并点击分享按钮（英文界面，文案是"Share"）
+    const shareBtnClicked = await this.findAndClickShareButton(page, [
       'button:has-text("Share")',
       'button:has-text("分享")',
       '[aria-label*="Share"]',
       '[aria-label*="分享"]',
       '[data-testid*="share"]',
       '[class*="share"]:not([class*="shared"])',
-    ];
-
-    let shareBtnClicked = false;
-    for (const sel of shareBtnSelectors) {
-      try {
-        const btn = await page.$(sel);
-        if (btn) {
-          const visible = await btn.isVisible().catch(() => false);
-          if (!visible) continue;
-          await btn.click({ timeout: 3000 }).catch(() => {});
-          await page.waitForTimeout(1500);
-          shareBtnClicked = true;
-          console.log(`[DeepSeek] 点击分享按钮成功: ${sel}`);
-          break;
-        }
-      } catch { /* 继续 */ }
-    }
+    ], ['Share', '分享', 'share']);
 
     if (!shareBtnClicked) {
       console.log('[DeepSeek] 未找到分享按钮');
@@ -347,42 +312,15 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
     }
 
     // 步骤4: 从拦截到的剪贴板内容提取 URL
-    const capturedUrl = await page.evaluate(() => (window as any).__capturedShareUrl__ as string | null).catch(() => null);
-    if (capturedUrl && capturedUrl.includes('/share/')) {
-      // 提取 URL 部分（复制内容可能包含额外文本）
-      const urlMatch = capturedUrl.match(/https?:\/\/[^\s<>"']+/);
-      if (urlMatch) {
-        console.log(`[DeepSeek] 从剪贴板拦截到分享链接: ${urlMatch[0]}`);
-        return urlMatch[0];
-      }
+    const capturedUrl = await this.getCapturedShareUrl(page, '/share/');
+    if (capturedUrl) {
+      console.log(`[DeepSeek] 从剪贴板拦截到分享链接: ${capturedUrl}`);
+      return capturedUrl;
     }
 
     // 步骤5: 兜底 — 从弹窗 input 中提取
-    const dialogSelectors = ['[role="dialog"]', '[class*="share-dialog"]', '[class*="modal"]', '[class*="popup"]'];
-    for (const dlgSel of dialogSelectors) {
-      try {
-        const dlg = await page.$(dlgSel).catch(() => null);
-        if (!dlg) continue;
-        const visible = await dlg.isVisible().catch(() => false);
-        if (!visible) continue;
-        // 查找 input 中的 URL
-        const inputUrl = await dlg.evaluate((node: HTMLElement) => {
-          const input = node.querySelector('input');
-          return input?.value || input?.textContent || '';
-        }).catch(() => '');
-        if (inputUrl && inputUrl.includes('/share/')) {
-          console.log(`[DeepSeek] 从弹窗 input 提取到分享链接: ${inputUrl}`);
-          return inputUrl.trim();
-        }
-        // 从文本中匹配
-        const text = await dlg.textContent().catch(() => '');
-        const urlMatch = text?.match(/https?:\/\/[^\s<>"']+\/share\/[^\s<>"']+/);
-        if (urlMatch) {
-          console.log(`[DeepSeek] 从弹窗文本提取到分享链接: ${urlMatch[0]}`);
-          return urlMatch[0];
-        }
-      } catch { /* 继续 */ }
-    }
+    const dialogUrl = await this.extractShareUrlFromDialog(page, '/share/');
+    if (dialogUrl) return dialogUrl;
 
     // 步骤6: 关闭弹窗
     await page.keyboard.press('Escape').catch(() => {});

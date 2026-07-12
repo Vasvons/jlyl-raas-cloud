@@ -480,6 +480,214 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     return this.getCurrentPageShareUrl(page);
   }
 
+  /**
+   * 注入 clipboard + execCommand 拦截，捕获复制到剪贴板的分享 URL
+   * 所有适配器的 extractShareLink 都应在点击分享按钮前调用此方法
+   *
+   * @param urlPatterns URL 匹配模式数组（如 ['/share/', 'kimi.com']），匹配其中一个即认为捕获成功
+   */
+  protected async injectClipboardInterceptor(page: Page, urlPatterns: string[]): Promise<void> {
+    await page.evaluate((patterns: string[]) => {
+      (window as any).__capturedShareUrl__ = null;
+      const origWrite = navigator.clipboard.writeText.bind(navigator.clipboard);
+      navigator.clipboard.writeText = (text: string) => {
+        if (text && patterns.some(p => text.includes(p))) {
+          (window as any).__capturedShareUrl__ = text;
+        }
+        return origWrite(text);
+      };
+      const origExec = document.execCommand.bind(document);
+      document.execCommand = (cmd: string) => {
+        if (cmd === 'copy') {
+          const selection = window.getSelection();
+          const selText = selection ? selection.toString() : '';
+          if (patterns.some(p => selText.includes(p))) {
+            (window as any).__capturedShareUrl__ = selText;
+          }
+        }
+        return origExec(cmd);
+      };
+    }, urlPatterns).catch(() => {});
+  }
+
+  /**
+   * 从拦截到的剪贴板内容提取 URL
+   * @param urlPattern URL 中必须包含的子串（如 '/share/'）
+   * @returns 匹配到的 URL 或 null
+   */
+  protected async getCapturedShareUrl(page: Page, urlPattern: string): Promise<string | null> {
+    const captured = await page.evaluate(() => (window as any).__capturedShareUrl__ as string | null).catch(() => null);
+    if (captured) {
+      const urlMatch = captured.match(/https?:\/\/[^\s<>"']+/);
+      if (urlMatch && urlMatch[0].includes(urlPattern)) {
+        return urlMatch[0];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 健壮地查找并点击分享按钮
+   *
+   * 策略：
+   * 1. 先尝试传入的 CSS 选择器列表（精确匹配）
+   * 2. 兜底：用 JavaScript 扫描所有可见的按钮/图标，查找包含分享相关文案/aria-label/class 的元素
+   *
+   * @param page Playwright Page
+   * @param selectors CSS 选择器列表（按优先级排序）
+   * @param shareTexts 分享按钮可能的文案（如 ['分享', 'Share', '复制链接']）
+   * @returns 是否成功点击了分享按钮
+   */
+  protected async findAndClickShareButton(
+    page: Page,
+    selectors: string[],
+    shareTexts: string[] = ['分享', 'Share', '分享对话', '复制链接', 'Copy link', 'Copy Link']
+  ): Promise<boolean> {
+    // 策略1：尝试传入的 CSS 选择器
+    for (const sel of selectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          const visible = await btn.isVisible().catch(() => false);
+          if (!visible) continue;
+          await btn.click({ timeout: 3000 }).catch(() => {});
+          await page.waitForTimeout(1500);
+          console.log(`[${this.platformName}] 点击分享按钮成功(选择器): ${sel}`);
+          return true;
+        }
+      } catch { /* 继续 */ }
+    }
+
+    // 策略2：用 JavaScript 扫描所有可见的按钮/图标/可点击元素
+    // 查找包含分享相关文案、aria-label、class 的元素
+    const found = await page.evaluate((texts: string[]) => {
+      // 所有可能的可点击元素
+      const clickables = Array.from(document.querySelectorAll(
+        'button, a, [role="button"], [class*="icon"], [class*="btn"], [class*="button"], [data-testid], [aria-label]'
+      )) as HTMLElement[];
+
+      for (const el of clickables) {
+        // 跳过不可见
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+
+        // 检查文案
+        const text = (el.textContent || '').trim();
+        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        const className = (el.className || '').toLowerCase();
+        const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+        const title = (el.getAttribute('title') || '').toLowerCase();
+
+        // 匹配分享相关关键词
+        const isShare = texts.some(t => {
+          const tl = t.toLowerCase();
+          return text === t || text.includes(t) || ariaLabel.includes(tl) ||
+                 className.includes(tl) || testid.includes(tl) || title.includes(tl);
+        });
+
+        // 额外：class/aria-label 直接包含 "share" 关键词
+        const hasShareAttr = className.includes('share') || ariaLabel.includes('share') ||
+                             testid.includes('share') || title.includes('share');
+
+        if (isShare || hasShareAttr) {
+          // 排除 "shared"/"sharing" 等非按钮类
+          if (className.includes('shared') || className.includes('sharing')) continue;
+          return true; // 找到了
+        }
+      }
+      return false;
+    }, shareTexts).catch(() => false);
+
+    if (!found) {
+      console.log(`[${this.platformName}] 未找到分享按钮（选择器和兜底扫描均失败）`);
+      return false;
+    }
+
+    // 找到了候选元素，需要用 Playwright 点击
+    // 用 evaluate 找到元素并点击（因为元素没有稳定的 CSS 选择器）
+    const clicked = await page.evaluate((texts: string[]) => {
+      const clickables = Array.from(document.querySelectorAll(
+        'button, a, [role="button"], [class*="icon"], [class*="btn"], [class*="button"], [data-testid], [aria-label]'
+      )) as HTMLElement[];
+
+      for (const el of clickables) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+
+        const text = (el.textContent || '').trim();
+        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
+        const className = (el.className || '').toLowerCase();
+        const testid = (el.getAttribute('data-testid') || '').toLowerCase();
+        const title = (el.getAttribute('title') || '').toLowerCase();
+
+        const isShare = texts.some(t => {
+          const tl = t.toLowerCase();
+          return text === t || text.includes(t) || ariaLabel.includes(tl) ||
+                 className.includes(tl) || testid.includes(tl) || title.includes(tl);
+        });
+        const hasShareAttr = className.includes('share') || ariaLabel.includes('share') ||
+                             testid.includes('share') || title.includes('share');
+
+        if ((isShare || hasShareAttr) && !className.includes('shared') && !className.includes('sharing')) {
+          (el as HTMLElement).click();
+          return true;
+        }
+      }
+      return false;
+    }, shareTexts).catch(() => false);
+
+    if (clicked) {
+      await page.waitForTimeout(1500);
+      console.log(`[${this.platformName}] 点击分享按钮成功(兜底扫描)`);
+      return true;
+    }
+
+    console.log(`[${this.platformName}] 未找到分享按钮`);
+    return false;
+  }
+
+  /**
+   * 从弹窗中提取分享链接（兜底策略）
+   * @param urlPattern URL 中必须包含的子串
+   */
+  protected async extractShareUrlFromDialog(page: Page, urlPattern: string): Promise<string | null> {
+    const dialogSelectors = [
+      '[role="dialog"]', '[class*="share-dialog"]', '[class*="share-modal"]',
+      '[class*="modal"]', '[class*="popup"]', '[class*="overlay"]',
+    ];
+    for (const dlgSel of dialogSelectors) {
+      try {
+        const dlg = await page.$(dlgSel).catch(() => null);
+        if (!dlg) continue;
+        const visible = await dlg.isVisible().catch(() => false);
+        if (!visible) continue;
+
+        // 从 input 中提取
+        const inputUrl = await dlg.evaluate((node: HTMLElement) => {
+          const input = node.querySelector('input');
+          return input?.value || input?.textContent || '';
+        }).catch(() => '');
+        if (inputUrl && inputUrl.includes(urlPattern)) {
+          console.log(`[${this.platformName}] 从弹窗 input 提取到分享链接: ${inputUrl}`);
+          return inputUrl.trim();
+        }
+
+        // 从文本中匹配 URL
+        const text = await dlg.textContent().catch(() => '');
+        const urlMatch = text?.match(new RegExp(`https?://[^\\s<>"']+${urlPattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^\\s<>"']*`));
+        if (urlMatch) {
+          console.log(`[${this.platformName}] 从弹窗文本提取到分享链接: ${urlMatch[0]}`);
+          return urlMatch[0];
+        }
+      } catch { /* 继续 */ }
+    }
+    return null;
+  }
+
   async extractContent(page: Page): Promise<{ text: string; html: string }> {
     // 滚动到底部触发懒加载，再滚动回顶部（确保所有内容渲染完成）
     await this.scrollToBottom(page);
@@ -504,6 +712,16 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       // 从后往前找第一个有内容的元素（最新的回答）
       for (let i = elements.length - 1; i >= 0; i--) {
         const el = elements[i];
+        // 跳过导航/侧边栏元素（class/id/role 匹配）
+        const isNav = await el.evaluate((node: HTMLElement) => {
+          const navPatterns = /sidebar|side-bar|sidenav|side-nav|navigation|nav-bar|navbar|menu|aside|left-bar|leftbar|right-bar|rightbar/i;
+          const cls = node.className || '';
+          const id = node.id || '';
+          const role = node.getAttribute('role') || '';
+          return navPatterns.test(cls) || navPatterns.test(id) || role === 'navigation' || role === 'menu';
+        }).catch(() => false);
+        if (isNav) continue;
+
         const text = (await el.textContent()) || '';
         if (text.trim().length > 0) {
           // v1.4.2：清理 HTML，移除图片/脚本/样式/按钮等非内容元素

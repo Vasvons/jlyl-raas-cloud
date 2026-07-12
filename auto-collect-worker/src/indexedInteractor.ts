@@ -277,6 +277,9 @@ export async function smartFindLongestContent(
     let bestText = '';
     let bestHtml = '';
 
+    // 导航/侧边栏关键词 — class/id 包含这些的元素一律跳过
+    const navPatterns = /sidebar|side-bar|sidenav|side-nav|navigation|nav-bar|navbar|menu|aside|left-bar|leftbar|right-bar|rightbar/i;
+
     for (const el of candidates) {
       // 跳过不可见
       const rect = el.getBoundingClientRect();
@@ -284,17 +287,39 @@ export async function smartFindLongestContent(
       const style = window.getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
 
-      const text = (el.textContent || '').trim();
+      // 跳过 <style> / <script> / <noscript> 元素本身
+      const tag = el.tagName;
+      if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'NOSCRIPT') continue;
+
+      // 跳过导航/侧边栏元素（class/id/role 匹配）
+      const className = el.className || '';
+      const id = el.id || '';
+      const role = el.getAttribute('role') || '';
+      if (navPatterns.test(className) || navPatterns.test(id) || role === 'navigation' || role === 'menu') continue;
+
+      // 提取文本时排除 <style>/<script> 子元素的内容
+      // 之前 bug：Kimi 页面有内联 <style> 含大量 CSS 动画代码（33K 字符），
+      // el.textContent 会把 CSS 文本也算进去，导致抓到 33223 字符的垃圾内容
+      const clone = el.cloneNode(true) as HTMLElement;
+      clone.querySelectorAll('style, script, noscript').forEach(e => e.remove());
+      const text = (clone.textContent || '').trim();
       // 跳过过短文本（通常是占位符、按钮文字等）
       if (text.length < minLen) continue;
+      // 跳过 CSS/JS 代码特征（大括号+分号密度高，如 "#LeftBar{transform-box:...}"）
+      const cssCharRatio = (text.match(/[{};:]/g) || []).length / text.length;
+      if (cssCharRatio > 0.15 && text.length > 500) continue;
       // 跳过包含过多子元素重复文本的容器（如整个页面 body）
       // 启发式：如果文本长度 / 子元素数量 > 20，认为是内容容器
       const childCount = el.querySelectorAll('*').length;
       if (childCount > 0 && text.length / childCount < 5) continue;
 
+      // 跳过高链接密度元素（导航栏有很多 <a> 标签）
+      const linkCount = el.querySelectorAll('a').length;
+      if (linkCount > 5 && text.length / linkCount < 50) continue;
+
       if (text.length > bestText.length) {
         bestText = text;
-        bestHtml = el.innerHTML || '';
+        bestHtml = clone.innerHTML || '';
       }
     }
 

@@ -1489,6 +1489,8 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   // 统计当前轮次的队列分片状态
   // 用 round_no 精准过滤当前轮次（避免 round_start_time 为 NULL 时回退到 1970-01-01 导致跨轮次累计）
   // 兼容旧数据：若 queue 表 round_no 为 0（旧分片），回退用 create_time >= round_start_time 过滤
+  // 修复：当 round_start_time 为 NULL 时，不再用 create_time >= q.create_time（恒为 true，会统计所有历史分片），
+  //       改为只统计最近 24 小时内的分片，避免跨轮次累计（如 133 个历史分片被全部计入）
   const result = await query(
     `WITH task_round AS (
        SELECT id, round_no, round_start_time FROM real_collect_task WHERE id = $1
@@ -1505,7 +1507,7 @@ export async function getTaskShardProgress(taskId: number): Promise<{
        AND (
          (tr.round_no > 0 AND q.round_no = tr.round_no)
          OR
-         (tr.round_no = 0 AND q.round_no = 0 AND q.create_time >= COALESCE(tr.round_start_time, q.create_time))
+         (tr.round_no = 0 AND q.round_no = 0 AND q.create_time >= COALESCE(tr.round_start_time, NOW() - INTERVAL '24 hours'))
        )`,
     [taskId]
   );
@@ -1523,7 +1525,7 @@ export async function getTaskShardProgress(taskId: number): Promise<{
        AND (
          (tr.round_no > 0 AND q.round_no = tr.round_no)
          OR
-         (tr.round_no = 0 AND q.round_no = 0 AND q.create_time >= COALESCE(tr.round_start_time, q.create_time))
+         (tr.round_no = 0 AND q.round_no = 0 AND q.create_time >= COALESCE(tr.round_start_time, NOW() - INTERVAL '24 hours'))
        )
      ORDER BY q.start_time ASC
      LIMIT 1`,
