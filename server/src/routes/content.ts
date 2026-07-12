@@ -2045,9 +2045,12 @@ router.post('/publish-accounts/:id/check-login', async (req: Request, res: Respo
 
 router.get('/customers', async (req: Request, res: Response) => {
   try {
+    // v2.0.5：过滤 level='1' 的管理员，只返回 level='0' 的真实客户
+    // 与 repository.ts 的 getUserDataStats 保持一致
     const result = await query(
       `SELECT id, username, phone, email, level, create_time
        FROM users
+       WHERE level = '0'
        ORDER BY id ASC`,
     );
     res.json({ code: 200, data: result.rows });
