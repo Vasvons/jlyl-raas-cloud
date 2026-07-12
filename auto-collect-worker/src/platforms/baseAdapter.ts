@@ -628,7 +628,11 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    *
    * 策略：
    * 1. 先尝试传入的 CSS 选择器列表（精确匹配）
-   * 2. 兜底：用 JavaScript 扫描所有可见的按钮/图标，查找包含分享相关文案/aria-label/class 的元素
+   * 2. 用 Playwright Locator filter({ hasText }) 按文本匹配
+   * 3. 用属性选择器匹配 aria-label / title / data-testid / class 含 "share"
+   *
+   * 关键：所有点击都用 Playwright 的 click()（真实鼠标事件 mousedown→mouseup→click），
+   *       不用 evaluate + element.click()（JS 原生 click 对 React/Vue 不生效）
    *
    * @param page Playwright Page
    * @param selectors CSS 选择器列表（按优先级排序）
@@ -640,7 +644,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     selectors: string[],
     shareTexts: string[] = ['分享', 'Share', '分享对话', '复制链接', 'Copy link', 'Copy Link']
   ): Promise<boolean> {
-    // 策略1：尝试传入的 CSS 选择器
+    // 策略1：尝试传入的 CSS 选择器（Playwright click，真实鼠标事件）
     for (const sel of selectors) {
       try {
         const btn = await page.$(sel);
@@ -655,95 +659,62 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       } catch { /* 继续 */ }
     }
 
-    // 策略2：用 JavaScript 扫描所有可见的按钮/图标/可点击元素
-    // 查找包含分享相关文案、aria-label、class 的元素
-    const found = await page.evaluate((texts: string[]) => {
-      // 所有可能的可点击元素
-      const clickables = Array.from(document.querySelectorAll(
-        'button, a, [role="button"], [class*="icon"], [class*="btn"], [class*="button"], [data-testid], [aria-label]'
-      )) as HTMLElement[];
-
-      for (const el of clickables) {
-        // 跳过不可见
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
-        const style = window.getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-
-        // 检查文案
-        const text = (el.textContent || '').trim();
-        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-        const className = (el.className || '').toLowerCase();
-        const testid = (el.getAttribute('data-testid') || '').toLowerCase();
-        const title = (el.getAttribute('title') || '').toLowerCase();
-
-        // 匹配分享相关关键词
-        const isShare = texts.some(t => {
-          const tl = t.toLowerCase();
-          return text === t || text.includes(t) || ariaLabel.includes(tl) ||
-                 className.includes(tl) || testid.includes(tl) || title.includes(tl);
-        });
-
-        // 额外：class/aria-label 直接包含 "share" 关键词
-        const hasShareAttr = className.includes('share') || ariaLabel.includes('share') ||
-                             testid.includes('share') || title.includes('share');
-
-        if (isShare || hasShareAttr) {
-          // 排除 "shared"/"sharing" 等非按钮类
-          if (className.includes('shared') || className.includes('sharing')) continue;
-          return true; // 找到了
+    // 策略2：用 Playwright Locator filter({ hasText }) 按文本匹配
+    // Playwright 的 filter 在内部用文本匹配，click() 是真实鼠标事件
+    try {
+      const textRegex = new RegExp(shareTexts.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
+      const textMatches = page.locator('button, a, [role="button"], [class*="icon"]')
+        .filter({ hasText: textRegex });
+      const textCount = await textMatches.count().catch(() => 0);
+      if (textCount > 0) {
+        // 从后往前找（最新的回答的操作栏通常在后面）
+        for (let i = textCount - 1; i >= 0; i--) {
+          try {
+            const el = textMatches.nth(i);
+            const visible = await el.isVisible().catch(() => false);
+            if (!visible) continue;
+            const text = (await el.textContent().catch(() => '') || '').trim().substring(0, 30);
+            await el.click({ timeout: 3000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+            console.log(`[${this.platformName}] 点击分享按钮成功(hasText): text="${text}"`);
+            return true;
+          } catch { /* 继续 */ }
         }
       }
-      return false;
-    }, shareTexts).catch(() => false);
+    } catch { /* 继续 */ }
 
-    if (!found) {
-      console.log(`[${this.platformName}] 未找到分享按钮（选择器和兜底扫描均失败）`);
-      return false;
-    }
-
-    // 找到了候选元素，需要用 Playwright 点击
-    // 用 evaluate 找到元素并点击（因为元素没有稳定的 CSS 选择器）
-    const clicked = await page.evaluate((texts: string[]) => {
-      const clickables = Array.from(document.querySelectorAll(
-        'button, a, [role="button"], [class*="icon"], [class*="btn"], [class*="button"], [data-testid], [aria-label]'
-      )) as HTMLElement[];
-
-      for (const el of clickables) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width === 0 || rect.height === 0) continue;
-        const style = window.getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-
-        const text = (el.textContent || '').trim();
-        const ariaLabel = (el.getAttribute('aria-label') || '').toLowerCase();
-        const className = (el.className || '').toLowerCase();
-        const testid = (el.getAttribute('data-testid') || '').toLowerCase();
-        const title = (el.getAttribute('title') || '').toLowerCase();
-
-        const isShare = texts.some(t => {
-          const tl = t.toLowerCase();
-          return text === t || text.includes(t) || ariaLabel.includes(tl) ||
-                 className.includes(tl) || testid.includes(tl) || title.includes(tl);
-        });
-        const hasShareAttr = className.includes('share') || ariaLabel.includes('share') ||
-                             testid.includes('share') || title.includes('share');
-
-        if ((isShare || hasShareAttr) && !className.includes('shared') && !className.includes('sharing')) {
-          (el as HTMLElement).click();
-          return true;
+    // 策略3：用属性选择器匹配 aria-label / title / data-testid / class 含 "share"
+    const attrSelectors = [
+      '[aria-label*="分享"]',
+      '[aria-label*="share" i]',
+      '[title*="分享"]',
+      '[title*="share" i]',
+      '[data-testid*="share"]',
+      '[data-testid*="share" i]',
+      '[class*="share"]:not([class*="shared"]):not([class*="sharing"])',
+    ];
+    for (const sel of attrSelectors) {
+      try {
+        const loc = page.locator(sel);
+        const count = await loc.count().catch(() => 0);
+        if (count > 0) {
+          for (let i = count - 1; i >= 0; i--) {
+            try {
+              const el = loc.nth(i);
+              const visible = await el.isVisible().catch(() => false);
+              if (!visible) continue;
+              const className = await el.getAttribute('class').catch(() => '') || '';
+              await el.click({ timeout: 3000 }).catch(() => {});
+              await page.waitForTimeout(1500);
+              console.log(`[${this.platformName}] 点击分享按钮成功(属性): sel="${sel}" class="${className.substring(0, 50)}"`);
+              return true;
+            } catch { /* 继续 */ }
+          }
         }
-      }
-      return false;
-    }, shareTexts).catch(() => false);
-
-    if (clicked) {
-      await page.waitForTimeout(1500);
-      console.log(`[${this.platformName}] 点击分享按钮成功(兜底扫描)`);
-      return true;
+      } catch { /* 继续 */ }
     }
 
-    console.log(`[${this.platformName}] 未找到分享按钮`);
+    console.log(`[${this.platformName}] 未找到分享按钮（选择器/hasText/属性均失败）`);
     return false;
   }
 
