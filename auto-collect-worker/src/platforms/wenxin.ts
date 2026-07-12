@@ -172,10 +172,10 @@ export class WenxinAdapter extends BasePlatformAdapter {
    * 从分享链接页面提取纯净 AI 回答
    *
    * 分享页 DOM 结构（实地调查 2026-07-12）：
-   *   - .cosd-markdown-content（66 字符纯回答）— 最精确
-   *   - .answer-container.cs-enable-selection（66 字符）— 备选
-   *   - .cosd-markdown（66 字符）— 备选
-   *   - .ai-entry-block.ai-markdown（66 字符）— 备选
+   *   长回答情况下，.cosd-markdown-content 有多个元素：
+   *     - index 0: `cosd-markdown-content`（无后缀类）= 主回答正文（如 1779 字符）
+   *     - index 1: `cosd-markdown-content cosd-markdown-content-typingall` = 追加引导（如 57 字符，"需要我补充..."）
+   *   因此必须选择字符数最多的元素，而非最后一个（最后一个往往是追加引导）
    *
    * 分享页 URL 重定向链：
    *   https://mr.baidu.com/r/{短码} → https://chat.baidu.com/csaitab/history/share?share_id=...
@@ -190,8 +190,8 @@ export class WenxinAdapter extends BasePlatformAdapter {
 
       // 精确选择器（按优先级排序，从最精确到最宽泛）
       const preciseSelectors = [
-        '.cosd-markdown-content',                          // 最精确的纯回答容器
-        '.ai-entry-block.ai-markdown',                     // markdown 入口块
+        '.cosd-markdown-content:not(.cosd-markdown-content-typingall)',  // 主回答（排除追加引导）
+        '.cosd-markdown-content',                          // 兜底：所有 markdown-content
         '.cosd-markdown',                                  // markdown 容器
         '.answer-container.cs-enable-selection',           // 回答容器
         '.cs-history-answer',                              // 历史回答
@@ -201,14 +201,20 @@ export class WenxinAdapter extends BasePlatformAdapter {
       for (const sel of preciseSelectors) {
         try {
           const elements = await page.$$(sel);
-          // 从后往前找（最新的回答在后面）
-          for (let i = elements.length - 1; i >= 0; i--) {
+          if (elements.length === 0) continue;
+
+          // 收集所有元素的文本和 HTML，选择字符数最多的（主回答总是最长的）
+          let bestText = '';
+          let bestHtml = '';
+          let bestIndex = -1;
+          for (let i = 0; i < elements.length; i++) {
             const text = (await elements[i].textContent()) || '';
             const trimmed = text.trim();
-            // 只接受有实质内容的回答（>20 字符）
-            if (trimmed.length > 20) {
+            if (trimmed.length > bestText.length) {
+              bestText = trimmed;
+              bestIndex = i;
               // 清理 HTML
-              const cleanedHtml = await elements[i].evaluate((node: HTMLElement) => {
+              bestHtml = await elements[i].evaluate((node: HTMLElement) => {
                 const clone = node.cloneNode(true) as HTMLElement;
                 const removeSelectors = [
                   'script', 'style', 'noscript', 'iframe', 'svg', 'canvas',
@@ -223,9 +229,13 @@ export class WenxinAdapter extends BasePlatformAdapter {
                 }
                 return clone.innerHTML;
               }).catch(() => '');
-              console.log(`[文心一言] 分享页选择器 ${sel} 提取成功: ${trimmed.length} 字符`);
-              return { text: trimmed, html: cleanedHtml || `<div>${trimmed}</div>` };
             }
+          }
+
+          // 只接受有实质内容的回答（>20 字符）
+          if (bestText.length > 20) {
+            console.log(`[文心一言] 分享页选择器 ${sel} 提取成功: ${bestText.length} 字符 (共 ${elements.length} 个元素，选中 index=${bestIndex})`);
+            return { text: bestText, html: bestHtml || `<div>${bestText}</div>` };
           }
         } catch {
           // 继续
@@ -257,14 +267,15 @@ export class WenxinAdapter extends BasePlatformAdapter {
    * 降级方案：从对话页面提取 AI 回答（分享链接获取失败时使用）
    *
    * 使用精确选择器，避免抓到大容器
+   * 注意：长回答时 .cosd-markdown-content 有多个元素，需选择字符数最多的（主回答）
    */
   private async extractContentFromChatPage(page: Page): Promise<{ text: string; html: string }> {
     await this.scrollToBottom(page);
 
     // 精确选择器（按优先级排序）
     const preciseSelectors = [
+      '.cosd-markdown-content:not(.cosd-markdown-content-typingall)',  // 主回答（排除追加引导）
       '.cosd-markdown-content',
-      '.ai-entry-block.ai-markdown',
       '.cosd-markdown',
       '.answer-container.cs-enable-selection',
       '.cs-answer-container',
@@ -274,11 +285,19 @@ export class WenxinAdapter extends BasePlatformAdapter {
     for (const sel of preciseSelectors) {
       try {
         const elements = await page.$$(sel);
-        for (let i = elements.length - 1; i >= 0; i--) {
+        if (elements.length === 0) continue;
+
+        // 收集所有元素的文本，选择字符数最多的（主回答总是最长的）
+        let bestText = '';
+        let bestHtml = '';
+        let bestIndex = -1;
+        for (let i = 0; i < elements.length; i++) {
           const text = (await elements[i].textContent()) || '';
           const trimmed = text.trim();
-          if (trimmed.length > 20) {
-            const cleanedHtml = await elements[i].evaluate((node: HTMLElement) => {
+          if (trimmed.length > bestText.length) {
+            bestText = trimmed;
+            bestIndex = i;
+            bestHtml = await elements[i].evaluate((node: HTMLElement) => {
               const clone = node.cloneNode(true) as HTMLElement;
               const removeSelectors = [
                 'script', 'style', 'noscript', 'iframe', 'svg', 'canvas',
@@ -293,9 +312,12 @@ export class WenxinAdapter extends BasePlatformAdapter {
               }
               return clone.innerHTML;
             }).catch(() => '');
-            console.log(`[文心一言] 对话页选择器 ${sel} 提取成功: ${trimmed.length} 字符`);
-            return { text: trimmed, html: cleanedHtml || `<div>${trimmed}</div>` };
           }
+        }
+
+        if (bestText.length > 20) {
+          console.log(`[文心一言] 对话页选择器 ${sel} 提取成功: ${bestText.length} 字符 (共 ${elements.length} 个元素，选中 index=${bestIndex})`);
+          return { text: bestText, html: bestHtml || `<div>${bestText}</div>` };
         }
       } catch {
         // 继续
