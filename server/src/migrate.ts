@@ -1039,6 +1039,12 @@ export async function migrate() {
     // 发布流程（桌面端 publishWorker 的 aiActionExecutor 截图识别）按此字段取模型
     await client.query(`ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_publish BOOLEAN DEFAULT FALSE`);
 
+    // 8.6.4 ai_model_config 新增 use_for_aeo 字段（v2.0.5：AEO 分析专用开关）
+    // 用户需求：AEO 分析不再读环境变量 LLM_API_KEY，改为读 ai_model_config 表
+    // 用户在 AI 模型配置页开启"用于 AEO 分析"开关的平台会被用于 AEO 日报/轮次报告/分片报告/周期报告
+    // 多个平台开启时取第一个（按 id 排序）
+    await client.query(`ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_aeo BOOLEAN DEFAULT FALSE`);
+
     // 8.7 real_collect_record 新增 source 字段（标记查询来源：api / crawler）
     await client.query(`ALTER TABLE real_collect_record ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'crawler'`);
 

@@ -33,19 +33,14 @@ import {
   allocateArticlesByWeight,
   createWritingTask,
   getDefaultModelConfig,
+  getAeoModelConfig,
   getEnterpriseKnowledges,
   getAllWritingInstructions,
 } from '../../repository';
 import { query as dbQuery } from '../../db';
+import { decrypt } from '../../utils/crypto';
 
-const LLM_API_URL = process.env.LLM_API_URL || '';
-const LLM_API_KEY = process.env.LLM_API_KEY || '';
-const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
 const AEO_RECORD_LIMIT = parseInt(process.env.AEO_RECORD_LIMIT || '200');
-
-if (!LLM_API_URL || !LLM_API_KEY) {
-  console.warn('[AEO] LLM_API_URL 或 LLM_API_KEY 未配置，AEO 分析将使用 fallback 纯代码模式');
-}
 
 /**
  * 为指定任务生成 AEO 日报
@@ -71,16 +66,17 @@ export async function generateAeoReport(taskId: number, userId: string): Promise
   const brandKeywords = await getBrandKeywords(userId);
 
   // 准备分析数据
+  // v2.0.5：截取前 3000 字（原 500 字太少，品牌描述+情感分析需要完整内容）
   const analysisInput = records.map(r => ({
     platform: r.platform,
     keyword: r.keyword,
-    content: (r.raw_content || '').substring(0, 500),
+    content: (r.raw_content || '').substring(0, 3000),
     matchedBrands: r.matched_brands,
     shareUrl: r.share_url,
   }));
 
   // 调用 LLM 分析
-  const analysis = await callLlmForAeo(analysisInput, brandKeywords);
+  const analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
 
   // 入库
   const reportId = await insertAeoReport({
@@ -104,10 +100,14 @@ export async function generateAeoReport(taskId: number, userId: string): Promise
 
 /**
  * 调用大模型进行 AEO 分析
+ * v2.0.5：不再读环境变量 LLM_API_URL/LLM_API_KEY/LLM_MODEL
+ *         改为读 ai_model_config 表（use_for_aeo=true 的配置）
+ *         未配置时降级用 fallbackAnalysis 纯代码分析
  */
 async function callLlmForAeo(
   records: any[],
-  brandKeywords: string[]
+  brandKeywords: string[],
+  userId: string
 ): Promise<{
   visibilityScore: number;
   positiveRatio: number;
@@ -117,10 +117,24 @@ async function callLlmForAeo(
   suggestions: string;
   raw: string;
 }> {
-  // 如果未配置 LLM，使用纯代码简单分析
-  if (!LLM_API_URL || !LLM_API_KEY) {
+  // 从 ai_model_config 表读取 AEO 专用模型
+  const modelConfig = await getAeoModelConfig(userId);
+  if (!modelConfig || !modelConfig.api_key_encrypted) {
+    console.warn(`[AEO] 用户 ${userId} 未配置 AEO 模型（use_for_aeo=true），使用 fallback 纯代码分析`);
     return fallbackAnalysis(records, brandKeywords);
   }
+
+  let apiKey: string;
+  try {
+    apiKey = decrypt(modelConfig.api_key_encrypted);
+  } catch (e: any) {
+    console.error(`[AEO] API-KEY 解密失败 platform=${modelConfig.platform}:`, e.message);
+    return fallbackAnalysis(records, brandKeywords);
+  }
+
+  const apiUrl = modelConfig.base_url;
+  const model = modelConfig.model_name;
+  console.log(`[AEO] 使用模型: platform=${modelConfig.platform} model=${model}`);
 
   const prompt = `你是一位 AEO（Answer Engine Optimization）分析专家。请分析以下 AI 平台品牌提及数据，生成一份日报。
 
@@ -141,9 +155,9 @@ ${JSON.stringify(records, null, 2)}
 
   try {
     const resp = await axios.post(
-      LLM_API_URL,
+      apiUrl,
       {
-        model: LLM_MODEL,
+        model,
         messages: [
           { role: 'system', content: '你是 AEO 分析专家，只返回 JSON 格式数据。' },
           { role: 'user', content: prompt },
@@ -151,7 +165,7 @@ ${JSON.stringify(records, null, 2)}
         temperature: 0.3,
       },
       {
-        headers: { 'Authorization': `Bearer ${LLM_API_KEY}`, 'Content-Type': 'application/json' },
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         timeout: 60000,
       }
     );
@@ -171,7 +185,7 @@ ${JSON.stringify(records, null, 2)}
       raw: content,
     };
   } catch (e: any) {
-    console.error('[AEO] LLM 调用失败，使用 fallback 分析:', e.message);
+    console.error(`[AEO] LLM 调用失败 platform=${modelConfig.platform} model=${model}，使用 fallback 分析:`, e.message);
     return fallbackAnalysis(records, brandKeywords);
   }
 }
@@ -259,16 +273,17 @@ export async function generateAeoFullReport(
     } catch {}
 
     // 准备分析数据
+    // v2.0.5：截取前 3000 字（原 500 字太少，品牌描述+情感分析需要完整内容）
     const analysisInput = records.map(r => ({
       platform: r.platform,
       keyword: r.keyword,
-      content: (r.raw_content || '').substring(0, 500),
+      content: (r.raw_content || '').substring(0, 3000),
       matchedBrands: r.matched_brands,
       shareUrl: r.share_url,
     }));
 
     // 调用 LLM 分析（复用现有函数）
-    const analysis = await callLlmForAeo(analysisInput, brandKeywords);
+    const analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
 
     // 统计本轮总记录数和品牌命中数
     const brandMatchedCount = records.length;
@@ -651,17 +666,17 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       return null;
     }
 
-    // 6. 准备分析输入（截取内容前 500 字）
+    // 6. 准备分析输入（v2.0.5：截取内容前 3000 字，原 500 字太少）
     const analysisInput = records.map(r => ({
       platform: r.platform,
       keyword: r.keyword,
-      content: (r.raw_content || '').substring(0, 500),
+      content: (r.raw_content || '').substring(0, 3000),
       matchedBrands: r.matched_brands,
       shareUrl: r.share_url,
     }));
 
     // 7. 调用 LLM 分析（复用现有 callLlmForAeo）
-    const analysis = await callLlmForAeo(analysisInput, brandKeywords);
+    const analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
 
     // 8. 提取负面发现和品牌提及详情
     const brandMentions = records.map(r => ({
