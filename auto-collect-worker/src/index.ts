@@ -71,7 +71,7 @@ async function pollAndExecute(): Promise<void> {
     }
 
     logger.setTaskId(task.taskId);
-    logger.info(`消费到任务 queueId=${task.queueId} taskId=${task.taskId} userId=${task.userId} keywords=${task.keywords?.length} platforms=${task.platforms?.length} resumeFrom=${task.lastKeywordIndex ?? -1}`);
+    logger.info(`消费到任务 queueId=${task.queueId} taskId=${task.taskId} userId=${task.userId} keywords=${task.keywords?.length} platforms=${task.platforms?.length} resumeFrom=${task.lastKeywordIndex ?? -1} queryMode=${task.queryMode || 'auto'}`);
 
     let recordCount = 0;
     let brandCount = 0;
