@@ -664,7 +664,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     try {
       const diagnostics = await page.evaluate(() => {
         const results: string[] = [];
-        const allElements = document.querySelectorAll('button, a, [role="button"], [class*="icon"], [class*="btn"], [data-testid], [aria-label]');
+        const allElements = Array.from(document.querySelectorAll('button, a, [role="button"], [class*="icon"], [class*="btn"], [data-testid], [aria-label]'));
         for (const el of allElements) {
           const text = (el.textContent || '').trim().substring(0, 30);
           const ariaLabel = el.getAttribute('aria-label') || '';
