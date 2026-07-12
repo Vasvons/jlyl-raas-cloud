@@ -2,6 +2,7 @@ import { Page } from 'playwright';
 import { PlatformAdapter, PlatformCredentials, QueryResult, randomDelay } from './base';
 import { smartFindInputElement, smartFindLongestContent } from '../indexedInteractor';
 import { humanType, humanDelay, humanClick } from '../behaviorHumanizer';
+import * as logger from '../logger';
 
 /**
  * 通用平台适配器基类实现
@@ -630,6 +631,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    * 1. 先尝试传入的 CSS 选择器列表（精确匹配）
    * 2. 用 Playwright Locator filter({ hasText }) 按文本匹配
    * 3. 用属性选择器匹配 aria-label / title / data-testid / class 含 "share"
+   * 4. 如果以上都失败，hover 所有消息/回答区域（很多平台操作栏 hover 才显示），然后重试 1-3
    *
    * 关键：所有点击都用 Playwright 的 click()（真实鼠标事件 mousedown→mouseup→click），
    *       不用 evaluate + element.click()（JS 原生 click 对 React/Vue 不生效）
@@ -644,6 +646,28 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     selectors: string[],
     shareTexts: string[] = ['分享', 'Share', '分享对话', '复制链接', 'Copy link', 'Copy Link']
   ): Promise<boolean> {
+    // 第一轮：直接尝试三个策略
+    const found = await this._tryClickShareButton(page, selectors, shareTexts);
+    if (found) return true;
+
+    // 第二轮：hover 消息/回答区域后重试
+    // 大部分 AI 平台（DeepSeek/Kimi/豆包/通义千问等）的操作栏 hover 才显示
+    logger.warn(`[${this.platformName}] 第一轮未找到分享按钮，尝试 hover 消息区域后重试...`);
+    await this._hoverMessageAreas(page);
+
+    const found2 = await this._tryClickShareButton(page, selectors, shareTexts);
+    if (found2) return true;
+
+    logger.warn(`[${this.platformName}] 未找到分享按钮（hover 后仍失败）`);
+    return false;
+  }
+
+  /** 内部方法：尝试三个策略查找并点击分享按钮 */
+  private async _tryClickShareButton(
+    page: Page,
+    selectors: string[],
+    shareTexts: string[]
+  ): Promise<boolean> {
     // 策略1：尝试传入的 CSS 选择器（Playwright click，真实鼠标事件）
     for (const sel of selectors) {
       try {
@@ -653,21 +677,19 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           if (!visible) continue;
           await btn.click({ timeout: 3000 }).catch(() => {});
           await page.waitForTimeout(1500);
-          console.log(`[${this.platformName}] 点击分享按钮成功(选择器): ${sel}`);
+          logger.info(`[${this.platformName}] 点击分享按钮成功(选择器): ${sel}`);
           return true;
         }
       } catch { /* 继续 */ }
     }
 
     // 策略2：用 Playwright Locator filter({ hasText }) 按文本匹配
-    // Playwright 的 filter 在内部用文本匹配，click() 是真实鼠标事件
     try {
       const textRegex = new RegExp(shareTexts.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
       const textMatches = page.locator('button, a, [role="button"], [class*="icon"]')
         .filter({ hasText: textRegex });
       const textCount = await textMatches.count().catch(() => 0);
       if (textCount > 0) {
-        // 从后往前找（最新的回答的操作栏通常在后面）
         for (let i = textCount - 1; i >= 0; i--) {
           try {
             const el = textMatches.nth(i);
@@ -676,7 +698,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
             const text = (await el.textContent().catch(() => '') || '').trim().substring(0, 30);
             await el.click({ timeout: 3000 }).catch(() => {});
             await page.waitForTimeout(1500);
-            console.log(`[${this.platformName}] 点击分享按钮成功(hasText): text="${text}"`);
+            logger.info(`[${this.platformName}] 点击分享按钮成功(hasText): text="${text}"`);
             return true;
           } catch { /* 继续 */ }
         }
@@ -706,7 +728,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
               const className = await el.getAttribute('class').catch(() => '') || '';
               await el.click({ timeout: 3000 }).catch(() => {});
               await page.waitForTimeout(1500);
-              console.log(`[${this.platformName}] 点击分享按钮成功(属性): sel="${sel}" class="${className.substring(0, 50)}"`);
+              logger.info(`[${this.platformName}] 点击分享按钮成功(属性): sel="${sel}" class="${className.substring(0, 50)}"`);
               return true;
             } catch { /* 继续 */ }
           }
@@ -714,8 +736,40 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       } catch { /* 继续 */ }
     }
 
-    console.log(`[${this.platformName}] 未找到分享按钮（选择器/hasText/属性均失败）`);
     return false;
+  }
+
+  /** hover 消息/回答区域，触发操作栏显示 */
+  private async _hoverMessageAreas(page: Page): Promise<void> {
+    // 所有可能包含 AI 回答的容器选择器
+    const messageSelectors = [
+      '[class*="message"]:not([class*="input"]):not([class*="send"])',
+      '[class*="answer"]',
+      '[class*="response"]',
+      '[class*="reply"]',
+      '[class*="chat-item"]',
+      '[class*="conversation-item"]',
+      '[class*="bubble"]',
+      'article',
+      '[class*="markdown"]',
+      '[class*="content"]:not([class*="input-content"])',
+    ];
+
+    for (const sel of messageSelectors) {
+      try {
+        const elements = await page.$$(sel);
+        // hover 最后几个元素（最新的回答通常在后面）
+        const startIdx = Math.max(0, elements.length - 5);
+        for (let i = elements.length - 1; i >= startIdx; i--) {
+          try {
+            const visible = await elements[i].isVisible().catch(() => false);
+            if (!visible) continue;
+            await elements[i].hover({ timeout: 1000 }).catch(() => {});
+            await page.waitForTimeout(300); // 等待操作栏动画
+          } catch { /* 继续 */ }
+        }
+      } catch { /* 继续 */ }
+    }
   }
 
   /**
