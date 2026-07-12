@@ -34,14 +34,18 @@ export async function reportResult(result: {
 
     // 解析云端返回的品牌识别结果
     const data = resp.data?.data;
+    const shareInfo = result.shareUrl ? ` 分享链接=${result.shareUrl}` : ' (无分享链接)';
+    const contentPreview = result.content.substring(0, 80).replace(/\n/g, ' ');
     if (data && data.brandMatched) {
       const brands = data.matchedBrands || [];
       const contact = data.hasContact ? ' [含联系方式]' : '';
-      logger.info(`[品牌命中] ${result.platform}/${result.keyword.substring(0, 30)} 命中品牌: ${brands.join(', ')}${contact} recordId=${data.recordId}`);
+      logger.info(`[品牌命中] ${result.platform}/${result.keyword.substring(0, 30)} 命中品牌: ${brands.join(', ')}${contact} recordId=${data.recordId}${shareInfo}`);
+      logger.info(`[品牌命中详情] 关键词="${result.keyword}" 内容长度=${result.content.length} 内容预览="${contentPreview}"`);
     } else if (data) {
-      logger.info(`[未命中品牌] ${result.platform}/${result.keyword.substring(0, 30)} 内容长度=${result.content.length} recordId=${data.recordId}`);
+      logger.info(`[未命中品牌] ${result.platform}/${result.keyword.substring(0, 30)} 内容长度=${result.content.length} recordId=${data.recordId}${shareInfo}`);
+      logger.info(`[未命中详情] 关键词="${result.keyword}" 内容预览="${contentPreview}"`);
     } else {
-      logger.info(`[Reporter] 结果回写成功(无识别结果): ${result.platform}/${result.keyword.substring(0, 20)}`);
+      logger.info(`[Reporter] 结果回写成功(无识别结果): ${result.platform}/${result.keyword.substring(0, 20)} 内容长度=${result.content.length}${shareInfo}`);
     }
 
     return data || null;

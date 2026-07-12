@@ -264,7 +264,8 @@ async function executeSingleQuery(
         logger.error(`[API] 结果上报失败 ${platform}/${keyword.substring(0, 30)}: ${reportErr.message}`);
       }
       recordPlatformResult(platform, true);
-      logger.info(`[API] 查询成功 ${platform}/${keyword.substring(0, 30)} 内容长度=${apiResult.content.length}`);
+      const shareInfo = apiResult.shareUrl ? ` 分享链接=${apiResult.shareUrl}` : ' (无分享链接)';
+      logger.info(`[API] 查询成功 ${platform}/${keyword.substring(0, 30)} 内容长度=${apiResult.content.length}${shareInfo}`);
       return { success: true, brandMatched: false };
     }
   } catch (e: any) {
@@ -319,6 +320,8 @@ async function executeSingleQuery(
     // 执行查询（query 方法内部已包含登录态检测，无需重复调用 checkLoginStatus）
     logger.info(`查询: ${platform}/${keyword.substring(0, 30)}`);
     const result = await adapter.query(page, keyword);
+    const shareInfo = result.shareUrl ? ` 分享链接=${result.shareUrl}` : ' (无分享链接)';
+    logger.info(`查询完成: ${platform}/${keyword.substring(0, 30)} 内容长度=${result.content.length}${shareInfo}`);
 
     // 品牌词包含检查由云端 resultProcessor 完成，worker 端只统计记录数
     const brandMatched = false;
