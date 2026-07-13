@@ -1097,27 +1097,40 @@ export async function getExcludeComboOptions(userId: string): Promise<string[]> 
 /**
  * 构建组合检测映射表（v2.0.7）
  * 从 kw_config 读取 A/B/C/D/E/F 各组词，返回用于反向推导关键词组合模式的数据结构
+ * 关键：若 kw_config 读不到（用户未在内容中枢保存配置），使用默认词组，避免组合屏蔽被静默跳过
+ * 默认词组必须与 getExcludePrefixOptions / getExcludeComboOptions 的默认值保持一致
  */
 async function buildComboDetectionMap(userId: string): Promise<{
   groups: { name: string; words: string[] }[];
 } | null> {
   const configJson = await getKwConfig(userId, 'distillate');
-  if (!configJson) return null;
 
-  let A: string[] = [], B: string[] = [], D: string[] = [], E: string[] = [], F: string[] = [];
-  try {
-    const config = JSON.parse(configJson);
-    A = parseWordList(config.A);
-    B = parseWordList(config.B);
-    D = parseWordList(config.D);
-    E = parseWordList(config.E);
-    F = parseWordList(config.F);
-  } catch {
-    return null;
+  // 默认词组（与 getExcludePrefixOptions / getExcludeComboOptions 默认值一致）
+  let A: string[] = ['市面上', '行业内', '市场', '目前', '国内'];
+  let B: string[] = ['口碑好的', '比较好的', '靠谱的', '有实力的', '可靠的', '诚信的', '正规的', '专业的', '热门的', '知名的', '优秀的'];
+  let D: string[] = ['品牌', '公司', '工厂', '厂家', '厂商', '生产厂家', '源头厂家', '批发厂家', '加工厂'];
+  let E: string[] = ['推荐', '排行', '推荐榜', '排行榜', '排名'];
+  let F: string[] = ['哪家好', '哪家强', '哪家靠谱', '推荐几家'];
+
+  if (configJson) {
+    try {
+      const config = JSON.parse(configJson);
+      const parsedA = parseWordList(config.A);
+      const parsedB = parseWordList(config.B);
+      const parsedD = parseWordList(config.D);
+      const parsedE = parseWordList(config.E);
+      const parsedF = parseWordList(config.F);
+      // 仅在解析到非空值时覆盖默认值，避免用户配置了部分组但其他组为空导致漏判
+      if (parsedA.length > 0) A = parsedA;
+      if (parsedB.length > 0) B = parsedB;
+      if (parsedD.length > 0) D = parsedD;
+      if (parsedE.length > 0) E = parsedE;
+      if (parsedF.length > 0) F = parsedF;
+    } catch {
+      // 解析失败用默认值
+    }
   }
 
-  // C 组是主词（核心词），不在 kw_config 里，从 zlgjc 的 keyword_type=0 提取
-  // 但为了反向推导，C 组词可以从关键词中动态识别（它是关键词的核心部分）
   const groups = [
     { name: 'A', words: A },
     { name: 'B', words: B },
@@ -1126,7 +1139,7 @@ async function buildComboDetectionMap(userId: string): Promise<{
     { name: 'F', words: F },
   ].filter(g => g.words.length > 0);
 
-  return { groups };
+  return groups.length > 0 ? { groups } : null;
 }
 
 /**
@@ -1134,10 +1147,13 @@ async function buildComboDetectionMap(userId: string): Promise<{
  * 算法：检查关键词包含哪些组的词，按组名字母排序拼接为组合模式
  * C 组（主词）默认存在于所有组合中，不参与检测（因为主词是关键词的核心，无法从配置读取）
  *
+ * 关键修正（v2.0.8）：A 组是前缀词，排在组合最前端，必须用 startsWith 检测
+ * 否则"市场"会误匹配关键词中部的子串（如"投影仪市场份额"实际不含A组前缀，但被误判为含A）
+ *
  * 示例：
- *   "市面上投影仪品牌推荐" → 包含 A(市面上)+D(品牌)+E(推荐) → 组合模式 "A+C+D+E"
- *   "投影仪品牌" → 包含 D(品牌) → 组合模式 "C+D"
- *   "口碑好的投影仪公司排行" → 包含 B(口碑好的)+D(公司)+E(排行) → 组合模式 "B+C+D+E"
+ *   "市面上投影仪品牌推荐" → A(startsWith 市面上)+D(品牌)+E(推荐) → "A+C+D+E"
+ *   "投影仪品牌" → D(品牌) → "C+D"
+ *   "口碑好的投影仪公司排行" → B(includes 口碑好的)+D(公司)+E(排行) → "B+C+D+E"
  */
 function detectKeywordCombo(
   keyword: string,
@@ -1146,8 +1162,14 @@ function detectKeywordCombo(
   const matchedGroups: string[] = ['C']; // C 组（主词）默认存在
 
   for (const group of comboMap.groups) {
-    // 检查关键词是否包含该组的任一词
-    const matched = group.words.some(w => keyword.includes(w));
+    let matched = false;
+    if (group.name === 'A') {
+      // A 组是前缀词，排在组合最前端，必须用 startsWith 检测
+      matched = group.words.some(w => keyword.startsWith(w));
+    } else {
+      // B/D/E/F 组用 includes 检测（这些词在关键词中部）
+      matched = group.words.some(w => keyword.includes(w));
+    }
     if (matched) {
       matchedGroups.push(group.name);
     }
@@ -1773,7 +1795,7 @@ export async function startNewRound(
       excludeCombos = [];
     }
     if (excludeCombos.length > 0 && taskUserId) {
-      // 从 kw_config 读取词组配置，用于反向推导关键词的组合模式
+      // 从 kw_config 读取词组配置（读不到时用默认词组），用于反向推导关键词的组合模式
       const comboMap = await buildComboDetectionMap(String(taskUserId));
       if (comboMap) {
         const beforeComboFilter = filteredKeywords.length;
@@ -1785,7 +1807,11 @@ export async function startNewRound(
         });
         if (filteredKeywords.length < beforeComboFilter) {
           console.log(`[RealCollect] 任务 ${taskId} 组合规则屏蔽: ${beforeComboFilter} → ${filteredKeywords.length}（屏蔽组合: [${excludeCombos.join(', ')}]，删除 ${beforeComboFilter - filteredKeywords.length} 条）`);
+        } else {
+          console.log(`[RealCollect] 任务 ${taskId} 组合规则屏蔽: 未匹配到任何关键词（屏蔽组合: [${excludeCombos.join(', ')}]，当前关键词数 ${beforeComboFilter}）`);
         }
+      } else {
+        console.warn(`[RealCollect] 任务 ${taskId} 组合规则屏蔽跳过：无法构建组合检测映射表（kw_config 表无用户 ${taskUserId} 的 distillate 配置，且默认词组为空）。excludeCombos=[${excludeCombos.join(',')}] 不生效。`);
       }
     }
   }
