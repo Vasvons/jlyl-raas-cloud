@@ -262,12 +262,10 @@ export async function processWorkerResult(result: WorkerResult): Promise<Process
   // recognizer 只在品牌词附近 ±300 字符窗口内识别联系方式，避免误识别
   const recognizeResult = recognizeContent(result.content, brandKeywords);
 
-  // 只保存有价值的记录：品牌命中 或 有联系方式
-  // 既未命中品牌也没有联系方式的记录对用户无用，不保存（避免污染 GEO 报告）
-  if (!recognizeResult.brandMatched && !recognizeResult.hasContact) {
-    console.log(`[resultProcessor] 跳过无价值记录: ${result.platform}/${result.keyword.substring(0, 30)} 未命中品牌且无联系方式`);
-    return null;
-  }
+  // v2.0.5 修复：所有有效查询记录都入库，brand_matched 字段记录是否命中品牌
+  // 之前只入库 brand_matched=true 的记录，导致收录率 = 命中/命中 = 100%，永远算不出真实收录率
+  // 收录率 = brand_matched=true 的数量 / 总查询记录数，分母必须包含未命中的记录
+  // 未命中品牌的记录也入库，AEO 大屏的 KPI/趋势/平台分布图表才能有坐标为 0 的数据点
 
   // 先插入 record 获取 id
   const recordId = await insertRealCollectRecord({

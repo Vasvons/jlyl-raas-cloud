@@ -2681,13 +2681,19 @@ export async function getDueRealCollectTasks(): Promise<any[]> {
   return result.rows;
 }
 
-/** 获取用户的品牌词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */
+/**
+ * 获取用户的品牌词库（用于 AEO 品牌匹配）
+ * v2.0.5 修复：品牌词在 pp 表，不在 zlgjc 表。
+ *   - pp 表：品牌词（如"聚量引力"），用户配置，AEO 匹配用这个
+ *   - zlgjc WHERE keyword_type=1：品牌关键词（如"聚量引力价格"），是查询用的组合词，不是品牌词
+ *   之前查错表导致用 99 条品牌关键词去匹配 AI 回答，当然匹配不上
+ */
 export async function getBrandKeywords(userId: string): Promise<string[]> {
   const result = await query(
-    `SELECT DISTINCT value FROM zlgjc WHERE userid = $1 AND keyword_type = 1 AND value != ''`,
+    `SELECT pp FROM pp WHERE user_id = $1 AND pp != '' ORDER BY id`,
     [userId]
   );
-  return result.rows.map((r: any) => r.value);
+  return result.rows.map((r: any) => r.pp);
 }
 
 /** 获取用户的蒸馏词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */
