@@ -9,6 +9,7 @@ import {
   getTaskShardProgress,
   resetTaskCurrentRound,
   getExcludePrefixOptions,
+  getExcludeComboOptions,
 } from '../repository';
 import { enqueueTaskNow } from '../services/realCollect/scheduler';
 
@@ -24,6 +25,20 @@ router.get('/exclude-prefix-options', async (req, res) => {
       return res.json({ code: 400, message: '缺少 userId' });
     }
     const options = await getExcludePrefixOptions(userId);
+    res.json({ code: 200, data: options });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 获取蒸馏词库可用的组合规则屏蔽选项（来源：kw_config 的 combos 字段）
+router.get('/exclude-combo-options', async (req, res) => {
+  try {
+    const userId = String(req.query.userId || '');
+    if (!userId) {
+      return res.json({ code: 400, message: '缺少 userId' });
+    }
+    const options = await getExcludeComboOptions(userId);
     res.json({ code: 200, data: options });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -54,12 +69,12 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, queryMode } = req.body;
+    const { userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode } = req.body;
     // cronExpr 可选：循环模式下不传 cronExpr，任务24小时持续执行
     if (!userId || !taskName || keywordType === undefined || !platforms) {
       return res.status(400).json({ code: 400, message: '缺少必要参数' });
     }
-    const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, queryMode });
+    const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode });
     res.json({ code: 200, message: '创建成功', data: { id } });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -68,8 +83,8 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, queryMode } = req.body;
-    await updateRealCollectTask(parseInt(req.params.id), { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, queryMode });
+    const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode } = req.body;
+    await updateRealCollectTask(parseInt(req.params.id), { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode });
     res.json({ code: 200, message: '更新成功' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });

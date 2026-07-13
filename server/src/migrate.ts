@@ -626,6 +626,10 @@ export async function migrate() {
     // 仅对蒸馏词库（keyword_type=0）生效
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS exclude_prefixes TEXT DEFAULT NULL`);
 
+    // 组合规则屏蔽（v2.0.7）：存储 JSON 数组（如 ["A+C+D","B+C+D+E"]），查询时跳过这些组合模式生成的关键词
+    // 仅对蒸馏词库（keyword_type=0）生效
+    await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS exclude_combos TEXT DEFAULT NULL`);
+
     // 查询模式：auto（默认，优先API降级爬虫）/ api（仅API）/ crawler（仅爬虫，可获取分享链接）
     // 用于按任务单独控制查询方式，在智能巡检页面的任务列表操作栏切换
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS query_mode VARCHAR(20) DEFAULT 'auto'`);
