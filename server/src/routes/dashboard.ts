@@ -111,7 +111,7 @@ router.get('/keypage', async (req, res) => {
           userId: item.user_id,
           queryTime: item.query_time,
           url: item.url,
-          zlgjcUrl: item.zlgjc_url || '',
+          zlgjcUrl: item.zlgjc_url || (item.id ? `/api/real-collect/results/${item.id}/page` : ''),
           hasLxfs: item.has_lxfs === 1,
           createTime: item.create_time,
         })),
