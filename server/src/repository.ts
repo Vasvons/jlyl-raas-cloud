@@ -2599,37 +2599,41 @@ export async function deleteRealCollectTask(id: number): Promise<void> {
 }
 
 /**
- * 重置任务当前轮次：删除 pending/done/failed 分片，保留 running 分片
- * 用于修复分片数异常（如关键词重复入库导致分片数翻倍）的问题
- * 保留 running 分片是为了避免 Worker 执行被删除的分片（执行无效查询）
- * Worker 执行完当前 running 分片后会自动 dequeue 新分片
+ * 重置任务当前轮次：
+ * 1. 对 running 分片请求 abort（设置 abort_requested=true），Worker 会在几秒内检测到并退出
+ * 2. 删除当前轮次的所有分片（pending/done/failed/running 全删）
+ * 3. 重置任务的 round_no（减1），由调用方负责立即入队新分片
+ *
+ * 注意：本函数只负责清理，不会自动入队新分片。调用方（路由层）必须在之后调用 enqueueTaskNow
+ * 立即入队新分片，否则任务会卡住（调度器 checkCompletedRounds 不会自动启动新一轮）。
  */
-export async function resetTaskCurrentRound(taskId: number): Promise<{ deletedShards: number; runningShardsKept: number; roundNo: number }> {
+export async function resetTaskCurrentRound(taskId: number): Promise<{ deletedShards: number; runningShardsAborted: number; roundNo: number }> {
   // 获取当前 round_no
   const taskResult = await query(`SELECT round_no FROM real_collect_task WHERE id = $1`, [taskId]);
   const currentRoundNo = taskResult.rows[0]?.round_no || 0;
 
-  // 统计 running 分片数（保留）
-  const runningResult = await query(
-    `SELECT COUNT(*) as cnt FROM real_collect_queue WHERE task_id = $1 AND round_no = $2 AND status = 'running'`,
+  // 1. 对 running 分片请求 abort（Worker 会在 taskFetcher 的 checkAbortRequested 检测点退出）
+  const abortResult = await query(
+    `UPDATE real_collect_queue SET abort_requested = true WHERE task_id = $1 AND round_no = $2 AND status = 'running'`,
     [taskId, currentRoundNo]
   );
-  const runningShardsKept = parseInt(runningResult.rows[0]?.cnt || '0');
+  const runningShardsAborted = abortResult.rowCount || 0;
 
-  // 只删除 pending/done/failed 分片，保留 running 分片
+  // 2. 删除当前轮次的所有分片（包括 running，因为已请求 abort，Worker 退出后这些记录已无意义）
+  //    注意：Worker 在 abort 退出时会调用 /queue/complete 回写结果，如果记录已删除，回写会 no-op，不会报错
   const deleteResult = await query(
-    `DELETE FROM real_collect_queue WHERE task_id = $1 AND round_no = $2 AND status != 'running' RETURNING id`,
+    `DELETE FROM real_collect_queue WHERE task_id = $1 AND round_no = $2 RETURNING id`,
     [taskId, currentRoundNo]
   );
 
-  // 重置任务的 round_no（减1，这样 startNewRoundForTask 会重新启动新一轮）
-  // 同时清空 round_start_time，让 getTaskShardProgress 不会查到旧数据
+  // 3. 重置任务的 round_no（减1），调用方随后会调用 enqueueTaskNow 启动新一轮（round_no 会递增回原值+1）
+  //    同时清空 round_start_time，让 getTaskShardProgress 不会查到旧数据
   await query(
     `UPDATE real_collect_task SET round_no = GREATEST(round_no - 1, 0), round_start_time = NULL WHERE id = $1`,
     [taskId]
   );
 
-  return { deletedShards: deleteResult.rowCount || 0, runningShardsKept, roundNo: currentRoundNo };
+  return { deletedShards: deleteResult.rowCount || 0, runningShardsAborted, roundNo: currentRoundNo };
 }
 
 /** 获取真实查询任务列表 */
