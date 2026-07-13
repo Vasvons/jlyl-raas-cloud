@@ -262,7 +262,7 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
        SELECT
          rcr.id,
          rcr.keyword AS expanded_keyword,
-         rcr.keyword AS distillate_keyword,
+         NULL AS distillate_keyword,
          rcr.platform,
          rcr.user_id,
          rcr.query_time,
