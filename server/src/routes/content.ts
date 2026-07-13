@@ -2215,7 +2215,9 @@ router.get('/aeo-dashboard', async (req: Request, res: Response) => {
   try {
     const customerId = getCustomerId(req);
     const days = req.query.days ? Math.min(Math.max(Number(req.query.days), 1), 90) : 30;
-    const data = await getAeoDashboardData(String(customerId), days);
+    // v2.0.6：是否纳入品牌词任务数据，默认 true
+    const includeBrand = req.query.includeBrand !== 'false';
+    const data = await getAeoDashboardData(String(customerId), days, includeBrand);
     res.json({ code: 200, data });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });

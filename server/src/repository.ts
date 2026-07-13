@@ -3503,20 +3503,26 @@ export async function getInclusionStatsByTimeRange(
  * @param userId 客户 ID（users.id 转字符串）
  * @param days 时间范围天数（默认 30 天）
  */
-export async function getAeoDashboardData(userId: string, days: number = 30): Promise<any> {
+export async function getAeoDashboardData(userId: string, days: number = 30, includeBrand: boolean = true): Promise<any> {
   const endTime = new Date();
   const startTime = new Date(endTime.getTime() - days * 24 * 60 * 60 * 1000);
   // 上一周期（用于环比）
   const prevStartTime = new Date(startTime.getTime() - days * 24 * 60 * 60 * 1000);
 
+  // v2.0.6：品牌词任务数据过滤
+  // includeBrand=false 时，KPI/可见度/趋势/平台分布/热力图只统计蒸馏词任务(keyword_type=0)的数据
+  // 情感分析维度始终用所有数据（蒸馏词+品牌词合并），保证样本量
+  const recordFilter = includeBrand ? '' : ' AND rcr.task_id IN (SELECT id FROM real_collect_task WHERE user_id = $1 AND keyword_type = 0)';
+  const shardFilter = includeBrand ? '' : ' AND asr.task_id IN (SELECT id FROM real_collect_task WHERE user_id = $1 AND keyword_type = 0)';
+
   // ---- 1. KPI：总记录数、品牌命中、关键词覆盖（当前周期） ----
   const kpiResult = await query(
     `SELECT
        COUNT(*) AS total_records,
-       SUM(CASE WHEN brand_matched = true THEN 1 ELSE 0 END) AS brand_matched,
-       COUNT(DISTINCT keyword) AS keywords_covered
-     FROM real_collect_record
-     WHERE user_id = $1 AND query_time >= $2 AND query_time <= $3`,
+       SUM(CASE WHEN rcr.brand_matched = true THEN 1 ELSE 0 END) AS brand_matched,
+       COUNT(DISTINCT rcr.keyword) AS keywords_covered
+     FROM real_collect_record rcr
+     WHERE rcr.user_id = $1 AND rcr.query_time >= $2 AND rcr.query_time <= $3${recordFilter}`,
     [userId, startTime, endTime]
   );
 
@@ -3524,32 +3530,48 @@ export async function getAeoDashboardData(userId: string, days: number = 30): Pr
   const prevKpiResult = await query(
     `SELECT
        COUNT(*) AS total_records,
-       SUM(CASE WHEN brand_matched = true THEN 1 ELSE 0 END) AS brand_matched,
-       COUNT(DISTINCT keyword) AS keywords_covered
-     FROM real_collect_record
-     WHERE user_id = $1 AND query_time >= $2 AND query_time < $3`,
+       SUM(CASE WHEN rcr.brand_matched = true THEN 1 ELSE 0 END) AS brand_matched,
+       COUNT(DISTINCT rcr.keyword) AS keywords_covered
+     FROM real_collect_record rcr
+     WHERE rcr.user_id = $1 AND rcr.query_time >= $2 AND rcr.query_time < $3${recordFilter}`,
     [userId, prevStartTime, startTime]
   );
 
-  // ---- 3. KPI：分片报告聚合（可见度、情感、提及数） ----
+  // ---- 3. KPI：分片报告聚合（可见度、提及数 — 受开关控制） ----
   const shardKpi = await query(
     `SELECT
-       COALESCE(AVG(visibility_score), 0) AS avg_visibility,
+       COALESCE(AVG(asr.visibility_score), 0) AS avg_visibility,
+       COALESCE(SUM(asr.brand_matched_count), 0) AS total_mentions
+     FROM aeo_shard_report asr
+     WHERE asr.user_id = $1 AND asr.created_at >= $2${shardFilter}`,
+    [userId, startTime]
+  );
+
+  // ---- 3b. 情感分析（始终用合并数据，不受开关控制） ----
+  const sentimentKpi = await query(
+    `SELECT
        COALESCE(AVG(positive_ratio), 0) AS avg_positive,
        COALESCE(AVG(negative_ratio), 0) AS avg_negative,
-       COALESCE(AVG(neutral_ratio), 0) AS avg_neutral,
-       COALESCE(SUM(brand_matched_count), 0) AS total_mentions
+       COALESCE(AVG(neutral_ratio), 0) AS avg_neutral
      FROM aeo_shard_report
      WHERE user_id = $1 AND created_at >= $2`,
     [userId, startTime]
   );
 
-  // ---- 4. 上一周期分片报告（环比） ----
+  // ---- 4. 上一周期分片报告（环比 — 受开关控制） ----
   const prevShardKpi = await query(
     `SELECT
-       COALESCE(AVG(visibility_score), 0) AS avg_visibility,
-       COALESCE(AVG(negative_ratio), 0) AS avg_negative,
-       COALESCE(SUM(brand_matched_count), 0) AS total_mentions
+       COALESCE(AVG(asr.visibility_score), 0) AS avg_visibility,
+       COALESCE(SUM(asr.brand_matched_count), 0) AS total_mentions
+     FROM aeo_shard_report asr
+     WHERE asr.user_id = $1 AND asr.created_at >= $2 AND asr.created_at < $3${shardFilter}`,
+    [userId, prevStartTime, startTime]
+  );
+
+  // ---- 4b. 上一周期情感（环比 — 始终合并） ----
+  const prevSentimentKpi = await query(
+    `SELECT
+       COALESCE(AVG(negative_ratio), 0) AS avg_negative
      FROM aeo_shard_report
      WHERE user_id = $1 AND created_at >= $2 AND created_at < $3`,
     [userId, prevStartTime, startTime]
@@ -3569,17 +3591,27 @@ export async function getAeoDashboardData(userId: string, days: number = 30): Pr
     [userId]
   );
 
-  // ---- 7. 趋势：分片级收录率 + 可见度 + 情感序列 ----
+  // ---- 7. 趋势：分片级收录率 + 可见度序列（受开关控制） ----
   const shardTrend = await query(
     `SELECT
+       asr.shard_end_time,
+       asr.record_count,
+       asr.brand_matched_count,
+       asr.visibility_score,
+       asr.round_no
+     FROM aeo_shard_report asr
+     WHERE asr.user_id = $1 AND asr.created_at >= $2 AND asr.shard_end_time IS NOT NULL${shardFilter}
+     ORDER BY asr.shard_end_time ASC`,
+    [userId, startTime]
+  );
+
+  // ---- 7b. 情感趋势序列（始终用合并数据，不受开关控制） ----
+  const sentimentTrend = await query(
+    `SELECT
        shard_end_time,
-       record_count,
-       brand_matched_count,
-       visibility_score,
        positive_ratio,
        neutral_ratio,
-       negative_ratio,
-       round_no
+       negative_ratio
      FROM aeo_shard_report
      WHERE user_id = $1 AND created_at >= $2 AND shard_end_time IS NOT NULL
      ORDER BY shard_end_time ASC`,
@@ -3600,24 +3632,24 @@ export async function getAeoDashboardData(userId: string, days: number = 30): Pr
     [userId, startTime.toISOString().slice(0, 10)]
   );
 
-  // ---- 9. 平台分布 ----
+  // ---- 9. 平台分布（受开关控制） ----
   const platformDist = await query(
-    `SELECT platform,
+    `SELECT rcr.platform,
        COUNT(*) AS total,
-       SUM(CASE WHEN brand_matched = true THEN 1 ELSE 0 END) AS matched
-     FROM real_collect_record
-     WHERE user_id = $1 AND query_time >= $2 AND query_time <= $3
-     GROUP BY platform
+       SUM(CASE WHEN rcr.brand_matched = true THEN 1 ELSE 0 END) AS matched
+     FROM real_collect_record rcr
+     WHERE rcr.user_id = $1 AND rcr.query_time >= $2 AND rcr.query_time <= $3${recordFilter}
+     GROUP BY rcr.platform
      ORDER BY total DESC`,
     [userId, startTime, endTime]
   );
 
-  // ---- 10. 品牌提及热力图（最近 50 条分片报告的 brand_mentions） ----
+  // ---- 10. 品牌提及热力图（受开关控制，最近 50 条分片报告） ----
   const brandMentions = await query(
-    `SELECT brand_mentions
-     FROM aeo_shard_report
-     WHERE user_id = $1 AND created_at >= $2 AND brand_mentions IS NOT NULL
-     ORDER BY created_at DESC
+    `SELECT asr.brand_mentions
+     FROM aeo_shard_report asr
+     WHERE asr.user_id = $1 AND asr.created_at >= $2 AND asr.brand_mentions IS NOT NULL${shardFilter}
+     ORDER BY asr.created_at DESC
      LIMIT 50`,
     [userId, startTime]
   );
@@ -3643,14 +3675,16 @@ export async function getAeoDashboardData(userId: string, days: number = 30): Pr
   const prevKeywordsCovered = parseInt(prevKpiResult.rows[0]?.keywords_covered || '0', 10);
 
   const avgVisibility = parseFloat(shardKpi.rows[0]?.avg_visibility || '0');
-  const avgPositive = parseFloat(shardKpi.rows[0]?.avg_positive || '0');
-  const avgNegative = parseFloat(shardKpi.rows[0]?.avg_negative || '0');
-  const avgNeutral = parseFloat(shardKpi.rows[0]?.avg_neutral || '0');
   const totalMentions = parseInt(shardKpi.rows[0]?.total_mentions || '0', 10);
 
+  // 情感数据始终用合并数据（不受开关控制）
+  const avgPositive = parseFloat(sentimentKpi.rows[0]?.avg_positive || '0');
+  const avgNegative = parseFloat(sentimentKpi.rows[0]?.avg_negative || '0');
+  const avgNeutral = parseFloat(sentimentKpi.rows[0]?.avg_neutral || '0');
+
   const prevAvgVisibility = parseFloat(prevShardKpi.rows[0]?.avg_visibility || '0');
-  const prevAvgNegative = parseFloat(prevShardKpi.rows[0]?.avg_negative || '0');
   const prevTotalMentions = parseInt(prevShardKpi.rows[0]?.total_mentions || '0', 10);
+  const prevAvgNegative = parseFloat(prevSentimentKpi.rows[0]?.avg_negative || '0');
 
   const inclusionRate = totalRecords > 0 ? Math.round((brandMatched / totalRecords) * 10000) / 100 : 0;
   const prevInclusionRate = prevTotalRecords > 0 ? Math.round((prevBrandMatched / prevTotalRecords) * 10000) / 100 : 0;
@@ -3688,8 +3722,8 @@ export async function getAeoDashboardData(userId: string, days: number = 30): Pr
     round_no: r.round_no,
   }));
 
-  // 情感趋势序列
-  const sentimentSeries = shardTrend.rows.map((r: any) => ({
+  // 情感趋势序列（始终用合并数据，不受开关控制）
+  const sentimentSeries = sentimentTrend.rows.map((r: any) => ({
     time: r.shard_end_time,
     positive: parseFloat(r.positive_ratio || '0'),
     neutral: parseFloat(r.neutral_ratio || '0'),
