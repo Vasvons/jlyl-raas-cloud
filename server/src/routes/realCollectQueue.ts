@@ -49,9 +49,12 @@ router.post('/complete', async (req, res) => {
       });
     }
 
-    // v2.0.0: 分片成功完成且有品牌命中时，异步触发分片级 AEO 分析
+    // v2.0.0: 分片成功完成后，异步触发分片级 AEO 分析
     // 分析结果只入库 aeo_shard_report，不触发写作任务（等待周/月报汇总）
-    if (!error && (brandCount || 0) > 0) {
+    // v2.0.5 修复：不再依赖 worker 回传的 brandCount（worker 端写死 false，永远为 0）
+    // 改为只要分片成功完成就触发，由 generateAeoShardReport 内部查 real_collect_record
+    // 表的实际 brand_matched 数据做准确判断（analyzer.ts 第 5/6/7 道门）
+    if (!error) {
       generateAeoShardReport(queueId)
         .then(reportId => {
           if (reportId) {
