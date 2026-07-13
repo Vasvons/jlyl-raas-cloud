@@ -1081,17 +1081,19 @@ export async function getExcludePrefixOptions(userId: string): Promise<string[]>
  * 若用户未保存配置，返回默认组合
  */
 export async function getExcludeComboOptions(userId: string): Promise<string[]> {
-  const configJson = await getKwConfig(userId, 'distillate');
-  let combos: string[] = ['C+D', 'A+C+D', 'B+C+D', 'C+D+E'];
-  if (configJson) {
-    try {
-      const config = JSON.parse(configJson);
-      if (Array.isArray(config.combos) && config.combos.length > 0) {
-        combos = config.combos;
-      }
-    } catch {}
+  // v2.0.9: 从 zlgjc 表实际关键词反向推导所有存在的组合模式
+  // 原实现只返回 kw_config.combos 固定列表（如 ['C+D','A+C+D','B+C+D','C+D+E']），
+  // 但 detectKeywordCombo 会动态生成 C+D+E+F 等组合，选项里没有就无法屏蔽
+  const comboMap = await buildComboDetectionMap(userId);
+  if (!comboMap) return [];
+
+  const keywords = await getDistillateKeywords(userId);
+  const comboSet = new Set<string>();
+  for (const kw of keywords) {
+    const combo = detectKeywordCombo(kw, comboMap);
+    if (combo) comboSet.add(combo);
   }
-  return combos;
+  return Array.from(comboSet).sort();
 }
 
 /**
