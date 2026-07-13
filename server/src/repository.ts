@@ -194,12 +194,13 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
   args.push(offset);
 
   // ============ 真实结果 WHERE 条件 ============
-  // 按 tab 类型过滤真实记录：
+  // 搜索详情只展示命中品牌的记录（brand_matched=true），未命中的不出现
+  // 按 tab 类型附加过滤：
   // - keywords tab: keyword_type=0 的真实记录（蒸馏词库任务的结果）
   // - brand tab: keyword_type=1 的真实记录（品牌词库任务的结果）
   // - scene tab: has_contact=true 的真实记录（不论 keyword_type）
-  // - 不传 type: brand_matched=true 的真实记录（保持原兼容行为）
-  const realWhere = [`rcr.user_id = $1`];
+  // - 不传 type: 所有 brand_matched=true 的真实记录
+  const realWhere = [`rcr.user_id = $1`, `rcr.brand_matched = true`];
   if (hasPlatform) {
     realWhere.push(`rcr.platform = $${platformParamIdx}`);
   }
@@ -209,9 +210,6 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
     realWhere.push(`rcr.keyword_type = 1`);
   } else if (params.type === 'scene') {
     realWhere.push(`rcr.has_contact = true`);
-  } else {
-    // 默认（无 type 过滤）：保持原 brand_matched=true 行为
-    realWhere.push(`rcr.brand_matched = true`);
   }
   const realWhereClause = realWhere.join(' AND ');
 
@@ -342,20 +340,17 @@ export async function getPlatformRatio(userId: string, type?: string) {
     genExtraWhere = `AND EXISTS (SELECT 1 FROM zlgjc z2 INNER JOIN zlgjcurl u2 ON z2.id = u2.zlgjcid WHERE z2.value = k.distillate_keyword AND z2.userid = k.user_id AND u2.has_lxfs = 1 AND u2.pt = k.platform)`;
   }
 
-  // 真实结果的额外WHERE条件（按 tab 类型过滤，与 getKeywordSearchRank 保持一致）
-  let realExtraWhere = '';
+  // 真实结果的额外WHERE条件（与 getKeywordSearchRank 保持一致：只统计命中品牌的记录）
+  let realExtraWhere = `AND rcr.brand_matched = true`;
   if (type === 'keywords') {
     // 关键词搜索：keyword_type=0 的真实记录
-    realExtraWhere = `AND rcr.keyword_type = 0`;
+    realExtraWhere += ` AND rcr.keyword_type = 0`;
   } else if (type === 'brand') {
     // 品牌搜索：keyword_type=1 的真实记录
-    realExtraWhere = `AND rcr.keyword_type = 1`;
+    realExtraWhere += ` AND rcr.keyword_type = 1`;
   } else if (type === 'scene') {
     // 联系方式：has_contact=true 的真实记录
-    realExtraWhere = `AND rcr.has_contact = true`;
-  } else {
-    // 默认：brand_matched=true（保持原兼容行为）
-    realExtraWhere = `AND rcr.brand_matched = true`;
+    realExtraWhere += ` AND rcr.has_contact = true`;
   }
 
   const result = await query(
