@@ -256,8 +256,9 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
        -- url/zlgjc_url 规则：
        --   1. 优先使用 share_url（支持分享的平台）
        --   2. share_url 为空但有 static_page_id 时，使用静态页 URL
-       --   3. 两者都为空时返回 NULL，前端不展示"查看详情"跳转链接
-       --     （这避免了"未开始对话界面"被误识别为命中后生成错误跳转链接）
+       -- v2.0.10: 去掉 static_page_id IS NOT NULL 判断，回归 SPEC 描述的无条件兜底
+       -- 原逻辑当 share_url 和 static_page_id 同时为 NULL 时返回 NULL，导致搜索详情不显示链接
+       -- 但搜索详情已过滤 brand_matched=true + raw_content>=30，不需要再用 static_page_id 二次过滤
        SELECT
          rcr.id,
          rcr.keyword AS expanded_keyword,
@@ -265,20 +266,13 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
          rcr.platform,
          rcr.user_id,
          rcr.query_time,
-         COALESCE(rcr.share_url,
-           CASE WHEN rcr.static_page_id IS NOT NULL
-                THEN '/api/real-collect/results/' || rcr.id || '/page'
-                ELSE NULL END) AS url,
+         COALESCE(rcr.share_url, '/api/real-collect/results/' || rcr.id || '/page') AS url,
          rcr.create_time,
-         COALESCE(rcr.share_url,
-           CASE WHEN rcr.static_page_id IS NOT NULL
-                THEN '/api/real-collect/results/' || rcr.id || '/page'
-                ELSE NULL END) AS zlgjc_url,
+         COALESCE(rcr.share_url, '/api/real-collect/results/' || rcr.id || '/page') AS zlgjc_url,
          CASE WHEN rcr.has_contact THEN 1 ELSE 0 END AS has_lxfs,
          'real' AS source
        FROM real_collect_record rcr
        WHERE ${realWhereClause}
-         -- 过滤无效记录：raw_content 为空或过短（<30字符）的记录是 extractContent 兜底失败导致的脏数据
          AND COALESCE(LENGTH(rcr.raw_content), 0) >= 30
 
        UNION ALL
