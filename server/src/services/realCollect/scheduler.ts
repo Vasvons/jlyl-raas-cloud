@@ -16,6 +16,7 @@ import {
   cleanOldWorkerLogs,
   cleanOldRealCollectRecords,
   resetRunningQueueOnRestart,
+  requeueStaleRunningShards,
   getTasksNeedingNewRound,
   isTaskRoundComplete,
   startNewRound,
@@ -147,6 +148,18 @@ async function checkCompletedRounds(): Promise<void> {
   }
   checkCompletedRunning = true;
   try {
+    // 0. 回收超时的 running 分片（Worker 崩溃/OOM/容器重启后会永久卡在 running）
+    // 阈值 30 分钟：正常分片 50 个关键词，单个查询 10-30 秒，最多 25 分钟完成
+    // 超过 30 分钟还在 running 的分片，Worker 一定已经死了
+    try {
+      const { requeuedCount, resetTaskIds } = await requeueStaleRunningShards(30);
+      if (requeuedCount > 0) {
+        console.log(`[RealCollect] 回收 ${requeuedCount} 个超时 running 分片，涉及任务: [${resetTaskIds.join(', ')}]`);
+      }
+    } catch (e: any) {
+      console.error('[RealCollect] 回收超时 running 分片失败:', e.message);
+    }
+
     // 获取所有 active 任务
     const tasks = await getDueRealCollectTasks();
 

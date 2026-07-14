@@ -262,7 +262,7 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
        SELECT
          rcr.id,
          rcr.keyword AS expanded_keyword,
-         NULL AS distillate_keyword,
+         rcr.keyword AS distillate_keyword,
          rcr.platform,
          rcr.user_id,
          rcr.query_time,
@@ -1701,6 +1701,40 @@ export async function resetRunningQueueOnRestart(): Promise<number> {
   return result.rowCount || 0;
 }
 
+/**
+ * 回收超时的 running 分片：Worker 崩溃/OOM/容器重启后，分片会永久卡在 running 状态。
+ * 超过阈值（默认 30 分钟）的 running 分片重置为 pending，让其他 Worker 重新消费。
+ * 同时把卡死的 task.last_run_status 重置为 pending（让前端能正确显示状态）。
+ *
+ * 注意：只在正常运行期间调用（不要在服务器重启时调用，重启时用 resetRunningQueueOnRestart）。
+ */
+export async function requeueStaleRunningShards(timeoutMinutes: number = 30): Promise<{
+  requeuedCount: number;
+  resetTaskIds: number[];
+}> {
+  // 1. 回收超时的 running 分片
+  const result = await query(
+    `UPDATE real_collect_queue
+     SET status = 'pending', worker_id = NULL, start_time = NULL
+     WHERE status = 'running' AND start_time < NOW() - ($1 || ' minutes')::INTERVAL
+     RETURNING task_id`,
+    [String(timeoutMinutes)]
+  );
+  const requeuedCount = result.rowCount || 0;
+  const resetTaskIds = Array.from(new Set(result.rows.map((r: any) => r.task_id)));
+
+  // 2. 重置这些任务的 last_run_status（如果还是 running 说明任务卡死了）
+  if (resetTaskIds.length > 0) {
+    await query(
+      `UPDATE real_collect_task
+       SET last_run_status = 'pending'
+       WHERE id = ANY($1::int[]) AND last_run_status = 'running'`,
+      [resetTaskIds]
+    );
+  }
+  return { requeuedCount, resetTaskIds };
+}
+
 /** 检查任务当前轮次是否全部完成（所有分片 done/failed，无 pending/running） */
 export async function isTaskRoundComplete(taskId: number): Promise<boolean> {
   const result = await query(
@@ -1742,11 +1776,12 @@ export async function startNewRound(
   );
   const roundNo = taskResult.rows[0]?.round_no || 1;
 
-  // 清理旧轮次已完成的 queue 记录，避免表无限膨胀（保留最近一轮用于审计）
+  // 清理旧轮次的 queue 记录，避免表无限膨胀（保留最近一轮用于审计）
+  // 同时删除 done 和 failed 分片：旧轮次的 failed 分片没有保留价值，反而会累积膨胀
   if (roundNo > 1) {
     await query(
       `DELETE FROM real_collect_queue
-       WHERE task_id = $1 AND round_no > 0 AND round_no < $2 AND status = 'done'`,
+       WHERE task_id = $1 AND round_no > 0 AND round_no < $2 AND status IN ('done', 'failed')`,
       [taskId, roundNo - 1]
     );
   }
