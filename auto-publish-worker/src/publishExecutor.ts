@@ -15,7 +15,7 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import { getStealthScript, getAntiDetectionArgs, shouldUseHeadless } from './stealthLoader';
-import { getStableFingerprint, fingerprintToContextOptions } from './fingerprintManager';
+import { getStableFingerprint, fingerprintToContextOptions, getFingerprintInjectionScript } from './fingerprintManager';
 import { normalizeToPlaywrightStorageState, injectStorageState, captureStorageState } from './storageStateManager';
 import { checkLoginState, detectBanSignal, PlatformLoginCheck } from './loginDetector';
 import { executeSteps, Step, StepExecutionContext } from './stepExecutor';
@@ -23,6 +23,14 @@ import * as logger from './logger';
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 const WORKER_SECRET = process.env.WORKER_SECRET || '';
+
+// v2.1.0：补齐容错韧性（对齐桌面端 publishWorker v2.0.8）
+const RECORD_TIMEOUT_MS = 8 * 60 * 1000;   // record 级 8 分钟超时（防 step 卡死占用并发槽）
+const PLATFORM_LOCK_TIMEOUT_MS = 5 * 60 * 1000; // 同平台锁 5 分钟超时（防 context.close() 卡住导致同平台饿死）
+const PUBLISH_DELAY_MIN_MS = 5000;         // 发布前随机延迟下限 5s（反检测）
+const PUBLISH_DELAY_MAX_MS = 15000;        // 发布前随机延迟上限 15s（反检测）
+const REPORT_RETRY_MAX = 3;                // 回写重试次数
+const REPORT_RETRY_BASE_MS = 1000;         // 回写重试基础间隔（指数退避 1s/2s/4s）
 
 // 同平台串行锁（与桌面端一致，避免同一平台多个 record 共用资源导致 Chrome 崩溃）
 const platformLocks: Map<string, Promise<void>> = new Map();
@@ -66,6 +74,14 @@ export interface PublishResult {
 
 /**
  * 处理单条发布记录（完整流程）
+ *
+ * v2.1.0 补齐容错韧性（对齐桌面端 publishWorker v2.0.8）：
+ *  - record 级 8 分钟超时（Promise.race，防 step 卡死占用并发槽）
+ *  - 同平台锁 5 分钟超时（防 context.close() 卡住导致同平台饿死）
+ *  - 发布前 5-15s 随机延迟（反检测）
+ *  - WebGL/Canvas 噪声脚本注入（对齐桌面端指纹能力）
+ *  - 回写 3 次重试 + 指数退避（防回写丢失）
+ *  - 关键事件推送到 flywheel_event_log（让桌面端看到云端 worker 日志）
  */
 export async function processRecord(record: PublishRecord): Promise<void> {
   const recordId = record.record_id;
@@ -74,13 +90,53 @@ export async function processRecord(record: PublishRecord): Promise<void> {
   logger.setRecordId(recordId);
   logger.info(`开始处理 [${platform}] "${articleTitle}"`);
 
-  // 同平台串行锁
+  // v2.1.0：推送事件到云端 flywheel_event_log（让桌面端"自动写作"Tab 的云端日志能看到）
+  void reportFlywheelEvent('publish_started', `开始发布 [${platform}] "${articleTitle}"（record #${recordId}）`, { record_id: recordId, platform, task_id: record.task_id }).catch(() => {});
+
+  // v2.1.0：同平台锁 5 分钟超时（防 context.close() 卡住导致同平台饿死）
   const prevLock = platformLocks.get(platform) || Promise.resolve();
   let releaseLock!: () => void;
   const thisLock = new Promise<void>((resolve) => { releaseLock = resolve; });
-  platformLocks.set(platform, prevLock.then(() => thisLock));
-  await prevLock;
+  const lockWithTimeout = Promise.race([
+    prevLock,
+    new Promise<void>((resolve) => setTimeout(() => {
+      logger.warn(`同平台锁等待超时（${PLATFORM_LOCK_TIMEOUT_MS / 1000}s），强制继续执行`);
+      resolve();
+    }, PLATFORM_LOCK_TIMEOUT_MS)),
+  ]);
+  platformLocks.set(platform, lockWithTimeout.then(() => thisLock));
+  await lockWithTimeout;
 
+  // v2.1.0：用 record 级超时包裹整个执行流程（防 step 卡死）
+  const executePromise = processRecordInner(record, recordId, platform, articleTitle);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(`record 执行超时（${RECORD_TIMEOUT_MS / 1000}s），强制终止`)), RECORD_TIMEOUT_MS);
+  });
+
+  try {
+    await Promise.race([executePromise, timeoutPromise]);
+  } catch (err: any) {
+    // processRecordInner 内部已有 catch 处理，这里只处理超时
+    const isTimeout = err.message?.includes('执行超时');
+    if (isTimeout) {
+      logger.error(`record #${recordId} 超时: ${err.message}`);
+      void reportFlywheelEvent('publish_failed', `[${platform}] record #${recordId} 执行超时（8分钟）`, { record_id: recordId, platform, reason: 'timeout' }).catch(() => {});
+      await reportPublishResult(recordId, {
+        status: 'failed',
+        error_type: 'timeout',
+        error_msg: err.message,
+      }).catch(() => {});
+    }
+    // 非 timeout 的错误已由 processRecordInner 内部处理，这里不重复
+  } finally {
+    releaseLock();
+  }
+}
+
+/**
+ * processRecord 的内部实现（不含锁和超时，由外层 processRecord 包裹）
+ */
+async function processRecordInner(record: PublishRecord, recordId: number, platform: string, articleTitle: string): Promise<void> {
   let context: BrowserContext | null = null;
 
   try {
@@ -97,6 +153,11 @@ export async function processRecord(record: PublishRecord): Promise<void> {
     if (!record.account_storage_state) {
       throw new Error(`账号 ${record.account_name || record.platform_auth_id} 无 storage_state，请先登录`);
     }
+
+    // ---- v2.1.0：发布前 5-15s 随机延迟（反检测，对齐桌面端） ----
+    const delayMs = PUBLISH_DELAY_MIN_MS + Math.floor(Math.random() * (PUBLISH_DELAY_MAX_MS - PUBLISH_DELAY_MIN_MS));
+    logger.info(`发布前随机延迟 ${Math.round(delayMs / 1000)}s（反检测）`);
+    await new Promise(resolve => setTimeout(resolve, delayMs));
 
     // ---- 1. 启动 Playwright ----
     const useHeadless = shouldUseHeadless();
@@ -152,6 +213,10 @@ export async function processRecord(record: PublishRecord): Promise<void> {
     // 注入 stealth.min.js
     await context.addInitScript(getStealthScript());
 
+    // v2.1.0：注入 WebGL/Canvas 噪声指纹脚本（对齐桌面端，之前缺失）
+    await context.addInitScript(getFingerprintInjectionScript(fingerprint));
+    logger.info(`已注入 WebGL/Canvas 噪声指纹脚本（vendor=${fingerprint.webglVendor.slice(0, 20)}...）`);
+
     const page = await context.newPage();
 
     // 兜底：若原生 storageState 注入失败，用补丁式注入
@@ -201,6 +266,7 @@ export async function processRecord(record: PublishRecord): Promise<void> {
       if (!loginCheck.valid) {
         // 云端不支持交互式登录恢复，直接报 login_expired
         logger.error(`登录态失效: ${loginCheck.reason}（云端不支持自动恢复，请重新登录账号）`);
+        void reportFlywheelEvent('login_expired', `[${platform}] 账号登录态失效：${loginCheck.reason}（请在桌面端重新登录）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
         await reportPublishResult(recordId, {
           status: 'login_expired',
           error_msg: `登录态失效: ${loginCheck.reason}（云端发布 Worker 不支持自动登录恢复，请在桌面端重新登录该账号）`,
@@ -213,6 +279,7 @@ export async function processRecord(record: PublishRecord): Promise<void> {
       const banCheck = await detectBanSignal(page, platform);
       if (banCheck.banned) {
         logger.error(`检测到封禁信号: ${banCheck.reason}`);
+        void reportFlywheelEvent('banned', `[${platform}] 检测到封禁信号：${banCheck.reason}（账号 ${record.account_name}）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
         await reportPublishResult(recordId, {
           status: 'banned',
           error_msg: banCheck.reason,
@@ -248,6 +315,7 @@ export async function processRecord(record: PublishRecord): Promise<void> {
     const postBanCheck = await detectBanSignal(page, platform).catch(() => ({ banned: false, reason: undefined } as { banned: boolean; reason?: string }));
     if (postBanCheck.banned) {
       logger.error(`发布后检测到封禁: ${postBanCheck.reason}`);
+      void reportFlywheelEvent('banned', `[${platform}] 发布后检测到封禁：${postBanCheck.reason}（账号 ${record.account_name}）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
       await reportPublishResult(recordId, {
         status: 'banned',
         error_msg: postBanCheck.reason,
@@ -263,6 +331,7 @@ export async function processRecord(record: PublishRecord): Promise<void> {
       screenshot_path: screenshotPath,
     });
     logger.info(`发布成功${platformUrl ? ' → ' + platformUrl : ''}`);
+    void reportFlywheelEvent('publish_success', `[${platform}] 发布成功 "${articleTitle}"${platformUrl ? ' → ' + platformUrl : ''}`, { record_id: recordId, platform, platform_url: platformUrl, task_id: record.task_id }).catch(() => {});
 
     // ---- 8. 抓取最新 storage_state 回传（保持账号新鲜） ----
     try {
@@ -283,6 +352,7 @@ export async function processRecord(record: PublishRecord): Promise<void> {
     }
 
     const result = classifyError(errorMsg);
+    void reportFlywheelEvent('publish_failed', `[${platform}] 发布失败 "${articleTitle}": ${errorMsg}（类型: ${result.error_type}）`, { record_id: recordId, platform, error_type: result.error_type, error_msg: errorMsg }).catch(() => {});
     await reportPublishResult(recordId, {
       status: result.status,
       error_type: result.error_type,
@@ -302,7 +372,6 @@ export async function processRecord(record: PublishRecord): Promise<void> {
       } catch {}
     }
     logger.setRecordId(undefined);
-    releaseLock();
   }
 }
 
@@ -402,18 +471,55 @@ async function takeScreenshot(page: any, recordId: number): Promise<string | und
 }
 
 /**
- * 回写发布结果到云端
+ * 回写发布结果到云端（v2.1.0：3 次重试 + 指数退避，防回写丢失）
  */
 async function reportPublishResult(recordId: number, result: PublishResult): Promise<void> {
+  for (let attempt = 1; attempt <= REPORT_RETRY_MAX; attempt++) {
+    try {
+      await axios.post(
+        `${SERVER_URL}/content/publish/records/${recordId}/result`,
+        result,
+        {
+          headers: { 'X-Worker-Secret': WORKER_SECRET },
+          timeout: 10000,
+        }
+      );
+      logger.info(`已回写: ${result.status}${attempt > 1 ? `（第${attempt}次成功）` : ''}`);
+      return;
+    } catch (e: any) {
+      if (attempt < REPORT_RETRY_MAX) {
+        const backoff = REPORT_RETRY_BASE_MS * Math.pow(2, attempt - 1);
+        logger.warn(`回写失败(第${attempt}次): ${e.message}，${backoff}ms 后重试`);
+        await new Promise(resolve => setTimeout(resolve, backoff));
+      } else {
+        logger.error(`回写失败(已重试${REPORT_RETRY_MAX}次): ${e.message}，放弃回写`);
+        throw e;
+      }
+    }
+  }
+}
+
+/**
+ * v2.1.0：推送事件到云端 flywheel_event_log 表
+ * 让桌面端"自动写作"Tab 的"云端工作日志"Timeline 能看到云端 worker 的执行过程
+ *
+ * 事件类型：publish_started / publish_success / publish_failed / login_expired / banned
+ * 复用 v2.0.9 新建的 flywheel_event_log 表和 POST /content/flywheel/event-logs 路由
+ */
+async function reportFlywheelEvent(eventType: string, message: string, data?: any): Promise<void> {
   await axios.post(
-    `${SERVER_URL}/content/publish/records/${recordId}/result`,
-    result,
+    `${SERVER_URL}/content/flywheel/event-logs`,
+    {
+      event_type: eventType,
+      message,
+      data,
+      // user_id 不传，路由层会用 caller 的 user_id（worker 是 level=1 管理员）
+    },
     {
       headers: { 'X-Worker-Secret': WORKER_SECRET },
-      timeout: 10000,
+      timeout: 5000,
     }
   );
-  logger.info(`已回写: ${result.status}`);
 }
 
 /**
