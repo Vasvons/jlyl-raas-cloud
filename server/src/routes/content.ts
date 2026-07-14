@@ -750,7 +750,8 @@ async function testProxyConnectivity(endpoint: string, username: string, passwor
 
 router.get('/writing-tasks', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.1.0：支持 customer_id 查询参数（管理员查看指定客户的写作任务）
+    const userId = getCustomerId(req);
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
     // v2.0.9：auto_generated 过滤（true=仅自动, false=仅手动, 不传=全部）
@@ -1370,7 +1371,8 @@ router.post('/allocate-articles', async (req: Request, res: Response) => {
 
 router.get('/publish/tasks', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.1.0：支持 customer_id 查询参数（管理员查看指定客户的发布任务）
+    const userId = getCustomerId(req);
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
     // v2.0.9：auto_generated 过滤
@@ -1421,7 +1423,8 @@ router.post('/publish/tasks/:id/cancel', async (req: Request, res: Response) => 
  */
 router.get('/publish/grouped-by-batch', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.1.0：支持 customer_id 查询参数（管理员查看指定客户的发布任务）
+    const userId = getCustomerId(req);
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
     // v2.0.9：auto_generated 过滤
@@ -2121,9 +2124,11 @@ router.get('/flywheel/event-logs', async (req: Request, res: Response) => {
   try {
     const callerUserId = getUserId(req);
     // v2.0.9：管理员可传 user_id 查看指定客户；非管理员强制只看自己
+    // v2.1.0：同时支持 customer_id 参数名（与其他内容中枢路由统一）
     let targetUserId: number | null = callerUserId;
-    if (req.query.user_id != null) {
-      const requested = Number(req.query.user_id);
+    const requestedIdRaw = req.query.user_id ?? req.query.customer_id;
+    if (requestedIdRaw != null) {
+      const requested = Number(requestedIdRaw);
       if (!Number.isNaN(requested)) {
         // 仅当请求的 userId 等于自己，或自己是管理员时允许
         if (requested === callerUserId) {
