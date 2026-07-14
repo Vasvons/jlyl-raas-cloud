@@ -1,6 +1,6 @@
 {
   "platform": "xhs",
-  "version": "1.7.12",
+  "version": "2.0.8",
   "description": "小红书图文发布流程（基于 red.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
@@ -13,6 +13,18 @@
       "value": "https://creator.xiaohongshu.com/publish/publish?from=menu&target=image",
       "descript": "导航到小红书图文发布页",
       "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "await new Promise(function(r) { setTimeout(r, 1500 + Math.random() * 2000); }); return 'waited for page to settle';",
+      "descript": "v2.0.8 反检测：等待页面加载完成后随机停顿1.5-3.5秒",
+      "timeout": 5000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "for (var i = 0; i < 2 + Math.floor(Math.random() * 2); i++) { window.scrollBy(0, 200 + Math.random() * 400); await new Promise(function(r) { setTimeout(r, 800 + Math.random() * 1500); }); } window.scrollTo(0, 0); await new Promise(function(r) { setTimeout(r, 500 + Math.random() * 1000); }); return 'simulated browsing behavior';",
+      "descript": "v2.0.8 反检测：模拟用户浏览行为（随机滚动2-3次后回到顶部）",
+      "timeout": 10000
     },
     {
       "type": "wait_for_url",
@@ -47,10 +59,11 @@
       "type": "content",
       "selector": "div.tiptap.ProseMirror | div[contenteditable='true']",
       "value": "{content}",
-      "descript": "填写正文内容",
+      "descript": "填写正文内容（人性化：鼠标移动→点击聚焦→粘贴→随机停顿）",
+      "humanize": true,
       "ai_fallback": true,
       "ai_intent": "找到小红书正文编辑器并填入内容",
-      "timeout": 10000
+      "timeout": 15000
     },
     {
       "type": "branch",
