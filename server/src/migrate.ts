@@ -1256,6 +1256,24 @@ export async function migrate() {
     // 用于一级聚合视图，避免按 writing_task_id 聚合时多次创建被合并
     await client.query(`ALTER TABLE publish_task ADD COLUMN IF NOT EXISTS batch_id UUID`);
 
+    // v2.0.9：publish_task 表新增 auto_generated 字段，区分飞轮自动触发 vs 用户手动创建
+    await client.query(`ALTER TABLE publish_task ADD COLUMN IF NOT EXISTS auto_generated BOOLEAN DEFAULT false`);
+
+    // v2.0.9：新增 flywheel_event_log 表，持久化飞轮守护进程事件日志
+    // 解决桌面端主进程重启后内存日志丢失的问题，支持云端查询历史
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS flywheel_event_log (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT,
+        event_type VARCHAR(32) NOT NULL,
+        message TEXT NOT NULL,
+        data JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_flywheel_event_log_user_id ON flywheel_event_log(user_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_flywheel_event_log_created_at ON flywheel_event_log(created_at DESC)`);
+
     // v1.8.4 修复：重置并按 (user_id, article.task_id, 创建时间分钟) 聚合回填
     // 同一写作任务、同一分钟内创建的 publish_task 视为同一次批量创建动作
     // 注意：这里强制重置所有 batch_id（包括之前回填的独立 UUID），统一按规则聚合
