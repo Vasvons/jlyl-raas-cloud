@@ -906,7 +906,8 @@ router.get('/writing-tasks/:id/articles', async (req: Request, res: Response) =>
 
 router.get('/articles', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.1.0：支持 customer_id 查询参数（管理员查看指定客户的文章）
+    const userId = getCustomerId(req);
     const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
     const result = await getArticles(userId, {
       keyword: req.query.keyword as string,
