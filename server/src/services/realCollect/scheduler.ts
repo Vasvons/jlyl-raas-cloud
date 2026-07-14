@@ -112,8 +112,9 @@ async function recoverOnRestart(): Promise<void> {
 
 /**
  * 为任务启动新一轮
+ * @returns 是否成功入队分片（false 表示无关键词或失败）
  */
-async function startNewRoundForTask(task: any): Promise<void> {
+async function startNewRoundForTask(task: any): Promise<boolean> {
   try {
     // 获取全量关键词（循环模式：每轮都查全量，不再分片轮询）
     const keywords = task.keyword_type === 1
@@ -121,8 +122,10 @@ async function startNewRoundForTask(task: any): Promise<void> {
       : await getDistillateKeywords(task.user_id);
 
     if (keywords.length === 0) {
-      console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 无关键词，跳过`);
-      return;
+      console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 无关键词，标记为完成`);
+      // 无关键词时标记为 success，避免 checkCompletedRounds 每次循环都尝试入队
+      await updateTaskRunStatus(task.id, { status: 'success', endTime: new Date() });
+      return false;
     }
 
     const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
@@ -131,8 +134,10 @@ async function startNewRoundForTask(task: any): Promise<void> {
     // updateTaskRunStatus 中 startTime 会更新 last_run_time 字段，status 会更新 last_run_status 字段
     await updateTaskRunStatus(task.id, { status: 'running', startTime: new Date() });
     console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 启动第 ${result.roundNo} 轮: ${result.shardCount} 个分片, ${keywords.length} 个关键词`);
+    return true;
   } catch (e: any) {
     console.error(`[RealCollect] 任务 ${task.id} 启动新一轮失败:`, e.message);
+    return false;
   }
 }
 
@@ -192,7 +197,21 @@ async function checkCompletedRounds(): Promise<void> {
 
         // 检查当前轮次是否完成
         const isComplete = await isTaskRoundComplete(task.id);
-        if (!isComplete) continue;
+        if (!isComplete) {
+          // 额外检查：当前轮次是否完全没有分片（可能入队失败、被手动删除、或重启恢复时遗漏）
+          // isTaskRoundComplete 在 total=0 时返回 false，但任务会永远卡住
+          // 此时需要直接启动新一轮
+          const noShardResult = await query(
+            `SELECT COUNT(*) as cnt FROM real_collect_queue WHERE task_id = $1 AND round_no = $2`,
+            [task.id, task.round_no]
+          );
+          const shardCount = parseInt(noShardResult.rows[0]?.cnt || '0');
+          if (shardCount === 0) {
+            console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 当前轮次 ${task.round_no} 无分片，启动新一轮`);
+            await startNewRoundForTask(task);
+          }
+          continue;
+        }
 
         // 轮次完成，触发AEO分析
         try {
