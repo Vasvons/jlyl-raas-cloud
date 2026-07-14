@@ -906,8 +906,13 @@ router.get('/writing-tasks/:id/articles', async (req: Request, res: Response) =>
 
 router.get('/articles', async (req: Request, res: Response) => {
   try {
-    // v2.1.0：支持 customer_id 查询参数（管理员查看指定客户的文章）
-    const userId = getCustomerId(req);
+    // v2.1.1：管理员未指定 customer_id 时不按 user_id 过滤（查看全部客户文章）
+    // 客户自身调用时仍按自己的 user_id 过滤
+    let userId = getCustomerId(req);
+    const caller = (req as any).user;
+    if (caller && caller.level === '1' && !req.query.customer_id) {
+      userId = 0; // 0 = 不按 user_id 过滤
+    }
     const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
     const result = await getArticles(userId, {
       keyword: req.query.keyword as string,

@@ -5229,9 +5229,15 @@ export async function getArticles(userId: number, filters: { keyword?: string; s
   const page = filters.page || 1;
   const pageSize = filters.pageSize || 20;
   const offset = (page - 1) * pageSize;
-  const where: string[] = ['user_id = $1'];
-  const params: any[] = [userId];
-  let idx = 2;
+  // v2.1.1：userId <= 0 时不按 user_id 过滤（管理员查看全部客户文章）
+  const where: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+  if (userId > 0) {
+    where.push(`user_id = $1`);
+    params.push(userId);
+    idx = 2;
+  }
   if (filters.keyword) {
     where.push(`(title ILIKE $${idx} OR core_keyword ILIKE $${idx})`);
     params.push(`%${filters.keyword}%`);
@@ -5254,7 +5260,7 @@ export async function getArticles(userId: number, filters: { keyword?: string; s
       params.push(filters.platform);
     }
   }
-  const whereClause = where.join(' AND ');
+  const whereClause = where.length > 0 ? where.join(' AND ') : '1=1';
   const countResult = await query(`SELECT COUNT(*) as total FROM article WHERE ${whereClause}`, params);
   const total = parseInt(countResult.rows[0].total);
   params.push(pageSize, offset);
