@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getAeoReports, getLatestAeoReport, getAeoReportById, getAeoFullReports } from '../repository';
 import { generateAeoReport } from '../services/aeo/analyzer';
 import { authMiddleware } from '../auth';
+import { query as dbQuery } from '../db';
 
 const router = Router();
 
@@ -12,8 +13,9 @@ router.post('/analyze', authMiddleware, async (req, res) => {
     if (!taskId || !userId || !Number.isFinite(Number(taskId))) {
       return res.json({ code: 400, message: '缺少 taskId 或 userId，或 taskId 格式无效' });
     }
-    // 校验 userId 归属：只能为当前登录用户触发分析
-    if (String((req as any).user?.id) !== String(userId)) {
+    // v2.1.4：管理员可为任意客户触发分析；普通用户只能为自己触发
+    const caller = (req as any).user;
+    if (caller?.level !== '1' && String(caller?.id) !== String(userId)) {
       return res.status(403).json({ code: 403, message: '无权为其他用户触发分析' });
     }
     const taskIdNum = Number(taskId);
@@ -22,6 +24,26 @@ router.post('/analyze', authMiddleware, async (req, res) => {
       .then(reportId => console.log(`[AEO] 手动分析完成 taskId=${taskIdNum} reportId=${reportId}`))
       .catch(e => console.error(`[AEO] 手动分析失败 taskId=${taskIdNum}:`, e.message));
     res.json({ code: 200, message: '分析已触发，请稍后查询结果' });
+  } catch (e: any) {
+    res.json({ code: 500, message: e.message });
+  }
+});
+
+// v2.1.4: 删除指定任务的所有 AEO 日报（调试用，支持飞轮流程反复重试）
+router.delete('/by-task/:taskId', authMiddleware, async (req, res) => {
+  try {
+    const taskId = Number(req.params.taskId);
+    if (!taskId) {
+      return res.json({ code: 400, message: '缺少 taskId' });
+    }
+    // 仅管理员可删除
+    const caller = (req as any).user;
+    if (caller?.level !== '1') {
+      return res.status(403).json({ code: 403, message: '仅管理员可删除 AEO 报告' });
+    }
+    await dbQuery('DELETE FROM aeo_report WHERE task_id = $1', [taskId]);
+    console.log(`[AEO] 已删除任务 ${taskId} 的所有 AEO 日报`);
+    res.json({ code: 200, message: '删除成功' });
   } catch (e: any) {
     res.json({ code: 500, message: e.message });
   }

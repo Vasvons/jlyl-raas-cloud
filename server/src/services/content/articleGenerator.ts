@@ -508,8 +508,9 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           ragSnippets = await retrieveRelevantArticles(task.knowledge_id, queryText, 5);
         }
 
-        // 构建分层写作上下文（L0专家 + L1客户档案 + L2历史 + L3效果/策略 + L5 RAG）
+        // 构建分层写作上下文（L0专家 + L1客户档案 + L2历史 + L3效果/策略 + L5 RAG + L7 AEO建议）
         // v1.8.1：使用截断后的 keywordsForContext（前 200 个），避免 L4 主题参考层全量注入导致 token 超限
+        // v2.1.4：传入 aeoContext（来自 autoCreateWritingTasksFromPeriod 写入的 AEO 写作建议池）
         const writingCtx = buildWritingContext({
           task,
           keywords: keywordsForContext.map((k: any) => k.value),
@@ -517,6 +518,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           performanceMemory,
           strategyMemory,
           ragSnippets,
+          aeoContext: task.aeo_context,
         });
 
         // 1. 先做占位符替换（向后兼容用户在模板里写的 {enterprise} {keyword} 等）
@@ -960,6 +962,7 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     performanceMemory,
     strategyMemory,
     ragSnippets,
+    aeoContext: task.aeo_context, // v2.1.4
   });
 
   let articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {

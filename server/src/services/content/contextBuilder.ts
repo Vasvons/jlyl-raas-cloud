@@ -67,6 +67,8 @@ export interface WritingContextInput {
   strategyMemory?: StrategyMemoryItem[];
   /** L5 RAG 检索片段（阶段2，可选） */
   ragSnippets?: RagSnippet[];
+  /** v2.1.4: L7 AEO 建议层（来自 aeo_context JSON，含 writingSuggestions） */
+  aeoContext?: string;
 }
 
 /** buildWritingContext 输出 */
@@ -328,9 +330,9 @@ function buildLayer6OutputSpec(task: any, keywords: string[]): string {
  *     : [{ role: 'user', content: articlePrompt + ctx.userPromptSuffix }];
  */
 export function buildWritingContext(input: WritingContextInput): WritingContext {
-  const { task, keywords, recentArticles, performanceMemory, strategyMemory, ragSnippets } = input;
+  const { task, keywords, recentArticles, performanceMemory, strategyMemory, ragSnippets, aeoContext } = input;
 
-  // 构建 system message：L0 + L1 + L2 + L3 + L5 + L6
+  // 构建 system message：L0 + L1 + L2 + L3 + L5 + L6 + L7
   const systemParts: string[] = [];
 
   const l0 = buildLayer0ExpertPersona(task);
@@ -355,6 +357,10 @@ export function buildWritingContext(input: WritingContextInput): WritingContext 
   const l6 = buildLayer6OutputSpec(task, keywords);
   if (l6) systemParts.push(l6);
 
+  // v2.1.4: L7 AEO 建议层（来自 aeo_context，含写作建议池）
+  const l7 = buildLayer7AeoSuggestions(aeoContext);
+  if (l7) systemParts.push(l7);
+
   // 构建 user prompt 后缀：L4 主题参考
   const suffixParts: string[] = [];
   const l4 = buildLayer4TopicReference(keywords);
@@ -364,4 +370,40 @@ export function buildWritingContext(input: WritingContextInput): WritingContext 
     systemMessage: systemParts.join('\n\n---\n'),
     userPromptSuffix: suffixParts.length > 0 ? '\n\n---\n' + suffixParts.join('\n\n') : '',
   };
+}
+
+/**
+ * v2.1.4: L7 AEO 建议层
+ * 解析 task.aeo_context JSON，提取 writingSuggestions 并注入到 system message
+ * 解决"自动写作标题跑题"问题：AI 能看到 AEO 报告的写作建议（主题/方向/关键词/推荐平台）
+ */
+function buildLayer7AeoSuggestions(aeoContext?: string): string | null {
+  if (!aeoContext) return null;
+  try {
+    const ctx = JSON.parse(aeoContext);
+    const suggestions = ctx.suggestions;
+    if (!Array.isArray(suggestions) || suggestions.length === 0) return null;
+
+    const lines: string[] = ['【AEO 写作建议】'];
+    lines.push(`周期类型：${ctx.period_type || '未知'}`);
+    lines.push('');
+    suggestions.forEach((s: any, i: number) => {
+      lines.push(`${i + 1}. 主题：${s.topic || '未指定'}`);
+      if (s.direction) lines.push(`   方向：${s.direction}`);
+      if (s.keywords && Array.isArray(s.keywords) && s.keywords.length > 0) {
+        lines.push(`   关键词：${s.keywords.join('、')}`);
+      }
+      if (s.platforms && Array.isArray(s.platforms) && s.platforms.length > 0) {
+        lines.push(`   推荐平台：${s.platforms.join('、')}`);
+      }
+      if (s.priority) lines.push(`   优先级：${s.priority}`);
+      if (s.reason) lines.push(`   原因：${s.reason}`);
+    });
+    lines.push('');
+    lines.push('请参考以上 AEO 写作建议，优先围绕建议的主题和关键词创作，确保文章方向与 AEO 优化策略一致。');
+
+    return lines.join('\n');
+  } catch {
+    return null;
+  }
 }

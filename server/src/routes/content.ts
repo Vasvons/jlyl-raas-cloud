@@ -893,6 +893,31 @@ router.post('/writing-tasks/:id/retry-failed', async (req: Request, res: Respons
   }
 });
 
+// v2.1.4: 重新执行写作任务（调试用，支持飞轮流程反复重试）
+// 与 retry-failed 不同：此接口会重置所有文章（包括已成功的），从头开始生成
+router.post('/writing-tasks/:id/execute', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const taskId = Number(req.params.id);
+    // 查询任务是否存在
+    const task = await getWritingTaskById(taskId);
+    if (!task) {
+      return res.status(404).json({ code: 404, message: '任务不存在' });
+    }
+    // 删除该任务下所有旧文章（包括成功和失败的），从头开始
+    await query('DELETE FROM article WHERE task_id = $1', [taskId]);
+    // 重置任务状态为 processing
+    await query('UPDATE ai_writing_task SET status = $1, completed_count = 0, failed_count = 0, error_msg = NULL, started_at = NOW(), finished_at = NULL WHERE id = $2', ['processing', taskId]);
+    // 异步执行任务
+    executeWritingTask(taskId, userId).catch(err => {
+      console.error(`Re-execute writing task ${taskId} failed:`, err);
+    });
+    res.json({ code: 200, message: '已重新触发写作任务执行' });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 router.get('/writing-tasks/:id/articles', async (req: Request, res: Response) => {
   try {
     const taskId = Number(req.params.id);
