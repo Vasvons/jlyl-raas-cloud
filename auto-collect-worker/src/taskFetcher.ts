@@ -231,7 +231,8 @@ async function executeSingleQuery(
   platform: string,
   adapter: PlatformAdapter,
   workerId: string,
-  queryMode?: string
+  queryMode?: string,
+  queueId?: number // v2.1.6：分片ID，用于精确关联记录
 ): Promise<{ success: boolean; brandMatched: boolean }> {
   // 熔断检查：连续失败的平台跳过
   if (isPlatformInCircuitBreaker(platform)) {
@@ -530,7 +531,7 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
         logger.info(`  关键词 "${keyword.substring(0, 20)}" 平台批次 ${i + 1}/${batches.length}: ${batch.map(b => b.platform).join(', ')}`);
 
         const promises = batch.map(({ platform, adapter }) => {
-          return executeSingleQuery(browser, taskId, userId, keywordType, keyword, platform, adapter, workerId, queryMode);
+          return executeSingleQuery(browser, taskId, userId, keywordType, keyword, platform, adapter, workerId, queryMode, queueId);
         });
 
         const results = await Promise.allSettled(promises);
