@@ -750,8 +750,13 @@ async function testProxyConnectivity(endpoint: string, username: string, passwor
 
 router.get('/writing-tasks', async (req: Request, res: Response) => {
   try {
-    // v2.1.0：支持 customer_id 查询参数（管理员查看指定客户的写作任务）
-    const userId = getCustomerId(req);
+    // v2.1.2：管理员未指定 customer_id 时不按 user_id 过滤（查看全部客户的任务）
+    // 客户自身调用时仍按自己的 user_id 过滤
+    let userId = getCustomerId(req);
+    const caller = (req as any).user;
+    if (caller && caller.level === '1' && !req.query.customer_id) {
+      userId = 0; // 0 = 不按 user_id 过滤
+    }
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
     // v2.0.9：auto_generated 过滤（true=仅自动, false=仅手动, 不传=全部）
@@ -1377,8 +1382,12 @@ router.post('/allocate-articles', async (req: Request, res: Response) => {
 
 router.get('/publish/tasks', async (req: Request, res: Response) => {
   try {
-    // v2.1.0：支持 customer_id 查询参数（管理员查看指定客户的发布任务）
-    const userId = getCustomerId(req);
+    // v2.1.2：管理员未指定 customer_id 时不按 user_id 过滤
+    let userId = getCustomerId(req);
+    const caller = (req as any).user;
+    if (caller && caller.level === '1' && !req.query.customer_id) {
+      userId = 0;
+    }
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
     // v2.0.9：auto_generated 过滤
@@ -1429,8 +1438,12 @@ router.post('/publish/tasks/:id/cancel', async (req: Request, res: Response) => 
  */
 router.get('/publish/grouped-by-batch', async (req: Request, res: Response) => {
   try {
-    // v2.1.0：支持 customer_id 查询参数（管理员查看指定客户的发布任务）
-    const userId = getCustomerId(req);
+    // v2.1.2：管理员未指定 customer_id 时不按 user_id 过滤
+    let userId = getCustomerId(req);
+    const caller = (req as any).user;
+    if (caller && caller.level === '1' && !req.query.customer_id) {
+      userId = 0;
+    }
     const page = Number(req.query.page) || 1;
     const pageSize = Number(req.query.pageSize) || 20;
     // v2.0.9：auto_generated 过滤
