@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getAeoReports, getLatestAeoReport, getAeoReportById, getAeoFullReports } from '../repository';
-import { generateAeoReport } from '../services/aeo/analyzer';
+import { generateAeoReport, generateAeoShardReport } from '../services/aeo/analyzer';
 import { authMiddleware } from '../auth';
 import { query as dbQuery } from '../db';
 
@@ -109,6 +109,44 @@ router.get('/full-reports/:taskId', authMiddleware, async (req, res) => {
     res.json({ code: 200, data: reports });
   } catch (e: any) {
     res.json({ code: 500, message: e.message });
+  }
+});
+
+// v2.1.5：补生成缺失的分片报告
+// 扫描所有 status='done' 但无对应 aeo_shard_report 的分片，逐个调用 generateAeoShardReport
+// 用途：修复历史 bug（result_brand_count===0 检查）导致已完成分片未生成报告的问题
+router.post('/shard/backfill', authMiddleware, async (req, res) => {
+  try {
+    // 查询所有已完成但无报告的分片
+    const result = await dbQuery(
+      `SELECT q.id AS queue_id
+       FROM real_collect_queue q
+       LEFT JOIN aeo_shard_report s ON s.queue_id = q.id
+       WHERE q.status = 'done' AND s.id IS NULL
+       ORDER BY q.end_time DESC
+       LIMIT 100`
+    );
+    const queueIds: number[] = result.rows.map((r: any) => r.queue_id);
+    if (queueIds.length === 0) {
+      return res.json({ code: 200, data: { total: 0, generated: 0, message: '无缺失的分片报告' } });
+    }
+
+    // 逐个补生成（异步，不阻塞响应；有品牌命中的才会真正生成报告）
+    let generated = 0;
+    for (const queueId of queueIds) {
+      try {
+        const reportId = await generateAeoShardReport(queueId);
+        if (reportId) generated++;
+      } catch (e: any) {
+        console.error(`[AEO-Backfill] 分片 ${queueId} 补生成失败:`, e.message);
+      }
+    }
+    res.json({
+      code: 200,
+      data: { total: queueIds.length, generated, message: `扫描 ${queueIds.length} 个缺失分片，成功生成 ${generated} 份报告` },
+    });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
   }
 });
 
