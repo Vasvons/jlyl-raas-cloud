@@ -1401,15 +1401,21 @@ export async function getAllRecordsByTimeWindow(
   startTime: Date,
   endTime: Date
 ): Promise<any[]> {
+  // v2.1.6：扩大时间窗口范围（前10分钟 ~ 后2小时），并用 OR 同时匹配 query_time 和 create_time
+  // 解决 query_time 时区/延迟上报导致查不到记录的问题
+  const expandedStart = new Date(startTime.getTime() - 10 * 60 * 1000);
+  const expandedEnd = new Date(endTime.getTime() + 2 * 60 * 60 * 1000);
   const result = await query(
     `SELECT id, task_id, user_id, keyword, platform, brand_matched, matched_brands,
-            share_url, raw_content, query_time
+            share_url, raw_content, query_time, create_time
      FROM real_collect_record
      WHERE task_id = $1
-       AND query_time >= $2
-       AND query_time <= $3
+       AND (
+         (query_time >= $2 AND query_time <= $3)
+         OR (create_time >= $2 AND create_time <= $3)
+       )
      ORDER BY query_time ASC`,
-    [taskId, startTime, endTime]
+    [taskId, expandedStart, expandedEnd]
   );
   return result.rows;
 }

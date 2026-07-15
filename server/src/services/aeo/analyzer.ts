@@ -852,8 +852,42 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
     let allRecords = await getRecordsByQueueId(queueId);
     if (allRecords.length === 0) {
       // 旧记录无 queue_id，fallback 到时间窗口查询
-      console.log(`[AEO-Shard] 分片 ${queueId} 无 queue_id 关联记录，fallback 到时间窗口查询`);
+      console.log(`[AEO-Shard] 分片 ${queueId} 无 queue_id 关联记录，fallback 到时间窗口查询 (task=${queueInfo.task_id}, start=${startTime.toISOString()}, end=${endTime.toISOString()})`);
       allRecords = await getAllRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
+    }
+
+    // v2.1.6：如果时间窗口也查不到，查询该任务最近 N 条记录作为兜底
+    // 解决记录被清理或 query_time 时区问题导致查不到的情况
+    if (allRecords.length === 0) {
+      console.warn(`[AEO-Shard] 分片 ${queueId} 时间窗口内无记录，查询任务 ${queueInfo.task_id} 最近记录作为兜底`);
+      // 查该任务是否有任何记录
+      const { query: dbQuery } = await import('../../db');
+      const statsResult = await dbQuery(
+        `SELECT COUNT(*) as total, MIN(query_time) as min_time, MAX(query_time) as max_time,
+                MIN(create_time) as min_create, MAX(create_time) as max_create
+         FROM real_collect_record WHERE task_id = $1`,
+        [queueInfo.task_id]
+      );
+      const stats = statsResult.rows[0] || {};
+      console.warn(`[AEO-Shard] 任务 ${queueInfo.task_id} 记录统计: total=${stats.total}, query_time范围=${stats.min_time}~${stats.max_time}, create_time范围=${stats.min_create}~${stats.max_create}`);
+
+      // v2.1.6：如果任务有记录，取该分片 end_time 前后最近的 N 条记录作为兜底
+      // 这样即使时间窗口对不上，也能基于该任务最近的数据生成报告
+      if (Number(stats.total) > 0) {
+        const { rows: recentRecords } = await dbQuery(
+          `SELECT id, task_id, user_id, keyword, platform, brand_matched, matched_brands,
+                  share_url, raw_content, query_time, create_time
+           FROM real_collect_record
+           WHERE task_id = $1
+           ORDER BY ABS(EXTRACT(EPOCH FROM (COALESCE(query_time, create_time) - $2)))
+           LIMIT 50`,
+          [queueInfo.task_id, endTime]
+        );
+        if (recentRecords.length > 0) {
+          console.warn(`[AEO-Shard] 分片 ${queueId} 使用任务 ${queueInfo.task_id} 最近 ${recentRecords.length} 条记录作为兜底`);
+          allRecords = recentRecords;
+        }
+      }
     }
 
     // 如果连任何记录都没有，说明分片没有产出查询结果，才真正跳过
