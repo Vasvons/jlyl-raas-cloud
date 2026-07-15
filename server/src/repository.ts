@@ -1480,7 +1480,9 @@ export async function getAeoShardReports(
     conditions.push(`task_id = $${params.length}`);
   }
   if (userId) {
-    params.push(userId);
+    // user_id 列是 TEXT 类型，插入时存的是 string（如 "2"），查询时传 number（如 2）
+    // 显式转成 string 确保类型一致，避免 PG 隐式类型转换导致匹配失败
+    params.push(String(userId));
     conditions.push(`user_id = $${params.length}`);
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

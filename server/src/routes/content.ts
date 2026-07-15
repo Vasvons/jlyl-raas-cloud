@@ -2369,7 +2369,8 @@ router.put('/aeo-quota', async (req: Request, res: Response) => {
 router.get('/aeo-shard-reports', async (req: Request, res: Response) => {
   try {
     const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
-    const userId = getUserId(req);
+    // v2.1.5：支持 customer_id 参数（管理员查看指定客户）和 all=1（管理员查看全部）
+    const userId = req.query.all === '1' ? undefined : getCustomerId(req);
     const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
     const result = await getAeoShardReports(taskId as number | undefined, userId, limit, offset);
