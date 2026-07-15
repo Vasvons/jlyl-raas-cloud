@@ -25,6 +25,7 @@ import {
   checkShardReportExists,
   // v2.0.0 时间维度报告（周/月报）
   getShardReportsByTimeRange,
+  getShardReportsByDate,
   getInclusionStatsByTimeRange,
   checkPeriodReportExists,
   insertAeoPeriodReport,
@@ -44,7 +45,14 @@ import { decrypt } from '../../utils/crypto';
 const AEO_RECORD_LIMIT = parseInt(process.env.AEO_RECORD_LIMIT || '200');
 
 /**
- * 为指定任务生成 AEO 日报
+ * 为指定客户生成 AEO 日报
+ *
+ * v2.1.6 重构：数据源从 getBrandMentionRecordsForAeo（单任务、仅品牌命中）
+ * 改为 getShardReportsByDate（按客户维度、当日所有分片报告汇总，跨任务合并蒸馏词+品牌词）
+ * 这样日报/周报/月报/大屏的数据源统一为 aeo_shard_report，只是时间范围和聚合粒度不同
+ *
+ * @param taskId 占位 task_id（用于 aeo_report 表的主键约束，实际日报内容跨任务汇总）
+ * @param userId 客户 ID（日报按客户维度生成）
  */
 export async function generateAeoReport(taskId: number, userId: string): Promise<number | null> {
   // v2.1.5：使用 Asia/Shanghai 时区的今日日期（原 UTC 导致北京时间 0-8 点日期错位）
@@ -58,13 +66,11 @@ export async function generateAeoReport(taskId: number, userId: string): Promise
     return null;
   }
 
-  // 获取今日品牌提及记录
-  const records = await getBrandMentionRecordsForAeo(taskId, AEO_RECORD_LIMIT);
+  // v2.1.6：改为基于当日分片报告汇总（数据源与周报/月报/大屏一致）
+  const shardReports = await getShardReportsByDate(userId, today);
 
-  // v2.1.5：今日无品牌命中记录时，生成"今日无数据"报告（而非 return null 静默跳过）
-  // 这样飞轮页面"立即触发分析"后能看到报告生成，趋势卡片会更新
-  if (records.length === 0) {
-    console.log(`[AEO] 任务 ${taskId} 今日无品牌提及记录，生成无数据报告`);
+  if (shardReports.length === 0) {
+    console.log(`[AEO] 用户 ${userId} 今日无分片报告，生成无数据日报`);
     const reportId = await insertAeoReport({
       taskId,
       userId,
@@ -74,48 +80,136 @@ export async function generateAeoReport(taskId: number, userId: string): Promise
       positiveRatio: 0,
       neutralRatio: 0,
       negativeRatio: 0,
-      competitorAnalysis: '今日无品牌提及记录',
-      suggestions: '今日巡检尚未命中任何品牌关键词，暂无数据分析结论。请检查巡检任务是否正常运行，或品牌关键词是否配置正确。',
-      rawAnalysis: JSON.stringify({ reason: 'no_brand_mention_records_today', task_id: taskId }),
+      competitorAnalysis: '今日无分片报告',
+      suggestions: '今日巡检尚未产出分片报告，暂无数据分析结论。请检查巡检任务是否正常运行，或分片报告是否生成成功。',
+      rawAnalysis: JSON.stringify({ reason: 'no_shard_reports_today', task_id: taskId, user_id: userId }),
       recordIds: [],
     });
-    console.log(`[AEO] 任务 ${taskId} 无数据日报生成成功 reportId=${reportId}`);
+    console.log(`[AEO] 用户 ${userId} 无数据日报生成成功 reportId=${reportId}`);
     return reportId;
+  }
+
+  // 汇总当日所有分片报告的多维度数据
+  const totalRecords = shardReports.reduce((sum, sr) => sum + (sr.record_count || 0), 0);
+  const totalBrandMatched = shardReports.reduce((sum, sr) => sum + (sr.brand_matched_count || 0), 0);
+  const avgVisibility = shardReports.length > 0
+    ? Math.round(shardReports.reduce((sum, sr) => sum + (sr.visibility_score || 0), 0) / shardReports.length)
+    : 0;
+  const avgPositive = shardReports.length > 0
+    ? Math.round(shardReports.reduce((sum, sr) => sum + (sr.positive_ratio || 0), 0) / shardReports.length)
+    : 0;
+  const avgNeutral = shardReports.length > 0
+    ? Math.round(shardReports.reduce((sum, sr) => sum + (sr.neutral_ratio || 0), 0) / shardReports.length)
+    : 0;
+  const avgNegative = shardReports.length > 0
+    ? Math.round(shardReports.reduce((sum, sr) => sum + (sr.negative_ratio || 0), 0) / shardReports.length)
+    : 0;
+
+  // 汇总平台分布
+  const platformMap: Record<string, { total: number; brand_matched: number }> = {};
+  for (const sr of shardReports) {
+    const pb = Array.isArray(sr.platform_breakdown) ? sr.platform_breakdown : [];
+    for (const p of pb) {
+      const name = p.platform || 'unknown';
+      if (!platformMap[name]) platformMap[name] = { total: 0, brand_matched: 0 };
+      platformMap[name].total += p.total || 0;
+      platformMap[name].brand_matched += p.brand_matched || 0;
+    }
+  }
+
+  // 汇总竞品提及
+  const competitorMap: Record<string, number> = {};
+  for (const sr of shardReports) {
+    const competitors = Array.isArray(sr.competitor_mentions) ? sr.competitor_mentions : [];
+    for (const c of competitors) {
+      const name = c.competitor || '';
+      if (name) competitorMap[name] = (competitorMap[name] || 0) + (c.mention_count || 0);
+    }
+  }
+  const topCompetitors = Object.entries(competitorMap)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, count]) => `${name}(${count}次)`);
+
+  // 汇总负面发现
+  const allNegativeFindings: any[] = [];
+  for (const sr of shardReports) {
+    const findings = Array.isArray(sr.negative_findings) ? sr.negative_findings : [];
+    allNegativeFindings.push(...findings);
+  }
+
+  // 收集所有分片的内容样本（供 LLM 分析，限制总量避免 token 超限）
+  const allContentSamples: any[] = [];
+  for (const sr of shardReports) {
+    const samples = Array.isArray(sr.raw_contents_sample) ? sr.raw_contents_sample : [];
+    for (const s of samples) {
+      allContentSamples.push(s);
+      if (allContentSamples.length >= 30) break; // 限制最多30条样本
+    }
+    if (allContentSamples.length >= 30) break;
   }
 
   // 获取品牌词
   const brandKeywords = await getBrandKeywords(userId);
 
-  // 准备分析数据
-  // v2.0.5：截取前 3000 字（原 500 字太少，品牌描述+情感分析需要完整内容）
-  const analysisInput = records.map(r => ({
-    platform: r.platform,
-    keyword: r.keyword,
-    content: (r.raw_content || '').substring(0, 3000),
-    matchedBrands: r.matched_brands,
-    shareUrl: r.share_url,
+  // 准备 LLM 分析输入（基于分片报告的内容样本）
+  const analysisInput = allContentSamples.map(s => ({
+    platform: s.platform,
+    keyword: s.keyword,
+    content: (s.content || '').substring(0, 3000),
+    matchedBrands: s.matched_brands,
+    brandMatched: s.brand_matched,
   }));
 
-  // 调用 LLM 分析
+  // 调用 LLM 分析（复用 callLlmForAeo）
   const analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
+
+  // 构建日报建议（含多维度汇总数据）
+  const inclusionRate = totalRecords > 0
+    ? Math.round((totalBrandMatched / totalRecords) * 10000) / 100
+    : 0;
+  const platformSummary = Object.entries(platformMap)
+    .sort((a, b) => b[1].total - a[1].total)
+    .slice(0, 5)
+    .map(([name, stat]) => `${name}: ${stat.total}条/命中${stat.brand_matched}条`)
+    .join('，');
+
+  const dailySuggestions = `【今日数据汇总】分片报告 ${shardReports.length} 份，总查询 ${totalRecords} 条，品牌命中 ${totalBrandMatched} 条，收录率 ${inclusionRate}%，平均可见度 ${avgVisibility}分。
+【情感分布】正面 ${avgPositive}%，中性 ${avgNeutral}%，负面 ${avgNegative}%。
+【平台分布】${platformSummary || '无平台数据'}。
+【竞品提及】${topCompetitors.length > 0 ? topCompetitors.join('、') : '无竞品提及'}。
+【负面发现】${allNegativeFindings.length} 条需关注。
+【LLM 分析】${analysis.suggestions}`;
 
   // 入库
   const reportId = await insertAeoReport({
     taskId,
     userId,
     reportDate: today,
-    visibilityScore: analysis.visibilityScore,
-    mentionCount: records.length,
-    positiveRatio: analysis.positiveRatio,
-    neutralRatio: analysis.neutralRatio,
-    negativeRatio: analysis.negativeRatio,
-    competitorAnalysis: analysis.competitorAnalysis,
-    suggestions: analysis.suggestions,
-    rawAnalysis: analysis.raw,
-    recordIds: records.map(r => r.id),
+    visibilityScore: avgVisibility,
+    mentionCount: totalBrandMatched,
+    positiveRatio: avgPositive,
+    neutralRatio: avgNeutral,
+    negativeRatio: avgNegative,
+    competitorAnalysis: topCompetitors.length > 0
+      ? `今日竞品提及：${topCompetitors.join('、')}`
+      : '无竞品提及',
+    suggestions: dailySuggestions,
+    rawAnalysis: JSON.stringify({
+      shard_report_count: shardReports.length,
+      total_records: totalRecords,
+      brand_matched: totalBrandMatched,
+      inclusion_rate: inclusionRate,
+      platform_breakdown: platformMap,
+      competitor_mentions: competitorMap,
+      negative_findings_count: allNegativeFindings.length,
+      llm_raw: analysis.raw,
+      llm_competitor_analysis: analysis.competitorAnalysis,
+    }),
+    recordIds: shardReports.map(sr => sr.queue_id), // 用 queue_id 作为记录标识
   });
 
-  console.log(`[AEO] 任务 ${taskId} 日报生成成功 reportId=${reportId} mentions=${records.length}`);
+  console.log(`[AEO] 用户 ${userId} 日报生成成功 reportId=${reportId}, 分片报告=${shardReports.length}, 总查询=${totalRecords}, 品牌命中=${totalBrandMatched}, 收录率=${inclusionRate}%`);
   return reportId;
 }
 
@@ -667,16 +761,14 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       return null;
     }
 
-    // 2. 获取分片队列信息
+    // 2. 获取分片队列信息（v2.1.6：含 keyword_type 和 task_name）
     const queueInfo = await getQueueInfoForShardReport(queueId);
     if (!queueInfo) {
       console.log(`[AEO-Shard] 分片 ${queueId} 队列信息不存在`);
       return null;
     }
 
-    // 仅对成功完成的分片进行分析（品牌命中判断交给第 5 道门 getRecordsByTimeWindow）
-    // v2.1.5：删除原 result_brand_count===0 检查——worker 端写死 brandMatched=false 导致该字段恒为 0，
-    //         所有分片都在此处被错误跳过。真实品牌命中以 real_collect_record 表 brand_matched=true 为准。
+    // 仅对成功完成的分片进行分析
     if (queueInfo.status !== 'done') {
       console.log(`[AEO-Shard] 分片 ${queueId} 状态非 done（${queueInfo.status}），跳过`);
       return null;
@@ -686,21 +778,12 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
     const startTime = queueInfo.start_time ? new Date(queueInfo.start_time) : new Date(Date.now() - 30 * 60 * 1000);
     const endTime = queueInfo.end_time ? new Date(queueInfo.end_time) : new Date();
 
-    // 4. 按时间窗口查询品牌命中记录
-    const brandMatchedRecords = await getRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
-
-    // 5. 获取品牌词
     const userId = queueInfo.user_id || '';
-    const brandKeywords = await getBrandKeywords(userId);
+    const keywordType = queueInfo.keyword_type ?? 0; // 0=蒸馏词, 1=品牌词
 
-    // v2.1.5：无品牌命中时也生成报告（如实展现收录为 0 的情况）
-    // 没有命中记录正说明品牌需要做 GEO 优化，报告应如实展现当前 AI 提及率为 0%
-    const hasBrandMatch = brandMatchedRecords.length > 0;
-
-    // 查询该时间窗口内所有记录（不限 brand_matched），用于统计总查询量
-    const allRecords = hasBrandMatch
-      ? brandMatchedRecords
-      : await getAllRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
+    // v2.1.6：始终查全量记录（不再只查品牌命中），从全量记录中区分品牌命中
+    // 这样分片报告成为所有数据（日报/周报/月报/大屏）的统一基础数据源
+    const allRecords = await getAllRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
 
     // 如果连任何记录都没有，说明分片没有产出查询结果，才真正跳过
     if (allRecords.length === 0) {
@@ -708,19 +791,113 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       return null;
     }
 
+    // 4. 获取品牌词，从全量记录中识别品牌命中
+    const brandKeywords = await getBrandKeywords(userId);
+    const brandKeywordSet = new Set(brandKeywords.map(k => k.toLowerCase()));
+    const brandMatchedRecords = allRecords.filter(r => r.brand_matched === true);
+
+    const hasBrandMatch = brandMatchedRecords.length > 0;
+    const totalRecordCount = allRecords.length;
+    const brandMatchedCount = brandMatchedRecords.length;
+    const hitRate = totalRecordCount > 0
+      ? Math.round((brandMatchedCount / totalRecordCount) * 10000) / 100
+      : 0;
+
+    // 5. v2.1.6：构建多维度数据
+    // (a) platform_breakdown：各AI平台的查询数/品牌命中数
+    const platformMap: Record<string, { total: number; brand_matched: number }> = {};
+    for (const r of allRecords) {
+      const p = r.platform || 'unknown';
+      if (!platformMap[p]) platformMap[p] = { total: 0, brand_matched: 0 };
+      platformMap[p].total++;
+      if (r.brand_matched === true) platformMap[p].brand_matched++;
+    }
+    const platformBreakdown = Object.entries(platformMap).map(([platform, stat]) => ({
+      platform,
+      total: stat.total,
+      brand_matched: stat.brand_matched,
+      brand_rate: stat.total > 0 ? Math.round((stat.brand_matched / stat.total) * 10000) / 100 : 0,
+    })).sort((a, b) => b.total - a.total);
+
+    // (b) keyword_coverage：关键词覆盖详情（关键词列表+命中情况）
+    const keywordMap: Record<string, { total: number; brand_matched: number; platforms: Set<string> }> = {};
+    for (const r of allRecords) {
+      const kw = r.keyword || '';
+      if (!kw) continue;
+      if (!keywordMap[kw]) keywordMap[kw] = { total: 0, brand_matched: 0, platforms: new Set() };
+      keywordMap[kw].total++;
+      if (r.brand_matched === true) keywordMap[kw].brand_matched++;
+      if (r.platform) keywordMap[kw].platforms.add(r.platform);
+    }
+    const keywordCoverage = Object.entries(keywordMap).map(([keyword, stat]) => ({
+      keyword,
+      total: stat.total,
+      brand_matched: stat.brand_matched,
+      hit_rate: stat.total > 0 ? Math.round((stat.brand_matched / stat.total) * 10000) / 100 : 0,
+      platforms: Array.from(stat.platforms),
+    })).sort((a, b) => b.total - a.total);
+
+    // (c) source_platforms：本分片查询的AI平台列表（去重）
+    const sourcePlatforms = Array.from(new Set(allRecords.map(r => r.platform).filter(Boolean)));
+
+    // (d) share_urls：分享链接列表（用于详情查看）
+    const shareUrls = allRecords
+      .filter(r => r.share_url)
+      .map(r => ({
+        keyword: r.keyword,
+        platform: r.platform,
+        share_url: r.share_url,
+        brand_matched: r.brand_matched === true,
+      }))
+      .slice(0, 50); // 限制最多50条避免过大
+
+    // (e) raw_contents_sample：AI回答内容样本（前10条，供日报/周报LLM分析用）
+    const rawContentsSample = allRecords
+      .slice(0, 10)
+      .map(r => ({
+        keyword: r.keyword,
+        platform: r.platform,
+        content: (r.raw_content || '').substring(0, 1000),
+        brand_matched: r.brand_matched === true,
+        matched_brands: r.matched_brands,
+      }));
+
+    // (f) competitor_mentions：竞品在AI回答中的出现情况
+    // 从品牌命中记录中提取非自身品牌的实体（matched_brands 中非自身品牌的字符串）
+    const competitorMentions: any[] = [];
+    if (hasBrandMatch && brandKeywords.length > 0) {
+      const competitorMap: Record<string, { count: number; platforms: Set<string>; keywords: Set<string> }> = {};
+      for (const r of brandMatchedRecords) {
+        const matchedBrands: string[] = Array.isArray(r.matched_brands) ? r.matched_brands : [];
+        for (const brand of matchedBrands) {
+          const lowerBrand = (brand || '').toLowerCase();
+          // 非自身品牌 = 竞品
+          if (lowerBrand && !brandKeywordSet.has(lowerBrand)) {
+            if (!competitorMap[brand]) competitorMap[brand] = { count: 0, platforms: new Set(), keywords: new Set() };
+            competitorMap[brand].count++;
+            if (r.platform) competitorMap[brand].platforms.add(r.platform);
+            if (r.keyword) competitorMap[brand].keywords.add(r.keyword);
+          }
+        }
+      }
+      for (const [competitor, stat] of Object.entries(competitorMap)) {
+        competitorMentions.push({
+          competitor,
+          mention_count: stat.count,
+          platforms: Array.from(stat.platforms),
+          keywords: Array.from(stat.keywords),
+        });
+      }
+      competitorMentions.sort((a, b) => b.mention_count - a.mention_count);
+    }
+
     let analysis: any;
     let brandMentions: any[];
     let negativeFindings: any[];
     let sentimentSummary: any;
-    let totalRecordCount: number;
-    let brandMatchedCount: number;
 
     if (hasBrandMatch) {
-      // ===== 有品牌命中：正常分析流程 =====
-      totalRecordCount = queueInfo.result_record_count || allRecords.length;
-      brandMatchedCount = brandMatchedRecords.length;
-
-      // 准备分析输入（v2.0.5：截取内容前 3000 字，原 500 字太少）
+      // ===== 有品牌命中：正常 LLM 分析流程 =====
       const analysisInput = brandMatchedRecords.map(r => ({
         platform: r.platform,
         keyword: r.keyword,
@@ -728,11 +905,8 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
         matchedBrands: r.matched_brands,
         shareUrl: r.share_url,
       }));
-
-      // 调用 LLM 分析（复用现有 callLlmForAeo）
       analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
 
-      // 提取品牌提及详情
       brandMentions = brandMatchedRecords.map(r => ({
         keyword: r.keyword,
         platform: r.platform,
@@ -741,7 +915,6 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
         contentPreview: (r.raw_content || '').substring(0, 200),
       }));
 
-      // 识别负面发现（内容含负面词的记录）
       const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷'];
       negativeFindings = brandMatchedRecords
         .filter(r => {
@@ -755,7 +928,6 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
           negativeWords: negativeWords.filter(w => (r.raw_content || '').toLowerCase().includes(w)),
         }));
 
-      // 情感汇总
       sentimentSummary = {
         total: brandMatchedRecords.length,
         positive: Math.round(brandMatchedRecords.length * analysis.positiveRatio / 100),
@@ -767,10 +939,6 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       };
     } else {
       // ===== 无品牌命中：生成"收录为 0"的报告 =====
-      // 没有命中记录说明品牌 AI 提及率为 0%，这恰恰是最需要 GEO 优化的情况
-      totalRecordCount = allRecords.length;
-      brandMatchedCount = 0;
-
       const noKeywordNote = brandKeywords.length === 0
         ? `用户未配置品牌词（pp 表为空），无法识别品牌命中。请先在"品牌词库"中添加品牌词。`
         : `已配置 ${brandKeywords.length} 个品牌词，但 AI 回答中均未提及品牌。`;
@@ -805,7 +973,7 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       console.log(`[AEO-Shard] 分片 ${queueId} 无品牌命中，生成"收录为 0"报告（总查询 ${allRecords.length} 条）`);
     }
 
-    // 入库
+    // 入库（v2.1.6：含多维度扩展字段）
     const reportId = await insertAeoShardReport({
       task_id: queueInfo.task_id,
       queue_id: queueId,
@@ -825,9 +993,18 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       raw_analysis: { raw: analysis.raw, competitorAnalysis: analysis.competitorAnalysis },
       shard_start_time: startTime,
       shard_end_time: endTime,
+      // v2.1.6：多维度扩展字段
+      platform_breakdown: platformBreakdown,
+      keyword_coverage: keywordCoverage,
+      competitor_mentions: competitorMentions,
+      source_platforms: sourcePlatforms,
+      keyword_type: keywordType,
+      hit_rate: hitRate,
+      share_urls: shareUrls,
+      raw_contents_sample: rawContentsSample,
     });
 
-    console.log(`[AEO-Shard] 分片 ${queueId} AEO报告已生成: reportId=${reportId}, 品牌命中=${brandMatchedCount}, 负面发现=${negativeFindings.length}`);
+    console.log(`[AEO-Shard] 分片 ${queueId} AEO报告已生成: reportId=${reportId}, 任务类型=${keywordType === 1 ? '品牌词' : '蒸馏词'}, 总查询=${totalRecordCount}, 品牌命中=${brandMatchedCount}, 命中率=${hitRate}%, 平台数=${sourcePlatforms.length}, 竞品=${competitorMentions.length}`);
     return reportId;
   } catch (err: any) {
     console.error(`[AEO-Shard] 分片 ${queueId} AEO分析失败:`, err.message);

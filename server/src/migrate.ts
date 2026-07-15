@@ -1557,6 +1557,26 @@ export async function migrate() {
 
     console.log('[Migrate] v2.0.0 分片级AEO报告表创建完成（aeo_shard_report）');
 
+    // ============ v2.1.6: 分片报告多维度扩展 ============
+    // 分片报告作为所有数据（日报/周报/月报/大屏）的基础数据源，需包含完整维度：
+    // - platform_breakdown: 各AI平台的查询数/品牌命中数
+    // - keyword_coverage: 关键词覆盖详情（关键词列表+命中情况）
+    // - competitor_mentions: 竞品在AI回答中的出现情况
+    // - source_platforms: 本分片查询的AI平台列表（含信源权重）
+    // - keyword_type: 关键词类型（0=蒸馏词, 1=品牌词）
+    // - hit_rate: 命中率（brand_matched_count / record_count * 100）
+    // - share_urls: 分享链接列表（用于详情查看）
+    // - raw_contents_sample: AI回答内容样本（前N条，供日报/周报LLM分析用）
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS platform_breakdown JSONB`);
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS keyword_coverage JSONB`);
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS competitor_mentions JSONB`);
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS source_platforms JSONB`);
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS keyword_type INTEGER DEFAULT 0`);
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS hit_rate DECIMAL(5,2) DEFAULT 0`);
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS share_urls JSONB`);
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS raw_contents_sample JSONB`);
+    console.log('[Migrate] v2.1.6 分片报告多维度扩展完成（8个新字段）');
+
     // ============ v2.0.0: 时间维度报告（周/月报，写作驱动核心） ============
 
     // aeo_period_report: 时间维度报告

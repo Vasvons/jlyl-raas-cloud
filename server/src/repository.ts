@@ -1347,15 +1347,26 @@ export interface AeoShardReport {
   shard_start_time: string | null;
   shard_end_time: string | null;
   created_at: string;
+  // v2.1.6：多维度扩展字段（分片报告作为所有数据的基础数据源）
+  platform_breakdown?: any;       // 各AI平台的查询数/品牌命中数
+  keyword_coverage?: any;          // 关键词覆盖详情（关键词列表+命中情况）
+  competitor_mentions?: any;       // 竞品在AI回答中的出现情况
+  source_platforms?: any;          // 本分片查询的AI平台列表（含信源权重）
+  keyword_type?: number;           // 关键词类型（0=蒸馏词, 1=品牌词）
+  hit_rate?: number;               // 命中率（brand_matched_count / record_count * 100）
+  share_urls?: any;                // 分享链接列表（用于详情查看）
+  raw_contents_sample?: any;       // AI回答内容样本（前N条，供日报/周报LLM分析用）
 }
 
-/** 获取分片队列信息（含 start_time/end_time/keywords/task_id/user_id/round_no） */
+/** 获取分片队列信息（含 start_time/end_time/keywords/task_id/user_id/round_no/keyword_type） */
 export async function getQueueInfoForShardReport(queueId: number): Promise<any | null> {
   const result = await query(
-    `SELECT id, task_id, user_id, round_no, keywords, start_time, end_time, status,
-            result_record_count, result_brand_count
-     FROM real_collect_queue
-     WHERE id = $1`,
+    `SELECT q.id, q.task_id, q.user_id, q.round_no, q.keywords, q.start_time, q.end_time, q.status,
+            q.result_record_count, q.result_brand_count,
+            t.keyword_type, t.task_name
+     FROM real_collect_queue q
+     LEFT JOIN real_collect_task t ON t.id = q.task_id
+     WHERE q.id = $1`,
     [queueId]
   );
   return result.rows[0] || null;
@@ -1423,6 +1434,15 @@ export async function insertAeoShardReport(data: {
   raw_analysis?: any;
   shard_start_time?: Date;
   shard_end_time?: Date;
+  // v2.1.6：多维度扩展字段
+  platform_breakdown?: any;
+  keyword_coverage?: any;
+  competitor_mentions?: any;
+  source_platforms?: any;
+  keyword_type?: number;
+  hit_rate?: number;
+  share_urls?: any;
+  raw_contents_sample?: any;
 }): Promise<number> {
   const result = await query(
     `INSERT INTO aeo_shard_report
@@ -1430,8 +1450,11 @@ export async function insertAeoShardReport(data: {
        sentiment_summary, brand_mentions, negative_findings, content_suggestions,
        record_count, brand_matched_count, visibility_score,
        positive_ratio, negative_ratio, neutral_ratio,
-       raw_analysis, shard_start_time, shard_end_time)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+       raw_analysis, shard_start_time, shard_end_time,
+       platform_breakdown, keyword_coverage, competitor_mentions, source_platforms,
+       keyword_type, hit_rate, share_urls, raw_contents_sample)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
+             $19, $20, $21, $22, $23, $24, $25, $26)
      RETURNING id`,
     [
       data.task_id,
@@ -1452,6 +1475,14 @@ export async function insertAeoShardReport(data: {
       data.raw_analysis ? JSON.stringify(data.raw_analysis) : null,
       data.shard_start_time || null,
       data.shard_end_time || null,
+      data.platform_breakdown ? JSON.stringify(data.platform_breakdown) : null,
+      data.keyword_coverage ? JSON.stringify(data.keyword_coverage) : null,
+      data.competitor_mentions ? JSON.stringify(data.competitor_mentions) : null,
+      data.source_platforms ? JSON.stringify(data.source_platforms) : null,
+      data.keyword_type ?? 0,
+      data.hit_rate ?? 0,
+      data.share_urls ? JSON.stringify(data.share_urls) : null,
+      data.raw_contents_sample ? JSON.stringify(data.raw_contents_sample) : null,
     ]
   );
   return result.rows[0].id;
@@ -1517,6 +1548,27 @@ export async function getShardReportsByTimeRange(
        AND created_at <= $3
      ORDER BY created_at ASC`,
     [userId, startTime, endTime]
+  );
+  return result.rows as AeoShardReport[];
+}
+
+/**
+ * v2.1.6：按日期查询当日所有分片报告（用于日报生成）
+ * 按客户维度（user_id）查询当日所有分片报告，跨任务（品牌词+蒸馏词合并）
+ * 日报基于分片报告汇总生成，数据源与周报/月报/大屏一致
+ */
+export async function getShardReportsByDate(
+  userId: string,
+  dateStr: string // YYYY-MM-DD（Asia/Shanghai 时区）
+): Promise<AeoShardReport[]> {
+  // 当日 00:00:00 ~ 次日 00:00:00（按 created_at 过滤，分片报告的创建时间）
+  const result = await query(
+    `SELECT * FROM aeo_shard_report
+     WHERE user_id = $1
+       AND created_at >= ($2::date)
+       AND created_at < ($2::date + INTERVAL '1 day')
+     ORDER BY created_at ASC`,
+    [userId, dateStr]
   );
   return result.rows as AeoShardReport[];
 }
