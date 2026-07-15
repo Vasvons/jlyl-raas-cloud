@@ -1506,7 +1506,7 @@ export async function checkShardReportExists(queueId: number): Promise<boolean> 
 /** 查询分片级 AEO 报告列表（分页） */
 export async function getAeoShardReports(
   taskId?: number,
-  userId?: number,
+  userId?: string | number,
   limit: number = 50,
   offset: number = 0
 ): Promise<{ list: AeoShardReport[]; total: number }> {

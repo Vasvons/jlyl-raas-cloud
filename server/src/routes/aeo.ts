@@ -136,6 +136,9 @@ const backfillJobs = new Map<string, BackfillJob>();
 // 触发补生成（异步）：立即返回 jobId，后台逐个处理
 router.post('/shard/backfill', authMiddleware, async (req, res) => {
   try {
+    // v2.1.6：支持按客户过滤（管理员从某客户飞轮页面触发时只补该客户的分片）
+    const customerId = req.body.customerId ? String(req.body.customerId) : undefined;
+
     // 如果已有任务在运行，返回当前任务状态
     const runningJob = Array.from(backfillJobs.values()).find(j => j.status === 'running');
     if (runningJob) {
@@ -153,15 +156,22 @@ router.post('/shard/backfill', authMiddleware, async (req, res) => {
       });
     }
 
-    // 查询所有已完成但无报告的分片
+    // 查询所有已完成但无报告的分片（v2.1.6：按 customerId 过滤）
+    const params: any[] = [];
+    let whereClause = `WHERE q.status = 'done' AND s.id IS NULL`;
+    if (customerId) {
+      params.push(customerId);
+      whereClause += ` AND q.user_id = $${params.length}`;
+    }
     const result = await dbQuery(
       `SELECT q.id AS queue_id, q.task_id, q.user_id, q.start_time, q.end_time, q.status,
               q.result_record_count, q.result_brand_count
        FROM real_collect_queue q
        LEFT JOIN aeo_shard_report s ON s.queue_id = q.id
-       WHERE q.status = 'done' AND s.id IS NULL
+       ${whereClause}
        ORDER BY q.end_time DESC
-       LIMIT 100`
+       LIMIT 100`,
+      params
     );
     const rows: any[] = result.rows;
     if (rows.length === 0) {
