@@ -116,9 +116,44 @@ router.get('/full-reports/:taskId', authMiddleware, async (req, res) => {
 // 扫描所有 status='done' 但无对应 aeo_shard_report 的分片，逐个调用 generateAeoShardReport
 // 用途：修复历史 bug（result_brand_count===0 检查）导致已完成分片未生成报告的问题
 // 当 generated=0 时返回诊断信息，帮助定位为什么无法生成
+// v2.1.6：补生成任务状态（内存存储，进程重启丢失，不影响功能）
+interface BackfillJob {
+  id: string;
+  status: 'running' | 'done' | 'failed';
+  total: number;
+  generated: number;
+  failed: number;
+  current: number;
+  currentQueueId: number | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+  message: string;
+  diagnosis: string;
+  failedSamples: any[];
+}
+const backfillJobs = new Map<string, BackfillJob>();
+
+// 触发补生成（异步）：立即返回 jobId，后台逐个处理
 router.post('/shard/backfill', authMiddleware, async (req, res) => {
   try {
-    // 查询所有已完成但无报告的分片（带诊断字段）
+    // 如果已有任务在运行，返回当前任务状态
+    const runningJob = Array.from(backfillJobs.values()).find(j => j.status === 'running');
+    if (runningJob) {
+      return res.json({
+        code: 200,
+        data: {
+          jobId: runningJob.id,
+          status: runningJob.status,
+          total: runningJob.total,
+          generated: runningJob.generated,
+          failed: runningJob.failed,
+          current: runningJob.current,
+          message: '补生成任务正在运行中',
+        }
+      });
+    }
+
+    // 查询所有已完成但无报告的分片
     const result = await dbQuery(
       `SELECT q.id AS queue_id, q.task_id, q.user_id, q.start_time, q.end_time, q.status,
               q.result_record_count, q.result_brand_count
@@ -133,80 +168,145 @@ router.post('/shard/backfill', authMiddleware, async (req, res) => {
       return res.json({ code: 200, data: { total: 0, generated: 0, message: '无缺失的分片报告' } });
     }
 
-    // 逐个补生成
-    let generated = 0;
-    const failed: any[] = [];
-    for (const row of rows) {
-      const queueId = row.queue_id;
-      try {
-        const reportId = await generateAeoShardReport(queueId);
-        if (reportId) {
-          generated++;
-        } else {
-          // generateAeoShardReport 返回 null，收集诊断信息
-          // 查该分片时间窗口内 real_collect_record 的总数和 brand_matched=true 数
-          const startTime = row.start_time ? new Date(row.start_time) : new Date(Date.now() - 30 * 60 * 1000);
-          const endTime = row.end_time ? new Date(row.end_time) : new Date();
-          const diagRes = await dbQuery(
-            `SELECT
-               COUNT(*) AS total_records,
-               COUNT(*) FILTER (WHERE brand_matched = true) AS brand_matched_count
-             FROM real_collect_record
-             WHERE task_id = $1 AND query_time >= $2 AND query_time <= $3`,
-            [row.task_id, startTime, endTime]
-          );
-          const diag = diagRes.rows[0] || {};
-          // 查该用户品牌词数量
-          const brandRes = await dbQuery(
-            `SELECT COUNT(*) AS brand_count FROM pp WHERE user_id = $1 AND pp != ''`,
-            [row.user_id]
-          );
-          failed.push({
-            queue_id: queueId,
-            task_id: row.task_id,
-            user_id: row.user_id,
-            start_time: row.start_time,
-            end_time: row.end_time,
-            result_record_count: row.result_record_count,
-            records_in_window: Number(diag.total_records || 0),
-            brand_matched_count: Number(diag.brand_matched_count || 0),
-            brand_keyword_count: Number(brandRes.rows[0]?.brand_count || 0),
-          });
-        }
-      } catch (e: any) {
-        failed.push({ queue_id: queueId, error: e.message });
-        console.error(`[AEO-Backfill] 分片 ${queueId} 补生成失败:`, e.message);
-      }
-    }
+    // 创建 job
+    const jobId = `bf_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const job: BackfillJob = {
+      id: jobId,
+      status: 'running',
+      total: rows.length,
+      generated: 0,
+      failed: 0,
+      current: 0,
+      currentQueueId: null,
+      startedAt: new Date(),
+      finishedAt: null,
+      message: '',
+      diagnosis: '',
+      failedSamples: [],
+    };
+    backfillJobs.set(jobId, job);
 
-    // 生成诊断摘要
-    let diagnosis = '';
-    if (generated === 0 && failed.length > 0) {
-      const sample = failed[0];
-      if (sample.brand_keyword_count === 0) {
-        diagnosis = `用户 ${sample.user_id} 未配置品牌词（pp 表为空），无法识别品牌命中。请先在"品牌词库"中为该用户添加品牌词。`;
-      } else if (sample.brand_matched_count === 0 && sample.records_in_window > 0) {
-        diagnosis = `分片 ${sample.queue_id} 时间窗口内有 ${sample.records_in_window} 条查询记录，但无 brand_matched=true 记录（品牌词与 AI 回答内容未匹配）。品牌词配置了 ${sample.brand_keyword_count} 个，可能需要检查品牌词与实际内容是否匹配。`;
-      } else if (sample.records_in_window === 0) {
-        diagnosis = `分片 ${sample.queue_id} 时间窗口内无任何 real_collect_record 记录（start=${sample.start_time}, end=${sample.end_time}）。可能记录被清理或时间窗口不对。`;
-      } else {
-        diagnosis = sample.error || '未知原因';
-      }
-    }
-
+    // 立即响应前端
     res.json({
       code: 200,
       data: {
+        jobId,
+        status: 'running',
         total: rows.length,
-        generated,
-        message: `扫描 ${rows.length} 个缺失分片，成功生成 ${generated} 份报告` + (diagnosis ? `。原因：${diagnosis}` : ''),
-        diagnosis,
-        failed_samples: failed.slice(0, 5),
-      },
+        generated: 0,
+        failed: 0,
+        current: 0,
+        message: `开始补生成 ${rows.length} 份分片报告`,
+      }
+    });
+
+    // 后台异步处理（不阻塞响应）
+    (async () => {
+      for (const row of rows) {
+        const queueId = row.queue_id;
+        job.currentQueueId = queueId;
+        try {
+          const reportId = await generateAeoShardReport(queueId);
+          if (reportId) {
+            job.generated++;
+          } else {
+            job.failed++;
+            // 收集诊断信息
+            const startTime = row.start_time ? new Date(row.start_time) : new Date(Date.now() - 30 * 60 * 1000);
+            const endTime = row.end_time ? new Date(row.end_time) : new Date();
+            const diagRes = await dbQuery(
+              `SELECT
+                 COUNT(*) AS total_records,
+                 COUNT(*) FILTER (WHERE brand_matched = true) AS brand_matched_count
+               FROM real_collect_record
+               WHERE task_id = $1 AND query_time >= $2 AND query_time <= $3`,
+              [row.task_id, startTime, endTime]
+            );
+            const diag = diagRes.rows[0] || {};
+            const brandRes = await dbQuery(
+              `SELECT COUNT(*) AS brand_count FROM pp WHERE user_id = $1 AND pp != ''`,
+              [row.user_id]
+            );
+            if (job.failedSamples.length < 5) {
+              job.failedSamples.push({
+                queue_id: queueId,
+                task_id: row.task_id,
+                user_id: row.user_id,
+                start_time: row.start_time,
+                end_time: row.end_time,
+                result_record_count: row.result_record_count,
+                records_in_window: Number(diag.total_records || 0),
+                brand_matched_count: Number(diag.brand_matched_count || 0),
+                brand_keyword_count: Number(brandRes.rows[0]?.brand_count || 0),
+              });
+            }
+          }
+        } catch (e: any) {
+          job.failed++;
+          if (job.failedSamples.length < 5) {
+            job.failedSamples.push({ queue_id: queueId, error: e.message });
+          }
+          console.error(`[AEO-Backfill] 分片 ${queueId} 补生成失败:`, e.message);
+        }
+        job.current++;
+      }
+
+      // 完成
+      job.status = 'done';
+      job.finishedAt = new Date();
+      job.currentQueueId = null;
+      job.message = `扫描 ${job.total} 个缺失分片，成功生成 ${job.generated} 份报告，失败 ${job.failed} 份`;
+
+      // 生成诊断摘要
+      if (job.generated === 0 && job.failedSamples.length > 0) {
+        const sample = job.failedSamples[0];
+        if (sample.brand_keyword_count === 0) {
+          job.diagnosis = `用户 ${sample.user_id} 未配置品牌词（pp 表为空），无法识别品牌命中。请先在"品牌词库"中为该用户添加品牌词。`;
+        } else if (sample.brand_matched_count === 0 && sample.records_in_window > 0) {
+          job.diagnosis = `分片 ${sample.queue_id} 时间窗口内有 ${sample.records_in_window} 条查询记录，但无 brand_matched=true 记录（品牌词与 AI 回答内容未匹配）。品牌词配置了 ${sample.brand_keyword_count} 个，可能需要检查品牌词与实际内容是否匹配。`;
+        } else if (sample.records_in_window === 0) {
+          job.diagnosis = `分片 ${sample.queue_id} 时间窗口内无任何 real_collect_record 记录（start=${sample.start_time}, end=${sample.end_time}）。可能记录被清理或时间窗口不对。`;
+        } else {
+          job.diagnosis = sample.error || '未知原因';
+        }
+      }
+
+      console.log(`[AEO-Backfill] 任务 ${jobId} 完成: ${job.message}`);
+      // 清理超过 1 小时的旧 job
+      const oneHourAgo = Date.now() - 60 * 60 * 1000;
+      for (const [id, j] of backfillJobs) {
+        if (j.finishedAt && j.finishedAt.getTime() < oneHourAgo) {
+          backfillJobs.delete(id);
+        }
+      }
+    })().catch(err => {
+      console.error(`[AEO-Backfill] 任务 ${jobId} 异常:`, err);
+      job.status = 'failed';
+      job.message = `任务异常: ${err.message}`;
+      job.finishedAt = new Date();
     });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }
+});
+
+// 查询补生成任务状态
+router.get('/shard/backfill/status', authMiddleware, async (req, res) => {
+  const jobId = req.query.jobId as string;
+  if (!jobId) {
+    // 返回最近的一个 job
+    const jobs = Array.from(backfillJobs.values());
+    if (jobs.length === 0) {
+      return res.json({ code: 200, data: { status: 'none', message: '无补生成任务' } });
+    }
+    const latest = jobs[jobs.length - 1];
+    return res.json({ code: 200, data: latest });
+  }
+  const job = backfillJobs.get(jobId);
+  if (!job) {
+    return res.json({ code: 404, data: { message: '任务不存在或已清理' } });
+  }
+  res.json({ code: 200, data: job });
 });
 
 export default router;
