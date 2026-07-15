@@ -23,6 +23,8 @@ export interface WorkerResult {
   supportsShare: boolean;
   /** 查询来源：api（调用大模型 API）/ crawler（爬虫） */
   source?: 'api' | 'crawler';
+  /** v2.1.6：分片ID，用于精确关联记录与分片 */
+  queueId?: number | null;
 }
 
 function generateStaticHtml(keyword: string, platform: string, content: string, htmlContent?: string): string {
@@ -284,6 +286,7 @@ export async function processWorkerResult(result: WorkerResult): Promise<Process
     queryTime: result.queryTime,
     workerId: result.workerId,
     source: result.source,
+    queueId: result.queueId, // v2.1.6：精确关联分片
   });
 
   // 不支持分享的平台或没有分享链接的，生成静态页

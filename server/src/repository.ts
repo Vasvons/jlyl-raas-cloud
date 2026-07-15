@@ -1358,10 +1358,10 @@ export interface AeoShardReport {
   raw_contents_sample?: any;       // AI回答内容样本（前N条，供日报/周报LLM分析用）
 }
 
-/** 获取分片队列信息（含 start_time/end_time/keywords/task_id/user_id/round_no/keyword_type） */
+/** 获取分片队列信息（含 start_time/end_time/create_time/keywords/task_id/user_id/round_no/keyword_type） */
 export async function getQueueInfoForShardReport(queueId: number): Promise<any | null> {
   const result = await query(
-    `SELECT q.id, q.task_id, q.user_id, q.round_no, q.keywords, q.start_time, q.end_time, q.status,
+    `SELECT q.id, q.task_id, q.user_id, q.round_no, q.keywords, q.start_time, q.end_time, q.create_time, q.status,
             q.result_record_count, q.result_brand_count,
             t.keyword_type, t.task_name
      FROM real_collect_queue q
@@ -1571,6 +1571,23 @@ export async function getShardReportsByDate(
     [userId, dateStr]
   );
   return result.rows as AeoShardReport[];
+}
+
+/**
+ * v2.1.6：按 queue_id 精确查询分片对应的查询记录
+ * 新记录（worker v2.1.6+ 上报）会带上 queue_id，可精确关联
+ * 旧记录 queue_id 为 null，需 fallback 到时间窗口查询
+ */
+export async function getRecordsByQueueId(queueId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT id, task_id, user_id, keyword, platform, brand_matched, matched_brands,
+            share_url, raw_content, query_time, queue_id
+     FROM real_collect_record
+     WHERE queue_id = $1
+     ORDER BY query_time ASC`,
+    [queueId]
+  );
+  return result.rows;
 }
 
 // Worker更新分片处理进度（记录已处理到的关键词索引，重启后从断点续查）
@@ -2828,16 +2845,17 @@ export async function insertRealCollectRecord(params: {
   queryTime: Date;
   workerId: string;
   source?: 'api' | 'crawler';
+  queueId?: number | null; // v2.1.6：精确关联分片
 }): Promise<number> {
   const result = await query(
     `INSERT INTO real_collect_record
      (task_id, user_id, keyword, keyword_type, platform, brand_matched, matched_brands,
-      has_contact, contacts, share_url, static_page_id, raw_content, query_time, worker_id, source)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
+      has_contact, contacts, share_url, static_page_id, raw_content, query_time, worker_id, source, queue_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING id`,
     [params.taskId, params.userId, params.keyword, params.keywordType, params.platform,
      params.brandMatched, params.matchedBrands, params.hasContact, JSON.stringify(params.contacts),
      params.shareUrl, params.staticPageId, params.rawContent, params.queryTime, params.workerId,
-     params.source || 'crawler']
+     params.source || 'crawler', params.queueId ?? null]
   );
   return result.rows[0].id;
 }

@@ -83,6 +83,8 @@ export async function reportResult(result: {
   workerId: string;
   /** 查询来源：api（大模型 API）/ crawler（爬虫） */
   source?: 'api' | 'crawler';
+  /** v2.1.6：分片ID，用于精确关联记录与分片 */
+  queueId?: number | null;
 }): Promise<ReportResult | null> {
   try {
     const resp = await axios.post(`${SERVER_URL}/real-collect/results/worker/report`, {

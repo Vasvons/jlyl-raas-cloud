@@ -261,18 +261,19 @@ async function executeSingleQuery(
       // 回写结果（source='api'，shareUrl=null 由云端生成静态页）
       try {
         await reportResult({
-          taskId,
-          userId,
-          keyword,
-          keywordType,
-          platform,
-          content: apiResult.content,
-          htmlContent: apiResult.htmlContent,
-          shareUrl: apiResult.shareUrl,
-          supportsShare: apiResult.supportsShare,
-          workerId,
-          source: 'api',
-        });
+        taskId,
+        userId,
+        keyword,
+        keywordType,
+        platform,
+        content: apiResult.content,
+        htmlContent: apiResult.htmlContent,
+        shareUrl: apiResult.shareUrl,
+        supportsShare: apiResult.supportsShare,
+        workerId,
+        source: 'api',
+        queueId, // v2.1.6：精确关联分片
+      });
       } catch (reportErr: any) {
         logger.error(`[API] 结果上报失败 ${platform}/${keyword.substring(0, 30)}: ${reportErr.message}`);
       }
@@ -366,6 +367,7 @@ async function executeSingleQuery(
         supportsShare: result.supportsShare,
         workerId,
         source: 'crawler',
+        queueId, // v2.1.6：精确关联分片
       });
     } catch (reportErr: any) {
       logger.error(`结果上报失败 ${platform}/${keyword.substring(0, 30)}: ${reportErr.message}`);

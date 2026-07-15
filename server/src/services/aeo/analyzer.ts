@@ -21,6 +21,7 @@ import {
   getQueueInfoForShardReport,
   getRecordsByTimeWindow,
   getAllRecordsByTimeWindow,
+  getRecordsByQueueId,
   insertAeoShardReport,
   checkShardReportExists,
   // v2.0.0 时间维度报告（周/月报）
@@ -775,15 +776,32 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
     }
 
     // 3. 确定分片时间窗口
-    const startTime = queueInfo.start_time ? new Date(queueInfo.start_time) : new Date(Date.now() - 30 * 60 * 1000);
-    const endTime = queueInfo.end_time ? new Date(queueInfo.end_time) : new Date();
+    // v2.1.6：修复 start_time=null 导致时间窗口计算错误的问题
+    // 优先级：start_time > create_time > now-2h
+    // end_time 优先级：end_time > create_time+2h > now
+    const queueCreateTime = queueInfo.create_time ? new Date(queueInfo.create_time) : null;
+    const startTime = queueInfo.start_time
+      ? new Date(queueInfo.start_time)
+      : queueCreateTime
+        ? new Date(queueCreateTime.getTime() - 10 * 60 * 1000) // create_time 前10分钟兜底
+        : new Date(Date.now() - 2 * 60 * 60 * 1000);
+    const endTime = queueInfo.end_time
+      ? new Date(queueInfo.end_time)
+      : queueCreateTime
+        ? new Date(queueCreateTime.getTime() + 2 * 60 * 60 * 1000) // create_time 后2小时兜底
+        : new Date();
 
     const userId = queueInfo.user_id || '';
     const keywordType = queueInfo.keyword_type ?? 0; // 0=蒸馏词, 1=品牌词
 
-    // v2.1.6：始终查全量记录（不再只查品牌命中），从全量记录中区分品牌命中
-    // 这样分片报告成为所有数据（日报/周报/月报/大屏）的统一基础数据源
-    const allRecords = await getAllRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
+    // v2.1.6：优先用 queue_id 精确查询分片记录（新记录），fallback 到时间窗口（旧记录）
+    // 这样解决同任务多分片同时执行时时间窗口重叠导致记录串分片的问题
+    let allRecords = await getRecordsByQueueId(queueId);
+    if (allRecords.length === 0) {
+      // 旧记录无 queue_id，fallback 到时间窗口查询
+      console.log(`[AEO-Shard] 分片 ${queueId} 无 queue_id 关联记录，fallback 到时间窗口查询`);
+      allRecords = await getAllRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
+    }
 
     // 如果连任何记录都没有，说明分片没有产出查询结果，才真正跳过
     if (allRecords.length === 0) {

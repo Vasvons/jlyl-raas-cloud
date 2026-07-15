@@ -363,6 +363,11 @@ export async function migrate() {
     // create_time 索引：优化 cleanOldRealCollectRecords 按时间清理
     await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_create_time ON real_collect_record(create_time DESC)`);
 
+    // v2.1.6：添加 queue_id 字段，精确关联记录与分片（解决时间窗口查询重叠问题）
+    // 新记录会带上 queue_id，旧记录 queue_id 为 null（fallback 到时间窗口查询）
+    await client.query(`ALTER TABLE real_collect_record ADD COLUMN IF NOT EXISTS queue_id BIGINT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_rcr_queue_id ON real_collect_record(queue_id) WHERE queue_id IS NOT NULL`);
+
     // 静态页存储表
     await client.query(`
       CREATE TABLE IF NOT EXISTS real_collect_static_page (
