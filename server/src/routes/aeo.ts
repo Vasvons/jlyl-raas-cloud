@@ -19,12 +19,15 @@ router.post('/analyze', authMiddleware, async (req, res) => {
       return res.status(403).json({ code: 403, message: '无权为其他用户触发分析' });
     }
     const taskIdNum = Number(taskId);
-    // 异步触发分析，不阻塞响应
-    generateAeoReport(taskIdNum, String(userId))
-      .then(reportId => console.log(`[AEO] 手动分析完成 taskId=${taskIdNum} reportId=${reportId}`))
-      .catch(e => console.error(`[AEO] 手动分析失败 taskId=${taskIdNum}:`, e.message));
-    res.json({ code: 200, message: '分析已触发，请稍后查询结果' });
+    // v2.1.5：改为同步等待结果，把真实结果反馈给前端（原异步执行静默失败无反馈）
+    const reportId = await generateAeoReport(taskIdNum, String(userId));
+    if (reportId === null) {
+      res.json({ code: 200, message: '今日日报已生成，无需重复生成', data: { reportId: null, skipped: true } });
+    } else {
+      res.json({ code: 200, message: 'AEO 日报生成成功', data: { reportId, skipped: false } });
+    }
   } catch (e: any) {
+    console.error(`[AEO] 手动分析失败:`, e.message);
     res.json({ code: 500, message: e.message });
   }
 });

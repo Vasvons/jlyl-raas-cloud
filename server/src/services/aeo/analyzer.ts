@@ -46,7 +46,9 @@ const AEO_RECORD_LIMIT = parseInt(process.env.AEO_RECORD_LIMIT || '200');
  * 为指定任务生成 AEO 日报
  */
 export async function generateAeoReport(taskId: number, userId: string): Promise<number | null> {
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+  // v2.1.5：使用 Asia/Shanghai 时区的今日日期（原 UTC 导致北京时间 0-8 点日期错位）
+  const now = new Date();
+  const today = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
 
   // 检查今日是否已生成
   const exists = await checkAeoReportExists(taskId, today);
@@ -57,9 +59,27 @@ export async function generateAeoReport(taskId: number, userId: string): Promise
 
   // 获取今日品牌提及记录
   const records = await getBrandMentionRecordsForAeo(taskId, AEO_RECORD_LIMIT);
+
+  // v2.1.5：今日无品牌命中记录时，生成"今日无数据"报告（而非 return null 静默跳过）
+  // 这样飞轮页面"立即触发分析"后能看到报告生成，趋势卡片会更新
   if (records.length === 0) {
-    console.log(`[AEO] 任务 ${taskId} 今日无品牌提及记录，跳过`);
-    return null;
+    console.log(`[AEO] 任务 ${taskId} 今日无品牌提及记录，生成无数据报告`);
+    const reportId = await insertAeoReport({
+      taskId,
+      userId,
+      reportDate: today,
+      visibilityScore: 0,
+      mentionCount: 0,
+      positiveRatio: 0,
+      neutralRatio: 0,
+      negativeRatio: 0,
+      competitorAnalysis: '今日无品牌提及记录',
+      suggestions: '今日巡检尚未命中任何品牌关键词，暂无数据分析结论。请检查巡检任务是否正常运行，或品牌关键词是否配置正确。',
+      rawAnalysis: JSON.stringify({ reason: 'no_brand_mention_records_today', task_id: taskId }),
+      recordIds: [],
+    });
+    console.log(`[AEO] 任务 ${taskId} 无数据日报生成成功 reportId=${reportId}`);
+    return reportId;
   }
 
   // 获取品牌词

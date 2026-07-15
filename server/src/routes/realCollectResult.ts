@@ -203,11 +203,13 @@ router.post('/cleanup-invalid', async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const { userId, platform, keywordType, startTime, endTime, pageNum, pageSize } = req.query;
+    const { userId, platform, keywordType, brandMatched, startTime, endTime, pageNum, pageSize } = req.query;
     const result = await getRealCollectRecords({
       userId: userId as string | undefined,
       platform: platform as string | undefined,
       keywordType: keywordType ? parseInt(keywordType as string) : undefined,
+      // v2.1.5：支持 brand_matched 过滤
+      brandMatched: brandMatched !== undefined ? brandMatched === 'true' : undefined,
       startTime: startTime ? new Date(startTime as string) : undefined,
       endTime: endTime ? new Date(endTime as string) : undefined,
       pageNum: pageNum ? parseInt(pageNum as string) : 1,

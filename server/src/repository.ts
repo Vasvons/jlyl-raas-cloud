@@ -2785,6 +2785,7 @@ export async function getRealCollectRecords(params: {
   userId?: string;
   platform?: string;
   keywordType?: number;
+  brandMatched?: boolean;  // v2.1.5：支持过滤只看品牌命中记录
   pageNum: number;
   pageSize: number;
   startTime?: Date;
@@ -2797,6 +2798,8 @@ export async function getRealCollectRecords(params: {
   if (params.userId) { conditions.push(`user_id = $${paramIdx++}`); values.push(params.userId); }
   if (params.platform) { conditions.push(`platform = $${paramIdx++}`); values.push(params.platform); }
   if (params.keywordType !== undefined) { conditions.push(`keyword_type = $${paramIdx++}`); values.push(params.keywordType); }
+  // v2.1.5：支持 brand_matched 过滤
+  if (params.brandMatched !== undefined) { conditions.push(`brand_matched = $${paramIdx++}`); values.push(params.brandMatched); }
   if (params.startTime) { conditions.push(`query_time >= $${paramIdx++}`); values.push(params.startTime); }
   if (params.endTime) { conditions.push(`query_time <= $${paramIdx++}`); values.push(params.endTime); }
 
