@@ -136,7 +136,9 @@ async function callLlmForAeo(
   const model = modelConfig.model_name;
   console.log(`[AEO] 使用模型: platform=${modelConfig.platform} model=${model}`);
 
-  const prompt = `你是一位 AEO（Answer Engine Optimization）分析专家。请分析以下 AI 平台品牌提及数据，生成一份日报。
+  const prompt = `你是一位 AEO（Answer Engine Optimization）数据分析师。请分析以下 AI 平台品牌提及数据，生成一份客观数据日报。
+
+注意：你只负责客观数据分析和结论，不负责给出写作或优化建议。写作建议由周报/月报统一生成。
 
 品牌关键词：${brandKeywords.join('、')}
 
@@ -150,7 +152,7 @@ ${JSON.stringify(records, null, 2)}
   "neutralRatio": 0-100的数字,     // 中性情感占比
   "negativeRatio": 0-100的数字,    // 负面情感占比
   "competitorAnalysis": "竞品分析文本", // 是否有竞品被提及
-  "suggestions": "优化建议文本"     // 3-5条 GEO 优化建议
+  "suggestions": "数据分析结论"     // 3-5条客观数据分析结论，如"今日可见度下降5%，主要因为XX平台收录减少"，不要给出任何写作或优化建议
 }`;
 
   try {
@@ -232,7 +234,8 @@ function fallbackAnalysis(
 
   const total = records.length || 1;
   const competitorAnalysis = `共在 ${platformCount} 个平台获得 ${records.length} 次品牌提及。`;
-  const suggestions = `1. 继续保持当前 GEO 内容输出频率\n2. 关注提及量较少的平台，增加针对性内容\n3. 定期监控品牌情感变化趋势`;
+  // v2.1.5: 日报只输出客观数据分析结论，不输出写作或优化建议（写作建议由周/月报统一生成）
+  const suggestions = `1. 今日品牌可见度评分 ${visibilityScore}，共获得 ${records.length} 次提及\n2. 正面情感占比 ${Math.round((positive / total) * 100)}%，负面情感占比 ${Math.round((negative / total) * 100)}%\n3. 品牌在 ${platformCount} 个平台被提及`;
 
   return {
     visibilityScore,
