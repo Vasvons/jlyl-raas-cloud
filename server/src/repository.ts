@@ -1381,6 +1381,28 @@ export async function getRecordsByTimeWindow(
   return result.rows;
 }
 
+/**
+ * v2.1.5：按时间窗口查询所有查询记录（不限 brand_matched）
+ * 用于分片报告中无品牌命中时，统计总查询量，生成"收录为 0"的报告
+ */
+export async function getAllRecordsByTimeWindow(
+  taskId: number,
+  startTime: Date,
+  endTime: Date
+): Promise<any[]> {
+  const result = await query(
+    `SELECT id, task_id, user_id, keyword, platform, brand_matched, matched_brands,
+            share_url, raw_content, query_time
+     FROM real_collect_record
+     WHERE task_id = $1
+       AND query_time >= $2
+       AND query_time <= $3
+     ORDER BY query_time ASC`,
+    [taskId, startTime, endTime]
+  );
+  return result.rows;
+}
+
 /** 插入分片级 AEO 报告 */
 export async function insertAeoShardReport(data: {
   task_id: number;

@@ -20,6 +20,7 @@ import {
   // v2.0.0 分片级 AEO
   getQueueInfoForShardReport,
   getRecordsByTimeWindow,
+  getAllRecordsByTimeWindow,
   insertAeoShardReport,
   checkShardReportExists,
   // v2.0.0 时间维度报告（周/月报）
@@ -686,67 +687,125 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
     const endTime = queueInfo.end_time ? new Date(queueInfo.end_time) : new Date();
 
     // 4. 按时间窗口查询品牌命中记录
-    const records = await getRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
-    if (records.length === 0) {
-      console.log(`[AEO-Shard] 分片 ${queueId} 时间窗口内无品牌命中记录，跳过`);
-      return null;
-    }
+    const brandMatchedRecords = await getRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
 
     // 5. 获取品牌词
     const userId = queueInfo.user_id || '';
     const brandKeywords = await getBrandKeywords(userId);
-    if (brandKeywords.length === 0) {
-      console.log(`[AEO-Shard] 用户 ${userId} 无品牌词配置，跳过`);
+
+    // v2.1.5：无品牌命中时也生成报告（如实展现收录为 0 的情况）
+    // 没有命中记录正说明品牌需要做 GEO 优化，报告应如实展现当前 AI 提及率为 0%
+    const hasBrandMatch = brandMatchedRecords.length > 0;
+
+    // 查询该时间窗口内所有记录（不限 brand_matched），用于统计总查询量
+    const allRecords = hasBrandMatch
+      ? brandMatchedRecords
+      : await getAllRecordsByTimeWindow(queueInfo.task_id, startTime, endTime);
+
+    // 如果连任何记录都没有，说明分片没有产出查询结果，才真正跳过
+    if (allRecords.length === 0) {
+      console.log(`[AEO-Shard] 分片 ${queueId} 时间窗口内无任何查询记录，跳过`);
       return null;
     }
 
-    // 6. 准备分析输入（v2.0.5：截取内容前 3000 字，原 500 字太少）
-    const analysisInput = records.map(r => ({
-      platform: r.platform,
-      keyword: r.keyword,
-      content: (r.raw_content || '').substring(0, 3000),
-      matchedBrands: r.matched_brands,
-      shareUrl: r.share_url,
-    }));
+    let analysis: any;
+    let brandMentions: any[];
+    let negativeFindings: any[];
+    let sentimentSummary: any;
+    let totalRecordCount: number;
+    let brandMatchedCount: number;
 
-    // 7. 调用 LLM 分析（复用现有 callLlmForAeo）
-    const analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
+    if (hasBrandMatch) {
+      // ===== 有品牌命中：正常分析流程 =====
+      totalRecordCount = queueInfo.result_record_count || allRecords.length;
+      brandMatchedCount = brandMatchedRecords.length;
 
-    // 8. 提取负面发现和品牌提及详情
-    const brandMentions = records.map(r => ({
-      keyword: r.keyword,
-      platform: r.platform,
-      matchedBrands: r.matched_brands,
-      shareUrl: r.share_url,
-      contentPreview: (r.raw_content || '').substring(0, 200),
-    }));
-
-    // 9. 识别负面发现（内容含负面词的记录）
-    const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷'];
-    const negativeFindings = records
-      .filter(r => {
-        const text = (r.raw_content || '').toLowerCase();
-        return negativeWords.some(w => text.includes(w));
-      })
-      .map(r => ({
-        keyword: r.keyword,
+      // 准备分析输入（v2.0.5：截取内容前 3000 字，原 500 字太少）
+      const analysisInput = brandMatchedRecords.map(r => ({
         platform: r.platform,
-        contentPreview: (r.raw_content || '').substring(0, 300),
-        negativeWords: negativeWords.filter(w => (r.raw_content || '').toLowerCase().includes(w)),
+        keyword: r.keyword,
+        content: (r.raw_content || '').substring(0, 3000),
+        matchedBrands: r.matched_brands,
+        shareUrl: r.share_url,
       }));
 
-    // 10. 情感汇总
-    const sentimentSummary = {
-      total: records.length,
-      positive: Math.round(records.length * analysis.positiveRatio / 100),
-      neutral: Math.round(records.length * analysis.neutralRatio / 100),
-      negative: Math.round(records.length * analysis.negativeRatio / 100),
-      positiveRatio: analysis.positiveRatio,
-      neutralRatio: analysis.neutralRatio,
-      negativeRatio: analysis.negativeRatio,
-    };
+      // 调用 LLM 分析（复用现有 callLlmForAeo）
+      analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
 
-    // 11. 入库
+      // 提取品牌提及详情
+      brandMentions = brandMatchedRecords.map(r => ({
+        keyword: r.keyword,
+        platform: r.platform,
+        matchedBrands: r.matched_brands,
+        shareUrl: r.share_url,
+        contentPreview: (r.raw_content || '').substring(0, 200),
+      }));
+
+      // 识别负面发现（内容含负面词的记录）
+      const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷'];
+      negativeFindings = brandMatchedRecords
+        .filter(r => {
+          const text = (r.raw_content || '').toLowerCase();
+          return negativeWords.some(w => text.includes(w));
+        })
+        .map(r => ({
+          keyword: r.keyword,
+          platform: r.platform,
+          contentPreview: (r.raw_content || '').substring(0, 300),
+          negativeWords: negativeWords.filter(w => (r.raw_content || '').toLowerCase().includes(w)),
+        }));
+
+      // 情感汇总
+      sentimentSummary = {
+        total: brandMatchedRecords.length,
+        positive: Math.round(brandMatchedRecords.length * analysis.positiveRatio / 100),
+        neutral: Math.round(brandMatchedRecords.length * analysis.neutralRatio / 100),
+        negative: Math.round(brandMatchedRecords.length * analysis.negativeRatio / 100),
+        positiveRatio: analysis.positiveRatio,
+        neutralRatio: analysis.neutralRatio,
+        negativeRatio: analysis.negativeRatio,
+      };
+    } else {
+      // ===== 无品牌命中：生成"收录为 0"的报告 =====
+      // 没有命中记录说明品牌 AI 提及率为 0%，这恰恰是最需要 GEO 优化的情况
+      totalRecordCount = allRecords.length;
+      brandMatchedCount = 0;
+
+      const noKeywordNote = brandKeywords.length === 0
+        ? `用户未配置品牌词（pp 表为空），无法识别品牌命中。请先在"品牌词库"中添加品牌词。`
+        : `已配置 ${brandKeywords.length} 个品牌词，但 AI 回答中均未提及品牌。`;
+
+      analysis = {
+        visibilityScore: 0,
+        positiveRatio: 0,
+        neutralRatio: 0,
+        negativeRatio: 0,
+        competitorAnalysis: '无品牌命中，无法分析竞品',
+        suggestions: `本分片查询了 ${allRecords.length} 条记录，品牌命中 0 条，AI 提及率为 0%。${noKeywordNote}建议持续通过飞轮运转做 GEO 优化，提高品牌 AI 提及率。`,
+        raw: JSON.stringify({
+          reason: 'no_brand_match',
+          total_records: allRecords.length,
+          brand_matched_count: 0,
+          brand_keyword_count: brandKeywords.length,
+          note: noKeywordNote,
+        }),
+      };
+      brandMentions = [];
+      negativeFindings = [];
+      sentimentSummary = {
+        total: 0,
+        positive: 0,
+        neutral: 0,
+        negative: 0,
+        positiveRatio: 0,
+        neutralRatio: 0,
+        negativeRatio: 0,
+      };
+
+      console.log(`[AEO-Shard] 分片 ${queueId} 无品牌命中，生成"收录为 0"报告（总查询 ${allRecords.length} 条）`);
+    }
+
+    // 入库
     const reportId = await insertAeoShardReport({
       task_id: queueInfo.task_id,
       queue_id: queueId,
@@ -757,8 +816,8 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       brand_mentions: brandMentions,
       negative_findings: negativeFindings,
       content_suggestions: analysis.suggestions,
-      record_count: queueInfo.result_record_count || records.length,
-      brand_matched_count: queueInfo.result_brand_count || records.length,
+      record_count: totalRecordCount,
+      brand_matched_count: brandMatchedCount,
       visibility_score: analysis.visibilityScore,
       positive_ratio: analysis.positiveRatio,
       negative_ratio: analysis.negativeRatio,
@@ -768,7 +827,7 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       shard_end_time: endTime,
     });
 
-    console.log(`[AEO-Shard] 分片 ${queueId} AEO报告已生成: reportId=${reportId}, 品牌命中=${records.length}, 负面发现=${negativeFindings.length}`);
+    console.log(`[AEO-Shard] 分片 ${queueId} AEO报告已生成: reportId=${reportId}, 品牌命中=${brandMatchedCount}, 负面发现=${negativeFindings.length}`);
     return reportId;
   } catch (err: any) {
     console.error(`[AEO-Shard] 分片 ${queueId} AEO分析失败:`, err.message);
