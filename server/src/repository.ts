@@ -1596,6 +1596,7 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   brandHitCount: number; // 本轮命中品牌次数
   totalRecords: number; // 本轮总查询记录数
   brandHitRate: number; // 本轮命中率（百分比，0-100）
+  latestShardStartTime: Date | null; // v2.1.5：最近 running 分片的开始时间（用于飞轮判断"最近执行的任务"）
 }> {
   // 获取任务配置
   const taskResult = await query(
@@ -1634,12 +1635,14 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   const row = result.rows[0] || {};
 
   // 查询当前正在执行的 running 分片的详细进度
-  // 按 create_time 排序，取最早的 running 分片（即正在执行的分片）
+  // 按 start_time 排序，取最早的 running 分片（即最早开始执行的分片）
+  // v2.1.5：加 MAX(start_time) OVER() 获取最新分片开始时间，用于飞轮判断"最近执行的任务"
   const runningResult = await query(
     `WITH task_round AS (
        SELECT id, round_no, round_start_time FROM real_collect_task WHERE id = $1
      )
-     SELECT q.id, q.last_keyword_index, jsonb_array_length(q.keywords) as keyword_count
+     SELECT q.id, q.last_keyword_index, jsonb_array_length(q.keywords) as keyword_count,
+            MAX(q.start_time) OVER () as latest_start_time
      FROM real_collect_queue q, task_round tr
      WHERE q.task_id = $1 AND q.status = 'running'
        AND (
@@ -1710,6 +1713,7 @@ export async function getTaskShardProgress(taskId: number): Promise<{
     brandHitCount,
     totalRecords,
     brandHitRate,
+    latestShardStartTime: runningShard?.latest_start_time || null,
   };
 }
 
