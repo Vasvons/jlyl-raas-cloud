@@ -4,7 +4,7 @@
  * - 每小时检查是否需要生成周报/月报（按客户创建日计算周期，依次执行非并发）
  */
 import cron from 'node-cron';
-import { getActiveTasksForAeo, shouldGenerateWeeklyReport, shouldGenerateMonthlyReport } from '../../repository';
+import { getActiveTasksForAeo, shouldGenerateDailyReport, shouldGenerateWeeklyReport, shouldGenerateMonthlyReport } from '../../repository';
 import { generateAeoReport, generatePeriodReport } from './analyzer';
 
 let aeoSchedulerStarted = false;
@@ -66,12 +66,22 @@ async function checkAndGeneratePeriodReports(): Promise<void> {
   if (userIds.length === 0) return;
 
   const now = new Date();
+  let dailyCount = 0;
   let weeklyCount = 0;
   let monthlyCount = 0;
 
   // 依次处理每个用户（非并发，避免 LLM 调用和写作任务创建同时进行导致资源压力）
   for (const userId of userIds) {
     try {
+      // v2.1.3：检查日报（配额周期为 daily 时触发自动写作）
+      if (await shouldGenerateDailyReport(userId, now)) {
+        const periodEnd = now;
+        const periodStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        console.log(`[AEO-Period] 用户 ${userId} 需要生成日报 (${periodStart.toISOString().slice(0,10)}~${periodEnd.toISOString().slice(0,10)})`);
+        const reportId = await generatePeriodReport(userId, 'daily', periodStart, periodEnd);
+        if (reportId) dailyCount++;
+      }
+
       // 检查周报
       if (await shouldGenerateWeeklyReport(userId, now)) {
         const periodEnd = now;
@@ -95,7 +105,7 @@ async function checkAndGeneratePeriodReports(): Promise<void> {
     }
   }
 
-  if (weeklyCount > 0 || monthlyCount > 0) {
-    console.log(`[AEO-Period] 周期报告检查完成: 生成 ${weeklyCount} 份周报, ${monthlyCount} 份月报`);
+  if (dailyCount > 0 || weeklyCount > 0 || monthlyCount > 0) {
+    console.log(`[AEO-Period] 周期报告检查完成: 生成 ${dailyCount} 份日报, ${weeklyCount} 份周报, ${monthlyCount} 份月报`);
   }
 }

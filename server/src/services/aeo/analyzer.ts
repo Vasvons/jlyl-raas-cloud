@@ -776,7 +776,7 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
  */
 export async function generatePeriodReport(
   userId: string,
-  periodType: 'weekly' | 'monthly',
+  periodType: 'daily' | 'weekly' | 'monthly',
   periodStart: Date,
   periodEnd: Date
 ): Promise<number | null> {
@@ -807,8 +807,9 @@ export async function generatePeriodReport(
     const articleQuota = Number(quotaConfig?.article_quota) || 0;
     const legacyQuota = periodType === 'weekly'
       ? (Number(quotaConfig?.weekly_article_quota) || 0)
-      : (Number(quotaConfig?.monthly_article_quota) || 0);
+      : (periodType === 'monthly' ? (Number(quotaConfig?.monthly_article_quota) || 0) : 0);
     // 只有当当前周期类型 === 配置的周期时才触发自动写作
+    // v2.1.3：支持 'daily' 周期
     const quota = periodType === configCycle
       ? (articleQuota > 0 ? articleQuota : legacyQuota)
       : 0;
@@ -1021,7 +1022,9 @@ async function generateWritingSuggestionsPool(
   console.log(`[AEO-Period] 使用模型生成写作建议: platform=${modelConfig.platform} model=${model}`);
 
   // 调用 LLM 生成建议池
-  const prompt = `你是 AEO（Answer Engine Optimization）内容策略专家。请基于以下本${periodType === 'weekly' ? '周' : '月'}数据，生成 5-10 条具体的写作建议。
+  // v2.1.3：支持 'daily' 周期
+  const periodLabel = periodType === 'daily' ? '日' : periodType === 'weekly' ? '周' : '月';
+  const prompt = `你是 AEO（Answer Engine Optimization）内容策略专家。请基于以下本${periodLabel}数据，生成 5-10 条具体的写作建议。
 
 分片报告数：${shardReports.length}
 收录统计：总记录 ${inclusionStats.total}，品牌命中 ${inclusionStats.brand_matched}，收录率 ${inclusionStats.inclusion_rate}%
@@ -1218,13 +1221,34 @@ async function autoCreateWritingTasksFromPeriod(
     return 0;
   }
 
-  const taskName = `[AEO自动] ${periodType === 'weekly' ? '周报' : '月报'}驱动写作任务 ${new Date().toISOString().slice(0, 10)}`;
+  const taskName = `[AEO自动] ${periodType === 'daily' ? '日报' : periodType === 'weekly' ? '周报' : '月报'}驱动写作任务 ${new Date().toISOString().slice(0, 10)}`;
+
+  // v2.1.3：优先使用用户配置的"重点优化关键词"作为写作主题
+  // 如果未配置 focus_keywords，则回退到 null（由写作指令和AEO建议驱动）
+  const quotaConfig = await getAeoQuotaConfig(userIdNum);
+  const focusKeywords: string[] = Array.isArray(quotaConfig?.focus_keywords)
+    ? quotaConfig.focus_keywords.filter((k: any) => typeof k === 'string' && k.trim())
+    : [];
+
+  // v2.1.3：将 focus_keywords 字符串转为 zlgjc 表的 keyword_ids
+  // 如果 focus_keywords 在 zlgjc 表中找不到匹配项，则 keyword_ids 为空（不影响文章生成，只是 L4 主题参考层为空）
+  let focusKeywordIds: number[] = [];
+  if (focusKeywords.length > 0) {
+    try {
+      const { getKeywordIdsByValues } = await import('../../repository');
+      focusKeywordIds = await getKeywordIdsByValues(userIdNum, focusKeywords);
+      console.log(`[AEO-Period] focus_keywords 匹配到 ${focusKeywordIds.length}/${focusKeywords.length} 个关键词 ID`);
+    } catch (e: any) {
+      console.warn(`[AEO-Period] 查询 focus_keywords ID 失败:`, e.message);
+    }
+  }
 
   // 创建写作任务
+  // v2.1.3：auto_publish=true，写作完成后云端自动创建发布任务
   const taskId = await createWritingTask({
     user_id: userIdNum,
     task_name: taskName,
-    keyword_ids: null, // 自动任务不指定关键词，由写作指令和AEO建议驱动
+    keyword_ids: focusKeywordIds.length > 0 ? focusKeywordIds : null, // v2.1.3：重点优化关键词 ID
     instruction_id: instruction.id,
     knowledge_id: knowledge.id,
     model_config_id: modelConfig.id,
@@ -1238,10 +1262,11 @@ async function autoCreateWritingTasksFromPeriod(
   });
 
   // 7. 补充 AEO 相关字段（createWritingTask 未包含这些字段）
+  // v2.1.3：auto_publish=true 让云端 articleGenerator 完成后自动创建发布任务
   await dbQuery(
     `UPDATE ai_writing_task
      SET aeo_context = $1,
-         auto_publish = false,
+         auto_publish = true,
          auto_generated = true,
          trigger_period_report_id = $2
      WHERE id = $3`,

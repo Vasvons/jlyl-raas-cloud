@@ -3509,6 +3509,12 @@ export async function shouldGenerateWeeklyReport(userId: string, now: Date = new
   return daysSinceStart >= 7 && daysSinceStart % 7 === 0;
 }
 
+/** v2.1.3：检查客户今天是否需要生成日报（每日都生成） */
+export async function shouldGenerateDailyReport(userId: string, now: Date = new Date()): Promise<boolean> {
+  // 每日报告每天都触发，由 checkPeriodReportExists 防重复
+  return true;
+}
+
 /** 检查客户今天是否需要生成月报（按创建日的日期，每月该日） */
 export async function shouldGenerateMonthlyReport(userId: string, now: Date = new Date()): Promise<boolean> {
   const startDate = await getAeoReportStartDate(userId);
@@ -4390,6 +4396,7 @@ const AEO_QUOTA_FIELDS = [
   'aeo_report_start_date',
   'enable_competitor_geo',
   'competitor_brands',
+  'focus_keywords',
 ] as const;
 
 /** 获取当前用户的 AEO 配额配置 */
@@ -4432,7 +4439,13 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
   }
   if (data.quota_cycle !== undefined) {
     fields.push(`quota_cycle = $${idx++}`);
-    values.push(data.quota_cycle === 'monthly' ? 'monthly' : 'weekly');
+    // v2.1.3：新增 'daily' 选项
+    values.push(['daily', 'weekly', 'monthly'].includes(data.quota_cycle) ? data.quota_cycle : 'weekly');
+  }
+  // v2.1.3：重点优化关键词
+  if (data.focus_keywords !== undefined) {
+    fields.push(`focus_keywords = $${idx++}`);
+    values.push(JSON.stringify(data.focus_keywords || []));
   }
   if (data.auto_publish_enabled !== undefined) {
     fields.push(`auto_publish_enabled = $${idx++}`);

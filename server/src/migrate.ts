@@ -973,6 +973,8 @@ export async function migrate() {
     // v2.0.2: 统一配额字段（替代 weekly/monthly 双配额）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS article_quota INTEGER DEFAULT 0`);
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS quota_cycle VARCHAR(10) DEFAULT 'weekly'`);
+    // v2.1.3: 重点优化关键词（用户手动设置，驱动自动写作任务的主题方向）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS focus_keywords JSONB`);
 
     // v2.0.0: ai_writing_task 表新增 AEO 驱动字段
     // aeo_context: AEO综合建议池（周/月报汇总后注入，直接驱动写作方向）
