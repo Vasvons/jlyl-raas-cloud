@@ -673,13 +673,11 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       return null;
     }
 
-    // 仅对成功完成且有品牌命中的分片进行分析
+    // 仅对成功完成的分片进行分析（品牌命中判断交给第 5 道门 getRecordsByTimeWindow）
+    // v2.1.5：删除原 result_brand_count===0 检查——worker 端写死 brandMatched=false 导致该字段恒为 0，
+    //         所有分片都在此处被错误跳过。真实品牌命中以 real_collect_record 表 brand_matched=true 为准。
     if (queueInfo.status !== 'done') {
       console.log(`[AEO-Shard] 分片 ${queueId} 状态非 done（${queueInfo.status}），跳过`);
-      return null;
-    }
-    if ((queueInfo.result_brand_count || 0) === 0) {
-      console.log(`[AEO-Shard] 分片 ${queueId} 无品牌命中，跳过`);
       return null;
     }
 
