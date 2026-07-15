@@ -2695,7 +2695,12 @@ export async function resetTaskCurrentRound(taskId: number): Promise<{ deletedSh
 
 /** 获取真实查询任务列表 */
 export async function getRealCollectTasks(userId?: string): Promise<any[]> {
-  const sql = `SELECT * FROM real_collect_task WHERE status != 'deleted' ${userId ? 'AND user_id = $1' : ''} ORDER BY create_time DESC`;
+  // v2.1.5：子查询统计累计执行分片数（real_collect_queue 表 status='done' 的数量）
+  const sql = `SELECT t.*,
+    (SELECT COUNT(*) FROM real_collect_queue q WHERE q.task_id = t.id AND q.status = 'done') AS execution_count
+    FROM real_collect_task t
+    WHERE t.status != 'deleted' ${userId ? 'AND t.user_id = $1' : ''}
+    ORDER BY t.create_time DESC`;
   const result = await query(sql, userId ? [userId] : []);
   return result.rows;
 }
