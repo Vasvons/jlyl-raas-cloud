@@ -252,24 +252,55 @@ async function callLlmForAeo(
   const model = modelConfig.model_name;
   console.log(`[AEO] 使用模型: platform=${modelConfig.platform} model=${model}`);
 
-  const prompt = `你是一位 AEO（Answer Engine Optimization）数据分析师。请分析以下 AI 平台品牌提及数据，生成一份客观数据日报。
+  // v2.1.6：构建多平台维度分析 prompt
+  // 输入包含全量记录（含未命中），让 LLM 看到所有 AI 平台的覆盖情况
+  // 品牌命中记录带 brandMatched=true，未命中记录带 brandMatched=false
+  const platformStats: Record<string, { total: number; hit: number }> = {};
+  for (const r of records) {
+    const p = r.platform || 'unknown';
+    if (!platformStats[p]) platformStats[p] = { total: 0, hit: 0 };
+    platformStats[p].total++;
+    if (r.brandMatched === true || (r.matchedBrands && r.matchedBrands.length > 0)) platformStats[p].hit++;
+  }
+  const platformSummary = Object.entries(platformStats)
+    .map(([p, s]) => `${p}: 查询${s.total}条/命中${s.hit}条(${s.total > 0 ? Math.round(s.hit / s.total * 100) : 0}%)`)
+    .join('；');
+  const hitRecords = records.filter(r => r.brandMatched === true || (r.matchedBrands && r.matchedBrands.length > 0));
+  const totalRecords = records.length;
+  const hitCount = hitRecords.length;
+
+  const prompt = `你是一位 AEO（Answer Engine Optimization）数据分析师，负责评估品牌在所有 AI 平台上的整体可见度和形象。
+GEO 优化的目标是提高品牌在所有 AI 平台（不只某一个）上的提及率和正面形象。
 
 注意：你只负责客观数据分析和结论，不负责给出写作或优化建议。写作建议由周报/月报统一生成。
 
 品牌关键词：${brandKeywords.join('、')}
 
-提及记录（共${records.length}条）：
-${JSON.stringify(records, null, 2)}
+【整体数据概览】
+- 总查询记录：${totalRecords} 条
+- 品牌命中记录：${hitCount} 条（命中率 ${totalRecords > 0 ? Math.round(hitCount / totalRecords * 100) : 0}%）
+- 覆盖平台：${Object.keys(platformStats).length} 个
+- 平台分布：${platformSummary}
 
-请返回 JSON 格式（不要 markdown 代码块）：
+【记录详情】（brandMatched=true 表示该条 AI 回答提及了品牌，false 表示未提及）
+${JSON.stringify(records.slice(0, 30), null, 2)}
+
+请综合所有平台的数据，返回 JSON 格式（不要 markdown 代码块）：
 {
-  "visibilityScore": 0-100的整数,  // 品牌可见度评分
-  "positiveRatio": 0-100的数字,    // 正面情感占比
+  "visibilityScore": 0-100的整数,  // 品牌可见度评分（需综合考虑：命中率、覆盖平台数、各平台命中均衡度）
+  "positiveRatio": 0-100的数字,    // 正面情感占比（基于命中记录的内容分析）
   "neutralRatio": 0-100的数字,     // 中性情感占比
   "negativeRatio": 0-100的数字,    // 负面情感占比
-  "competitorAnalysis": "竞品分析文本", // 是否有竞品被提及
-  "suggestions": "数据分析结论"     // 3-5条客观数据分析结论，如"今日可见度下降5%，主要因为XX平台收录减少"，不要给出任何写作或优化建议
-}`;
+  "competitorAnalysis": "竞品分析文本", // 各平台中出现的竞品情况
+  "suggestions": "数据分析结论"     // 3-5条客观数据分析结论，需包含：1)整体可见度评估 2)各平台覆盖差异（哪些平台命中高/低）3)情感分布 4)与 GEO 目标的差距
+}
+
+评分参考：
+- visibilityScore 应反映品牌在所有 AI 平台的整体可见度，不只看单一平台
+- 命中率 100% 且覆盖所有平台 = 90-100 分
+- 命中率 50% 且覆盖多数平台 = 50-70 分
+- 命中率 0% = 0 分
+- 只在单一平台命中（其他平台全未命中）应扣分，因为 GEO 目标是全平台覆盖`;
 
   try {
     const resp = await axios.post(
@@ -277,7 +308,7 @@ ${JSON.stringify(records, null, 2)}
       {
         model,
         messages: [
-          { role: 'system', content: '你是 AEO 分析专家，只返回 JSON 格式数据。' },
+          { role: 'system', content: '你是 AEO 分析专家，只返回 JSON 格式数据。综合所有 AI 平台数据进行分析，不只看单一平台。' },
           { role: 'user', content: prompt },
         ],
         temperature: 0.3,
@@ -310,6 +341,7 @@ ${JSON.stringify(records, null, 2)}
 
 /**
  * 无 LLM 时的简单分析（纯代码）
+ * v2.1.6：改为多平台维度计算，不只看品牌命中
  */
 function fallbackAnalysis(
   records: any[],
@@ -323,17 +355,35 @@ function fallbackAnalysis(
   suggestions: string;
   raw: string;
 } {
-  const platformCount = new Set(records.map(r => r.platform)).size;
-  const visibilityScore = Math.min(100, records.length * 5 + platformCount * 10);
+  // v2.1.6：按平台统计命中情况
+  const platformMap: Record<string, { total: number; hit: number }> = {};
+  for (const r of records) {
+    const p = r.platform || 'unknown';
+    if (!platformMap[p]) platformMap[p] = { total: 0, hit: 0 };
+    platformMap[p].total++;
+    if (r.brandMatched === true || (r.matchedBrands && r.matchedBrands.length > 0)) platformMap[p].hit++;
+  }
+  const platformCount = Object.keys(platformMap).length;
+  const hitPlatforms = Object.entries(platformMap).filter(([_, s]) => s.hit > 0).length;
+  const totalRecords = records.length;
+  const hitRecords = records.filter(r => r.brandMatched === true || (r.matchedBrands && r.matchedBrands.length > 0));
+  const hitCount = hitRecords.length;
+  const hitRate = totalRecords > 0 ? hitCount / totalRecords : 0;
 
-  // 简单情感判断：包含正面词计为正面，包含负面词计为负面
+  // v2.1.6：可见度 = 命中率(40%) + 平台覆盖均衡度(40%) + 命中数量(20%)
+  // 平台覆盖均衡度 = 命中平台数 / 总平台数
+  const platformBalance = platformCount > 0 ? hitPlatforms / platformCount : 0;
+  const hitCountScore = Math.min(1, hitCount / 10); // 10条命中即满分
+  const visibilityScore = Math.round((hitRate * 0.4 + platformBalance * 0.4 + hitCountScore * 0.2) * 100);
+
+  // 简单情感判断：基于命中记录
   const positiveWords = ['好', '优秀', '推荐', '不错', '方便', '好用', '满意', '专业'];
   const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗'];
 
   let positive = 0;
   let negative = 0;
   let neutral = 0;
-  for (const r of records) {
+  for (const r of hitRecords) {
     const text = (r.content || '').toLowerCase();
     let posScore = 0;
     let negScore = 0;
@@ -348,10 +398,13 @@ function fallbackAnalysis(
     else neutral++;
   }
 
-  const total = records.length || 1;
-  const competitorAnalysis = `共在 ${platformCount} 个平台获得 ${records.length} 次品牌提及。`;
+  const total = hitRecords.length || 1;
+  const platformBreakdown = Object.entries(platformMap)
+    .map(([p, s]) => `${p}: ${s.hit}/${s.total}(${s.total > 0 ? Math.round(s.hit / s.total * 100) : 0}%)`)
+    .join('，');
+  const competitorAnalysis = `共在 ${hitPlatforms}/${platformCount} 个平台获得 ${hitCount} 次品牌提及。平台分布：${platformBreakdown}`;
   // v2.1.5: 日报只输出客观数据分析结论，不输出写作或优化建议（写作建议由周/月报统一生成）
-  const suggestions = `1. 今日品牌可见度评分 ${visibilityScore}，共获得 ${records.length} 次提及\n2. 正面情感占比 ${Math.round((positive / total) * 100)}%，负面情感占比 ${Math.round((negative / total) * 100)}%\n3. 品牌在 ${platformCount} 个平台被提及`;
+  const suggestions = `1. 整体可见度评分 ${visibilityScore}，命中率 ${Math.round(hitRate * 100)}%（${hitCount}/${totalRecords}）\n2. 平台覆盖：${hitPlatforms}/${platformCount} 个平台命中品牌，${platformCount - hitPlatforms} 个平台未命中\n3. 正面情感占比 ${Math.round((positive / total) * 100)}%，负面情感占比 ${Math.round((negative / total) * 100)}%\n4. 平台分布：${platformBreakdown}`;
 
   return {
     visibilityScore,
@@ -360,7 +413,7 @@ function fallbackAnalysis(
     negativeRatio: Math.round((negative / total) * 100),
     competitorAnalysis,
     suggestions,
-    raw: JSON.stringify({ fallback: true, records: records.length }),
+    raw: JSON.stringify({ fallback: true, total_records: totalRecords, hit_count: hitCount, hit_rate: hitRate, platform_count: platformCount, hit_platforms: hitPlatforms }),
   };
 }
 
@@ -916,11 +969,14 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
 
     if (hasBrandMatch) {
       // ===== 有品牌命中：正常 LLM 分析流程 =====
-      const analysisInput = brandMatchedRecords.map(r => ({
+      // v2.1.6：把全量记录（含未命中）传给 LLM，让 LLM 看到所有平台的覆盖情况
+      // 而非只传品牌命中记录，否则 LLM 只能看到单一平台的数据
+      const analysisInput = allRecords.map(r => ({
         platform: r.platform,
         keyword: r.keyword,
         content: (r.raw_content || '').substring(0, 3000),
         matchedBrands: r.matched_brands,
+        brandMatched: r.brand_matched === true, // v2.1.6：标记是否命中，让 LLM 区分
         shareUrl: r.share_url,
       }));
       analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
@@ -946,14 +1002,17 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
           negativeWords: negativeWords.filter(w => (r.raw_content || '').toLowerCase().includes(w)),
         }));
 
+      // v2.1.6：情感汇总基于全量记录（命中记录参与情感分析，未命中记录算中性）
       sentimentSummary = {
-        total: brandMatchedRecords.length,
-        positive: Math.round(brandMatchedRecords.length * analysis.positiveRatio / 100),
-        neutral: Math.round(brandMatchedRecords.length * analysis.neutralRatio / 100),
-        negative: Math.round(brandMatchedRecords.length * analysis.negativeRatio / 100),
-        positiveRatio: analysis.positiveRatio,
-        neutralRatio: analysis.neutralRatio,
-        negativeRatio: analysis.negativeRatio,
+        total: allRecords.length,
+        brand_matched: brandMatchedCount,
+        positive: Math.round(brandMatchedCount * analysis.positiveRatio / 100),
+        neutral: (allRecords.length - brandMatchedCount) + Math.round(brandMatchedCount * analysis.neutralRatio / 100),
+        negative: Math.round(brandMatchedCount * analysis.negativeRatio / 100),
+        positiveRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * analysis.positiveRatio / 100) / allRecords.length * 100 : 0),
+        neutralRatio: Math.round(((allRecords.length - brandMatchedCount) + brandMatchedCount * analysis.neutralRatio / 100) / allRecords.length * 100),
+        negativeRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * analysis.negativeRatio / 100) / allRecords.length * 100 : 0),
+        platform_coverage: `${sourcePlatforms.length}个平台查询，${platformBreakdown.filter(p => p.brand_matched > 0).length}个平台命中`,
       };
     } else {
       // ===== 无品牌命中：生成"收录为 0"的报告 =====
@@ -979,13 +1038,15 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       brandMentions = [];
       negativeFindings = [];
       sentimentSummary = {
-        total: 0,
+        total: allRecords.length,
+        brand_matched: 0,
         positive: 0,
-        neutral: 0,
+        neutral: allRecords.length,
         negative: 0,
         positiveRatio: 0,
-        neutralRatio: 0,
+        neutralRatio: 100,
         negativeRatio: 0,
+        platform_coverage: `${sourcePlatforms.length}个平台查询，0个平台命中`,
       };
 
       console.log(`[AEO-Shard] 分片 ${queueId} 无品牌命中，生成"收录为 0"报告（总查询 ${allRecords.length} 条）`);
