@@ -10,6 +10,8 @@ import {
   resetTaskCurrentRound,
   getExcludePrefixOptions,
   getExcludeComboOptions,
+  getBrandKeywords,
+  getDistillateKeywords,
 } from '../repository';
 import { enqueueTaskNow } from '../services/realCollect/scheduler';
 
@@ -49,7 +51,20 @@ router.get('/', async (req, res) => {
   try {
     const userId = req.query.userId as string | undefined;
     const tasks = await getRealCollectTasks(userId);
-    res.json({ code: 200, data: tasks });
+    // v2.1.5：为每个任务附加 keyword_count，前端据此判断"无关键词"状态
+    const tasksWithKwCount = await Promise.all(
+      tasks.map(async (t: any) => {
+        try {
+          const keywords = t.keyword_type === 1
+            ? await getBrandKeywords(t.user_id)
+            : await getDistillateKeywords(t.user_id);
+          return { ...t, keyword_count: keywords.length };
+        } catch {
+          return { ...t, keyword_count: -1 }; // -1 表示查询失败
+        }
+      })
+    );
+    res.json({ code: 200, data: tasksWithKwCount });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }
@@ -74,8 +89,21 @@ router.post('/', async (req, res) => {
     if (!userId || !taskName || keywordType === undefined || !platforms) {
       return res.status(400).json({ code: 400, message: '缺少必要参数' });
     }
+    // v2.1.5：创建前检查关键词是否存在，给出警告（但仍允许创建，用户可能稍后导入关键词）
+    let warning: string | undefined;
+    try {
+      const keywords = keywordType === 1
+        ? await getBrandKeywords(userId)
+        : await getDistillateKeywords(userId);
+      if (keywords.length === 0) {
+        const kwSource = keywordType === 1 ? '品牌词库（pp 表）' : '蒸馏词库（zlgjc 表）';
+        warning = `该用户在${kwSource}中暂无关键词，任务创建后不会立即执行。请先导入关键词。`;
+      }
+    } catch {
+      // 关键词查询失败不阻塞创建
+    }
     const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode });
-    res.json({ code: 200, message: '创建成功', data: { id } });
+    res.json({ code: 200, message: '创建成功', data: { id }, warning });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }

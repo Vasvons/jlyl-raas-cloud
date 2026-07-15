@@ -122,9 +122,12 @@ async function startNewRoundForTask(task: any): Promise<boolean> {
       : await getDistillateKeywords(task.user_id);
 
     if (keywords.length === 0) {
-      console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 无关键词，标记为完成`);
-      // 无关键词时标记为 success，避免 checkCompletedRounds 每次循环都尝试入队
-      await updateTaskRunStatus(task.id, { status: 'success', endTime: new Date() });
+      // v2.1.5：关键词为空时记录错误信息到 last_error 字段，前端可据此显示"无关键词"状态
+      const kwSource = task.keyword_type === 1 ? 'pp 表（品牌词库）' : 'zlgjc 表（蒸馏词库）';
+      const errMsg = `无关键词：${kwSource}中 user_id=${task.user_id} 无数据，请先导入关键词`;
+      console.warn(`[RealCollect] 任务 ${task.id} (${task.task_name}) ${errMsg}`);
+      // 无关键词时标记为 success（避免 checkCompletedRounds 每次循环都尝试入队），但记录错误原因
+      await updateTaskRunStatus(task.id, { status: 'success', endTime: new Date(), error: errMsg });
       return false;
     }
 
