@@ -1266,7 +1266,7 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
   // 然后从该task的pending分片中取最早入队的一个
   const result = await query(
     `UPDATE real_collect_queue
-     SET status = 'running', worker_id = $1, start_time = NOW()
+     SET status = 'running', worker_id = $1, start_time = NOW(), abort_requested = false
      WHERE id = (
        WITH ranked AS (
          SELECT
@@ -1321,11 +1321,11 @@ export async function completeQueueTask(queueId: number, recordCount: number, br
   if (isAborted) {
     await query(
       `UPDATE real_collect_queue
-       SET status = 'pending', worker_id = NULL, start_time = NULL, error = NULL, end_time = NULL
+       SET status = 'pending', worker_id = NULL, start_time = NULL, error = NULL, end_time = NULL, abort_requested = false
        WHERE id = $1`,
       [queueId]
     );
-    console.log(`[RealCollectQueue] 分片 ${queueId} 被用户中断，已重新入队 pending（保留断点续查）`);
+    console.log(`[RealCollectQueue] 分片 ${queueId} 被用户中断，已重新入队 pending（保留断点续查，已清除 abort 标志）`);
   } else {
     await query(
       `UPDATE real_collect_queue
