@@ -1956,14 +1956,18 @@ export async function startNewRound(
     shards.push(filteredKeywords.slice(i, i + size));
   }
 
+  // v2.1.8 修复：立即执行（priority=1）只让第一个分片插队，其余分片固定 priority=0
+  // 否则整个轮次所有分片都是高优先级，会把其他任务的 pending 分片完全饿死
+  // （蒸馏词任务一轮 193 个分片全 priority=1，导致品牌词任务 3 天没被消费）
   let firstQueueId = 0;
-  for (const shard of shards) {
+  for (let i = 0; i < shards.length; i++) {
+    const shardPriority = i === 0 ? priority : 0;
     const result = await query(
       `INSERT INTO real_collect_queue (task_id, user_id, keyword_type, platforms, keywords, status, priority, round_no)
        SELECT $1, user_id, keyword_type, platforms, $2, 'pending', $3, $4
        FROM real_collect_task WHERE id = $1
        RETURNING id`,
-      [taskId, JSON.stringify(shard), priority, roundNo]
+      [taskId, JSON.stringify(shards[i]), shardPriority, roundNo]
     );
     if (firstQueueId === 0) firstQueueId = result.rows[0].id;
   }
