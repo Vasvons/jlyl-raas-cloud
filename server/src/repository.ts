@@ -1315,12 +1315,25 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
 
 // Worker回写队列结果
 export async function completeQueueTask(queueId: number, recordCount: number, brandCount: number, error?: string): Promise<void> {
-  await query(
-    `UPDATE real_collect_queue
-     SET status = $1, result_record_count = $2, result_brand_count = $3, error = $4, end_time = NOW()
-     WHERE id = $5`,
-    [error ? 'failed' : 'done', recordCount, brandCount, error || null, queueId]
-  );
+  // v2.1.8：被用户中断（立即执行其他任务）的分片重新设为 pending，保留 last_keyword_index 断点续查
+  // 这样中断的分片关键词不会丢失，下次 Worker 空闲时会从断点继续执行
+  const isAborted = error === '任务被用户中断';
+  if (isAborted) {
+    await query(
+      `UPDATE real_collect_queue
+       SET status = 'pending', worker_id = NULL, start_time = NULL, error = NULL, end_time = NULL
+       WHERE id = $1`,
+      [queueId]
+    );
+    console.log(`[RealCollectQueue] 分片 ${queueId} 被用户中断，已重新入队 pending（保留断点续查）`);
+  } else {
+    await query(
+      `UPDATE real_collect_queue
+       SET status = $1, result_record_count = $2, result_brand_count = $3, error = $4, end_time = NOW()
+       WHERE id = $5`,
+      [error ? 'failed' : 'done', recordCount, brandCount, error || null, queueId]
+    );
+  }
 }
 
 // ============ v2.0.0: 分片级 AEO 报告 ============

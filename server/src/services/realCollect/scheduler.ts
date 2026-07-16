@@ -22,6 +22,8 @@ import {
   startNewRound,
   getTaskRoundStartTime,
   cleanOversizedPendingShards,
+  getRunningQueueTask,
+  requestQueueAbort,
 } from '../../repository';
 import { generateAeoFullReport } from '../aeo/analyzer';
 
@@ -253,10 +255,21 @@ async function checkCompletedRounds(): Promise<void> {
 
 /**
  * 立即将任务放入队列（用于手动触发"立即执行"）
- * 手动触发会中断当前轮次的剩余分片，重新开始新一轮
+ * v2.1.8 行为调整：
+ *  1. 中断 Worker 当前正在执行的其他任务分片（设置 abort_requested）
+ *  2. 把当前任务的新一轮第一个分片以 priority=1 入队（插队立即执行）
+ *  3. 其余分片 priority=0，回到正常队列公平轮询
+ *  4. 被中断的分片会由 completeQueueTask 重新设为 pending（保留 last_keyword_index 断点续查）
  */
 export async function enqueueTaskNow(task: any): Promise<number> {
-  // 获取全量关键词
+  // 1. 中断 Worker 当前正在执行的分片（如果是其他任务的，且尚未请求中断）
+  const runningTask = await getRunningQueueTask();
+  if (runningTask && runningTask.task_id !== task.id && !runningTask.abort_requested) {
+    await requestQueueAbort(runningTask.id);
+    console.log(`[RealCollect] 立即执行：已请求中断当前运行的分片 queueId=${runningTask.id} taskId=${runningTask.task_id}，Worker 将在当前关键词查询完成后停止`);
+  }
+
+  // 2. 获取全量关键词
   const keywords = task.keyword_type === 1
     ? await getBrandKeywords(task.user_id)
     : await getDistillateKeywords(task.user_id);
@@ -271,11 +284,11 @@ export async function enqueueTaskNow(task: any): Promise<number> {
     return 0;
   }
 
-  // 启动新一轮（高优先级）
+  // 3. 启动新一轮（第一个分片 priority=1 插队，其余 priority=0 公平轮询）
   const shardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
   const result = await startNewRound(task.id, keywords, shardSize, 1);
   await updateTaskRunStatus(task.id, { status: 'running', startTime: new Date() });
-  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动触发第 ${result.roundNo} 轮: ${result.shardCount} 个分片, 高优先级`);
+  console.log(`[RealCollect] 任务 ${task.id} (${task.task_name}) 手动触发第 ${result.roundNo} 轮: ${result.shardCount} 个分片, 首分片高优先级`);
   return result.firstQueueId;
 }
 
