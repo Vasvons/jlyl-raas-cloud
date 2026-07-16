@@ -10,7 +10,6 @@ import {
   getDueRealCollectTasks,
   updateTaskRunStatus,
   getDistillateKeywords,
-  getBrandKeywords,
   getBrandQueryKeywords,
   resetDailyAuthCounters,
   getAuthsForRenewal,
@@ -47,17 +46,19 @@ async function recoverOnRestart(): Promise<void> {
       console.log(`[RealCollect] 重启恢复：${resetCount} 个中断的队列任务已重置为 pending`);
     }
 
-    // 1.5 同步 pending 分片的 round_no 为任务的当前 round_no
-    // 解决：重启后 startNewRoundForTask 可能更新了任务的 round_no，
-    // 但旧 pending 分片的 round_no 还是旧值，导致 getTaskShardProgress 查不到 running 分片
-    const syncResult = await query(
-      `UPDATE real_collect_queue q
-       SET round_no = t.round_no
-       FROM real_collect_task t
-       WHERE q.task_id = t.id AND q.status = 'pending' AND q.round_no != t.round_no`
+    // 1.5 删除旧轮次的 pending 分片（round_no != 任务当前 round_no）
+    // 旧方案是"同步 round_no"，但这会把多个旧轮次的 pending 分片合并到当前轮次，
+    // 导致 getTaskShardProgress 统计出多个分片（明明只有1个分片却显示3个）
+    // 正确做法：删除旧轮次的 pending 分片，让 getTasksNeedingNewRound 为无 pending 的任务启动新一轮
+    const deleteOldPendingResult = await query(
+      `DELETE FROM real_collect_queue q
+       USING real_collect_task t
+       WHERE q.task_id = t.id
+         AND q.status = 'pending'
+         AND COALESCE(q.round_no, 0) != COALESCE(t.round_no, 0)`
     );
-    if ((syncResult.rowCount || 0) > 0) {
-      console.log(`[RealCollect] 已同步 ${syncResult.rowCount} 个 pending 分片的 round_no`);
+    if ((deleteOldPendingResult.rowCount || 0) > 0) {
+      console.log(`[RealCollect] 重启恢复：删除 ${deleteOldPendingResult.rowCount} 个旧轮次的 pending 分片（避免 round_no 同并导致重复统计）`);
     }
 
     // 2. 清理旧的、未分片的 pending 队列项（分片机制生效前入队的巨型队列项）
@@ -120,13 +121,14 @@ async function recoverOnRestart(): Promise<void> {
 async function startNewRoundForTask(task: any): Promise<boolean> {
   try {
     // 获取全量关键词（循环模式：每轮都查全量，不再分片轮询）
+    // v2.1.8 修复：keyword_type=1 时从 zlgjc 表读品牌查询关键词（116个），不是从 pp 表读品牌名（1个）
     const keywords = task.keyword_type === 1
-      ? await getBrandKeywords(task.user_id)
+      ? await getBrandQueryKeywords(task.user_id)
       : await getDistillateKeywords(task.user_id);
 
     if (keywords.length === 0) {
       // v2.1.5：关键词为空时记录错误信息到 last_error 字段，前端可据此显示"无关键词"状态
-      const kwSource = task.keyword_type === 1 ? 'pp 表（品牌词库）' : 'zlgjc 表（蒸馏词库）';
+      const kwSource = task.keyword_type === 1 ? 'zlgjc 表（品牌查询关键词库 keyword_type=1）' : 'zlgjc 表（蒸馏词库）';
       const errMsg = `无关键词：${kwSource}中 user_id=${task.user_id} 无数据，请先导入关键词`;
       console.warn(`[RealCollect] 任务 ${task.id} (${task.task_name}) ${errMsg}`);
       // 无关键词时标记为 success（避免 checkCompletedRounds 每次循环都尝试入队），但记录错误原因
@@ -189,7 +191,7 @@ async function checkCompletedRounds(): Promise<void> {
           const shardCount = parseInt(shardCountResult.rows[0]?.cnt || '0');
           if (shardCount > 0) {
             const uniqueKeywords = task.keyword_type === 1
-              ? await getBrandKeywords(task.user_id)
+              ? await getBrandQueryKeywords(task.user_id)
               : await getDistillateKeywords(task.user_id);
             const expectedShardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
             const expectedShardCount = Math.ceil(uniqueKeywords.length / expectedShardSize);

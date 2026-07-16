@@ -1264,6 +1264,8 @@ export async function enqueueRealCollectTask(task: any, keywords: string[], prio
 export async function dequeueRealCollectTask(workerId: string): Promise<any | null> {
   // 使用子查询找出"该task最近一次running/done的时间"最早的task，
   // 然后从该task的pending分片中取最早入队的一个
+  // v2.1.9：只消费当前轮次的分片（q.round_no = t.round_no），避免旧轮次的 pending 分片被误执行
+  //   旧轮次的 pending 分片应由 startNewRound 的清理逻辑或 recoverOnRestart 删除
   const result = await query(
     `UPDATE real_collect_queue
      SET status = 'running', worker_id = $1, start_time = NOW(), abort_requested = false
@@ -1284,6 +1286,7 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
          INNER JOIN real_collect_task t ON t.id = q.task_id
          WHERE q.status = 'pending'
            AND t.status = 'active'
+           AND COALESCE(q.round_no, 0) = COALESCE(t.round_no, 0)
        )
        SELECT r.id FROM ranked r
        ORDER BY r.priority DESC, r.last_consumed ASC, r.create_time ASC
@@ -1722,6 +1725,25 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   );
   const row = result.rows[0] || {};
 
+  // v2.1.9：诊断日志 — 列出该任务所有分片（含旧轮次），排查"3个分片"类异常
+  try {
+    const diagResult = await query(
+      `SELECT q.id, q.round_no, q.status, q.priority, q.abort_requested,
+              jsonb_array_length(q.keywords) as kw_count, q.last_keyword_index,
+              q.create_time, q.start_time
+       FROM real_collect_queue q
+       WHERE q.task_id = $1
+       ORDER BY q.round_no DESC, q.create_time DESC
+       LIMIT 20`,
+      [taskId]
+    );
+    console.log(`[getTaskShardProgress] taskId=${taskId} taskRoundNo=${roundNo} roundStartTime=${roundStartTime?.toISOString() || 'NULL'} ` +
+      `统计结果: total=${row.total} completed=${row.completed} running=${row.running} pending=${row.pending} failed=${row.failed} ` +
+      `所有分片(最多20条): ${JSON.stringify(diagResult.rows.map((r: any) => ({ id: r.id, round: r.round_no, status: r.status, kw: r.kw_count, idx: r.last_keyword_index, abort: r.abort_requested })))}`);
+  } catch {
+    // 诊断日志失败不影响主流程
+  }
+
   // 查询当前正在执行的 running 分片的详细进度
   // 按 start_time 排序，取最早的 running 分片（即最早开始执行的分片）
   // v2.1.5：加 MAX(start_time) OVER() 获取最新分片开始时间，用于飞轮判断"最近执行的任务"
@@ -1893,11 +1915,13 @@ export async function startNewRound(
   const roundNo = taskResult.rows[0]?.round_no || 1;
 
   // 清理旧轮次的 queue 记录，避免表无限膨胀（保留最近一轮用于审计）
-  // 同时删除 done 和 failed 分片：旧轮次的 failed 分片没有保留价值，反而会累积膨胀
+  // v2.1.9：删除所有状态的旧分片（包括 pending），防止旧 pending 分片累积
+  //   旧 pending 分片会导致 getTasksNeedingNewRound 误判（该函数不按 round_no 过滤），
+  //   也可能被 round_no 同步逻辑误合并到当前轮次，导致进度显示异常
   if (roundNo > 1) {
     await query(
       `DELETE FROM real_collect_queue
-       WHERE task_id = $1 AND round_no > 0 AND round_no < $2 AND status IN ('done', 'failed')`,
+       WHERE task_id = $1 AND round_no > 0 AND round_no < $2`,
       [taskId, roundNo - 1]
     );
   }
