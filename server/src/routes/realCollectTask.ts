@@ -11,6 +11,7 @@ import {
   getExcludePrefixOptions,
   getExcludeComboOptions,
   getBrandKeywords,
+  getBrandQueryKeywords,
   getDistillateKeywords,
 } from '../repository';
 import { enqueueTaskNow } from '../services/realCollect/scheduler';
