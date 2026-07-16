@@ -16,39 +16,18 @@ export function startAeoScheduler(): void {
   }
   aeoSchedulerStarted = true;
 
+  // v2.2.3：启动时补生成昨天的日报（防止部署重启导致 cron 0 2 * * * 错过）
+  // 延迟 30 秒执行，等数据库连接池就绪
+  setTimeout(() => {
+    generateDailyReports().catch(e => {
+      console.error('[AEO] 启动补生成日报失败:', e.message);
+    });
+  }, 30 * 1000);
+
   // 每天凌晨 2 点生成 AEO 日报（在巡检任务执行之后）
   // v2.1.6：改为按客户(userId)去重，每个客户只生成一份日报（跨任务汇总蒸馏词+品牌词）
   cron.schedule('0 2 * * *', async () => {
-    console.log('[AEO] 开始生成每日 AEO 日报...');
-    try {
-      const tasks = await getActiveTasksForAeo();
-      // 按 userId 去重，每个客户取第一个任务作为占位 taskId
-      const userTaskMap = new Map<string, any>();
-      for (const task of tasks) {
-        if (task.user_id && !userTaskMap.has(task.user_id)) {
-          userTaskMap.set(task.user_id, task);
-        }
-      }
-      const userTasks = Array.from(userTaskMap.values());
-      console.log(`[AEO] 共 ${tasks.length} 个活跃任务，去重后 ${userTasks.length} 个客户需要生成日报`);
-
-      // 分批并发处理，每批3个
-      const batchSize = 3;
-      for (let i = 0; i < userTasks.length; i += batchSize) {
-        const batch = userTasks.slice(i, i + batchSize);
-        await Promise.allSettled(batch.map(async (task) => {
-          try {
-            await generateAeoReport(task.id, task.user_id);
-          } catch (e: any) {
-            console.error(`[AEO] 用户 ${task.user_id} 日报生成失败:`, e.message);
-          }
-        }));
-      }
-
-      console.log('[AEO] 每日 AEO 日报生成完成');
-    } catch (e: any) {
-      console.error('[AEO] 调度器异常:', e.message);
-    }
+    await generateDailyReports();
   });
 
   // v2.0.0: 每小时检查是否需要生成周报/月报（按客户创建日计算周期）
@@ -61,7 +40,44 @@ export function startAeoScheduler(): void {
     }
   });
 
-  console.log('[AEO] 调度器已启动(每天凌晨2点生成AEO日报 + 每小时检查周/月报)');
+  console.log('[AEO] 调度器已启动(每天凌晨2点生成AEO日报 + 每小时检查周/月报 + 启动补生成)');
+}
+
+/**
+ * v2.2.3：生成每日 AEO 日报（抽取为独立函数，供 cron 和启动补生成复用）
+ * 按客户(userId)去重，每个客户只生成一份日报（跨任务汇总蒸馏词+品牌词）
+ */
+async function generateDailyReports(): Promise<void> {
+  console.log('[AEO] 开始生成每日 AEO 日报...');
+  try {
+    const tasks = await getActiveTasksForAeo();
+    // 按 userId 去重，每个客户取第一个任务作为占位 taskId
+    const userTaskMap = new Map<string, any>();
+    for (const task of tasks) {
+      if (task.user_id && !userTaskMap.has(task.user_id)) {
+        userTaskMap.set(task.user_id, task);
+      }
+    }
+    const userTasks = Array.from(userTaskMap.values());
+    console.log(`[AEO] 共 ${tasks.length} 个活跃任务，去重后 ${userTasks.length} 个客户需要生成日报`);
+
+    // 分批并发处理，每批3个
+    const batchSize = 3;
+    for (let i = 0; i < userTasks.length; i += batchSize) {
+      const batch = userTasks.slice(i, i + batchSize);
+      await Promise.allSettled(batch.map(async (task) => {
+        try {
+          await generateAeoReport(task.id, task.user_id);
+        } catch (e: any) {
+          console.error(`[AEO] 用户 ${task.user_id} 日报生成失败:`, e.message);
+        }
+      }));
+    }
+
+    console.log('[AEO] 每日 AEO 日报生成完成');
+  } catch (e: any) {
+    console.error('[AEO] 调度器异常:', e.message);
+  }
 }
 
 /**

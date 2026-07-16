@@ -60,37 +60,47 @@ const AEO_RECORD_LIMIT = parseInt(process.env.AEO_RECORD_LIMIT || '200');
  * @param userId 客户 ID（日报按客户维度生成）
  */
 export async function generateAeoReport(taskId: number, userId: string): Promise<number | null> {
-  // v2.1.5：使用 Asia/Shanghai 时区的今日日期（原 UTC 导致北京时间 0-8 点日期错位）
+  // v2.2.3：修复日报日期逻辑
+  // 原 bug：cron 0 2 * * * 凌晨 2 点触发时，today=当天日期，但凌晨 2 点当天分片报告还没生成
+  //   → getShardReportsByDate(当天) 返回空 → 生成"无数据日报"，而前一天的日报永远不生成
+  // 修复：凌晨 2 点应该总结"前一天"的巡检数据，report_date = 前一天日期
+  // 如果当天调用（如手动触发、测试），则使用当天日期，由 checkAeoReportExists 防重复
   const now = new Date();
-  const today = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
+  const nowShanghai = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+  const hour = nowShanghai.getHours();
+  // v2.2.3：凌晨 0-6 点视为"次日补前一天日报"，其他时段视为"当天日报"
+  const reportDateObj = hour < 6
+    ? new Date(nowShanghai.getTime() - 24 * 60 * 60 * 1000) // 前一天
+    : nowShanghai; // 当天
+  const reportDate = reportDateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
 
-  // 检查今日是否已生成
-  const exists = await checkAeoReportExists(taskId, today);
+  // 检查该日期是否已生成
+  const exists = await checkAeoReportExists(taskId, reportDate);
   if (exists) {
-    console.log(`[AEO] 任务 ${taskId} 今日已生成报告，跳过`);
+    console.log(`[AEO] 任务 ${taskId} ${reportDate} 日报已生成，跳过`);
     return null;
   }
 
   // v2.1.6：改为基于当日分片报告汇总（数据源与周报/月报/大屏一致）
-  const shardReports = await getShardReportsByDate(userId, today);
+  const shardReports = await getShardReportsByDate(userId, reportDate);
 
   if (shardReports.length === 0) {
-    console.log(`[AEO] 用户 ${userId} 今日无分片报告，生成无数据日报`);
+    console.log(`[AEO] 用户 ${userId} ${reportDate} 无分片报告，生成无数据日报`);
     const reportId = await insertAeoReport({
       taskId,
       userId,
-      reportDate: today,
+      reportDate,
       visibilityScore: 0,
       mentionCount: 0,
       positiveRatio: 0,
       neutralRatio: 0,
       negativeRatio: 0,
-      competitorAnalysis: '今日无分片报告',
-      suggestions: '今日巡检尚未产出分片报告，暂无数据分析结论。请检查巡检任务是否正常运行，或分片报告是否生成成功。',
-      rawAnalysis: JSON.stringify({ reason: 'no_shard_reports_today', task_id: taskId, user_id: userId }),
+      competitorAnalysis: `${reportDate} 无分片报告`,
+      suggestions: `${reportDate} 巡检尚未产出分片报告，暂无数据分析结论。请检查巡检任务是否正常运行，或分片报告是否生成成功。`,
+      rawAnalysis: JSON.stringify({ reason: 'no_shard_reports', report_date: reportDate, task_id: taskId, user_id: userId }),
       recordIds: [],
     });
-    console.log(`[AEO] 用户 ${userId} 无数据日报生成成功 reportId=${reportId}`);
+    console.log(`[AEO] 用户 ${userId} ${reportDate} 无数据日报生成成功 reportId=${reportId}`);
     return reportId;
   }
 
@@ -190,7 +200,7 @@ export async function generateAeoReport(taskId: number, userId: string): Promise
   const reportId = await insertAeoReport({
     taskId,
     userId,
-    reportDate: today,
+    reportDate,
     visibilityScore: avgVisibility,
     mentionCount: totalBrandMatched,
     positiveRatio: avgPositive,
