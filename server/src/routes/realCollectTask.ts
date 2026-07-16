@@ -93,7 +93,7 @@ router.post('/', async (req, res) => {
     let warning: string | undefined;
     try {
       const keywords = keywordType === 1
-        ? await getBrandKeywords(userId)
+        ? await getBrandQueryKeywords(userId)
         : await getDistillateKeywords(userId);
       if (keywords.length === 0) {
         const kwSource = keywordType === 1 ? '品牌词库（pp 表）' : '蒸馏词库（zlgjc 表）';

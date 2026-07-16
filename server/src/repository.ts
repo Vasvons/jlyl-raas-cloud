@@ -2999,6 +2999,8 @@ export async function getDueRealCollectTasks(): Promise<any[]> {
  *   - pp 表：品牌词（如"聚量引力"），用户配置，AEO 匹配用这个
  *   - zlgjc WHERE keyword_type=1：品牌关键词（如"聚量引力价格"），是查询用的组合词，不是品牌词
  *   之前查错表导致用 99 条品牌关键词去匹配 AI 回答，当然匹配不上
+ *
+ * 使用场景：resultProcessor 品牌命中检测、AEO 报告分析
  */
 export async function getBrandKeywords(userId: string): Promise<string[]> {
   const result = await query(
@@ -3006,6 +3008,22 @@ export async function getBrandKeywords(userId: string): Promise<string[]> {
     [userId]
   );
   return result.rows.map((r: any) => r.pp);
+}
+
+/**
+ * 获取用户的品牌关键词（用于巡检查询）
+ * v2.1.8 新增：巡检任务 keyword_type=1 时使用这个函数，从 zlgjc 表读品牌关键词
+ *   - zlgjc WHERE keyword_type=1：品牌关键词（如"川务财税公司注册"），用于 Worker 查询
+ *   - 与 getBrandKeywords 区别：getBrandKeywords 读 pp 表（AEO 匹配用），这个读 zlgjc 表（查询用）
+ *
+ * 使用场景：scheduler startNewRoundForTask/enqueueTaskNow 分配关键词、realCollectTask 查询关键词数量
+ */
+export async function getBrandQueryKeywords(userId: string): Promise<string[]> {
+  const result = await query(
+    `SELECT DISTINCT value FROM zlgjc WHERE userid = $1 AND keyword_type = 1 AND value != ''`,
+    [userId]
+  );
+  return result.rows.map((r: any) => r.value);
 }
 
 /** 获取用户的蒸馏词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */

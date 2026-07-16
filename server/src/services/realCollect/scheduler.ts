@@ -11,6 +11,7 @@ import {
   updateTaskRunStatus,
   getDistillateKeywords,
   getBrandKeywords,
+  getBrandQueryKeywords,
   resetDailyAuthCounters,
   getAuthsForRenewal,
   cleanOldWorkerLogs,
@@ -270,8 +271,9 @@ export async function enqueueTaskNow(task: any): Promise<number> {
   }
 
   // 2. 获取全量关键词
+  // v2.1.8 修复：keyword_type=1 时从 zlgjc 表读品牌关键词（116 个），不是从 pp 表读品牌名（1 个）
   const keywords = task.keyword_type === 1
-    ? await getBrandKeywords(task.user_id)
+    ? await getBrandQueryKeywords(task.user_id)
     : await getDistillateKeywords(task.user_id);
 
   if (keywords.length === 0) {
