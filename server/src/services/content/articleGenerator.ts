@@ -664,9 +664,14 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
             if (currentPlatformRule) {
               titlePrompt += `\n\n【标题字数硬约束】目标平台：${currentPlatformRule.name}，标题必须 ${currentPlatformRule.title_min_length ?? 1}-${currentPlatformRule.title_max_length ?? 100} 字。超出 ${currentPlatformRule.title_max_length ?? 100} 字会被平台拒绝，请严格控制。`;
             }
-            // 标题生成用极简 system message，避免 L0-L5 上下文让 AI 陷入思考
+            // v2.2.2：标题生成注入完整上下文（L0-L7），解决"标题跑题、与内容无关"问题
+            // 原极简 system message 导致 AI 看不到客户档案/AEO 建议/专家角色，标题方向完全失控
+            // 现将 writingCtx.systemMessage（含 L0 专家/L1 客户/L7 AEO 建议等）拼到标题约束前
+            const titleSystemPrefix = writingCtx.systemMessage
+              ? writingCtx.systemMessage + '\n\n---\n\n'
+              : '';
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
-              { role: 'system', content: '你是标题生成器。只输出标题文字本身，不要输出任何思考过程、分析、解释、引号、前缀。直接输出标题。' },
+              { role: 'system', content: titleSystemPrefix + '你是标题生成器。基于上述所有上下文（客户档案、AEO 写作建议、专家角色等）生成与文章方向一致的标题。只输出标题文字本身，不要输出任何思考过程、分析、解释、引号、前缀。直接输出标题。' },
               { role: 'user', content: titlePrompt },
             ];
             const titleResult = await chatCompletion({

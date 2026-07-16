@@ -39,6 +39,10 @@ import {
   getAeoModelConfig,
   getEnterpriseKnowledges,
   getAllWritingInstructions,
+  // v2.2.2：自动写作精细化配置
+  getWritingInstructions,
+  getAgentProfiles,
+  getCustomerKeywordIds,
 } from '../../repository';
 import { query as dbQuery } from '../../db';
 import { decrypt } from '../../utils/crypto';
@@ -2080,6 +2084,7 @@ async function autoCreateWritingTasksFromPeriod(
   if (!userIdNum || quota <= 0) return 0;
 
   // 1. 获取用户的默认知识库（取第一个活跃的）
+  // v2.2.2：getEnterpriseKnowledges 已按 user_id 过滤，无需改动
   const knowledges = await getEnterpriseKnowledges(userIdNum);
   if (knowledges.length === 0) {
     console.warn(`[AEO-Period] 用户 ${userId} 无企业知识库，跳过自动创建写作任务`);
@@ -2087,15 +2092,38 @@ async function autoCreateWritingTasksFromPeriod(
   }
   const knowledge = knowledges[0];
 
-  // 2. 获取默认写作指令（取第一个活跃的）
-  const instructions = await getAllWritingInstructions();
+  // 2. v2.2.2：按客户筛选写作指令（替代原 getAllWritingInstructions 全局取第一个）
+  // 原逻辑取全局所有 active 指令的第一个，可能与客户不匹配，导致内容方向偏离
+  // 现改为按 userId 筛选该客户自己的指令，若无则回退到全局指令
+  let instructions = await getWritingInstructions(userIdNum);
+  if (instructions.length === 0) {
+    console.warn(`[AEO-Period] 用户 ${userId} 无客户专属写作指令，回退到全局指令`);
+    instructions = await getAllWritingInstructions();
+  }
   if (instructions.length === 0) {
     console.warn(`[AEO-Period] 无可用写作指令，跳过自动创建写作任务`);
     return 0;
   }
   const instruction = instructions[0];
 
-  // 3. 获取默认模型配置
+  // 3. v2.2.2：自动写作也使用专家角色（替代原 agent_profile_id=null）
+  // 查询客户的 agent_profile 列表，选第一个 active 的，注入 L0 专家人格层
+  // 若客户未配置专家角色，则 agentProfileId=null（保持原行为，仅靠指令+知识库驱动）
+  let agentProfileId: number | null = null;
+  try {
+    const agentProfiles = await getAgentProfiles(userIdNum);
+    const activeProfile = agentProfiles.find((p: any) => p.is_active !== false);
+    if (activeProfile) {
+      agentProfileId = activeProfile.id;
+      console.log(`[AEO-Period] 自动写作使用专家角色: userId=${userId}, profileId=${agentProfileId}, name=${activeProfile.name}`);
+    } else {
+      console.warn(`[AEO-Period] 用户 ${userId} 无 active 专家角色，自动写作将不注入 L0 专家人格层`);
+    }
+  } catch (e: any) {
+    console.warn(`[AEO-Period] 查询专家角色失败（不影响任务创建）:`, e.message);
+  }
+
+  // 4. 获取默认模型配置
   const modelConfig = await getDefaultModelConfig(userIdNum);
   if (!modelConfig) {
     console.warn(`[AEO-Period] 用户 ${userId} 无可用写作模型配置，跳过自动创建写作任务`);
@@ -2125,14 +2153,13 @@ async function autoCreateWritingTasksFromPeriod(
   const taskName = `[AEO自动] ${periodType === 'daily' ? '日报' : periodType === 'weekly' ? '周报' : '月报'}驱动写作任务 ${new Date().toISOString().slice(0, 10)}`;
 
   // v2.1.3：优先使用用户配置的"重点优化关键词"作为写作主题
-  // 如果未配置 focus_keywords，则回退到 null（由写作指令和AEO建议驱动）
+  // v2.2.2：如果未配置 focus_keywords，则回退到客户全量关键词（蒸馏+品牌），避免 L4 主题参考层为空
   const quotaConfig = await getAeoQuotaConfig(userIdNum);
   const focusKeywords: string[] = Array.isArray(quotaConfig?.focus_keywords)
     ? quotaConfig.focus_keywords.filter((k: any) => typeof k === 'string' && k.trim())
     : [];
 
   // v2.1.3：将 focus_keywords 字符串转为 zlgjc 表的 keyword_ids
-  // 如果 focus_keywords 在 zlgjc 表中找不到匹配项，则 keyword_ids 为空（不影响文章生成，只是 L4 主题参考层为空）
   let focusKeywordIds: number[] = [];
   if (focusKeywords.length > 0) {
     try {
@@ -2144,17 +2171,35 @@ async function autoCreateWritingTasksFromPeriod(
     }
   }
 
+  // v2.2.2：focus_keywords 为空时回退到客户全量关键词（蒸馏+品牌）
+  // 原逻辑 focus_keywords 未配置时 keyword_ids=null，导致 L4 主题参考层为空，AI 缺少主题方向
+  // 现改为查询客户全量关键词库，确保 L4 层有内容，与手动写作行为一致
+  if (focusKeywordIds.length === 0) {
+    try {
+      const customerKeywords = await getCustomerKeywordIds(userIdNum);
+      if (customerKeywords.ids.length > 0) {
+        focusKeywordIds = customerKeywords.ids;
+        console.log(`[AEO-Period] focus_keywords 未配置，回退到客户全量关键词: ${customerKeywords.ids.length} 个（蒸馏 ${customerKeywords.distilledCount} + 品牌 ${customerKeywords.brandCount}）`);
+      } else {
+        console.warn(`[AEO-Period] 用户 ${userId} 客户全量关键词也为空，L4 主题参考层将为空`);
+      }
+    } catch (e: any) {
+      console.warn(`[AEO-Period] 查询客户全量关键词失败:`, e.message);
+    }
+  }
+
   // 创建写作任务
   // v2.1.3：auto_publish=true，写作完成后云端自动创建发布任务
+  // v2.2.2：agent_profile_id 改为使用查询到的专家角色（替代原 null）
   const taskId = await createWritingTask({
     user_id: userIdNum,
     task_name: taskName,
-    keyword_ids: focusKeywordIds.length > 0 ? focusKeywordIds : null, // v2.1.3：重点优化关键词 ID
+    keyword_ids: focusKeywordIds.length > 0 ? focusKeywordIds : null,
     instruction_id: instruction.id,
     knowledge_id: knowledge.id,
     model_config_id: modelConfig.id,
     generation_mode: 'expert',
-    agent_profile_id: null,
+    agent_profile_id: agentProfileId,  // v2.2.2：使用专家角色
     total_count: quota,
     cover_image_mode: 'none',
     cover_image_id: null,

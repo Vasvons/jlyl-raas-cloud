@@ -21,6 +21,7 @@ import {
   updateEnterpriseKnowledge,
   deleteEnterpriseKnowledge,
   createWritingTask,
+  getLatestPeriodReportSuggestions,
   getWritingTasks,
   getWritingTaskById,
   deleteWritingTask,
@@ -788,7 +789,7 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     const callerUserId = getUserId(req);
     const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id, article_count,
             cover_image_mode, cover_image_id, illustration_count,
-            target_platforms, auto_generated, user_id } = req.body;
+            target_platforms, auto_generated, user_id, apply_aeo_suggestions } = req.body;
     // v2.0.9：管理员可通过 user_id 字段为客户创建任务（飞轮守护进程场景）
     // 非管理员调用时强制使用自己的 userId，防止越权
     let userId = callerUserId;
@@ -836,6 +837,34 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     if (!instruction_id || !knowledge_id) {
       return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id 必填' });
     }
+
+    // v2.2.2：手动写作支持注入 AEO 写作建议（与自动写作一致的数据源）
+    // 前端传 apply_aeo_suggestions=true 时，查询该客户最近一份含写作建议的周期报告
+    // 将原始 writing_suggestions 数组（含 topic/direction/keywords/platforms/priority/reason 字段）
+    // 打包成 aeo_context JSON 写入 ai_writing_task.aeo_context 字段
+    // articleGenerator 的 buildLayer7AeoSuggestions 会解析该字段注入到 system message L7 层
+    let aeoContext: string | null = null;
+    if (apply_aeo_suggestions === true) {
+      try {
+        const latestReport = await getLatestPeriodReportSuggestions(userId);
+        if (latestReport && latestReport.suggestions.length > 0) {
+          aeoContext = JSON.stringify({
+            period_report_id: latestReport.period_report_id,
+            period_type: latestReport.period_type,
+            period_end: latestReport.period_end,
+            suggestions: latestReport.suggestions,
+            source: 'manual_apply',  // 标记来源为手动应用（区别于自动生成）
+            generated_at: new Date().toISOString(),
+          });
+          console.log(`[WritingTask] 手动写作任务注入 AEO 建议: userId=${userId}, periodReportId=${latestReport.period_report_id}, suggestions=${latestReport.suggestions.length}条`);
+        } else {
+          console.warn(`[WritingTask] 用户 ${userId} 无可用 AEO 写作建议，aeo_context 为空`);
+        }
+      } catch (e: any) {
+        console.warn(`[WritingTask] 查询 AEO 写作建议失败（不影响任务创建）:`, e.message);
+      }
+    }
+
     // v1.5+：图库配置
     // cover_image_mode: 'none' 不用图库 / 'random' 随机选 / 'fixed' 指定一张
     // cover_image_id: 指定封面图 ID（cover_image_mode=fixed 时使用）
@@ -851,6 +880,7 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
       illustration_count: Math.max(0, Math.min(20, Number(illustration_count) || 0)),
       target_platforms: finalTargetPlatforms,
       auto_generated: auto_generated === true,
+      aeo_context: aeoContext,
     });
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {
