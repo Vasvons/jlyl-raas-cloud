@@ -1582,6 +1582,18 @@ export async function migrate() {
     await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS raw_contents_sample JSONB`);
     console.log('[Migrate] v2.1.6 分片报告多维度扩展完成（8个新字段）');
 
+    // ============ v2.1.9: 分片报告按关键词来源分离分析管道 ============
+    // 品牌词任务（keyword_type=1）：深度情感分析，输出多维度情感评分
+    //   - sentiment_dimensions: { trust, professionalism, recommendation_intent, value_perception, ... }
+    // 蒸馏词任务（keyword_type=0）：提及率/覆盖率分析，输出各平台提及率和盲区
+    //   - mention_analysis: { platform_mention_rates, uncovered_keywords, coverage_gaps, ... }
+    // 两种任务用不同的分析管道（analyzeBrandShard / analyzeDistillateShard），评分标准不同：
+    //   - 品牌词：visibilityScore 基于情感健康度（正面占比 - 负面占比）
+    //   - 蒸馏词：visibilityScore 基于提及率 × 平台覆盖均衡度
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS sentiment_dimensions JSONB`);
+    await client.query(`ALTER TABLE aeo_shard_report ADD COLUMN IF NOT EXISTS mention_analysis JSONB`);
+    console.log('[Migrate] v2.1.9 分片报告分离分析管道扩展完成（sentiment_dimensions + mention_analysis）');
+
     // ============ v2.0.0: 时间维度报告（周/月报，写作驱动核心） ============
 
     // aeo_period_report: 时间维度报告

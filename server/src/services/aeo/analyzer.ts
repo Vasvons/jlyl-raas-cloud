@@ -417,6 +417,515 @@ function fallbackAnalysis(
   };
 }
 
+// ============ v2.1.9: 分片报告按关键词来源分离分析管道 ============
+// 品牌词任务（keyword_type=1）：查询词本身含品牌，AI 几乎必然提及，命中率天然高（90%+）
+//   → 重点做深度情感分析，评分基于情感健康度（正面 - 负面），而非命中率
+// 蒸馏词任务（keyword_type=0）：查询词是行业通用词，AI 是否提及品牌才真实反映 GEO 可见度
+//   → 重点做提及率/覆盖率分析，评分基于提及率 × 平台覆盖均衡度
+
+/** 品牌词任务分片报告分析结果 */
+interface BrandShardAnalysis {
+  visibilityScore: number;       // 情感健康度评分（正面占比 - 负面占比，加权平台覆盖）
+  positiveRatio: number;
+  neutralRatio: number;
+  negativeRatio: number;
+  competitorAnalysis: string;
+  suggestions: string;
+  raw: string;
+  sentimentDimensions: {
+    trust: number;                // 信任度 0-100
+    professionalism: number;      // 专业度 0-100
+    recommendation_intent: number;// 推荐意愿 0-100
+    value_perception: number;     // 性价比感知 0-100
+    brand_recall: number;         // 品牌认知度 0-100
+    dimension_notes: string;      // 各维度评分依据说明
+  };
+  brandMentions: any[];
+  negativeFindings: any[];
+  sentimentSummary: any;
+}
+
+/** 蒸馏词任务分片报告分析结果 */
+interface DistillateShardAnalysis {
+  visibilityScore: number;       // 提及率 × 平台覆盖均衡度
+  positiveRatio: number;
+  neutralRatio: number;
+  negativeRatio: number;
+  competitorAnalysis: string;
+  suggestions: string;
+  raw: string;
+  mentionAnalysis: {
+    platform_mention_rates: { platform: string; total: number; mentioned: number; rate: number }[];
+    uncovered_keywords: string[];      // 未命中品牌的关键词列表
+    coverage_gaps: string;             // 覆盖盲区说明
+    cross_platform_consistency: number;// 跨平台一致性 0-100
+    mention_notes: string;             // 提及率分析说明
+  };
+  brandMentions: any[];
+  negativeFindings: any[];
+  sentimentSummary: any;
+}
+
+/**
+ * 品牌词任务分片分析管道（keyword_type=1）
+ *
+ * 特点：查询词本身就含品牌（如"川务财税公司注册"），AI 回答几乎必然提及品牌，
+ * 命中率天然高（90%+），因此命中率不是有意义的指标。
+ * 本管道重点做深度情感分析，理解 AI 回答中对品牌的态度和评价维度。
+ *
+ * 评分标准（visibilityScore）：
+ * - 基于情感健康度 = 正面占比 × 权重 - 负面占比 × 权重 + 平台覆盖修正
+ * - 命中率高但负面情感多 → 低分（品牌形象受损）
+ * - 命中率高且正面情感占主导 → 高分
+ * - 负面情感超过 30% → 直接降至 40 分以下（预警级别）
+ */
+async function analyzeBrandShard(
+  allRecords: any[],
+  brandMatchedRecords: any[],
+  brandKeywords: string[],
+  userId: string,
+  platformBreakdown: any[],
+  sourcePlatforms: string[]
+): Promise<BrandShardAnalysis> {
+  const totalRecordCount = allRecords.length;
+  const brandMatchedCount = brandMatchedRecords.length;
+
+  // 获取 AEO 专用模型
+  const modelConfig = await getAeoModelConfig(userId);
+  const hasLlm = modelConfig && modelConfig.api_key_encrypted;
+
+  // 命中记录的内容样本（传给 LLM 做深度情感分析）
+  const analysisInput = brandMatchedRecords.map(r => ({
+    platform: r.platform,
+    keyword: r.keyword,
+    content: (r.raw_content || '').substring(0, 3000),
+    matchedBrands: r.matched_brands,
+    shareUrl: r.share_url,
+  }));
+
+  // 负面发现（关键词匹配兜底，LLM 分析后会被 LLM 结果覆盖）
+  const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷', '投诉', '维权'];
+  const negativeFindings = brandMatchedRecords
+    .filter(r => {
+      const text = (r.raw_content || '').toLowerCase();
+      return negativeWords.some(w => text.includes(w));
+    })
+    .map(r => ({
+      keyword: r.keyword,
+      platform: r.platform,
+      contentPreview: (r.raw_content || '').substring(0, 300),
+      negativeWords: negativeWords.filter(w => (r.raw_content || '').toLowerCase().includes(w)),
+    }));
+
+  const brandMentions = brandMatchedRecords.map(r => ({
+    keyword: r.keyword,
+    platform: r.platform,
+    matchedBrands: r.matched_brands,
+    shareUrl: r.share_url,
+    contentPreview: (r.raw_content || '').substring(0, 200),
+  }));
+
+  if (!hasLlm || brandMatchedCount === 0) {
+    // 无 LLM 或无命中记录：用 fallback 简单分析
+    console.warn(`[AEO-Brand] 用户 ${userId} ${!hasLlm ? '未配置 AEO 模型' : '无品牌命中记录'}，品牌词分片使用 fallback 分析`);
+    const fallbackSentiment = fallbackAnalysis(allRecords, brandKeywords);
+    return {
+      ...fallbackSentiment,
+      sentimentDimensions: {
+        trust: 50,
+        professionalism: 50,
+        recommendation_intent: 50,
+        value_perception: 50,
+        brand_recall: brandMatchedCount > 0 ? 70 : 0,
+        dimension_notes: '未配置 AEO 模型或无命中记录，使用默认中性评分。请配置 AEO 模型（use_for_aeo=true）以获得深度情感分析。',
+      },
+      brandMentions,
+      negativeFindings,
+      sentimentSummary: {
+        total: totalRecordCount,
+        brand_matched: brandMatchedCount,
+        positive: Math.round(brandMatchedCount * fallbackSentiment.positiveRatio / 100),
+        neutral: (totalRecordCount - brandMatchedCount) + Math.round(brandMatchedCount * fallbackSentiment.neutralRatio / 100),
+        negative: Math.round(brandMatchedCount * fallbackSentiment.negativeRatio / 100),
+        positiveRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * fallbackSentiment.positiveRatio / 100) / totalRecordCount * 100 : 0),
+        neutralRatio: Math.round(((totalRecordCount - brandMatchedCount) + brandMatchedCount * fallbackSentiment.neutralRatio / 100) / totalRecordCount * 100),
+        negativeRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * fallbackSentiment.negativeRatio / 100) / totalRecordCount * 100 : 0),
+        platform_coverage: `${sourcePlatforms.length}个平台查询，${platformBreakdown.filter(p => p.brand_matched > 0).length}个平台命中`,
+        analysis_mode: 'brand_fallback',
+      },
+    };
+  }
+
+  // 有 LLM：调用大模型做深度情感分析
+  let apiKey: string;
+  try {
+    apiKey = decrypt(modelConfig.api_key_encrypted);
+  } catch (e: any) {
+    console.error(`[AEO-Brand] API-KEY 解密失败:`, e.message);
+    const fallback = fallbackAnalysis(allRecords, brandKeywords);
+    return { ...fallback, sentimentDimensions: { trust: 50, professionalism: 50, recommendation_intent: 50, value_perception: 50, brand_recall: 70, dimension_notes: 'API-KEY 解密失败' }, brandMentions, negativeFindings, sentimentSummary: { total: totalRecordCount, brand_matched: brandMatchedCount, analysis_mode: 'brand_fallback' } };
+  }
+
+  const platformSummary = platformBreakdown.map(p => `${p.platform}: 查询${p.total}条/命中${p.brand_matched}条`).join('；');
+
+  const prompt = `你是品牌情感分析专家。这是一个品牌词任务的分片报告 —— 查询词本身就包含品牌名，因此 AI 几乎必然提及品牌，命中率不是有意义的指标。
+你的任务是深度分析 AI 回答中对品牌的情感态度和多维度评价。
+
+品牌关键词：${brandKeywords.join('、')}
+本分片查询了 ${totalRecordCount} 条记录，其中 ${brandMatchedCount} 条命中品牌。
+平台分布：${platformSummary}
+
+【命中记录详情】（请仔细阅读内容，理解 AI 对品牌的评价态度）
+${JSON.stringify(analysisInput.slice(0, 30), null, 2)}
+
+请返回 JSON 格式（不要 markdown 代码块）：
+{
+  "visibilityScore": 0-100的整数,        // 情感健康度评分 = 正面情感强度 - 负面情感强度 + 平台覆盖修正
+  "positiveRatio": 0-100的数字,          // 正面情感占比（基于命中记录内容深度分析）
+  "neutralRatio": 0-100的数字,           // 中性情感占比
+  "negativeRatio": 0-100的数字,          // 负面情感占比
+  "competitorAnalysis": "竞品分析文本",
+  "suggestions": "数据分析结论",          // 3-5条，重点分析：1)品牌情感健康度 2)各维度情感表现 3)负面舆情风险 4)各平台情感差异
+  "sentimentDimensions": {
+    "trust": 0-100,                       // 信任度：AI 回答中是否体现品牌可靠、可信
+    "professionalism": 0-100,             // 专业度：AI 是否认为品牌专业、权威
+    "recommendation_intent": 0-100,       // 推荐意愿：AI 是否倾向于推荐该品牌
+    "value_perception": 0-100,            // 性价比感知：AI 对品牌性价比的评价
+    "brand_recall": 0-100,                // 品牌认知度：AI 对品牌的了解程度（信息丰富度）
+    "dimension_notes": "各维度评分依据说明"
+  }
+}
+
+评分标准（visibilityScore = 情感健康度）：
+- 正面情感占主导（positiveRatio > 60%）且负面 < 10% = 80-100 分
+- 正面略多于负面 = 60-80 分
+- 中性为主 = 40-60 分
+- 负面情感超过 30% = 直接降至 40 分以下（品牌形象预警）
+- 命中率高但负面多 → 低分（重点：负面舆情需立即处理）
+- 负面 0% 且正面 > 70% = 90-100 分`;
+
+  try {
+    const resp = await axios.post(
+      modelConfig.base_url,
+      {
+        model: modelConfig.model_name,
+        messages: [
+          { role: 'system', content: '你是品牌情感分析专家，只返回 JSON 格式数据。重点分析 AI 回答中对品牌的多维度情感态度。' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.3,
+      },
+      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 60000 }
+    );
+
+    const content = (resp.data as any)?.choices?.[0]?.message?.content || '';
+    const jsonStr = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(jsonStr);
+
+    const positiveRatio = Math.min(100, Math.max(0, parseFloat(parsed.positiveRatio) || 0));
+    const neutralRatio = Math.min(100, Math.max(0, parseFloat(parsed.neutralRatio) || 0));
+    const negativeRatio = Math.min(100, Math.max(0, parseFloat(parsed.negativeRatio) || 0));
+
+    // 品牌词评分 = 情感健康度（正面 - 负面，加权平台覆盖）
+    const hitPlatformCount = platformBreakdown.filter(p => p.brand_matched > 0).length;
+    const platformCoverageFactor = sourcePlatforms.length > 0 ? hitPlatformCount / sourcePlatforms.length : 0;
+    const sentimentHealth = positiveRatio - negativeRatio * 1.5; // 负面权重更高
+    let visibilityScore = Math.round(Math.max(0, Math.min(100, sentimentHealth * 0.7 + platformCoverageFactor * 30)));
+    // 负面超过 30% 直接降分
+    if (negativeRatio > 30) visibilityScore = Math.min(visibilityScore, 40);
+
+    const sentimentDimensions = parsed.sentimentDimensions || {
+      trust: 50, professionalism: 50, recommendation_intent: 50, value_perception: 50, brand_recall: 50, dimension_notes: 'LLM 未返回维度评分',
+    };
+
+    return {
+      visibilityScore,
+      positiveRatio,
+      neutralRatio,
+      negativeRatio,
+      competitorAnalysis: String(parsed.competitorAnalysis || ''),
+      suggestions: String(parsed.suggestions || ''),
+      raw: content,
+      sentimentDimensions: {
+        trust: Math.min(100, Math.max(0, parseInt(sentimentDimensions.trust) || 50)),
+        professionalism: Math.min(100, Math.max(0, parseInt(sentimentDimensions.professionalism) || 50)),
+        recommendation_intent: Math.min(100, Math.max(0, parseInt(sentimentDimensions.recommendation_intent) || 50)),
+        value_perception: Math.min(100, Math.max(0, parseInt(sentimentDimensions.value_perception) || 50)),
+        brand_recall: Math.min(100, Math.max(0, parseInt(sentimentDimensions.brand_recall) || 50)),
+        dimension_notes: String(sentimentDimensions.dimension_notes || ''),
+      },
+      brandMentions,
+      negativeFindings,
+      sentimentSummary: {
+        total: totalRecordCount,
+        brand_matched: brandMatchedCount,
+        positive: Math.round(brandMatchedCount * positiveRatio / 100),
+        neutral: (totalRecordCount - brandMatchedCount) + Math.round(brandMatchedCount * neutralRatio / 100),
+        negative: Math.round(brandMatchedCount * negativeRatio / 100),
+        positiveRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * positiveRatio / 100) / totalRecordCount * 100 : 0),
+        neutralRatio: Math.round(((totalRecordCount - brandMatchedCount) + brandMatchedCount * neutralRatio / 100) / totalRecordCount * 100),
+        negativeRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * negativeRatio / 100) / totalRecordCount * 100 : 0),
+        platform_coverage: `${sourcePlatforms.length}个平台查询，${hitPlatformCount}个平台命中`,
+        analysis_mode: 'brand_deep_sentiment',
+      },
+    };
+  } catch (e: any) {
+    console.error(`[AEO-Brand] LLM 调用失败:`, e.message);
+    const fallback = fallbackAnalysis(allRecords, brandKeywords);
+    return { ...fallback, sentimentDimensions: { trust: 50, professionalism: 50, recommendation_intent: 50, value_perception: 50, brand_recall: 70, dimension_notes: 'LLM 调用失败，使用 fallback' }, brandMentions, negativeFindings, sentimentSummary: { total: totalRecordCount, brand_matched: brandMatchedCount, analysis_mode: 'brand_fallback' } };
+  }
+}
+
+/**
+ * 蒸馏词任务分片分析管道（keyword_type=0）
+ *
+ * 特点：查询词是行业通用词（如"公司注册流程"），AI 是否提及品牌才真实反映 GEO 可见度。
+ * 命中率是这个管道的核心指标，直接反映品牌在 AI 回答中的出现概率。
+ *
+ * 评分标准（visibilityScore）：
+ * - 基于提及率 × 平台覆盖均衡度
+ * - 提及率 100% 且覆盖所有平台 = 90-100 分
+ * - 提及率 50% 且覆盖多数平台 = 50-70 分
+ * - 提及率 0% = 0 分
+ * - 只在单一平台命中（其他全未命中）应扣分（GEO 目标是全平台覆盖）
+ */
+async function analyzeDistillateShard(
+  allRecords: any[],
+  brandMatchedRecords: any[],
+  brandKeywords: string[],
+  userId: string,
+  platformBreakdown: any[],
+  keywordCoverage: any[],
+  sourcePlatforms: string[]
+): Promise<DistillateShardAnalysis> {
+  const totalRecordCount = allRecords.length;
+  const brandMatchedCount = brandMatchedRecords.length;
+  const hitRate = totalRecordCount > 0 ? Math.round((brandMatchedCount / totalRecordCount) * 10000) / 100 : 0;
+
+  // 未命中品牌的关键词列表（覆盖盲区）
+  const uncoveredKeywords = keywordCoverage
+    .filter(k => k.brand_matched === 0)
+    .map(k => k.keyword)
+    .slice(0, 50);
+
+  // 各平台提及率
+  const platformMentionRates = platformBreakdown.map(p => ({
+    platform: p.platform,
+    total: p.total,
+    mentioned: p.brand_matched,
+    rate: p.brand_rate,
+  }));
+
+  // 跨平台一致性：各平台提及率的标准差越小，一致性越高
+  const rates = platformMentionRates.map(p => p.rate);
+  const avgRate = rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
+  const variance = rates.length > 0 ? rates.reduce((sum, r) => sum + Math.pow(r - avgRate, 2), 0) / rates.length : 0;
+  const stdDev = Math.sqrt(variance);
+  const crossPlatformConsistency = Math.max(0, Math.min(100, Math.round(100 - stdDev)));
+
+  const brandMentions = brandMatchedRecords.map(r => ({
+    keyword: r.keyword,
+    platform: r.platform,
+    matchedBrands: r.matched_brands,
+    shareUrl: r.share_url,
+    contentPreview: (r.raw_content || '').substring(0, 200),
+  }));
+
+  const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷'];
+  const negativeFindings = brandMatchedRecords
+    .filter(r => {
+      const text = (r.raw_content || '').toLowerCase();
+      return negativeWords.some(w => text.includes(w));
+    })
+    .map(r => ({
+      keyword: r.keyword,
+      platform: r.platform,
+      contentPreview: (r.raw_content || '').substring(0, 300),
+      negativeWords: negativeWords.filter(w => (r.raw_content || '').toLowerCase().includes(w)),
+    }));
+
+  // 蒸馏词评分 = 提及率 × 0.6 + 平台覆盖均衡度 × 0.4
+  const hitPlatformCount = platformBreakdown.filter(p => p.brand_matched > 0).length;
+  const platformBalance = sourcePlatforms.length > 0 ? hitPlatformCount / sourcePlatforms.length : 0;
+  const visibilityScore = Math.round(hitRate * 0.6 + platformBalance * 100 * 0.4);
+
+  // 获取 AEO 模型（可选，蒸馏词管道即使无 LLM 也能生成有意义的提及率分析）
+  const modelConfig = await getAeoModelConfig(userId);
+  const hasLlm = modelConfig && modelConfig.api_key_encrypted;
+
+  if (!hasLlm || brandMatchedCount === 0) {
+    // 无 LLM 或无命中：用纯代码分析（蒸馏词管道的核心指标是提及率，不依赖 LLM）
+    const coverageGaps = uncoveredKeywords.length > 0
+      ? `共 ${uncoveredKeywords.length} 个关键词未命中品牌，占关键词总数的 ${keywordCoverage.length > 0 ? Math.round(uncoveredKeywords.length / keywordCoverage.length * 100) : 0}%。这些关键词是 GEO 优化的重点方向。`
+      : '所有关键词均命中品牌，覆盖完整。';
+
+    return {
+      visibilityScore,
+      positiveRatio: 0,
+      neutralRatio: brandMatchedCount > 0 ? 100 : 0,
+      negativeRatio: 0,
+      competitorAnalysis: brandMatchedCount > 0 ? `在 ${hitPlatformCount}/${sourcePlatforms.length} 个平台获得 ${brandMatchedCount} 次品牌提及` : '无品牌命中',
+      suggestions: `1. 提及率 ${hitRate}%（${brandMatchedCount}/${totalRecordCount}），${hitRate > 50 ? 'GEO 可见度良好' : hitRate > 20 ? 'GEO 可见度有待提升' : 'GEO 可见度较低，需加强优化'}\n2. 平台覆盖：${hitPlatformCount}/${sourcePlatforms.length} 个平台命中\n3. ${coverageGaps}\n4. 跨平台一致性 ${crossPlatformConsistency}%（${crossPlatformConsistency > 70 ? '各平台提及率较均衡' : '各平台提及率差异较大，需针对性优化'}`,
+      raw: JSON.stringify({ fallback: true, hit_rate: hitRate, platform_balance: platformBalance, uncovered: uncoveredKeywords.length }),
+      mentionAnalysis: {
+        platform_mention_rates: platformMentionRates,
+        uncovered_keywords: uncoveredKeywords,
+        coverage_gaps: coverageGaps,
+        cross_platform_consistency: crossPlatformConsistency,
+        mention_notes: '未配置 AEO 模型或无命中记录，使用纯代码提及率分析。配置 AEO 模型可获得更深入的内容分析。',
+      },
+      brandMentions,
+      negativeFindings,
+      sentimentSummary: {
+        total: totalRecordCount,
+        brand_matched: brandMatchedCount,
+        positive: 0,
+        neutral: totalRecordCount,
+        negative: 0,
+        positiveRatio: 0,
+        neutralRatio: 100,
+        negativeRatio: 0,
+        platform_coverage: `${sourcePlatforms.length}个平台查询，${hitPlatformCount}个平台命中`,
+        hit_rate: hitRate,
+        analysis_mode: 'distillate_code_analysis',
+      },
+    };
+  }
+
+  // 有 LLM：调用大模型做提及率+内容综合分析
+  let apiKey: string;
+  try {
+    apiKey = decrypt(modelConfig.api_key_encrypted);
+  } catch (e: any) {
+    console.error(`[AEO-Distillate] API-KEY 解密失败:`, e.message);
+    return {
+      visibilityScore,
+      positiveRatio: 0, neutralRatio: 100, negativeRatio: 0,
+      competitorAnalysis: '', suggestions: '', raw: 'API-KEY 解密失败',
+      mentionAnalysis: { platform_mention_rates: platformMentionRates, uncovered_keywords: uncoveredKeywords, coverage_gaps: '', cross_platform_consistency: crossPlatformConsistency, mention_notes: 'API-KEY 解密失败' },
+      brandMentions, negativeFindings,
+      sentimentSummary: { total: totalRecordCount, brand_matched: brandMatchedCount, hit_rate: hitRate, analysis_mode: 'distillate_code_analysis' },
+    };
+  }
+
+  const analysisInput = brandMatchedRecords.slice(0, 20).map(r => ({
+    platform: r.platform,
+    keyword: r.keyword,
+    content: (r.raw_content || '').substring(0, 2000),
+    matchedBrands: r.matched_brands,
+  }));
+
+  const prompt = `你是 AEO（Answer Engine Optimization）分析师。这是一个蒸馏词任务的分片报告 —— 查询词是行业通用词（非品牌词），AI 是否提及品牌才真实反映品牌的 GEO 可见度。
+命中率（提及率）是这个报告的核心指标。请重点分析提及率、平台覆盖和盲区。
+
+品牌关键词：${brandKeywords.join('、')}
+本分片查询了 ${totalRecordCount} 条记录，其中 ${brandMatchedCount} 条命中品牌，提及率 ${hitRate}%。
+平台分布：${platformMentionRates.map(p => `${p.platform}: ${p.mentioned}/${p.total}(${p.rate}%)`).join('；')}
+未命中关键词数：${uncoveredKeywords.length}
+
+【命中记录详情】
+${JSON.stringify(analysisInput, null, 2)}
+
+请返回 JSON 格式（不要 markdown 代码块）：
+{
+  "visibilityScore": 0-100的整数,        // 提及率 × 平台覆盖均衡度（评分标准见下）
+  "positiveRatio": 0-100的数字,          // 命中记录中的正面情感占比
+  "neutralRatio": 0-100的数字,
+  "negativeRatio": 0-100的数字,
+  "competitorAnalysis": "竞品分析文本",
+  "suggestions": "数据分析结论",          // 3-5条，重点分析：1)提及率水平 2)各平台覆盖差异 3)未命中关键词盲区 4)与 GEO 目标的差距
+  "mentionAnalysis": {
+    "coverage_gaps": "覆盖盲区说明",       // 详细说明哪些关键词/平台是 GEO 优化盲区
+    "cross_platform_consistency": 0-100,  // 跨平台一致性评分
+    "mention_notes": "提及率分析说明"       // 对提及率的深度解读
+  }
+}
+
+评分标准（visibilityScore = 提及率 × 平台覆盖）：
+- 提及率 100% 且覆盖所有平台 = 90-100 分
+- 提及率 50% 且覆盖多数平台 = 50-70 分
+- 提及率 0% = 0 分
+- 只在单一平台命中（其他全未命中）应扣分，因为 GEO 目标是全平台覆盖`;
+
+  try {
+    const resp = await axios.post(
+      modelConfig.base_url,
+      {
+        model: modelConfig.model_name,
+        messages: [
+          { role: 'system', content: '你是 AEO 分析专家，只返回 JSON 格式数据。重点分析提及率和平台覆盖。' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.3,
+      },
+      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 60000 }
+    );
+
+    const content = (resp.data as any)?.choices?.[0]?.message?.content || '';
+    const jsonStr = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(jsonStr);
+
+    const positiveRatio = Math.min(100, Math.max(0, parseFloat(parsed.positiveRatio) || 0));
+    const neutralRatio = Math.min(100, Math.max(0, parseFloat(parsed.neutralRatio) || 0));
+    const negativeRatio = Math.min(100, Math.max(0, parseFloat(parsed.negativeRatio) || 0));
+
+    // 蒸馏词评分 = 提及率 × 0.6 + 平台覆盖均衡度 × 0.4（以代码计算为准，LLM 评分仅参考）
+    const finalVisibilityScore = visibilityScore;
+
+    const mentionAnalysisParsed = parsed.mentionAnalysis || {};
+
+    return {
+      visibilityScore: finalVisibilityScore,
+      positiveRatio,
+      neutralRatio,
+      negativeRatio,
+      competitorAnalysis: String(parsed.competitorAnalysis || ''),
+      suggestions: String(parsed.suggestions || ''),
+      raw: content,
+      mentionAnalysis: {
+        platform_mention_rates: platformMentionRates,
+        uncovered_keywords: uncoveredKeywords,
+        coverage_gaps: String(mentionAnalysisParsed.coverage_gaps || (uncoveredKeywords.length > 0 ? `共 ${uncoveredKeywords.length} 个关键词未命中品牌` : '所有关键词均命中品牌')),
+        cross_platform_consistency: Math.min(100, Math.max(0, parseInt(mentionAnalysisParsed.cross_platform_consistency) || crossPlatformConsistency)),
+        mention_notes: String(mentionAnalysisParsed.mention_notes || ''),
+      },
+      brandMentions,
+      negativeFindings,
+      sentimentSummary: {
+        total: totalRecordCount,
+        brand_matched: brandMatchedCount,
+        positive: Math.round(brandMatchedCount * positiveRatio / 100),
+        neutral: (totalRecordCount - brandMatchedCount) + Math.round(brandMatchedCount * neutralRatio / 100),
+        negative: Math.round(brandMatchedCount * negativeRatio / 100),
+        positiveRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * positiveRatio / 100) / totalRecordCount * 100 : 0),
+        neutralRatio: Math.round(((totalRecordCount - brandMatchedCount) + brandMatchedCount * neutralRatio / 100) / totalRecordCount * 100),
+        negativeRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * negativeRatio / 100) / totalRecordCount * 100 : 0),
+        platform_coverage: `${sourcePlatforms.length}个平台查询，${hitPlatformCount}个平台命中`,
+        hit_rate: hitRate,
+        analysis_mode: 'distillate_llm_analysis',
+      },
+    };
+  } catch (e: any) {
+    console.error(`[AEO-Distillate] LLM 调用失败:`, e.message);
+    // LLM 失败时回退到纯代码分析（蒸馏词管道的核心指标是提及率，代码计算即可）
+    return {
+      visibilityScore,
+      positiveRatio: 0, neutralRatio: 100, negativeRatio: 0,
+      competitorAnalysis: '', suggestions: `提及率 ${hitRate}%（${brandMatchedCount}/${totalRecordCount}），平台覆盖 ${hitPlatformCount}/${sourcePlatforms.length}`,
+      raw: JSON.stringify({ fallback: true, llm_error: e.message }),
+      mentionAnalysis: {
+        platform_mention_rates: platformMentionRates,
+        uncovered_keywords: uncoveredKeywords,
+        coverage_gaps: uncoveredKeywords.length > 0 ? `共 ${uncoveredKeywords.length} 个关键词未命中品牌` : '所有关键词均命中品牌',
+        cross_platform_consistency: crossPlatformConsistency,
+        mention_notes: 'LLM 调用失败，使用纯代码提及率分析',
+      },
+      brandMentions, negativeFindings,
+      sentimentSummary: { total: totalRecordCount, brand_matched: brandMatchedCount, hit_rate: hitRate, analysis_mode: 'distillate_code_analysis' },
+    };
+  }
+}
+
 /**
  * 生成 AEO 轮次报告（基于完整关键词库的分析）
  * 每轮100%完成后触发，分析本轮所有品牌命中记录
@@ -996,114 +1505,49 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       competitorMentions.sort((a, b) => b.mention_count - a.mention_count);
     }
 
-    let analysis: any;
-    let brandMentions: any[];
-    let negativeFindings: any[];
-    let sentimentSummary: any;
+    // v2.1.9：按 keyword_type 分流到不同分析管道
+    // - 品牌词任务（keyword_type=1）：深度情感分析，评分基于情感健康度
+    // - 蒸馏词任务（keyword_type=0）：提及率分析，评分基于提及率 × 平台覆盖
+    let analysisResult: any;
+    let sentimentDimensions: any = null;
+    let mentionAnalysis: any = null;
 
-    if (hasBrandMatch) {
-      // ===== 有品牌命中：正常 LLM 分析流程 =====
-      // v2.1.6：把全量记录（含未命中）传给 LLM，让 LLM 看到所有平台的覆盖情况
-      // 而非只传品牌命中记录，否则 LLM 只能看到单一平台的数据
-      const analysisInput = allRecords.map(r => ({
-        platform: r.platform,
-        keyword: r.keyword,
-        content: (r.raw_content || '').substring(0, 3000),
-        matchedBrands: r.matched_brands,
-        brandMatched: r.brand_matched === true, // v2.1.6：标记是否命中，让 LLM 区分
-        shareUrl: r.share_url,
-      }));
-      analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
-
-      brandMentions = brandMatchedRecords.map(r => ({
-        keyword: r.keyword,
-        platform: r.platform,
-        matchedBrands: r.matched_brands,
-        shareUrl: r.share_url,
-        contentPreview: (r.raw_content || '').substring(0, 200),
-      }));
-
-      const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷'];
-      negativeFindings = brandMatchedRecords
-        .filter(r => {
-          const text = (r.raw_content || '').toLowerCase();
-          return negativeWords.some(w => text.includes(w));
-        })
-        .map(r => ({
-          keyword: r.keyword,
-          platform: r.platform,
-          contentPreview: (r.raw_content || '').substring(0, 300),
-          negativeWords: negativeWords.filter(w => (r.raw_content || '').toLowerCase().includes(w)),
-        }));
-
-      // v2.1.6：情感汇总基于全量记录（命中记录参与情感分析，未命中记录算中性）
-      sentimentSummary = {
-        total: allRecords.length,
-        brand_matched: brandMatchedCount,
-        positive: Math.round(brandMatchedCount * analysis.positiveRatio / 100),
-        neutral: (allRecords.length - brandMatchedCount) + Math.round(brandMatchedCount * analysis.neutralRatio / 100),
-        negative: Math.round(brandMatchedCount * analysis.negativeRatio / 100),
-        positiveRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * analysis.positiveRatio / 100) / allRecords.length * 100 : 0),
-        neutralRatio: Math.round(((allRecords.length - brandMatchedCount) + brandMatchedCount * analysis.neutralRatio / 100) / allRecords.length * 100),
-        negativeRatio: Math.round(brandMatchedCount > 0 ? (brandMatchedCount * analysis.negativeRatio / 100) / allRecords.length * 100 : 0),
-        platform_coverage: `${sourcePlatforms.length}个平台查询，${platformBreakdown.filter(p => p.brand_matched > 0).length}个平台命中`,
-      };
+    if (keywordType === 1) {
+      // ===== 品牌词任务管道：深度情感分析 =====
+      const brandAnalysis = await analyzeBrandShard(
+        allRecords, brandMatchedRecords, brandKeywords, userId, platformBreakdown, sourcePlatforms
+      );
+      analysisResult = brandAnalysis;
+      sentimentDimensions = brandAnalysis.sentimentDimensions;
+      console.log(`[AEO-Shard] 分片 ${queueId} 使用品牌词管道（深度情感分析），情感健康度=${brandAnalysis.visibilityScore}`);
     } else {
-      // ===== 无品牌命中：生成"收录为 0"的报告 =====
-      const noKeywordNote = brandKeywords.length === 0
-        ? `用户未配置品牌词（pp 表为空），无法识别品牌命中。请先在"品牌词库"中添加品牌词。`
-        : `已配置 ${brandKeywords.length} 个品牌词，但 AI 回答中均未提及品牌。`;
-
-      analysis = {
-        visibilityScore: 0,
-        positiveRatio: 0,
-        neutralRatio: 0,
-        negativeRatio: 0,
-        competitorAnalysis: '无品牌命中，无法分析竞品',
-        suggestions: `本分片查询了 ${allRecords.length} 条记录，品牌命中 0 条，AI 提及率为 0%。${noKeywordNote}建议持续通过飞轮运转做 GEO 优化，提高品牌 AI 提及率。`,
-        raw: JSON.stringify({
-          reason: 'no_brand_match',
-          total_records: allRecords.length,
-          brand_matched_count: 0,
-          brand_keyword_count: brandKeywords.length,
-          note: noKeywordNote,
-        }),
-      };
-      brandMentions = [];
-      negativeFindings = [];
-      sentimentSummary = {
-        total: allRecords.length,
-        brand_matched: 0,
-        positive: 0,
-        neutral: allRecords.length,
-        negative: 0,
-        positiveRatio: 0,
-        neutralRatio: 100,
-        negativeRatio: 0,
-        platform_coverage: `${sourcePlatforms.length}个平台查询，0个平台命中`,
-      };
-
-      console.log(`[AEO-Shard] 分片 ${queueId} 无品牌命中，生成"收录为 0"报告（总查询 ${allRecords.length} 条）`);
+      // ===== 蒸馏词任务管道：提及率分析 =====
+      const distillateAnalysis = await analyzeDistillateShard(
+        allRecords, brandMatchedRecords, brandKeywords, userId, platformBreakdown, keywordCoverage, sourcePlatforms
+      );
+      analysisResult = distillateAnalysis;
+      mentionAnalysis = distillateAnalysis.mentionAnalysis;
+      console.log(`[AEO-Shard] 分片 ${queueId} 使用蒸馏词管道（提及率分析），提及率=${hitRate}%，可见度=${distillateAnalysis.visibilityScore}`);
     }
 
-    // 入库（v2.1.6：含多维度扩展字段）
+    // 入库（v2.1.6：含多维度扩展字段；v2.1.9：含 sentiment_dimensions/mention_analysis）
     const reportId = await insertAeoShardReport({
       task_id: queueInfo.task_id,
       queue_id: queueId,
       user_id: userId,
       round_no: queueInfo.round_no,
       shard_keywords: queueInfo.keywords,
-      sentiment_summary: sentimentSummary,
-      brand_mentions: brandMentions,
-      negative_findings: negativeFindings,
-      content_suggestions: analysis.suggestions,
+      sentiment_summary: analysisResult.sentimentSummary,
+      brand_mentions: analysisResult.brandMentions,
+      negative_findings: analysisResult.negativeFindings,
+      content_suggestions: analysisResult.suggestions,
       record_count: totalRecordCount,
       brand_matched_count: brandMatchedCount,
-      visibility_score: analysis.visibilityScore,
-      positive_ratio: analysis.positiveRatio,
-      negative_ratio: analysis.negativeRatio,
-      neutral_ratio: analysis.neutralRatio,
-      raw_analysis: { raw: analysis.raw, competitorAnalysis: analysis.competitorAnalysis },
+      visibility_score: analysisResult.visibilityScore,
+      positive_ratio: analysisResult.positiveRatio,
+      negative_ratio: analysisResult.negativeRatio,
+      neutral_ratio: analysisResult.neutralRatio,
+      raw_analysis: { raw: analysisResult.raw, competitorAnalysis: analysisResult.competitorAnalysis },
       shard_start_time: startTime,
       shard_end_time: endTime,
       // v2.1.6：多维度扩展字段
@@ -1115,9 +1559,12 @@ export async function generateAeoShardReport(queueId: number): Promise<number | 
       hit_rate: hitRate,
       share_urls: shareUrls,
       raw_contents_sample: rawContentsSample,
+      // v2.1.9：分离管道专属字段
+      sentiment_dimensions: sentimentDimensions,
+      mention_analysis: mentionAnalysis,
     });
 
-    console.log(`[AEO-Shard] 分片 ${queueId} AEO报告已生成: reportId=${reportId}, 任务类型=${keywordType === 1 ? '品牌词' : '蒸馏词'}, 总查询=${totalRecordCount}, 品牌命中=${brandMatchedCount}, 命中率=${hitRate}%, 平台数=${sourcePlatforms.length}, 竞品=${competitorMentions.length}`);
+    console.log(`[AEO-Shard] 分片 ${queueId} AEO报告已生成: reportId=${reportId}, 任务类型=${keywordType === 1 ? '品牌词(情感分析)' : '蒸馏词(提及率分析)'}, 总查询=${totalRecordCount}, 品牌命中=${brandMatchedCount}, 命中率=${hitRate}%, 可见度=${analysisResult.visibilityScore}, 平台数=${sourcePlatforms.length}, 竞品=${competitorMentions.length}`);
     return reportId;
   } catch (err: any) {
     console.error(`[AEO-Shard] 分片 ${queueId} AEO分析失败:`, err.message);
@@ -1352,19 +1799,12 @@ async function generateWritingSuggestionsPool(
   periodType: string,
   userId: string
 ): Promise<any[]> {
-  // 收集负面发现和品牌提及关键词
-  const negativeFindings: any[] = [];
-  const brandMentionKeywords = new Set<string>();
-  for (const sr of shardReports) {
-    if (Array.isArray(sr.negative_findings)) {
-      negativeFindings.push(...sr.negative_findings);
-    }
-    if (Array.isArray(sr.brand_mentions)) {
-      for (const bm of sr.brand_mentions) {
-        if (bm.keyword) brandMentionKeywords.add(bm.keyword);
-      }
-    }
-  }
+  // v2.1.9：按 keyword_type 分组，分别生成针对性建议再合并
+  // - 品牌词报告（keyword_type=1）：侧重情感修复/优势强化，基于 sentiment_dimensions
+  // - 蒸馏词报告（keyword_type=0）：侧重提及率提升/盲区覆盖，基于 mention_analysis
+  const brandShardReports = shardReports.filter(sr => sr.keyword_type === 1);
+  const distillateShardReports = shardReports.filter(sr => sr.keyword_type !== 1);
+  console.log(`[AEO-Period] 写作建议分组: 品牌词报告 ${brandShardReports.length} 条, 蒸馏词报告 ${distillateShardReports.length} 条`);
 
   // 排名前3的信源平台
   const topPlatforms = Object.entries(sourceWeights)
@@ -1376,7 +1816,7 @@ async function generateWritingSuggestionsPool(
   const modelConfig = await getAeoModelConfig(userId);
   if (!modelConfig || !modelConfig.api_key_encrypted) {
     console.warn(`[AEO-Period] 用户 ${userId} 未配置 AEO 模型（use_for_aeo=true），使用规则兜底生成写作建议`);
-    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
+    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, [], new Set());
   }
 
   let apiKey: string;
@@ -1384,41 +1824,131 @@ async function generateWritingSuggestionsPool(
     apiKey = decrypt(modelConfig.api_key_encrypted);
   } catch (e: any) {
     console.error(`[AEO-Period] API-KEY 解密失败 platform=${modelConfig.platform}:`, e.message);
-    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
+    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, [], new Set());
   }
 
   const apiUrl = modelConfig.base_url;
   const model = modelConfig.model_name;
-  console.log(`[AEO-Period] 使用模型生成写作建议: platform=${modelConfig.platform} model=${model}`);
-
-  // 调用 LLM 生成建议池
-  // v2.1.3：支持 'daily' 周期
   const periodLabel = periodType === 'daily' ? '日' : periodType === 'weekly' ? '周' : '月';
-  const prompt = `你是 AEO（Answer Engine Optimization）内容策略专家。请基于以下本${periodLabel}数据，生成 5-10 条具体的写作建议。
+  console.log(`[AEO-Period] 使用模型生成写作建议: platform=${modelConfig.platform} model=${model}（分组模式）`);
 
-分片报告数：${shardReports.length}
-收录统计：总记录 ${inclusionStats.total}，品牌命中 ${inclusionStats.brand_matched}，收录率 ${inclusionStats.inclusion_rate}%
-负面发现数：${negativeFindings.length}
-品牌命中关键词：${Array.from(brandMentionKeywords).slice(0, 30).join('、') || '无'}
-推荐投放平台（按AI平台信源权重）：${topPlatforms.join('、') || '无'}
+  // 并行为两组报告生成建议
+  const [brandSuggestions, distillateSuggestions] = await Promise.all([
+    generateSuggestionsForGroup(modelConfig, apiKey, apiUrl, model, brandShardReports, periodLabel, topPlatforms, 'brand'),
+    generateSuggestionsForGroup(modelConfig, apiKey, apiUrl, model, distillateShardReports, periodLabel, topPlatforms, 'distillate'),
+  ]);
 
-各平台收录分布：
-${JSON.stringify(inclusionStats.platform_breakdown || [], null, 2)}
+  // 合并建议池，每条标注来源类型
+  const allSuggestions = [
+    ...brandSuggestions.map(s => ({ ...s, source_type: 'brand' })),
+    ...distillateSuggestions.map(s => ({ ...s, source_type: 'distillate' })),
+  ];
+
+  console.log(`[AEO-Period] 写作建议生成完成: 品牌词建议 ${brandSuggestions.length} 条, 蒸馏词建议 ${distillateSuggestions.length} 条, 合计 ${allSuggestions.length} 条`);
+  return allSuggestions;
+}
+
+/**
+ * 为单个分组（品牌词/蒸馏词）生成写作建议
+ * @param groupType 'brand' | 'distillate'
+ */
+async function generateSuggestionsForGroup(
+  modelConfig: any,
+  apiKey: string,
+  apiUrl: string,
+  model: string,
+  groupShardReports: any[],
+  periodLabel: string,
+  topPlatforms: string[],
+  groupType: 'brand' | 'distillate'
+): Promise<any[]> {
+  if (groupShardReports.length === 0) return [];
+
+  try {
+    let prompt: string;
+
+    if (groupType === 'brand') {
+      // 品牌词报告：基于 sentiment_dimensions 生成情感修复/优势强化建议
+      const sentimentDimensionsList = groupShardReports
+        .filter(sr => sr.sentiment_dimensions)
+        .slice(0, 10)
+        .map(sr => ({
+          queue_id: sr.queue_id,
+          dimensions: sr.sentiment_dimensions,
+          negative_findings: (sr.negative_findings || []).slice(0, 3),
+        }));
+
+      const allNegativeFindings = groupShardReports.flatMap(sr => sr.negative_findings || []).slice(0, 5);
+
+      prompt = `你是 AEO 内容策略专家。这是品牌词任务的本${periodLabel}报告数据 —— 查询词本身含品牌，命中率天然高，重点在于情感健康度。
+请基于以下多维度情感分析数据，生成 3-5 条针对品牌情感优化和负面舆情应对的写作建议。
+
+品牌词报告数：${groupShardReports.length}
+推荐投放平台：${topPlatforms.join('、') || '无'}
+
+各分片情感维度评分（信任度/专业度/推荐意愿/性价比感知/品牌认知度）：
+${JSON.stringify(sentimentDimensionsList, null, 2)}
 
 负面发现详情（前5条）：
-${JSON.stringify(negativeFindings.slice(0, 5), null, 2)}
+${JSON.stringify(allNegativeFindings, null, 2)}
 
 请返回 JSON 数组（不要 markdown 代码块），每条建议包含：
 {
-  "topic": "建议主题（简短）",
-  "direction": "创作方向（如：品牌优势强化/负面舆情应对/行业知识科普等）",
+  "topic": "建议主题",
+  "direction": "创作方向（如：品牌信任强化/负面舆情应对/专业度提升/性价比优势展示等）",
   "keywords": ["建议关键词1", "关键词2"],
   "platforms": ["平台1", "平台2"],
   "priority": "high|medium|low",
-  "reason": "建议原因（基于数据分析）"
-}`;
+  "reason": "建议原因（基于情感维度数据分析）"
+}
 
-  try {
+重点关注：
+- 信任度/专业度偏低的维度需强化
+- 负面情感超过 30% 的话题需优先应对
+- 推荐意愿偏低的平台需针对性优化`;
+    } else {
+      // 蒸馏词报告：基于 mention_analysis 生成提及率提升/盲区覆盖建议
+      const mentionAnalysisList = groupShardReports
+        .filter(sr => sr.mention_analysis)
+        .slice(0, 10)
+        .map(sr => ({
+          queue_id: sr.queue_id,
+          hit_rate: sr.hit_rate,
+          mention_analysis: sr.mention_analysis,
+        }));
+
+      const allUncoveredKeywords = Array.from(new Set(
+        groupShardReports.flatMap(sr => sr.mention_analysis?.uncovered_keywords || [])
+      )).slice(0, 30);
+
+      prompt = `你是 AEO 内容策略专家。这是蒸馏词任务的本${periodLabel}报告数据 —— 查询词是行业通用词，提及率真实反映品牌 GEO 可见度。
+请基于以下提及率分析数据，生成 3-5 条针对提及率提升和覆盖盲区弥补的写作建议。
+
+蒸馏词报告数：${groupShardReports.length}
+推荐投放平台：${topPlatforms.join('、') || '无'}
+
+各分片提及率分析：
+${JSON.stringify(mentionAnalysisList, null, 2)}
+
+未命中品牌的关键词（覆盖盲区，前30个）：
+${allUncoveredKeywords.join('、') || '无'}
+
+请返回 JSON 数组（不要 markdown 代码块），每条建议包含：
+{
+  "topic": "建议主题",
+  "direction": "创作方向（如：行业知识科普/关键词覆盖提升/平台均衡优化等）",
+  "keywords": ["建议关键词1", "关键词2"],
+  "platforms": ["平台1", "平台2"],
+  "priority": "high|medium|low",
+  "reason": "建议原因（基于提及率和覆盖盲区数据）"
+}
+
+重点关注：
+- 提及率低于 20% 的话题需优先优化
+- 未命中关键词（覆盖盲区）需通过内容建设弥补
+- 跨平台一致性低的需针对性加强薄弱平台`;
+    }
+
     const resp = await axios.post(
       apiUrl,
       {
@@ -1442,10 +1972,11 @@ ${JSON.stringify(negativeFindings.slice(0, 5), null, 2)}
     if (Array.isArray(parsed)) {
       return parsed;
     }
-    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
+    console.warn(`[AEO-Period] ${groupType} 分组 LLM 返回非数组，使用空建议`);
+    return [];
   } catch (e: any) {
-    console.warn('[AEO-Period] LLM 生成写作建议失败，使用规则兜底:', e.message);
-    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, negativeFindings, brandMentionKeywords);
+    console.warn(`[AEO-Period] ${groupType} 分组 LLM 生成建议失败:`, e.message);
+    return [];
   }
 }
 

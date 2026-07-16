@@ -1465,6 +1465,9 @@ export async function insertAeoShardReport(data: {
   hit_rate?: number;
   share_urls?: any;
   raw_contents_sample?: any;
+  // v2.1.9：分离管道专属字段
+  sentiment_dimensions?: any;  // 品牌词任务：多维度情感评分
+  mention_analysis?: any;      // 蒸馏词任务：提及率分析
 }): Promise<number> {
   const result = await query(
     `INSERT INTO aeo_shard_report
@@ -1474,9 +1477,10 @@ export async function insertAeoShardReport(data: {
        positive_ratio, negative_ratio, neutral_ratio,
        raw_analysis, shard_start_time, shard_end_time,
        platform_breakdown, keyword_coverage, competitor_mentions, source_platforms,
-       keyword_type, hit_rate, share_urls, raw_contents_sample)
+       keyword_type, hit_rate, share_urls, raw_contents_sample,
+       sentiment_dimensions, mention_analysis)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-             $19, $20, $21, $22, $23, $24, $25, $26)
+             $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
      RETURNING id`,
     [
       data.task_id,
@@ -1505,6 +1509,8 @@ export async function insertAeoShardReport(data: {
       data.hit_rate ?? 0,
       data.share_urls ? JSON.stringify(data.share_urls) : null,
       data.raw_contents_sample ? JSON.stringify(data.raw_contents_sample) : null,
+      data.sentiment_dimensions ? JSON.stringify(data.sentiment_dimensions) : null,
+      data.mention_analysis ? JSON.stringify(data.mention_analysis) : null,
     ]
   );
   return result.rows[0].id;
