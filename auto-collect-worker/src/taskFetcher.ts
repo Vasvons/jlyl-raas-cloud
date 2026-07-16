@@ -496,14 +496,12 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
       const keyword = keywords[kwIdx];
       logger.info(`任务 ${taskId} 关键词 ${kwIdx + 1}/${keywords.length}: ${keyword.substring(0, 30)}`);
 
-      // 检查中断请求
-      if (kwOffset > 0) {
-        const isAborted = await checkAbortRequested(queueId);
-        if (isAborted) {
-          logger.warn(`任务 ${taskId} 被请求中断，停止执行（已完成 ${kwIdx}/${keywords.length} 个关键词）`);
-          aborted = true;
-          break;
-        }
+      // 检查中断请求（每个关键词开始前检查，第一个关键词也检查，支持"立即执行"快速切换）
+      const isAborted = await checkAbortRequested(queueId);
+      if (isAborted) {
+        logger.warn(`任务 ${taskId} 被请求中断，停止执行（已完成 ${kwIdx}/${keywords.length} 个关键词）`);
+        aborted = true;
+        break;
       }
 
       // 定期重启 browser 防止内存泄漏
@@ -546,11 +544,21 @@ export async function executeTask(params: ExecuteTaskParams): Promise<ExecuteTas
 
         batchSinceRestart++;
 
-        // 批次间随机延迟（反爬）
+        // v2.1.8：每个平台批次完成后也检查中断请求（支持"立即执行"快速切换）
+        // 不等整个关键词的所有批次完成，批次间就检查，响应更快
         if (i < batches.length - 1) {
+          const batchAborted = await checkAbortRequested(queueId);
+          if (batchAborted) {
+            logger.warn(`任务 ${taskId} 被请求中断（批次 ${i + 1}/${batches.length} 完成后），停止执行`);
+            aborted = true;
+            break;
+          }
+          // 批次间随机延迟（反爬）
           await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1500));
         }
       }
+
+      if (aborted) break;
 
       // 每个关键词处理完毕后，更新进度（断点续查依据）
       await updateProgress(queueId, kwIdx);
