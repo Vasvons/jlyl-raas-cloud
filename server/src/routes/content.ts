@@ -910,12 +910,13 @@ router.delete('/writing-tasks/:id', async (req: Request, res: Response) => {
 //       然后异步执行 executeWritingTask
 router.post('/writing-tasks/:id/retry-failed', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
     const taskId = Number(req.params.id);
     const resetTask = await resetWritingTaskForRetry(taskId);
     if (!resetTask) {
       return res.status(404).json({ code: 404, message: '任务不存在' });
     }
+    // v2.2.18 修复：使用任务原属客户的 user_id（同 /execute 路由修复）
+    const userId = Number(resetTask.user_id);
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {
       console.error(`Retry writing task ${taskId} failed:`, err);
@@ -930,13 +931,17 @@ router.post('/writing-tasks/:id/retry-failed', async (req: Request, res: Respons
 // 与 retry-failed 不同：此接口会重置所有文章（包括已成功的），从头开始生成
 router.post('/writing-tasks/:id/execute', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
     const taskId = Number(req.params.id);
     // 查询任务是否存在
     const task = await getWritingTaskById(taskId);
     if (!task) {
       return res.status(404).json({ code: 404, message: '任务不存在' });
     }
+    // v2.2.18 修复：使用任务原属客户的 user_id，而不是当前登录管理员 ID
+    // 原 bug：管理员点「立即执行写作」时，getUserId(req) 返回管理员 ID（如 1），
+    //   生成的 article.user_id=管理员ID，但文章管理弹窗按 customer_id=客户ID 过滤，
+    //   导致「任务显示成功 30 篇但文章管理看不到」
+    const userId = Number(task.user_id);
     // 删除该任务下所有旧文章（包括成功和失败的），从头开始
     // v2.2.18：修复外键约束导致的 500 错误
     // 原 bug：publish_task.article_id 和 publish_record.task_id 没有 ON DELETE CASCADE，
@@ -990,8 +995,6 @@ router.get('/articles', async (req: Request, res: Response) => {
       userId = 0; // 0 = 不按 user_id 过滤
     }
     const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
-    // v2.2.18：调试日志，排查"任务显示30篇但文章管理看不到"问题
-    console.log(`[GET /articles] query=`, JSON.stringify(req.query), `→ userId=${userId}, taskId=${taskId}`);
     const result = await getArticles(userId, {
       keyword: req.query.keyword as string,
       status: req.query.status as string,
@@ -1000,7 +1003,6 @@ router.get('/articles', async (req: Request, res: Response) => {
       page: Number(req.query.page) || 1,
       pageSize: Number(req.query.pageSize) || 20,
     });
-    console.log(`[GET /articles] userId=${userId} taskId=${taskId} → 返回 ${result.list?.length || 0} 篇 (total=${result.total})`);
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });

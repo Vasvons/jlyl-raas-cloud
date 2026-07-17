@@ -5204,8 +5204,9 @@ export async function completeWritingTask(taskId: number, status: 'completed' | 
  */
 export async function resetWritingTaskForRetry(taskId: number): Promise<any | null> {
   // 先查任务当前状态，只允许重试 failed/partial 状态的任务
+  // v2.2.18：返回 user_id 字段，供调用方使用任务原属客户 ID（避免用管理员 ID 写文章）
   const checkResult = await query(
-    `SELECT id, status, total_count, completed_count, failed_count
+    `SELECT id, status, total_count, completed_count, failed_count, user_id
      FROM ai_writing_task WHERE id = $1`,
     [taskId]
   );
