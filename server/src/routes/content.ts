@@ -884,7 +884,13 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
             finalAgentProfileId = Number(aeoConfig.auto_agent_profile_id);
           }
           if (aeoConfig.auto_cover_image_mode) {
-            finalCoverImageMode = aeoConfig.auto_cover_image_mode;
+            // v2.2.21：'auto' 在 articleGenerator 虽已兼容，但为了避免歧义统一规范化为 'random'
+            //   原 bug：AEO 配置 Tab 早期默认值是 'auto'，数据库里可能存了 'auto'，
+            //   前端虽然会读取时映射为 'random' 显示，但用户没点保存就不会回写数据库，
+            //   导致 flywheelDaemon 创建任务时拿到的还是 'auto'。
+            //   修复：POST 路由读取时直接规范化，确保 task.cover_image_mode 始终是 'none'/'random'/'fixed'。
+            const mode = String(aeoConfig.auto_cover_image_mode).toLowerCase();
+            finalCoverImageMode = (mode === 'auto' || mode === 'random') ? 'random' : (mode === 'fixed' ? 'fixed' : 'none');
           }
           if (aeoConfig.auto_illustration_count != null) {
             // -1 表示按图库自动决定，传给 articleGenerator 由它兜底

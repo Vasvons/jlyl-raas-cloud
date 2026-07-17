@@ -69,6 +69,8 @@ export interface WritingContextInput {
   ragSnippets?: RagSnippet[];
   /** v2.1.4: L7 AEO 建议层（来自 aeo_context JSON，含 writingSuggestions） */
   aeoContext?: string;
+  /** v2.2.21: 当前文章索引（用于 L7 按索引轮询选主推建议） */
+  articleIdx?: number;
 }
 
 /** buildWritingContext 输出 */
@@ -348,7 +350,7 @@ function buildLayer6OutputSpec(task: any, keywords: string[]): string {
  *     : [{ role: 'user', content: articlePrompt + ctx.userPromptSuffix }];
  */
 export function buildWritingContext(input: WritingContextInput): WritingContext {
-  const { task, keywords, recentArticles, performanceMemory, strategyMemory, ragSnippets, aeoContext } = input;
+  const { task, keywords, recentArticles, performanceMemory, strategyMemory, ragSnippets, aeoContext, articleIdx } = input;
 
   // 构建 system message：L0 + L1 + L2 + L3 + L5 + L6 + L7
   const systemParts: string[] = [];
@@ -376,7 +378,8 @@ export function buildWritingContext(input: WritingContextInput): WritingContext 
   if (l6) systemParts.push(l6);
 
   // v2.1.4: L7 AEO 建议层（来自 aeo_context，含写作建议池）
-  const l7 = buildLayer7AeoSuggestions(aeoContext);
+  // v2.2.21: 传入 articleIdx，按索引轮询选主推建议
+  const l7 = buildLayer7AeoSuggestions(aeoContext, articleIdx || 0);
   if (l7) systemParts.push(l7);
 
   // 构建 user prompt 后缀：L4 主题参考
@@ -394,31 +397,46 @@ export function buildWritingContext(input: WritingContextInput): WritingContext 
  * v2.1.4: L7 AEO 建议层
  * 解析 task.aeo_context JSON，提取 writingSuggestions 并注入到 system message
  * 解决"自动写作标题跑题"问题：AI 能看到 AEO 报告的写作建议（主题/方向/关键词/推荐平台）
+ *
+ * v2.2.21：按文章索引轮询选 1 条作为"本次主推建议"，强制 AI 必须围绕这条建议写
+ *   原 bug：L7 只是"请参考以上建议"，AI 看到多条建议后自由选择甚至忽略，
+ *     导致多篇文章方向雷同、与 AEO 建议脱节。
+ *   修复：传入 articleIdx，按 `suggestions[articleIdx % suggestions.length]` 选 1 条
+ *     作为"本次必须遵循的主推建议"，其他建议仅作背景参考。
  */
-function buildLayer7AeoSuggestions(aeoContext?: string): string | null {
+function buildLayer7AeoSuggestions(aeoContext?: string, articleIdx: number = 0): string | null {
   if (!aeoContext) return null;
   try {
     const ctx = JSON.parse(aeoContext);
     const suggestions = ctx.suggestions;
     if (!Array.isArray(suggestions) || suggestions.length === 0) return null;
 
-    const lines: string[] = ['【AEO 写作建议】'];
-    lines.push(`周期类型：${ctx.period_type || '未知'}`);
+    // v2.2.21：按文章索引轮询选 1 条作为本次主推建议
+    const primaryIdx = articleIdx % suggestions.length;
+    const primary = suggestions[primaryIdx];
+
+    const lines: string[] = ['【AEO 写作建议池（来自周报/月报分析）】'];
+    lines.push(`周期类型：${ctx.period_type || '未知'}，共 ${suggestions.length} 条建议`);
     lines.push('');
+    lines.push(`★ 本次主推建议（第 ${primaryIdx + 1} 条，必须遵循）`);
+    lines.push(`  主题：${primary.topic || '未指定'}`);
+    if (primary.direction) lines.push(`  方向：${primary.direction}`);
+    if (primary.keywords && Array.isArray(primary.keywords) && primary.keywords.length > 0) {
+      lines.push(`  关键词：${primary.keywords.join('、')}`);
+    }
+    if (primary.platforms && Array.isArray(primary.platforms) && primary.platforms.length > 0) {
+      lines.push(`  推荐平台：${primary.platforms.join('、')}`);
+    }
+    if (primary.priority) lines.push(`  优先级：${primary.priority}`);
+    if (primary.reason) lines.push(`  原因：${primary.reason}`);
+    lines.push('');
+    lines.push('其他建议（仅作背景参考，本次不强制遵循）');
     suggestions.forEach((s: any, i: number) => {
-      lines.push(`${i + 1}. 主题：${s.topic || '未指定'}`);
-      if (s.direction) lines.push(`   方向：${s.direction}`);
-      if (s.keywords && Array.isArray(s.keywords) && s.keywords.length > 0) {
-        lines.push(`   关键词：${s.keywords.join('、')}`);
-      }
-      if (s.platforms && Array.isArray(s.platforms) && s.platforms.length > 0) {
-        lines.push(`   推荐平台：${s.platforms.join('、')}`);
-      }
-      if (s.priority) lines.push(`   优先级：${s.priority}`);
-      if (s.reason) lines.push(`   原因：${s.reason}`);
+      if (i === primaryIdx) return;
+      lines.push(`${i + 1}. ${s.topic || '未指定'}（方向：${s.direction || '未指定'}，优先级：${s.priority || 'medium'}）`);
     });
     lines.push('');
-    lines.push('请参考以上 AEO 写作建议，优先围绕建议的主题和关键词创作，确保文章方向与 AEO 优化策略一致。');
+    lines.push(`请【严格遵循】本次主推建议（第 ${primaryIdx + 1} 条）的主题、方向、关键词进行创作，确保本篇文章与 AEO 优化策略紧密对齐。`);
 
     return lines.join('\n');
   } catch {

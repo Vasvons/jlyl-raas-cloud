@@ -597,6 +597,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           strategyMemory,
           ragSnippets,
           aeoContext: task.aeo_context,
+          articleIdx: i, // v2.2.21: 传文章索引，L7 按索引轮询选主推建议
         });
 
         // 1. 先做占位符替换（向后兼容用户在模板里写的 {enterprise} {keyword} 等）
@@ -612,14 +613,18 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           enterprise: enterpriseInfo,
           wordCount: task.target_word_count,
         });
+
+        // v2.2.21：本次核心关键词放到 userPrompt 最前面（最高优先级位置），强约束 AI 必须围绕它写
+        //   原 bug（v2.2.19）：【本篇主题关键词】放在 userPrompt 末尾，被前面的 L4 主题参考层
+        //     （200 个关键词顿号连接）淹没，AI 看到一堆关键词后无法聚焦本次主题。
+        //   修复：放到 userPrompt 最前面 + 强约束"必须以此为核心主题，禁止偏离"。
+        //   同时减少 {keyword} 占位符注入的关键词数（避免前 100 个关键词淹没本次主题）。
+        if (kw && kw.value) {
+          articlePrompt = `【本篇核心主题关键词（最高优先级，必须围绕它展开）】${kw.value}\n\n请以"${kw.value}"作为本篇文章的【唯一核心主题】，所有标题、章节、段落、案例都必须围绕这个关键词展开。其他关键词仅作为辅助参考，不要喧宾夺主，不要试图覆盖多个关键词。\n\n---\n\n` + articlePrompt;
+        }
+
         // 2. 附加 L4 主题参考层（userPromptSuffix）
         articlePrompt += writingCtx.userPromptSuffix;
-        // v2.2.19：本次主题关键词注入（让 AI 知道本篇围绕哪个关键词展开）
-        //   原 bug：kw 仅用于数据库归属标记，AI 看不到"本次主题"，导致 AI 在关键词库里随机挑主题
-        //   修复：把本次主题关键词作为"本篇主题"明确告诉 AI（如有关键词库的话）
-        if (kw && kw.value) {
-          articlePrompt += `\n\n---\n\n【本篇主题关键词】${kw.value}\n请以这个关键词作为本篇的核心主题，围绕它展开内容。其他关键词作为辅助参考，不要喧宾夺主。`;
-        }
 
         // v2.2.20：FAQ / 对比表 / 创作方向 / 文案类型 强制注入到 userPrompt 末尾
         //   原 bug：directionCtx 只在 prompt 开头写"【创作方向】xxx"几个字标签，
