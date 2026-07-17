@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { findUserByUsername, findUserById, getAllUsers, getUsersByPage, createUser, updateUser, deleteUser, getUserLatestDataTime } from '../repository';
-import { generateToken, hashPassword, comparePassword, authMiddleware, adminMiddleware, verifyToken } from '../auth';
+import { generateToken, hashPassword, comparePassword, authMiddleware, adminMiddleware, verifyToken, requireAdminOrSelf } from '../auth';
 import { query } from '../db';
 import crypto from 'crypto';
 
@@ -210,17 +210,15 @@ router.post('/delete', authMiddleware, adminMiddleware, async (req, res) => {
 
 // 生成分享token（需登录，为当前登录用户或指定用户生成）
 // 管理员可通过 userId 参数为任意用户生成；普通用户只能为自己生成
-router.post('/generateShareToken', authMiddleware, async (req, res) => {
+// v2.2.12：用 requireAdminOrSelf 替代手写的 level+id 双判
+router.post('/generateShareToken', authMiddleware, requireAdminOrSelf(req => req.body.userId), async (req, res) => {
   try {
     const loginUser = (req as any).user;
     let targetUserId: number;
     let targetUsername: string;
 
     if (req.body.userId) {
-      // 指定了 userId：仅管理员可为他人生成
-      if (loginUser.level !== '1') {
-        return res.json({ code: 403, message: '仅管理员可为其他用户生成分享链接' });
-      }
+      // 指定了 userId：中间件已校验管理员或本人
       targetUserId = parseInt(req.body.userId);
       const targetUser = await findUserById(targetUserId);
       if (!targetUser) {
@@ -344,14 +342,15 @@ router.get('/verifyShareToken', async (req, res) => {
   }
 });
 
-// 获取当前用户的所有分享链接（需登录）
-router.get('/shareTokens', authMiddleware, async (req, res) => {
+// 获取当前用户的所有分享链接（需登录，管理员或本人）
+// v2.2.12：用 requireAdminOrSelf 替代手写的 level 判断
+router.get('/shareTokens', authMiddleware, requireAdminOrSelf(req => req.query.userId as string), async (req, res) => {
   try {
     const loginUser = (req as any).user;
     let targetUserId = loginUser.id;
 
-    // 管理员可查看指定用户的分享链接
-    if (req.query.userId && loginUser.level === '1') {
+    // 管理员可查看指定用户的分享链接（中间件已校验）
+    if (req.query.userId) {
       targetUserId = parseInt(req.query.userId as string);
     }
 

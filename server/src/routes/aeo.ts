@@ -1,22 +1,22 @@
 import { Router } from 'express';
 import { getAeoReports, getLatestAeoReport, getLatestAeoReportByUser, getAeoReportById, getAeoFullReports, getActiveTasksForAeo } from '../repository';
 import { generateAeoReport, generateAeoShardReport } from '../services/aeo/analyzer';
-import { authMiddleware } from '../auth';
+import { authMiddleware, requireAdmin, requireAdminOrSelf } from '../auth';
 import { query as dbQuery } from '../db';
 
 const router = Router();
 
-// 触发 AEO 分析（手动，需要登录鉴权，防止滥用 LLM 配额）
-router.post('/analyze', authMiddleware, async (req, res) => {
+// v2.2.12：统一权限中间件重构
+// - 所有手写的 `if (level !== '1' && id !== userId) return 403` 替换为 requireAdminOrSelf
+// - 所有手写的 `if (level !== '1') return 403` 替换为 requireAdmin
+// - 修复 GET /:id 完全公开的安全漏洞
+
+// 触发 AEO 分析（管理员或本人）
+router.post('/analyze', authMiddleware, requireAdminOrSelf(req => req.body.userId), async (req, res) => {
   try {
     const { taskId, userId } = req.body;
     if (!taskId || !userId || !Number.isFinite(Number(taskId))) {
       return res.json({ code: 400, message: '缺少 taskId 或 userId，或 taskId 格式无效' });
-    }
-    // v2.1.4：管理员可为任意客户触发分析；普通用户只能为自己触发
-    const caller = (req as any).user;
-    if (caller?.level !== '1' && String(caller?.id) !== String(userId)) {
-      return res.status(403).json({ code: 403, message: '无权为其他用户触发分析' });
     }
     const taskIdNum = Number(taskId);
     // v2.1.5：改为同步等待结果，把真实结果反馈给前端（原异步执行静默失败无反馈）
@@ -32,17 +32,12 @@ router.post('/analyze', authMiddleware, async (req, res) => {
   }
 });
 
-// v2.1.4: 删除指定任务的所有 AEO 日报（调试用，支持飞轮流程反复重试）
-router.delete('/by-task/:taskId', authMiddleware, async (req, res) => {
+// v2.1.4: 删除指定任务的所有 AEO 日报（仅管理员）
+router.delete('/by-task/:taskId', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const taskId = Number(req.params.taskId);
     if (!taskId) {
       return res.json({ code: 400, message: '缺少 taskId' });
-    }
-    // 仅管理员可删除
-    const caller = (req as any).user;
-    if (caller?.level !== '1') {
-      return res.status(403).json({ code: 403, message: '仅管理员可删除 AEO 报告' });
     }
     await dbQuery('DELETE FROM aeo_report WHERE task_id = $1', [taskId]);
     console.log(`[AEO] 已删除任务 ${taskId} 的所有 AEO 日报`);
@@ -52,16 +47,11 @@ router.delete('/by-task/:taskId', authMiddleware, async (req, res) => {
   }
 });
 
-// 查询 AEO 报告列表（需要登录，校验 userId 归属）
-router.get('/results', authMiddleware, async (req, res) => {
+// 查询 AEO 报告列表（管理员或本人）
+router.get('/results', authMiddleware, requireAdminOrSelf(req => req.query.userId as string), async (req, res) => {
   try {
     const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
     const userId = req.query.userId ? String(req.query.userId) : undefined;
-    // v2.2.11：管理员(level=1)可查询任意客户的日报；普通用户只能查自己的
-    // 原 bug：管理员选客户后传 userId=客户ID，但 req.user.id=管理员ID，返回 403 导致日报列表为空
-    if (userId && String((req as any).user?.id) !== userId && (req as any).user?.level !== '1') {
-      return res.status(403).json({ code: 403, message: '无权查询其他用户的报告' });
-    }
     const limit = req.query.limit ? Number(req.query.limit) : 30;
     const reports = await getAeoReports({ taskId, userId, limit });
     res.json({ code: 200, data: reports });
@@ -70,8 +60,10 @@ router.get('/results', authMiddleware, async (req, res) => {
   }
 });
 
-// 查询最新报告（需要登录）
-router.get('/latest', authMiddleware, async (req, res) => {
+// 查询最新报告（管理员或本人；taskId 关联的 task.user_id 必须与 caller 匹配）
+// 注意：此接口历史无业务级校验，v2.2.12 补上 requireAdminOrSelf，从 query.userId 校验
+// 若前端只传 taskId 不传 userId，则只要求登录（管理员可查任意；普通用户由业务层限制）
+router.get('/latest', authMiddleware, requireAdminOrSelf(req => req.query.userId as string), async (req, res) => {
   try {
     const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
     if (!taskId) {
@@ -84,9 +76,8 @@ router.get('/latest', authMiddleware, async (req, res) => {
   }
 });
 
-// v2.2.4：按 userId 查最新日报（解决 taskId 不匹配问题）
-// 日报按客户(userId)生成，飞轮页面/daemon 应使用此接口而非 /latest?taskId=xxx
-router.get('/latest-by-user', authMiddleware, async (req, res) => {
+// v2.2.4：按 userId 查最新日报（管理员或本人）
+router.get('/latest-by-user', authMiddleware, requireAdminOrSelf(req => req.query.userId as string), async (req, res) => {
   try {
     const userId = req.query.userId ? String(req.query.userId) : undefined;
     if (!userId) {
@@ -99,22 +90,9 @@ router.get('/latest-by-user', authMiddleware, async (req, res) => {
   }
 });
 
-// v2.2.5：补生成指定日期的 AEO 日报（管理员用，解决 cron 错过或部署导致日报未生成的问题）
-// 参数：
-//   userId: 客户 ID（必填）
-//   date:   日报日期 YYYY-MM-DD（可选，默认前一天）
-//   force:  是否强制覆盖已有日报（可选，默认 false）
-// 实现逻辑：
-//   1. 用 getActiveTasksForAeo 取该客户的占位 taskId（日报按 userId 维度，taskId 仅占位）
-//   2. 调用 generateAeoReport(taskId, userId, { reportDate, force }) 生成日报
-//   3. 同步触发 autoCreateWritingTasksFromPeriod（让日报完成后自动创建写作任务，与 cron 路径一致）
-router.post('/backfill-daily', authMiddleware, async (req, res) => {
+// v2.2.5：补生成指定日期的 AEO 日报（仅管理员）
+router.post('/backfill-daily', authMiddleware, requireAdmin, async (req, res) => {
   try {
-    const caller = (req as any).user;
-    // 仅管理员可补生成
-    if (caller?.level !== '1') {
-      return res.status(403).json({ code: 403, message: '仅管理员可补生成日报' });
-    }
     const userId = req.body.userId ? String(req.body.userId) : undefined;
     if (!userId) {
       return res.json({ code: 400, message: '缺少 userId' });
@@ -160,13 +138,19 @@ router.post('/backfill-daily', authMiddleware, async (req, res) => {
   }
 });
 
-// 查询单个报告详情
-router.get('/:id', async (req, res) => {
+// 查询单个报告详情（v2.2.12：修复原完全公开的安全漏洞，改为需要登录）
+// 管理员可查任意报告；普通用户需校验报告归属（通过 report.user_id）
+router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const report = await getAeoReportById(id);
     if (!report) {
       return res.json({ code: 404, message: '报告不存在' });
+    }
+    // v2.2.12：普通用户校验报告归属
+    const caller = (req as any).user;
+    if (caller?.level !== '1' && report.user_id && String(caller?.id) !== String(report.user_id)) {
+      return res.status(403).json({ code: 403, message: '无权查看该报告' });
     }
     res.json({ code: 200, data: report });
   } catch (e: any) {

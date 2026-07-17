@@ -13,6 +13,13 @@ import { authMiddleware } from '../auth';
 
 const router = Router();
 
+// ⚠️ v2.2.12 已知安全债务（暂不修复，需前端配合改造）：
+// 本文件大部分接口完全公开（用 ?userId=xxx 访问），是 GEO 报告 iframe 的历史遗留设计。
+// 任意人传 ?userId=他人ID 即可拉到该客户的搜索排名、关键词、平台占比等数据。
+// 完整修复方案：前端 GEO 报告页面改用 shareToken 替代 query.userId，
+// 后端用 shareToken 解析出 userId 后再查询数据。
+// 本次权限中间件统一重构暂不改动此文件，避免破坏现有分享链接功能。
+
 // 获取平台列表
 router.get('/platforms', async (req, res) => {
   try {

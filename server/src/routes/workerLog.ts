@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { insertWorkerLog, insertWorkerLogs, getWorkerLogs, getQueuePressure } from '../repository';
+import { authMiddleware, requireAdmin } from '../auth';
 
 const router = Router();
 
@@ -59,8 +60,9 @@ router.post('/report-batch', internalAuth, async (req, res) => {
   }
 });
 
-// 查询日志（前端调用，不需要内部密钥）
-router.get('/list', async (req, res) => {
+// 查询日志（v2.2.12：修复原完全公开漏洞，改为需要管理员登录）
+// 原 bug：任何人可查任意 taskId 的 Worker 日志，可能泄露巡检任务内部信息
+router.get('/list', authMiddleware, requireAdmin, async (req, res) => {
   try {
     const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
     const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);

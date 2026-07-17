@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { authMiddleware, adminMiddleware } from '../auth';
+import { authMiddleware, adminMiddleware, requireAdmin, requireAdminOrSelf } from '../auth';
 import { query } from '../db';
 import crypto from 'crypto';
 import {
@@ -146,13 +146,25 @@ function getUserId(req: Request): number {
 
 /**
  * 解析 customer_id 查询参数：
- * - 传入 ?customer_id=N 时使用该值（管理员模式，查看指定客户的数据）
+ * - 管理员传入 ?customer_id=N 时使用该值（查看指定客户的数据）
+ * - 普通用户传入 ?customer_id=N 时：若 N !== 自己的 user.id 则忽略（防越权），回退到自己的 ID
  * - 未传时回退到当前登录用户 ID（客户自身模式）
+ *
+ * v2.2.12：修复原 getCustomerId 无 level 校验的越权漏洞
+ * 原 bug：任何登录用户传 ?customer_id=他人ID 即可拉到他人数据（指令库/知识库/关键词/AEO 配额等 10+ 接口）
  */
 function getCustomerId(req: Request): number {
   const raw = req.query.customer_id as string | undefined;
+  const caller = (req as any).user;
+  const isAdmin = caller?.level === '1';
   if (raw && !Number.isNaN(Number(raw))) {
-    return Number(raw);
+    const requested = Number(raw);
+    // 管理员可指定任意客户；普通用户只能查自己
+    if (isAdmin || String(caller?.id) === String(requested)) {
+      return requested;
+    }
+    // 普通用户越权请求：忽略并回退到自己的 ID
+    console.warn(`[getCustomerId] 普通用户 ${caller?.id} 试图访问客户 ${requested} 的数据，已拒绝`);
   }
   return getUserId(req);
 }
@@ -435,8 +447,9 @@ router.get('/instructions/categories', (req: Request, res: Response) => {
 router.get('/instructions', async (req: Request, res: Response) => {
   try {
     const category = req.query.category as string | undefined;
-    // 管理员视角：all=1 时返回所有客户的指令（用于桌面端指令库列表）
-    if (req.query.all === '1') {
+    // v2.2.12：修复 ?all=1 越权漏洞——必须管理员才能查看所有客户的指令
+    // 原 bug：任何登录用户传 ?all=1 即可拉到所有客户的指令库
+    if (req.query.all === '1' && (req as any).user?.level === '1') {
       const list = await getAllWritingInstructions(category);
       res.json({ code: 200, data: list });
       return;
@@ -498,8 +511,8 @@ router.delete('/instructions/:id', async (req: Request, res: Response) => {
 
 router.get('/knowledge', async (req: Request, res: Response) => {
   try {
-    // 管理员视角：all=1 时返回所有客户的知识库（用于桌面端知识库列表）
-    if (req.query.all === '1') {
+    // v2.2.12：修复 ?all=1 越权漏洞——必须管理员才能查看所有客户的知识库
+    if (req.query.all === '1' && (req as any).user?.level === '1') {
       const list = await getAllEnterpriseKnowledges();
       res.json({ code: 200, data: list });
       return;
@@ -2292,9 +2305,9 @@ router.delete('/flywheel/event-logs', async (req: Request, res: Response) => {
   }
 });
 
-// ============ 客户列表（用于管理员选择客户） ============
-
-router.get('/customers', async (req: Request, res: Response) => {
+// ============ 客户列表（仅管理员，用于管理员选择客户） ============
+// v2.2.12：修复原任何登录用户都能拉到所有客户列表（含手机/邮箱）的越权漏洞
+router.get('/customers', requireAdmin, async (req: Request, res: Response) => {
   try {
     // v2.0.5：过滤 level='1' 的管理员，只返回 level='0' 的真实客户
     // 与 repository.ts 的 getUserDataStats 保持一致
@@ -2401,11 +2414,12 @@ router.get('/aeo-shard-reports', async (req: Request, res: Response) => {
     const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
     // v2.1.5：支持 customer_id 参数（管理员查看指定客户）和 all=1（管理员查看全部）
     // v2.1.6：customer_id 优先于 all，飞轮页面按客户过滤
+    // v2.2.12：修复 ?all=1 越权漏洞——必须管理员才能查看所有客户的分片报告
     // getAeoShardReports 的 userId 参数已支持 string | number（内部统一 String() 转换）
     let userId: string | number | undefined;
     if (req.query.customer_id) {
       userId = String(req.query.customer_id);
-    } else if (req.query.all === '1') {
+    } else if (req.query.all === '1' && (req as any).user?.level === '1') {
       userId = undefined;
     } else {
       userId = getCustomerId(req);
