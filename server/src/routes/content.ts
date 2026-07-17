@@ -819,6 +819,37 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
       finalKeywordIds = await getKeywordIdsByValues(userId, keywords);
     }
 
+    // v2.2.19：auto_generated=true 且 keyword_ids 为空时，从 AEO 配置 focus_keywords 或客户全量关键词补全
+    //   背景：flywheelDaemon 传的 keywords 是 AEO 报告 competitor_analysis 前 20 字符（伪关键词），
+    //   getKeywordIdsByValues 在关键词库查不到，导致 finalKeywordIds=[] → AI 完全没有主题方向。
+    //   修复：与 analyzer.ts 行为一致，从 focus_keywords 或客户全量关键词补全。
+    if (auto_generated === true && finalKeywordIds.length === 0) {
+      try {
+        const aeoConfig = await getAeoQuotaConfig(userId);
+        const focusKeywords: string[] = Array.isArray(aeoConfig?.focus_keywords)
+          ? aeoConfig.focus_keywords.filter((k: any) => typeof k === 'string' && k.trim())
+          : [];
+        if (focusKeywords.length > 0) {
+          const { getKeywordIdsByValues, getCustomerKeywordIds } = await import('../repository');
+          finalKeywordIds = await getKeywordIdsByValues(userId, focusKeywords);
+          console.log(`[WritingTask] auto_generated=true：从 AEO focus_keywords 补全 ${finalKeywordIds.length}/${focusKeywords.length} 个关键词 ID`);
+        }
+        if (finalKeywordIds.length === 0) {
+          // 回退到客户全量关键词（蒸馏 + 品牌）
+          const { getCustomerKeywordIds } = await import('../repository');
+          const customerKeywords = await getCustomerKeywordIds(userId);
+          if (customerKeywords.ids.length > 0) {
+            finalKeywordIds = customerKeywords.ids;
+            console.log(`[WritingTask] auto_generated=true：focus_keywords 未匹配，回退到客户全量关键词 ${finalKeywordIds.length} 个（蒸馏 ${customerKeywords.distilledCount} + 品牌 ${customerKeywords.brandCount}）`);
+          } else {
+            console.warn(`[WritingTask] auto_generated=true：客户 ${userId} 全量关键词也为空，L4 主题参考层将为空`);
+          }
+        }
+      } catch (e: any) {
+        console.warn(`[WritingTask] auto_generated=true 关键词补全失败:`, e.message);
+      }
+    }
+
     // v1.4+：关键词库不再强制非空，文章内容由 指令+知识库+专家 决定
     // 兼容旧逻辑：未传 article_count 且有关键词时，回退到关键词数量
     // v2.2.18：auto_generated=true 时从 AEO 配置自动补全缺失字段
@@ -913,8 +944,12 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     // 将原始 writing_suggestions 数组（含 topic/direction/keywords/platforms/priority/reason 字段）
     // 打包成 aeo_context JSON 写入 ai_writing_task.aeo_context 字段
     // articleGenerator 的 buildLayer7AeoSuggestions 会解析该字段注入到 system message L7 层
+    // v2.2.19：auto_generated=true 时也自动注入 AEO 建议（flywheelDaemon 没传该字段，需兜底）
+    //   原 bug：flywheelDaemon 创建任务时没传 apply_aeo_suggestions，导致 L7 AEO 建议层不注入，
+    //   AI 看不到 AEO 报告的写作建议（主题/方向/推荐平台），内容方向与 AEO 策略脱节。
     let aeoContext: string | null = null;
-    if (apply_aeo_suggestions === true) {
+    const shouldApplyAeo = apply_aeo_suggestions === true || auto_generated === true;
+    if (shouldApplyAeo) {
       try {
         const latestReport = await getLatestPeriodReportSuggestions(userId);
         if (latestReport && latestReport.suggestions.length > 0) {
@@ -923,10 +958,10 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
             period_type: latestReport.period_type,
             period_end: latestReport.period_end,
             suggestions: latestReport.suggestions,
-            source: 'manual_apply',  // 标记来源为手动应用（区别于自动生成）
+            source: auto_generated === true ? 'auto_apply' : 'manual_apply',
             generated_at: new Date().toISOString(),
           });
-          console.log(`[WritingTask] 手动写作任务注入 AEO 建议: userId=${userId}, periodReportId=${latestReport.period_report_id}, suggestions=${latestReport.suggestions.length}条`);
+          console.log(`[WritingTask] ${auto_generated === true ? '自动' : '手动'}写作任务注入 AEO 建议: userId=${userId}, periodReportId=${latestReport.period_report_id}, suggestions=${latestReport.suggestions.length}条`);
         } else {
           console.warn(`[WritingTask] 用户 ${userId} 无可用 AEO 写作建议，aeo_context 为空`);
         }
