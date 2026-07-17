@@ -2196,24 +2196,41 @@ async function autoCreateWritingTasksFromPeriod(
   // writingSuggestions 的 platforms 字段是信源平台名（如 'dy'/'xhs'/'zh'/'bjh'）
   // 这些平台作为 candidatePlatforms 传给 allocateArticlesByWeight，仅在候选平台内按权重分配
   // 若 writingSuggestions 为空或未收集到平台，则不传 candidatePlatforms（保持原行为：使用所有有权重的平台）
-  const candidatePlatforms: string[] = [];
-  for (const sug of (writingSuggestions || [])) {
-    if (Array.isArray(sug.platforms)) {
-      for (const p of sug.platforms) {
-        if (typeof p === 'string' && p.trim() && !candidatePlatforms.includes(p)) {
-          candidatePlatforms.push(p);
+  // v2.2.18：auto_target_platforms（用户显式配置的目标平台白名单）优先级最高
+  //   - 配置了 auto_target_platforms：仅在该白名单内分配（不再读写作建议池的 platforms）
+  //   - 未配置 auto_target_platforms（null/[]）：回退到写作建议池 platforms 收集逻辑
+  //   - 两者都为空：使用所有有权重的平台
+  const configuredTargetPlatforms: string[] | null = Array.isArray(quotaConfig?.auto_target_platforms)
+    ? quotaConfig.auto_target_platforms.filter((p: any) => typeof p === 'string' && p.trim())
+    : null;
+
+  let candidatePlatforms: string[] = [];
+  let platformSource = 'all_weighted'; // 日志用：标记平台来源
+  if (configuredTargetPlatforms && configuredTargetPlatforms.length > 0) {
+    // 用户显式配置了目标平台白名单，优先使用
+    candidatePlatforms = configuredTargetPlatforms;
+    platformSource = 'configured';
+  } else {
+    // 未配置，回退到写作建议池的 platforms 字段
+    for (const sug of (writingSuggestions || [])) {
+      if (Array.isArray(sug.platforms)) {
+        for (const p of sug.platforms) {
+          if (typeof p === 'string' && p.trim() && !candidatePlatforms.includes(p)) {
+            candidatePlatforms.push(p);
+          }
         }
       }
     }
+    if (candidatePlatforms.length > 0) {
+      platformSource = 'suggestions';
+    }
   }
-  // v2.2.17：按权重分配文章数（v2.2.17 起支持 candidatePlatforms）
+  // 按权重分配文章数（candidatePlatforms 为空时不传，使用所有有权重的平台）
   const allocation = await allocateArticlesByWeight(
     quota,
     candidatePlatforms.length > 0 ? candidatePlatforms : undefined
   );
-  if (candidatePlatforms.length > 0) {
-    console.log(`[AEO-Period] 写作建议池候选平台: [${candidatePlatforms.join(',')}] → 实际分配: ${JSON.stringify(allocation)}`);
-  }
+  console.log(`[AEO-Period] 平台分配来源=${platformSource}, 候选=[${candidatePlatforms.join(',')}], 实际分配=${JSON.stringify(allocation)}`);
 
   // 5. 构造 AEO 上下文（注入写作建议池）
   const aeoContext = JSON.stringify({
@@ -2326,6 +2343,17 @@ async function autoCreateWritingTasksFromPeriod(
   // v2.2.2：agent_profile_id 改为使用查询到的专家角色（替代原 null）
   // v2.2.13：illustration_count 改为按客户图库实际情况配置（替代硬编码 0）
   // v2.2.16：cover_image_mode 从 'none' 改为 'random'；total_count 乘以平台数
+  // v2.2.18：generation_mode 和 cover_image_id 改为读取配置（替代硬编码）
+  const configuredGenerationMode = typeof quotaConfig?.auto_generation_mode === 'string'
+    && ['expert', 'coze'].includes(quotaConfig.auto_generation_mode)
+    ? quotaConfig.auto_generation_mode
+    : 'expert';
+  const configuredCoverImageId = quotaConfig?.auto_cover_image_id
+    ? Number(quotaConfig.auto_cover_image_id)
+    : null;
+  // v2.2.18：cover_image_id 仅在 fixed 模式下生效；其他模式下强制 null（避免误用）
+  const finalCoverImageId = coverMode === 'fixed' ? configuredCoverImageId : null;
+
   const taskId = await createWritingTask({
     user_id: userIdNum,
     task_name: taskName,
@@ -2333,11 +2361,11 @@ async function autoCreateWritingTasksFromPeriod(
     instruction_id: instruction.id,
     knowledge_id: knowledge.id,
     model_config_id: modelConfig.id,
-    generation_mode: 'expert',
+    generation_mode: configuredGenerationMode,  // v2.2.18：读取配置（原硬编码 'expert'）
     agent_profile_id: agentProfileId,  // v2.2.2：使用专家角色
     total_count: totalCount,  // v2.2.16：quota × 平台数（原仅 quota）
     cover_image_mode: coverMode,  // v2.2.16：有封面图库时 'random'（原硬编码 'none'）
-    cover_image_id: null,
+    cover_image_id: finalCoverImageId,  // v2.2.18：fixed 模式下读取配置（原硬编码 null）
     illustration_count: illustrationCount,  // v2.2.13：按客户图库配置（原硬编码 0）
     target_platforms: targetPlatforms,
   });
