@@ -1,25 +1,24 @@
 import { Router } from 'express';
 import { getAeoReports, getLatestAeoReport, getLatestAeoReportByUser, getAeoReportById, getAeoFullReports, getActiveTasksForAeo } from '../repository';
 import { generateAeoReport, generateAeoShardReport } from '../services/aeo/analyzer';
-import { authMiddleware, requireAdmin, requireAdminOrSelf } from '../auth';
+import { authMiddleware } from '../auth';
 import { query as dbQuery } from '../db';
 
 const router = Router();
 
-// v2.2.12：统一权限中间件重构
-// - 所有手写的 `if (level !== '1' && id !== userId) return 403` 替换为 requireAdminOrSelf
-// - 所有手写的 `if (level !== '1') return 403` 替换为 requireAdmin
-// - 修复 GET /:id 完全公开的安全漏洞
+// v2.2.15：权限模型回滚到正确设计
+// 整个软件只有管理员会登录，level='0' 的"客户"是管理员管理的数据对象，不是登录用户。
+// 因此所有接口只需 authMiddleware（登录校验），不需要越权防护。
+// v2.2.12 加的 requireAdminOrSelf/requireAdminOrOwner 已全部移除。
 
-// 触发 AEO 分析（管理员或本人）
-router.post('/analyze', authMiddleware, requireAdminOrSelf(req => req.body.userId), async (req, res) => {
+// 触发 AEO 分析（登录即可，登录的永远是管理员）
+router.post('/analyze', authMiddleware, async (req, res) => {
   try {
     const { taskId, userId } = req.body;
     if (!taskId || !userId || !Number.isFinite(Number(taskId))) {
       return res.json({ code: 400, message: '缺少 taskId 或 userId，或 taskId 格式无效' });
     }
     const taskIdNum = Number(taskId);
-    // v2.1.5：改为同步等待结果，把真实结果反馈给前端（原异步执行静默失败无反馈）
     const reportId = await generateAeoReport(taskIdNum, String(userId));
     if (reportId === null) {
       res.json({ code: 200, message: '今日日报已生成，无需重复生成', data: { reportId: null, skipped: true } });
@@ -32,8 +31,8 @@ router.post('/analyze', authMiddleware, requireAdminOrSelf(req => req.body.userI
   }
 });
 
-// v2.1.4: 删除指定任务的所有 AEO 日报（仅管理员）
-router.delete('/by-task/:taskId', authMiddleware, requireAdmin, async (req, res) => {
+// 删除指定任务的所有 AEO 日报
+router.delete('/by-task/:taskId', authMiddleware, async (req, res) => {
   try {
     const taskId = Number(req.params.taskId);
     if (!taskId) {
@@ -47,8 +46,8 @@ router.delete('/by-task/:taskId', authMiddleware, requireAdmin, async (req, res)
   }
 });
 
-// 查询 AEO 报告列表（管理员或本人）
-router.get('/results', authMiddleware, requireAdminOrSelf(req => req.query.userId as string), async (req, res) => {
+// 查询 AEO 报告列表
+router.get('/results', authMiddleware, async (req, res) => {
   try {
     const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
     const userId = req.query.userId ? String(req.query.userId) : undefined;
@@ -60,10 +59,8 @@ router.get('/results', authMiddleware, requireAdminOrSelf(req => req.query.userI
   }
 });
 
-// 查询最新报告（管理员或本人；taskId 关联的 task.user_id 必须与 caller 匹配）
-// 注意：此接口历史无业务级校验，v2.2.12 补上 requireAdminOrSelf，从 query.userId 校验
-// 若前端只传 taskId 不传 userId，则只要求登录（管理员可查任意；普通用户由业务层限制）
-router.get('/latest', authMiddleware, requireAdminOrSelf(req => req.query.userId as string), async (req, res) => {
+// 查询最新报告
+router.get('/latest', authMiddleware, async (req, res) => {
   try {
     const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
     if (!taskId) {
@@ -76,8 +73,8 @@ router.get('/latest', authMiddleware, requireAdminOrSelf(req => req.query.userId
   }
 });
 
-// v2.2.4：按 userId 查最新日报（管理员或本人）
-router.get('/latest-by-user', authMiddleware, requireAdminOrSelf(req => req.query.userId as string), async (req, res) => {
+// v2.2.4：按 userId 查最新日报
+router.get('/latest-by-user', authMiddleware, async (req, res) => {
   try {
     const userId = req.query.userId ? String(req.query.userId) : undefined;
     if (!userId) {
@@ -90,8 +87,8 @@ router.get('/latest-by-user', authMiddleware, requireAdminOrSelf(req => req.quer
   }
 });
 
-// v2.2.5：补生成指定日期的 AEO 日报（仅管理员）
-router.post('/backfill-daily', authMiddleware, requireAdmin, async (req, res) => {
+// v2.2.5：补生成指定日期的 AEO 日报
+router.post('/backfill-daily', authMiddleware, async (req, res) => {
   try {
     const userId = req.body.userId ? String(req.body.userId) : undefined;
     if (!userId) {
@@ -138,19 +135,13 @@ router.post('/backfill-daily', authMiddleware, requireAdmin, async (req, res) =>
   }
 });
 
-// 查询单个报告详情（v2.2.12：修复原完全公开的安全漏洞，改为需要登录）
-// 管理员可查任意报告；普通用户需校验报告归属（通过 report.user_id）
+// 查询单个报告详情
 router.get('/:id', authMiddleware, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const report = await getAeoReportById(id);
     if (!report) {
       return res.json({ code: 404, message: '报告不存在' });
-    }
-    // v2.2.12：普通用户校验报告归属
-    const caller = (req as any).user;
-    if (caller?.level !== '1' && report.user_id && String(caller?.id) !== String(report.user_id)) {
-      return res.status(403).json({ code: 403, message: '无权查看该报告' });
     }
     res.json({ code: 200, data: report });
   } catch (e: any) {

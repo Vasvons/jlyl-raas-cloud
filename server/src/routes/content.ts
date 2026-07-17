@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { authMiddleware, adminMiddleware, requireAdmin, requireAdminOrSelf } from '../auth';
+import { authMiddleware, adminMiddleware } from '../auth';
 import { query } from '../db';
 import crypto from 'crypto';
 import {
@@ -146,25 +146,15 @@ function getUserId(req: Request): number {
 
 /**
  * 解析 customer_id 查询参数：
- * - 管理员传入 ?customer_id=N 时使用该值（查看指定客户的数据）
- * - 普通用户传入 ?customer_id=N 时：若 N !== 自己的 user.id 则忽略（防越权），回退到自己的 ID
- * - 未传时回退到当前登录用户 ID（客户自身模式）
+ * - 登录的永远是管理员，传入 ?customer_id=N 时使用该值（查看指定客户的数据）
+ * - 未传时回退到当前登录用户 ID
  *
- * v2.2.12：修复原 getCustomerId 无 level 校验的越权漏洞
- * 原 bug：任何登录用户传 ?customer_id=他人ID 即可拉到他人数据（指令库/知识库/关键词/AEO 配额等 10+ 接口）
+ * v2.2.15：回滚越权防护。整个软件只有管理员会登录，level='0' 的"客户"是数据对象不是登录用户。
  */
 function getCustomerId(req: Request): number {
   const raw = req.query.customer_id as string | undefined;
-  const caller = (req as any).user;
-  const isAdmin = caller?.level === '1';
   if (raw && !Number.isNaN(Number(raw))) {
-    const requested = Number(raw);
-    // 管理员可指定任意客户；普通用户只能查自己
-    if (isAdmin || String(caller?.id) === String(requested)) {
-      return requested;
-    }
-    // 普通用户越权请求：忽略并回退到自己的 ID
-    console.warn(`[getCustomerId] 普通用户 ${caller?.id} 试图访问客户 ${requested} 的数据，已拒绝`);
+    return Number(raw);
   }
   return getUserId(req);
 }
@@ -2305,9 +2295,9 @@ router.delete('/flywheel/event-logs', async (req: Request, res: Response) => {
   }
 });
 
-// ============ 客户列表（仅管理员，用于管理员选择客户） ============
-// v2.2.12：修复原任何登录用户都能拉到所有客户列表（含手机/邮箱）的越权漏洞
-router.get('/customers', requireAdmin, async (req: Request, res: Response) => {
+// ============ 客户列表 ============
+// v2.2.15：回滚到 authMiddleware。登录的永远是管理员，无需 requireAdmin 限制
+router.get('/customers', authMiddleware, async (req: Request, res: Response) => {
   try {
     // v2.0.5：过滤 level='1' 的管理员，只返回 level='0' 的真实客户
     // 与 repository.ts 的 getUserDataStats 保持一致

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { findUserByUsername, findUserById, getAllUsers, getUsersByPage, createUser, updateUser, deleteUser, getUserLatestDataTime } from '../repository';
-import { generateToken, hashPassword, comparePassword, authMiddleware, adminMiddleware, verifyToken, requireAdminOrSelf } from '../auth';
+import { generateToken, hashPassword, comparePassword, authMiddleware, adminMiddleware, verifyToken } from '../auth';
 import { query } from '../db';
 import crypto from 'crypto';
 
@@ -210,8 +210,8 @@ router.post('/delete', authMiddleware, adminMiddleware, async (req, res) => {
 
 // 生成分享token（需登录，为当前登录用户或指定用户生成）
 // 管理员可通过 userId 参数为任意用户生成；普通用户只能为自己生成
-// v2.2.12：用 requireAdminOrSelf 替代手写的 level+id 双判
-router.post('/generateShareToken', authMiddleware, requireAdminOrSelf(req => req.body.userId), async (req, res) => {
+// v2.2.15：权限模型回滚（登录的永远是管理员，无需越权防护）
+router.post('/generateShareToken', authMiddleware, async (req, res) => {
   try {
     const loginUser = (req as any).user;
     let targetUserId: number;
@@ -343,8 +343,7 @@ router.get('/verifyShareToken', async (req, res) => {
 });
 
 // 获取当前用户的所有分享链接（需登录，管理员或本人）
-// v2.2.12：用 requireAdminOrSelf 替代手写的 level 判断
-router.get('/shareTokens', authMiddleware, requireAdminOrSelf(req => req.query.userId as string), async (req, res) => {
+router.get('/shareTokens', authMiddleware, async (req, res) => {
   try {
     const loginUser = (req as any).user;
     let targetUserId = loginUser.id;
