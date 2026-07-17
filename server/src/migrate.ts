@@ -991,6 +991,41 @@ export async function migrate() {
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_generation_mode VARCHAR(20) DEFAULT 'expert'`); // 生成方式：expert/coze（默认 expert，coze 暂未实现）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_target_platforms JSONB`);          // 指定自动写作的目标平台白名单（null=由AEO信源权重自动分配，[]=空数组等价于null）
 
+    // v2.2.18：修复 publish_task / publish_record 外键缺失 ON DELETE CASCADE 导致的 500 错误
+    // 原 bug：publish_task.article_id REFERENCES article(id) 和 publish_record.task_id REFERENCES publish_task(id)
+    //   都没有 CASCADE，删除 article 时若存在关联 publish_task 会触发外键约束错误
+    // 修复：DROP 旧约束 + ADD 带 ON DELETE CASCADE 的新约束（幂等，约束已带 CASCADE 时跳过）
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'publish_task_article_id_fkey'
+            AND contype = 'f'
+            AND NOT (
+              pg_get_constraintdef(oid) ILIKE '%ON DELETE CASCADE%'
+            )
+        ) THEN
+          ALTER TABLE publish_task DROP CONSTRAINT publish_task_article_id_fkey;
+          ALTER TABLE publish_task ADD CONSTRAINT publish_task_article_id_fkey
+            FOREIGN KEY (article_id) REFERENCES article(id) ON DELETE CASCADE;
+        END IF;
+
+        IF EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'publish_record_task_id_fkey'
+            AND contype = 'f'
+            AND NOT (
+              pg_get_constraintdef(oid) ILIKE '%ON DELETE CASCADE%'
+            )
+        ) THEN
+          ALTER TABLE publish_record DROP CONSTRAINT publish_record_task_id_fkey;
+          ALTER TABLE publish_record ADD CONSTRAINT publish_record_task_id_fkey
+            FOREIGN KEY (task_id) REFERENCES publish_task(id) ON DELETE CASCADE;
+        END IF;
+      END $$;
+    `);
+
     // v2.0.0: ai_writing_task 表新增 AEO 驱动字段
     // aeo_context: AEO综合建议池（周/月报汇总后注入，直接驱动写作方向）
     // auto_publish: 写作完成后自动创建发布任务（覆盖客户级 auto_publish_enabled）

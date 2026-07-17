@@ -938,6 +938,19 @@ router.post('/writing-tasks/:id/execute', async (req: Request, res: Response) =>
       return res.status(404).json({ code: 404, message: '任务不存在' });
     }
     // 删除该任务下所有旧文章（包括成功和失败的），从头开始
+    // v2.2.18：修复外键约束导致的 500 错误
+    // 原 bug：publish_task.article_id 和 publish_record.task_id 没有 ON DELETE CASCADE，
+    //   一旦文章发过（有 publish_task 记录），DELETE FROM article 会被外键阻止
+    // 修复：按依赖顺序先删 publish_record（通过 task_id JOIN publish_task）→ publish_task → article
+    await query(
+      `DELETE FROM publish_record
+       WHERE task_id IN (SELECT id FROM publish_task WHERE article_id IN (SELECT id FROM article WHERE task_id = $1))`,
+      [taskId]
+    );
+    await query(
+      `DELETE FROM publish_task WHERE article_id IN (SELECT id FROM article WHERE task_id = $1)`,
+      [taskId]
+    );
     await query('DELETE FROM article WHERE task_id = $1', [taskId]);
     // 重置任务状态为 processing
     await query('UPDATE ai_writing_task SET status = $1, completed_count = 0, failed_count = 0, error_msg = NULL, started_at = NOW(), finished_at = NULL WHERE id = $2', ['processing', taskId]);
