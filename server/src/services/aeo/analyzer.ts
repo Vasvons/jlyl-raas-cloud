@@ -2243,7 +2243,13 @@ async function autoCreateWritingTasksFromPeriod(
 
   // 6. 汇总各平台分配的文章数，创建一个总的写作任务
   // （写作任务支持 target_platforms 字段，一个任务可覆盖多个平台）
-  const targetPlatforms = Object.keys(allocation).filter(p => allocation[p] > 0);
+  // v2.2.18 修复：保留所有候选平台（不过滤 allocation=0 的）。
+  //   原 bug：allocateArticlesByWeight(quota=10, 12 平台) 按权重分配后，5 个权重低的平台分到 0 篇被过滤，
+  //   导致"配 12 平台只写 7 平台"。修复后保留全部候选平台，让 articleGenerator 按 i % platformCount 轮询，
+  //   前 quota 篇覆盖前 quota 个平台（若 quota < 平台数，部分平台不写；若 quota >= 平台数，每平台至少 1 篇）。
+  const targetPlatforms = candidatePlatforms.length > 0
+    ? candidatePlatforms
+    : Object.keys(allocation).filter(p => allocation[p] > 0);
   if (targetPlatforms.length === 0) {
     console.warn(`[AEO-Period] 用户 ${userId} 文章分配结果为空，跳过`);
     return 0;
@@ -2291,9 +2297,13 @@ async function autoCreateWritingTasksFromPeriod(
   // v2.2.16：cover_mode='random'，illustration≤5
   // v2.2.17：支持通过 AeoQuotaConfig 显式配置 auto_cover_image_mode 和 auto_illustration_count
   //   - auto_cover_image_mode='auto'（默认）→ 按图库自动决定（有封面图=random，无封面图=none）
-  //   - auto_cover_image_mode='none'/'random'/'fixed' → 直接使用配置值
+  //   - auto_cover_image_mode='none' → 永不取封面图
+  //   - auto_cover_image_mode='random' → 每篇独立随机取 1 张（即使图库为空也尝试，由 articleGenerator 兜底）
   //   - auto_illustration_count=-1（默认）→ 按图库自动决定（min(5, 图库数)）
   //   - auto_illustration_count>=0 → 直接使用配置值
+  // v2.2.18 修复：原逻辑当 configuredCoverMode='random' 时仍查 coverImages.length 判断，
+  //   但 needQueryLibrary=false 导致 coverImages 是空数组，结果 coverMode 被错误降级为 'none'。
+  //   修复：'random' 直接生效，不依赖图库预查询；图库实际查询交给 articleGenerator.getRandomImages。
   const configuredCoverMode = typeof quotaConfig?.auto_cover_image_mode === 'string'
     ? quotaConfig.auto_cover_image_mode
     : 'auto';
@@ -2313,14 +2323,14 @@ async function autoCreateWritingTasksFromPeriod(
         getImageLibrary(userIdNum, knowledge.id, 'cover'),
       ]);
     }
-    // 决定 coverMode（v2.2.18：移除 fixed 模式，遇到 fixed/未知值退化为 random）
+    // 决定 coverMode（v2.2.18：random 直接生效，不再依赖图库预查询结果）
     if (configuredCoverMode === 'auto') {
       coverMode = coverImages.length > 0 ? 'random' : 'none';
     } else if (configuredCoverMode === 'none') {
       coverMode = 'none';
     } else {
-      // random / fixed（旧数据兼容）/ 未知值：只要有封面图就 random，否则 none
-      coverMode = coverImages.length > 0 ? 'random' : 'none';
+      // random / fixed（旧数据兼容）/ 未知值：直接 random（由 articleGenerator 实际取图时兜底）
+      coverMode = 'random';
     }
     // 决定 illustrationCount
     if (configuredIllustrationCount === -1) {
@@ -2331,7 +2341,7 @@ async function autoCreateWritingTasksFromPeriod(
     console.log(`[AEO-Period] 客户 ${userId} 图库配置: coverMode=${configuredCoverMode}(生效=${coverMode}), illuConfig=${configuredIllustrationCount}(生效=${illustrationCount}), 库存: cover=${coverImages.length}张, illu=${illuImages.length}张`);
   } catch (e: any) {
     console.warn(`[AEO-Period] 查询客户 ${userId} 图库失败（按配置降级：coverMode=${configuredCoverMode}, illu=${configuredIllustrationCount}）:`, e.message);
-    // 降级：按配置值生效（如果配置是 auto/-1，则用 none/0；fixed/其他退化为 random）
+    // 降级：按配置值生效（如果配置是 auto/-1，则用 none/0；其他直接用配置值）
     if (configuredCoverMode === 'auto' || configuredCoverMode === 'none') {
       coverMode = 'none';
     } else {
@@ -2340,10 +2350,12 @@ async function autoCreateWritingTasksFromPeriod(
     illustrationCount = configuredIllustrationCount === -1 ? 0 : Math.max(0, configuredIllustrationCount);
   }
 
-  // v2.2.16：total_count 必须乘以平台数，与手动写作 content.ts L838 对齐
-  // 原 bug：total_count=quota，导致 quota=1 平台数=3 时只生成 1 篇文章（仅第 0 个平台）
-  // 修复：total_count = quota × 平台数，确保每个平台都有 quota 篇文章
-  const totalCount = quota * targetPlatforms.length;
+  // v2.2.18 修复：totalCount = quota（quota 是用户配的"每周期总篇数"，不是"每平台篇数"）。
+  //   原 bug（v2.2.16 引入）：totalCount = quota × platforms.length，把 quota 当成"每平台篇数"，
+  //   导致 quota=10 + 12 平台 → totalCount=120 篇（用户期望 10 篇）。
+  //   修复后：totalCount = quota = 10 篇，articleGenerator 按 i % platformCount 轮询平台，
+  //   10 篇分到前 10 个平台（若 quota >= 平台数则每平台至少 1 篇）。
+  const totalCount = quota;
 
   // 创建写作任务
   // v2.1.3：auto_publish=true，写作完成后云端自动创建发布任务

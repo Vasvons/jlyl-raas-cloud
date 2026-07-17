@@ -821,24 +821,91 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
 
     // v1.4+：关键词库不再强制非空，文章内容由 指令+知识库+专家 决定
     // 兼容旧逻辑：未传 article_count 且有关键词时，回退到关键词数量
-    const articleCount = Math.max(1, Math.min(100, Number(article_count) || (finalKeywordIds.length > 0 ? finalKeywordIds.length : 1)));
-
-    // v1.8.0：目标平台校验
-    // target_platforms 非空时：每个关键词 × 每个平台 生成一篇专属文章
-    // target_platforms 为空或未传：向后兼容，走原通用流程（一篇多发）
+    // v2.2.18：auto_generated=true 时从 AEO 配置自动补全缺失字段
+    //   背景：flywheelDaemon 创建任务时只传 instruction_id/knowledge_id/target_platforms，
+    //   缺失 article_count/agent_profile_id/cover_image_mode/illustration_count/generation_mode，
+    //   导致"配 10 篇只写 7 篇"、"配封面+插图却一张图都没有"、"内容没用专家"等问题。
+    //   修复：auto_generated=true 时从 cloud_api_config 表的 AEO 配置字段补全（用户已配的优先）。
+    let finalInstructionId = instruction_id;
+    let finalKnowledgeId = knowledge_id;
+    let finalAgentProfileId = agent_profile_id;
+    let finalCoverImageMode = cover_image_mode;
+    let finalIllustrationCount = illustration_count;
+    let finalGenerationMode = generation_mode;
+    let finalArticleCount = article_count;
     let finalTargetPlatforms: string[] = [];
-    if (Array.isArray(target_platforms) && target_platforms.length > 0) {
-      // 过滤掉空字符串和重复项
+
+    if (auto_generated === true) {
+      try {
+        const aeoConfig = await getAeoQuotaConfig(userId);
+        if (aeoConfig) {
+          // v2.2.18：AEO 配置优先（用户显式配置的意图最明确），调用方传入的值作为兜底
+          //   背景：flywheelDaemon 取 instructions[0].id 作为指令，但用户可能在另一条指令上
+          //   配置了 content_types（写作类型）等字段。若 AEO 配置了 auto_instruction_id，
+          //   说明用户明确指定了用哪条指令，应优先使用。
+          if (aeoConfig.auto_instruction_id) {
+            finalInstructionId = Number(aeoConfig.auto_instruction_id);
+          }
+          if (aeoConfig.auto_knowledge_id) {
+            finalKnowledgeId = Number(aeoConfig.auto_knowledge_id);
+          }
+          if (aeoConfig.auto_agent_profile_id) {
+            finalAgentProfileId = Number(aeoConfig.auto_agent_profile_id);
+          }
+          if (aeoConfig.auto_cover_image_mode) {
+            finalCoverImageMode = aeoConfig.auto_cover_image_mode;
+          }
+          if (aeoConfig.auto_illustration_count != null) {
+            // -1 表示按图库自动决定，传给 articleGenerator 由它兜底
+            finalIllustrationCount = Number(aeoConfig.auto_illustration_count);
+          }
+          if (aeoConfig.auto_generation_mode) {
+            finalGenerationMode = aeoConfig.auto_generation_mode;
+          }
+          if (aeoConfig.article_quota) {
+            finalArticleCount = Number(aeoConfig.article_quota);
+          }
+          // target_platforms：AEO 配置优先（auto_target_platforms），调用方传入的兜底
+          const cfgPlatforms = Array.isArray(aeoConfig.auto_target_platforms)
+            ? aeoConfig.auto_target_platforms
+            : (typeof aeoConfig.auto_target_platforms === 'string'
+                ? (() => { try { return JSON.parse(aeoConfig.auto_target_platforms); } catch { return []; } })()
+                : []);
+          if (Array.isArray(cfgPlatforms) && cfgPlatforms.length > 0) {
+            finalTargetPlatforms = cfgPlatforms.filter((p: any) => typeof p === 'string' && p.trim());
+            console.log(`[WritingTask] auto_generated=true：从 AEO 配置取 target_platforms=${finalTargetPlatforms.join(',')}`);
+          }
+          console.log(`[WritingTask] auto_generated=true：AEO 配置覆盖结果 instructionId=${finalInstructionId}, knowledgeId=${finalKnowledgeId}, agentProfileId=${finalAgentProfileId}, coverMode=${finalCoverImageMode}, illuCount=${finalIllustrationCount}, genMode=${finalGenerationMode}, articleCount=${finalArticleCount}`);
+        }
+      } catch (e: any) {
+        console.warn(`[WritingTask] auto_generated=true 查询 AEO 配置失败（按原逻辑降级）:`, e.message);
+      }
+    }
+
+    // 处理 target_platforms
+    // v2.2.18：auto_generated=true 时 AEO 配置已优先填充 finalTargetPlatforms；
+    //   仅当 finalTargetPlatforms 仍为空时，才使用调用方传入的 target_platforms 兜底
+    if (finalTargetPlatforms.length === 0 && Array.isArray(target_platforms) && target_platforms.length > 0) {
       finalTargetPlatforms = Array.from(new Set(target_platforms.filter((p: any) => typeof p === 'string' && p.trim())));
       if (finalTargetPlatforms.length === 0) {
         return res.status(400).json({ code: 400, message: 'target_platforms 不能为空数组（如不需平台专属写作，请省略该字段）' });
       }
     }
-    // total_count = articleCount × 平台数（有平台时）；无平台时 = articleCount
-    const totalCount = finalTargetPlatforms.length > 0 ? articleCount * finalTargetPlatforms.length : articleCount;
 
-    if (!instruction_id || !knowledge_id) {
-      return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id 必填' });
+    const articleCount = Math.max(1, Math.min(100, Number(finalArticleCount) || (finalKeywordIds.length > 0 ? finalKeywordIds.length : 1)));
+
+    // v2.2.18 修复：totalCount 计算分两种语义
+    //   - auto_generated=true（飞轮/AEO 自动创建）：articleCount 是"每周期总篇数"（来自 AEO 配置 article_quota），
+    //     totalCount = articleCount，由 articleGenerator 按 i % platformCount 轮询覆盖各平台
+    //   - 手动创建（auto_generated=false）：articleCount 是"每平台篇数"（前端 UI 注释明确），
+    //     totalCount = articleCount × platforms.length（保留 v1.8.0 原行为，向后兼容）
+    //   原 bug：自动创建时也用了 articleCount × platforms.length，导致 quota=10 + 12 平台 → 120 篇
+    const totalCount = auto_generated === true
+      ? articleCount
+      : (finalTargetPlatforms.length > 0 ? articleCount * finalTargetPlatforms.length : articleCount);
+
+    if (!finalInstructionId || !finalKnowledgeId) {
+      return res.status(400).json({ code: 400, message: 'instruction_id/knowledge_id 必填（auto_generated=true 时也可在 AEO 配置中设置）' });
     }
 
     // v2.2.2：手动写作支持注入 AEO 写作建议（与自动写作一致的数据源）
@@ -872,15 +939,22 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     // cover_image_mode: 'none' 不用图库 / 'random' 随机选 / 'fixed' 指定一张
     // cover_image_id: 指定封面图 ID（cover_image_mode=fixed 时使用）
     // illustration_count: 插图数量（0=不插图，从插画图库随机取 N 张由 AI 决定插入位置）
+    // v2.2.18：使用 final* 变量（auto_generated=true 时从 AEO 配置补全后的值）
+    //   -1 表示"按图库自动决定"，传给 articleGenerator 由它兜底（与 analyzer.ts 行为一致）
+    const finalIllustrationCountNum = finalIllustrationCount != null
+      ? Math.max(-1, Math.min(20, Number(finalIllustrationCount)))
+      : 0;
     const taskId = await createWritingTask({
-      user_id: userId, task_name, keyword_ids: finalKeywordIds, instruction_id, knowledge_id,
+      user_id: userId, task_name, keyword_ids: finalKeywordIds,
+      instruction_id: finalInstructionId,
+      knowledge_id: finalKnowledgeId,
       model_config_id: model_config_id || null,
-      generation_mode: generation_mode || 'expert',
-      agent_profile_id: agent_profile_id || null,
+      generation_mode: finalGenerationMode || 'expert',
+      agent_profile_id: finalAgentProfileId || null,
       total_count: totalCount,
-      cover_image_mode: cover_image_mode || 'none',
+      cover_image_mode: (finalCoverImageMode || 'none') as 'none' | 'random' | 'fixed' | 'auto',
       cover_image_id: cover_image_id || null,
-      illustration_count: Math.max(0, Math.min(20, Number(illustration_count) || 0)),
+      illustration_count: finalIllustrationCountNum,
       target_platforms: finalTargetPlatforms,
       auto_generated: auto_generated === true,
       aeo_context: aeoContext,
