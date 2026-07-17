@@ -994,37 +994,32 @@ export async function migrate() {
     // v2.2.18：修复 publish_task / publish_record 外键缺失 ON DELETE CASCADE 导致的 500 错误
     // 原 bug：publish_task.article_id REFERENCES article(id) 和 publish_record.task_id REFERENCES publish_task(id)
     //   都没有 CASCADE，删除 article 时若存在关联 publish_task 会触发外键约束错误
-    // 修复：DROP 旧约束 + ADD 带 ON DELETE CASCADE 的新约束（幂等，约束已带 CASCADE 时跳过）
-    await client.query(`
-      DO $$
-      BEGIN
-        IF EXISTS (
-          SELECT 1 FROM pg_constraint
-          WHERE conname = 'publish_task_article_id_fkey'
-            AND contype = 'f'
-            AND NOT (
-              pg_get_constraintdef(oid) ILIKE '%ON DELETE CASCADE%'
-            )
-        ) THEN
-          ALTER TABLE publish_task DROP CONSTRAINT publish_task_article_id_fkey;
-          ALTER TABLE publish_task ADD CONSTRAINT publish_task_article_id_fkey
-            FOREIGN KEY (article_id) REFERENCES article(id) ON DELETE CASCADE;
-        END IF;
-
-        IF EXISTS (
-          SELECT 1 FROM pg_constraint
-          WHERE conname = 'publish_record_task_id_fkey'
-            AND contype = 'f'
-            AND NOT (
-              pg_get_constraintdef(oid) ILIKE '%ON DELETE CASCADE%'
-            )
-        ) THEN
-          ALTER TABLE publish_record DROP CONSTRAINT publish_record_task_id_fkey;
-          ALTER TABLE publish_record ADD CONSTRAINT publish_record_task_id_fkey
-            FOREIGN KEY (task_id) REFERENCES publish_task(id) ON DELETE CASCADE;
-        END IF;
-      END $$;
-    `);
+    // 修复：DROP 旧约束 + ADD 带 ON DELETE CASCADE 的新约束
+    // v2.2.18 hotfix：改用 JavaScript try-catch 包裹（原 DO $$ 块在某些环境失败导致 migrate 卡住，server 502）
+    try {
+      // 检查 publish_task.article_id 外键是否缺少 CASCADE
+      const ptFk = await client.query(
+        `SELECT pg_get_constraintdef(oid) as def FROM pg_constraint
+         WHERE conname = 'publish_task_article_id_fkey' AND contype = 'f'`
+      );
+      if (ptFk.rows.length > 0 && !String(ptFk.rows[0].def).toLowerCase().includes('on delete cascade')) {
+        await client.query('ALTER TABLE publish_task DROP CONSTRAINT publish_task_article_id_fkey');
+        await client.query('ALTER TABLE publish_task ADD CONSTRAINT publish_task_article_id_fkey FOREIGN KEY (article_id) REFERENCES article(id) ON DELETE CASCADE');
+        console.log('[Migrate] publish_task.article_id 外键已改为 ON DELETE CASCADE');
+      }
+      // 检查 publish_record.task_id 外键是否缺少 CASCADE
+      const prFk = await client.query(
+        `SELECT pg_get_constraintdef(oid) as def FROM pg_constraint
+         WHERE conname = 'publish_record_task_id_fkey' AND contype = 'f'`
+      );
+      if (prFk.rows.length > 0 && !String(prFk.rows[0].def).toLowerCase().includes('on delete cascade')) {
+        await client.query('ALTER TABLE publish_record DROP CONSTRAINT publish_record_task_id_fkey');
+        await client.query('ALTER TABLE publish_record ADD CONSTRAINT publish_record_task_id_fkey FOREIGN KEY (task_id) REFERENCES publish_task(id) ON DELETE CASCADE');
+        console.log('[Migrate] publish_record.task_id 外键已改为 ON DELETE CASCADE');
+      }
+    } catch (e: any) {
+      console.warn('[Migrate] 修复 publish 外键 CASCADE 失败（不阻断 migrate）:', e.message);
+    }
 
     // v2.0.0: ai_writing_task 表新增 AEO 驱动字段
     // aeo_context: AEO综合建议池（周/月报汇总后注入，直接驱动写作方向）
