@@ -74,10 +74,12 @@ export async function generateAeoReport(taskId: number, userId: string): Promise
     : nowShanghai; // 当天
   const reportDate = reportDateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
 
-  // 检查该日期是否已生成
-  const exists = await checkAeoReportExists(taskId, reportDate);
+  // v2.2.4：检查该日期是否已为该客户生成日报（按 user_id + report_date，不再用 taskId）
+  // 原按 taskId 检查，但 scheduler 用占位 taskId，每次部署后占位 taskId 可能变化，
+  // 导致同一日期被不同 taskId 反复生成（日志里 "AEO 报告已生成 (2026-07-15)" 刷屏）
+  const exists = await checkAeoReportExists(userId, reportDate);
   if (exists) {
-    console.log(`[AEO] 任务 ${taskId} ${reportDate} 日报已生成，跳过`);
+    console.log(`[AEO] 用户 ${userId} ${reportDate} 日报已生成，跳过`);
     return null;
   }
 

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getAeoReports, getLatestAeoReport, getAeoReportById, getAeoFullReports } from '../repository';
+import { getAeoReports, getLatestAeoReport, getLatestAeoReportByUser, getAeoReportById, getAeoFullReports } from '../repository';
 import { generateAeoReport, generateAeoShardReport } from '../services/aeo/analyzer';
 import { authMiddleware } from '../auth';
 import { query as dbQuery } from '../db';
@@ -77,6 +77,21 @@ router.get('/latest', authMiddleware, async (req, res) => {
       return res.json({ code: 400, message: '缺少 taskId' });
     }
     const report = await getLatestAeoReport(taskId);
+    res.json({ code: 200, data: report });
+  } catch (e: any) {
+    res.json({ code: 500, message: e.message });
+  }
+});
+
+// v2.2.4：按 userId 查最新日报（解决 taskId 不匹配问题）
+// 日报按客户(userId)生成，飞轮页面/daemon 应使用此接口而非 /latest?taskId=xxx
+router.get('/latest-by-user', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.query.userId ? String(req.query.userId) : undefined;
+    if (!userId) {
+      return res.json({ code: 400, message: '缺少 userId' });
+    }
+    const report = await getLatestAeoReportByUser(userId);
     res.json({ code: 200, data: report });
   } catch (e: any) {
     res.json({ code: 500, message: e.message });

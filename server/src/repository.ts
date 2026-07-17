@@ -3595,6 +3595,28 @@ export async function getLatestAeoReport(taskId: number): Promise<any | null> {
   return result.rows[0] || null;
 }
 
+/**
+ * v2.2.4：按 userId 查最新日报（解决 taskId 不匹配问题）
+ * 日报按客户(userId)生成，用客户第一个 task 作为占位 taskId
+ * 但飞轮页面/daemon 查询时用的 taskId 可能不同（如品牌词任务 vs 蒸馏词任务）
+ * 按 user_id 查确保始终能查到该客户最新的日报
+ */
+export async function getLatestAeoReportByUser(userId: string): Promise<any | null> {
+  const result = await query(
+    `SELECT id, task_id, user_id,
+            to_char(report_date, 'YYYY-MM-DD') as report_date,
+            visibility_score, mention_count,
+            positive_ratio, neutral_ratio, negative_ratio,
+            competitor_analysis, suggestions, raw_analysis, record_ids,
+            to_char((create_time AT TIME ZONE 'UTC') AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS') as create_time
+     FROM aeo_report
+     WHERE user_id = $1
+     ORDER BY report_date DESC LIMIT 1`,
+    [userId]
+  );
+  return result.rows[0] || null;
+}
+
 export async function getAeoReportById(id: number): Promise<any | null> {
   const result = await query(
     `SELECT id, task_id, user_id,
@@ -4176,11 +4198,19 @@ export async function getAeoDashboardData(userId: string, days: number = 30, inc
   };
 }
 
-/** 检查今日是否已生成 AEO 报告 */
-export async function checkAeoReportExists(taskId: number, reportDate: string): Promise<boolean> {
+/**
+ * 检查指定日期是否已为该客户生成 AEO 日报
+ *
+ * v2.2.4：原按 task_id + report_date 检查，但 scheduler 用 getActiveTasksForAeo() 取第一个
+ *   task 作占位 taskId，不同次调用占位 taskId 可能不同（任务激活/暂停顺序变化），
+ *   导致同一日期被不同 taskId 反复生成日报（日志里"AEO 报告已生成 (2026-07-15)"刷屏），
+ *   而真正应该生成的 7-16 日报反而漏掉。
+ * 现改为按 user_id + report_date 检查（日报本就按客户维度生成，与 taskId 无关）
+ */
+export async function checkAeoReportExists(userId: string, reportDate: string): Promise<boolean> {
   const result = await query(
-    `SELECT 1 FROM aeo_report WHERE task_id = $1 AND report_date = $2`,
-    [taskId, reportDate]
+    `SELECT 1 FROM aeo_report WHERE user_id = $1 AND report_date = $2 LIMIT 1`,
+    [userId, reportDate]
   );
   return result.rows.length > 0;
 }
