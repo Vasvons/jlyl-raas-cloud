@@ -113,6 +113,42 @@ function stripThinking(text: string): string {
 }
 
 /**
+ * v2.2.19：清洗标题前缀和后缀
+ * 场景：AI 不遵守"只输出标题文字"指令，把 # / 【标题】/ 标题：/ ## 等前缀一起输出
+ * 修复：去除所有非标题文字的前缀、后缀、装饰符号
+ */
+function cleanTitlePrefix(title: string): string {
+  if (!title) return '';
+  let t = title.trim();
+  // 循环去除开头的前缀（可能有多个，如 "## 【标题】xxx"）
+  let prev = '';
+  while (prev !== t && t) {
+    prev = t;
+    // 1. 去除开头的 markdown 标题符号 #（一个或多个，后跟空格）
+    t = t.replace(/^#{1,6}\s*/, '');
+    // 2. 去除开头的 【标题】、【标题：】、【标题1】 等前缀块
+    t = t.replace(/^【\s*标题\s*[\d：:]*\s*】\s*/, '');
+    // 3. 去除开头的 "标题："、"标题1："、"标题:" 等
+    t = t.replace(/^标题\s*[\d：:]*\s*[：:]\s*/, '');
+    // 4. 去除开头的 "Title:"、"Title：" 等
+    t = t.replace(/^Title\s*[：:]\s*/i, '');
+    // 5. 去除开头的项目符号 "- "、"1. "、"1、" 等
+    t = t.replace(/^[-•·]\s+/, '');
+    t = t.replace(/^\d+[.、)]\s*/, '');
+    // 6. 去除开头的引号（各种中文英文引号）
+    t = t.replace(/^["'""「『（(]+/, '');
+    // 7. 去除结尾的引号和括号
+    t = t.replace(/["'""」』）)]+$/, '');
+    t = t.trim();
+  }
+  // 去除标题中的 < > 标签残留
+  t = t.replace(/<[^>]+>/g, '');
+  // 合并中间多余空白
+  t = t.replace(/\s+/g, ' ').trim();
+  return t;
+}
+
+/**
  * 从AI响应中提取标题和正文HTML
  *
  * 约定AI返回格式：
@@ -135,6 +171,8 @@ function parseArticleContent(rawContent: string): { title: string; contentHtml: 
     title = titleMatch[1].trim();
     // 标题里不能有换行和 HTML 标签
     title = title.replace(/<[^>]+>/g, '').replace(/\n+/g, ' ').trim();
+    // v2.2.19：清洗前缀（# / 【标题】 / 标题：等）
+    title = cleanTitlePrefix(title);
     // 检测 <title> 内容是否像思考过程，如果是就清空（降级用 H1 或首段）
     if (isThinkingProcess(title)) {
       console.warn('[ArticleGen] <title> 标签内容像思考过程，已清空降级。前80字符:', title.slice(0, 80));
@@ -178,7 +216,8 @@ function parseArticleContent(rawContent: string): { title: string; contentHtml: 
       const h1Title = h1Match[1].replace(/<[^>]+>/g, '').trim();
       // H1 也可能是思考过程，检测一下
       if (!isThinkingProcess(h1Title)) {
-        title = h1Title;
+        // v2.2.19：H1 也需要清洗前缀
+        title = cleanTitlePrefix(h1Title);
         contentHtml = contentHtml.replace(/<h1[^>]*>[\s\S]*?<\/h1>/i, '').trim();
       }
     }
@@ -461,7 +500,10 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   // v1.5+：图库图片获取（封面 + 插画）
   // cover_image_mode: 'none' / 'random' / 'fixed'
   // illustration_count: 插图数量（每篇文章独立随机取）
+  // v2.2.19：诊断日志 - 输出图库配置实际值（便于排查"封面/插图没有"问题）
   const coverMode = task.cover_image_mode || 'none';
+  const illuCountConfig = Math.max(0, Math.min(20, Number(task.illustration_count) || 0));
+  console.log(`[ArticleGen][图库配置] 任务 ${taskId} cover_image_mode=${task.cover_image_mode}(生效=${coverMode}), illustration_count=${task.illustration_count}(生效=${illuCountConfig}), knowledge_id=${task.knowledge_id}, user_id=${userId}`);
   let fixedCoverUrl = '';
   // v1.5.1：保存固定封面图的指纹（original_name + file_size），用于和插画去重
   let fixedCoverFingerprint: { name: string; size: number } | null = null;
@@ -562,6 +604,12 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         });
         // 2. 附加 L4 主题参考层（userPromptSuffix）
         articlePrompt += writingCtx.userPromptSuffix;
+        // v2.2.19：本次主题关键词注入（让 AI 知道本篇围绕哪个关键词展开）
+        //   原 bug：kw 仅用于数据库归属标记，AI 看不到"本次主题"，导致 AI 在关键词库里随机挑主题
+        //   修复：把本次主题关键词作为"本篇主题"明确告诉 AI（如有关键词库的话）
+        if (kw && kw.value) {
+          articlePrompt += `\n\n---\n\n【本篇主题关键词】${kw.value}\n请以这个关键词作为本篇的核心主题，围绕它展开内容。其他关键词作为辅助参考，不要喧宾夺主。`;
+        }
 
         // === 诊断日志：输出各层上下文生效情况（仅第一篇打印，避免刷屏）===
         if (i === 0) {
@@ -618,11 +666,25 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
             console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇取随机封面失败:`, err);
           }
         }
-        const illuCount = Math.max(0, Math.min(20, Number(task.illustration_count) || 0));
-        if (illuCount > 0 && task.knowledge_id) {
+        // v2.2.19：illustration_count 支持 -1 语义（按图库自动决定）
+        //   -1 → 查图库后决定（有图取 min(5, 库存数)，无图=0）
+        //   0  → 不取插画
+        //   N>0 → 取 N 张（上限 20）
+        const rawIlluCount = Number(task.illustration_count);
+        let illuCount = 0;
+        if (Number.isFinite(rawIlluCount) && rawIlluCount > 0) {
+          illuCount = Math.min(20, rawIlluCount);
+        }
+        // -1 时按图库自动决定（先尝试查询图库，有图则取 min(5, 库存数)）
+        let autoIlluFallback = false;
+        if (rawIlluCount === -1) {
+          autoIlluFallback = true;
+        }
+        if ((illuCount > 0 || autoIlluFallback) && task.knowledge_id) {
           try {
             // 多取 5 张作为去重缓冲，过滤后取前 illuCount 张
-            const fetchCount = illuCount + 5;
+            // autoIlluFallback 时先取最多 5 张看看库存
+            const fetchCount = (autoIlluFallback ? 5 : illuCount) + 5;
             let randomIllus = await getRandomImages(userId, task.knowledge_id, 'illustration', fetchCount);
             if (randomIllus.length > 0 && coverFingerprint) {
               randomIllus = randomIllus.filter((img: any) => {
@@ -635,7 +697,11 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
               });
             }
             if (randomIllus.length > 0) {
-              const selectedIllus = randomIllus.slice(0, illuCount);
+              // autoIlluFallback 时根据库存决定最终数量
+              const finalCount = autoIlluFallback
+                ? Math.min(5, randomIllus.length)
+                : Math.min(illuCount, randomIllus.length);
+              const selectedIllus = randomIllus.slice(0, finalCount);
               const imgLines = selectedIllus.map((img: any, idx: number) => `${idx + 1}. <img src="${img.url}" alt="插图${idx + 1}">`);
               illustrationImageBlock = `\n\n【插画素材（请在正文合适位置插入以下 <img> 标签，每张图前应有承上启下的文字过渡，不要堆在一起）】\n${imgLines.join('\n')}`;
             }
@@ -710,8 +776,20 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
             const titleSystemPrefix = writingCtx.systemMessage
               ? writingCtx.systemMessage + '\n\n---\n\n'
               : '';
+            // v2.2.19：强化"只输出标题文字"约束，禁止 # / 【标题】 / 标题：等前缀
+            const titleSystemContent = titleSystemPrefix + `你是标题生成器。基于上述所有上下文（客户档案、AEO 写作建议、专家角色等）生成与文章方向一致的标题。
+
+【输出规则（必须严格遵守）】
+1. 只输出标题文字本身，不要输出任何其他内容
+2. 不要输出思考过程、分析、解释、引号
+3. 不要输出任何前缀：禁止使用 #、##、### 等 markdown 标题符号
+4. 禁止使用 【标题】、【标题：】、标题：、Title: 等前缀字样
+5. 禁止使用项目符号（- 1. 1、等）
+6. 禁止使用书名号《》包裹标题
+7. 直接输出标题文字，例如："如何选择适合的智能家居方案" 而不是 "## 【标题】如何选择适合的智能家居方案"
+8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
-              { role: 'system', content: titleSystemPrefix + '你是标题生成器。基于上述所有上下文（客户档案、AEO 写作建议、专家角色等）生成与文章方向一致的标题。只输出标题文字本身，不要输出任何思考过程、分析、解释、引号、前缀。直接输出标题。' },
+              { role: 'system', content: titleSystemContent },
               { role: 'user', content: titlePrompt },
             ];
             const titleResult = await chatCompletion({
@@ -726,9 +804,10 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
             // 剥离思考过程 + HTML 标签 + 引号
             title = stripThinking(titleResult.content)
               .replace(/<[^>]+>/g, '')
-              .replace(/^["'"「『]+|["'"」』]+$/g, '')
               .replace(/\n+/g, ' ')
               .trim();
+            // v2.2.19：统一清洗前缀（# / 【标题】 / 标题：/ 引号等）
+            title = cleanTitlePrefix(title);
             // 标题长度保护
             if (title.length > 50) {
               const punctPos = title.slice(0, 50).search(/[。，！？；,!?;]/);

@@ -155,6 +155,9 @@ function formatTriples(triples: Array<{ subject: string; relation: string; objec
  *   {trust_endorsement}  - 信任背书
  *   {other_info}         - 其他信息
  *   {word_count}         - 目标字数
+ *   {year} / {current_year} - 当前年份（v2.2.19 新增，4 位数字如 2026）
+ *   {month}              - 当前月份（1-12，不补零）
+ *   {date}               - 当前日期（YYYY-MM-DD 格式）
  */
 export function buildPrompt(template: string, context: {
   keyword: string;
@@ -173,5 +176,14 @@ export function buildPrompt(template: string, context: {
   result = result.replace(/\{trust_endorsement\}/g, context.enterprise?.trust_endorsement || '');
   result = result.replace(/\{other_info\}/g, context.enterprise?.other_info || '');
   result = result.replace(/\{word_count\}/g, String(context.wordCount || 1500));
+  // v2.2.19：年份/月份/日期占位符
+  const now = new Date();
+  const year = String(now.getFullYear());
+  const month = String(now.getMonth() + 1);
+  const dateStr = now.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
+  result = result.replace(/\{year\}/g, year);
+  result = result.replace(/\{current_year\}/g, year);
+  result = result.replace(/\{month\}/g, month);
+  result = result.replace(/\{date\}/g, dateStr);
   return result;
 }

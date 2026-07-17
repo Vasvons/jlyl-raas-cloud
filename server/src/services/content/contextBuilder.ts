@@ -140,9 +140,20 @@ function formatKeywords(keywords: string[]): string {
 function buildLayer0ExpertPersona(task: any): string {
   const systemPrompt: string = task.agent_system_prompt || '';
   const skillsContent: string = task.agent_skills_content || '';
+  const agentName: string = task.agent_profile_name || '';
   const parts: string[] = [];
-  if (systemPrompt.trim()) {
-    parts.push(systemPrompt.trim());
+  // v2.2.19：明确专家角色定位，强化"专家视角，避免营销味"
+  if (agentName || systemPrompt.trim()) {
+    parts.push(`【你的身份】`);
+    if (agentName) parts.push(`角色名：${agentName}`);
+    if (systemPrompt.trim()) parts.push(systemPrompt.trim());
+    parts.push(``);
+    parts.push(`【身份约束（必须严格遵守）】`);
+    parts.push(`1. 你是上述定义的专家，所有内容必须从专家视角出发，提供专业见解、行业洞察、实操建议`);
+    parts.push(`2. 严禁使用营销话术和推销语言，如"爆款""必看""震惊""年度最佳""首选""不容错过"等`);
+    parts.push(`3. 标题必须体现专业性和知识性，不要使用"震惊体""标题党"等营销标题`);
+    parts.push(`4. 内容侧重于：行业分析、技术解读、案例剖析、问题诊断、方案建议，而非产品推销`);
+    parts.push(`5. 即使提到自家产品/服务，也要客观陈述事实和特点，不要夸张赞美`);
   }
   if (skillsContent.trim()) {
     parts.push(`【已启用技能】\n${skillsContent.trim()}`);
@@ -273,14 +284,19 @@ function buildLayer6OutputSpec(task: any, keywords: string[]): string {
   lines.push(``);
   lines.push(`一、输出格式`);
   lines.push(`必须按以下格式输出，不要输出任何其他内容（不要输出思考过程、分析过程、解释说明）：`);
-  lines.push(`<title>文章标题（不要包含"文章"二字，不要包含书名号）</title>`);
+  lines.push(`<title>文章标题（不要包含"文章"二字，不要包含书名号，不要带 # 或【标题】等前缀）</title>`);
   lines.push(`<body>`);
   lines.push(`正文HTML内容`);
   lines.push(`</body>`);
   lines.push(``);
-  lines.push(`二、字数要求`);
-  lines.push(`字数优先级：若已指定目标平台约束，按平台字数限制创作；否则以写作指令中的要求为准。`);
-  lines.push(`字数统计基于纯文本（不含 HTML 标签），写完后自行核对字数。`);
+  lines.push(`二、字数要求（重要）`);
+  lines.push(`字数优先级（高到低）：`);
+  lines.push(`  1. 目标平台字数约束（最高优先级，已注入 system message 末尾的"字数硬约束"段）`);
+  lines.push(`  2. 写作指令中的字数要求`);
+  lines.push(`  3. 默认 1500 字`);
+  lines.push(`若目标平台上限较大（如几万字），请按上限的 60-80% 创作，不要只写 1000 字就结束。`);
+  lines.push(`例如：平台上限 50000 字 → 目标字数 3000-4000 字；平台上限 2000 字 → 目标字数 1200-1600 字。`);
+  lines.push(`字数统计基于纯文本（不含 HTML 标签），写完后请自行核对字数，不足请补充内容，超出请精简。`);
   lines.push(``);
   lines.push(`三、排版规范（必须使用语义化 HTML 标签）`);
   lines.push(`1. 用 <h2> 划分文章主要章节（3-5 个 H2）`);
@@ -303,11 +319,13 @@ function buildLayer6OutputSpec(task: any, keywords: string[]): string {
     lines.push(`- 优先使用关键词的完整匹配，不要随意拆分`);
   }
   lines.push(``);
-  lines.push(`五、内容质量要求`);
+  lines.push(`五、内容质量要求（专家视角，避免营销味）`);
   lines.push(`1. 开头直接切入主题，不要"随着...的发展"等套话`);
   lines.push(`2. 内容必须基于客户档案的真实信息，不要编造企业信息、案例、数据`);
-  lines.push(`3. 结尾给出明确的行动建议或总结，不要泛泛而谈`);
-  lines.push(`4. 不要输出"以上就是"、"希望对您有帮助"等废话结尾`);
+  lines.push(`3. 以专家视角分析问题，提供专业见解、行业洞察、实操建议，不要堆砌营销话术`);
+  lines.push(`4. 避免"爆款""必看""震惊""年度最佳""首选"等营销词汇`);
+  lines.push(`5. 结尾给出明确的行动建议或总结，不要泛泛而谈，不要"以上就是""希望对您有帮助"等废话结尾`);
+  lines.push(`6. 标题必须体现专业性，不要使用"震惊体""标题党"等营销标题`);
 
   return lines.join('\n');
 }
