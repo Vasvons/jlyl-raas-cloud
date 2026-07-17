@@ -498,11 +498,21 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   }
 
   // v1.5+：图库图片获取（封面 + 插画）
-  // cover_image_mode: 'none' / 'random' / 'fixed'
-  // illustration_count: 插图数量（每篇文章独立随机取）
+  // cover_image_mode: 'none' / 'random' / 'fixed' / 'auto'
+  // illustration_count: 插图数量（每篇文章独立随机取，-1=按图库自动决定）
   // v2.2.19：诊断日志 - 输出图库配置实际值（便于排查"封面/插图没有"问题）
-  const coverMode = task.cover_image_mode || 'none';
-  const illuCountConfig = Math.max(0, Math.min(20, Number(task.illustration_count) || 0));
+  // v2.2.20：修复 'auto' 模式不取图的 bug
+  //   原 bug：AEO 配置 Tab 默认值是 'auto'（"自动按图库决定"），但 articleGenerator 只识别
+  //   'none'/'random'/'fixed'，'auto' 落到所有分支都 false，导致一张封面图都不取。
+  //   修复：'auto' → 查图库，有封面图则按 'random' 处理，无则按 'none' 处理。
+  const rawCoverMode = task.cover_image_mode || 'none';
+  let coverMode: 'none' | 'random' | 'fixed' | 'auto';
+  if (rawCoverMode === 'auto' || rawCoverMode === 'none' || rawCoverMode === 'random' || rawCoverMode === 'fixed') {
+    coverMode = rawCoverMode;
+  } else {
+    coverMode = 'none';
+  }
+  const illuCountConfig = Math.max(-1, Math.min(20, Number(task.illustration_count)));
   console.log(`[ArticleGen][图库配置] 任务 ${taskId} cover_image_mode=${task.cover_image_mode}(生效=${coverMode}), illustration_count=${task.illustration_count}(生效=${illuCountConfig}), knowledge_id=${task.knowledge_id}, user_id=${userId}`);
   let fixedCoverUrl = '';
   // v1.5.1：保存固定封面图的指纹（original_name + file_size），用于和插画去重
@@ -643,16 +653,17 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         }
 
         // v1.5+：图库图片注入 prompt
-        // 1. 封面图：coverMode='random' 时每篇随机取一张；'fixed' 时用 fixedCoverUrl
-        // 2. 插画：illustration_count>0 时每篇随机取 N 张，由 AI 决定插入位置
+        // 1. 封面图：coverMode='random' 或 'auto'（按图库决定）时每篇随机取一张；'fixed' 时用 fixedCoverUrl
+        // 2. 插画：illustration_count>0 或 -1（按图库自动决定）时每篇随机取 N 张
         // v1.5.1 去重：同一篇文章的封面和插画不能是同一张图
         //   （按 original_name + file_size 判定，因为同一张图传到 cover/illustration 会有不同 OSS URL）
+        // v2.2.20：'auto' 模式 = 查图库，有图则按 'random' 处理，无图则不取
         let illustrationImageBlock = '';
         let coverFingerprint: { name: string; size: number } | null = null;
         if (coverMode === 'fixed' && fixedCoverUrl) {
           coverUrlForArticle = fixedCoverUrl;
           coverFingerprint = fixedCoverFingerprint;
-        } else if (coverMode === 'random' && task.knowledge_id) {
+        } else if ((coverMode === 'random' || coverMode === 'auto') && task.knowledge_id) {
           try {
             const randomCovers = await getRandomImages(userId, task.knowledge_id, 'cover', 1);
             if (randomCovers.length > 0) {
@@ -661,6 +672,9 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
               if (c.original_name && c.file_size != null) {
                 coverFingerprint = { name: c.original_name, size: c.file_size };
               }
+            } else if (coverMode === 'auto') {
+              // auto 模式下图库为空，安静降级（不报错，因为是"按图库决定"）
+              console.log(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇 auto 模式：封面图库为空，跳过封面图`);
             }
           } catch (err) {
             console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇取随机封面失败:`, err);
