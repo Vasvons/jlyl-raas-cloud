@@ -139,15 +139,22 @@ router.post('/backfill-daily', authMiddleware, async (req, res) => {
       return res.json({ code: 404, message: `客户 ${userId} 无活跃巡检任务，无法补生成日报` });
     }
 
-    console.log(`[AEO] 管理员触发补生成: userId=${userId}, date=${reportDate}, force=${force}, taskId=${task.id}`);
-    const reportId = await generateAeoReport(task.id, userId, { reportDate, force });
+    console.log(`[AEO] 管理员触发补生成: userId=${userId}, date=${reportDate}, force=${force}, taskId=${task.id} (type=${typeof task.id})`);
+    // v2.2.9：task.id 来自 pg BIGINT，正常应为 number；但若任务列表为空或字段缺失会变成 NaN
+    // 此处强校验，避免 NaN 传入 SQL 导致 "invalid input syntax for type integer: NaN"
+    const taskIdNum = Number(task.id);
+    if (!Number.isFinite(taskIdNum)) {
+      console.error(`[AEO] 补生成日报 taskId 非法: task=${JSON.stringify(task)}`);
+      return res.json({ code: 400, message: `taskId 非法（${task.id}），请检查客户 ${userId} 是否有活跃的巡检任务` });
+    }
+    const reportId = await generateAeoReport(taskIdNum, userId, { reportDate, force });
     if (reportId === null) {
       res.json({ code: 200, message: `${reportDate} 日报已存在，无需重复生成`, data: { reportId: null, skipped: true } });
     } else {
       res.json({ code: 200, message: `${reportDate} 日报补生成成功`, data: { reportId, skipped: false } });
     }
   } catch (e: any) {
-    console.error('[AEO] 补生成日报失败:', e.message);
+    console.error('[AEO] 补生成日报失败:', e.message, e.stack);
     res.json({ code: 500, message: e.message });
   }
 });

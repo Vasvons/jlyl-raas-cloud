@@ -3519,6 +3519,19 @@ export async function insertAeoReport(params: {
   rawAnalysis: string;
   recordIds: number[];
 }): Promise<number> {
+  // v2.2.9：防御性校验，避免 NaN 传入 SQL 导致 "invalid input syntax for type integer: 'NaN'"
+  const safeTaskId = Number.isFinite(params.taskId) ? params.taskId : 0;
+  const safeVisibility = Number.isFinite(params.visibilityScore) ? params.visibilityScore : 0;
+  const safeMention = Number.isFinite(params.mentionCount) ? params.mentionCount : 0;
+  const safePositive = Number.isFinite(params.positiveRatio) ? params.positiveRatio : 0;
+  const safeNeutral = Number.isFinite(params.neutralRatio) ? params.neutralRatio : 0;
+  const safeNegative = Number.isFinite(params.negativeRatio) ? params.negativeRatio : 0;
+  const safeRecordIds = Array.isArray(params.recordIds)
+    ? params.recordIds.filter(id => Number.isFinite(id))
+    : [];
+  if (!Number.isFinite(params.taskId)) {
+    console.warn(`[insertAeoReport] taskId 非法(${params.taskId})，已降级为 0；userId=${params.userId}, reportDate=${params.reportDate}`);
+  }
   const result = await query(
     `INSERT INTO aeo_report
      (task_id, user_id, report_date, visibility_score, mention_count,
@@ -3536,9 +3549,9 @@ export async function insertAeoReport(params: {
        raw_analysis = EXCLUDED.raw_analysis,
        record_ids = EXCLUDED.record_ids
      RETURNING id`,
-    [params.taskId, params.userId, params.reportDate, params.visibilityScore, params.mentionCount,
-     params.positiveRatio, params.neutralRatio, params.negativeRatio,
-     params.competitorAnalysis, params.suggestions, params.rawAnalysis, params.recordIds]
+    [safeTaskId, params.userId, params.reportDate, safeVisibility, safeMention,
+     safePositive, safeNeutral, safeNegative,
+     params.competitorAnalysis, params.suggestions, params.rawAnalysis, safeRecordIds]
   );
   return result.rows[0].id;
 }

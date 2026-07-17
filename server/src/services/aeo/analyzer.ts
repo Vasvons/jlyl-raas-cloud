@@ -210,6 +210,12 @@ export async function generateAeoReport(taskId: number, userId: string, options?
 【LLM 分析】${analysis.suggestions}`;
 
   // 入库
+  // v2.2.9：修复 "invalid input syntax for type integer: 'NaN'" 错误
+  // 原 bug：recordIds 直接用 sr.queue_id，若 queue_id 为 undefined/null 会传给 BIGINT[] 导致序列化异常
+  // 修复：过滤掉非数字的 queue_id，确保数组元素都是有效整数
+  const recordIds = shardReports
+    .map(sr => sr.queue_id)
+    .filter((id): id is number => typeof id === 'number' && Number.isFinite(id));
   const reportId = await insertAeoReport({
     taskId,
     userId,
@@ -234,7 +240,7 @@ export async function generateAeoReport(taskId: number, userId: string, options?
       llm_raw: analysis.raw,
       llm_competitor_analysis: analysis.competitorAnalysis,
     }),
-    recordIds: shardReports.map(sr => sr.queue_id), // 用 queue_id 作为记录标识
+    recordIds, // 用 queue_id 作为记录标识（已过滤无效值）
   });
 
   console.log(`[AEO] 用户 ${userId} 日报生成成功 reportId=${reportId}, 分片报告=${shardReports.length}, 总查询=${totalRecords}, 品牌命中=${totalBrandMatched}, 收录率=${inclusionRate}%`);
