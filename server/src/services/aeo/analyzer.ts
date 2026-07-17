@@ -59,28 +59,39 @@ const AEO_RECORD_LIMIT = parseInt(process.env.AEO_RECORD_LIMIT || '200');
  * @param taskId 占位 task_id（用于 aeo_report 表的主键约束，实际日报内容跨任务汇总）
  * @param userId 客户 ID（日报按客户维度生成）
  */
-export async function generateAeoReport(taskId: number, userId: string): Promise<number | null> {
+export async function generateAeoReport(taskId: number, userId: string, options?: { reportDate?: string; force?: boolean }): Promise<number | null> {
   // v2.2.3：修复日报日期逻辑
   // 原 bug：cron 0 2 * * * 凌晨 2 点触发时，today=当天日期，但凌晨 2 点当天分片报告还没生成
   //   → getShardReportsByDate(当天) 返回空 → 生成"无数据日报"，而前一天的日报永远不生成
   // 修复：凌晨 2 点应该总结"前一天"的巡检数据，report_date = 前一天日期
   // 如果当天调用（如手动触发、测试），则使用当天日期，由 checkAeoReportExists 防重复
-  const now = new Date();
-  const nowShanghai = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-  const hour = nowShanghai.getHours();
-  // v2.2.3：凌晨 0-6 点视为"次日补前一天日报"，其他时段视为"当天日报"
-  const reportDateObj = hour < 6
-    ? new Date(nowShanghai.getTime() - 24 * 60 * 60 * 1000) // 前一天
-    : nowShanghai; // 当天
-  const reportDate = reportDateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
+  // v2.2.5：支持 options.reportDate 指定日期（用于补生成）和 options.force 强制覆盖
+  let reportDate: string;
+  if (options?.reportDate) {
+    reportDate = options.reportDate;
+  } else {
+    const now = new Date();
+    const nowShanghai = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+    const hour = nowShanghai.getHours();
+    // v2.2.3：凌晨 0-6 点视为"次日补前一天日报"，其他时段视为"当天日报"
+    const reportDateObj = hour < 6
+      ? new Date(nowShanghai.getTime() - 24 * 60 * 60 * 1000) // 前一天
+      : nowShanghai; // 当天
+    reportDate = reportDateObj.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' }); // YYYY-MM-DD
+  }
 
   // v2.2.4：检查该日期是否已为该客户生成日报（按 user_id + report_date，不再用 taskId）
-  // 原按 taskId 检查，但 scheduler 用占位 taskId，每次部署后占位 taskId 可能变化，
-  // 导致同一日期被不同 taskId 反复生成（日志里 "AEO 报告已生成 (2026-07-15)" 刷屏）
-  const exists = await checkAeoReportExists(userId, reportDate);
-  if (exists) {
-    console.log(`[AEO] 用户 ${userId} ${reportDate} 日报已生成，跳过`);
-    return null;
+  // v2.2.5：options.force=true 时跳过查重（用于补生成已存在但内容有误的日报，需配合删除旧报告）
+  if (!options?.force) {
+    const exists = await checkAeoReportExists(userId, reportDate);
+    if (exists) {
+      console.log(`[AEO] 用户 ${userId} ${reportDate} 日报已生成，跳过`);
+      return null;
+    }
+  } else {
+    // force 模式下先删除该客户该日期的旧日报（避免主键冲突）
+    await dbQuery('DELETE FROM aeo_report WHERE user_id = $1 AND report_date = $2', [userId, reportDate]);
+    console.log(`[AEO] 用户 ${userId} ${reportDate} 强制覆盖模式，已删除旧日报`);
   }
 
   // v2.1.6：改为基于当日分片报告汇总（数据源与周报/月报/大屏一致）

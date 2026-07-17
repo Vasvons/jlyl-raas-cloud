@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getAeoReports, getLatestAeoReport, getLatestAeoReportByUser, getAeoReportById, getAeoFullReports } from '../repository';
+import { getAeoReports, getLatestAeoReport, getLatestAeoReportByUser, getAeoReportById, getAeoFullReports, getActiveTasksForAeo } from '../repository';
 import { generateAeoReport, generateAeoShardReport } from '../services/aeo/analyzer';
 import { authMiddleware } from '../auth';
 import { query as dbQuery } from '../db';
@@ -94,6 +94,60 @@ router.get('/latest-by-user', authMiddleware, async (req, res) => {
     const report = await getLatestAeoReportByUser(userId);
     res.json({ code: 200, data: report });
   } catch (e: any) {
+    res.json({ code: 500, message: e.message });
+  }
+});
+
+// v2.2.5：补生成指定日期的 AEO 日报（管理员用，解决 cron 错过或部署导致日报未生成的问题）
+// 参数：
+//   userId: 客户 ID（必填）
+//   date:   日报日期 YYYY-MM-DD（可选，默认前一天）
+//   force:  是否强制覆盖已有日报（可选，默认 false）
+// 实现逻辑：
+//   1. 用 getActiveTasksForAeo 取该客户的占位 taskId（日报按 userId 维度，taskId 仅占位）
+//   2. 调用 generateAeoReport(taskId, userId, { reportDate, force }) 生成日报
+//   3. 同步触发 autoCreateWritingTasksFromPeriod（让日报完成后自动创建写作任务，与 cron 路径一致）
+router.post('/backfill-daily', authMiddleware, async (req, res) => {
+  try {
+    const caller = (req as any).user;
+    // 仅管理员可补生成
+    if (caller?.level !== '1') {
+      return res.status(403).json({ code: 403, message: '仅管理员可补生成日报' });
+    }
+    const userId = req.body.userId ? String(req.body.userId) : undefined;
+    if (!userId) {
+      return res.json({ code: 400, message: '缺少 userId' });
+    }
+    // 默认补生成昨天的日报（用户最常见诉求："昨天的日报没出"）
+    let reportDate: string | undefined = req.body.date;
+    if (!reportDate) {
+      const now = new Date();
+      const nowShanghai = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+      const yesterday = new Date(nowShanghai.getTime() - 24 * 60 * 60 * 1000);
+      reportDate = yesterday.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    }
+    // 校验日期格式 YYYY-MM-DD
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate)) {
+      return res.json({ code: 400, message: 'date 格式应为 YYYY-MM-DD' });
+    }
+    const force = req.body.force === true;
+
+    // 取该客户的占位 taskId
+    const tasks = await getActiveTasksForAeo();
+    const task = tasks.find(t => String(t.user_id) === userId) || tasks[0];
+    if (!task) {
+      return res.json({ code: 404, message: `客户 ${userId} 无活跃巡检任务，无法补生成日报` });
+    }
+
+    console.log(`[AEO] 管理员触发补生成: userId=${userId}, date=${reportDate}, force=${force}, taskId=${task.id}`);
+    const reportId = await generateAeoReport(task.id, userId, { reportDate, force });
+    if (reportId === null) {
+      res.json({ code: 200, message: `${reportDate} 日报已存在，无需重复生成`, data: { reportId: null, skipped: true } });
+    } else {
+      res.json({ code: 200, message: `${reportDate} 日报补生成成功`, data: { reportId, skipped: false } });
+    }
+  } catch (e: any) {
+    console.error('[AEO] 补生成日报失败:', e.message);
     res.json({ code: 500, message: e.message });
   }
 });
