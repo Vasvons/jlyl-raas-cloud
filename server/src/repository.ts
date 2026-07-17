@@ -4617,6 +4617,12 @@ const AEO_QUOTA_FIELDS = [
   'enable_competitor_geo',
   'competitor_brands',
   'focus_keywords',
+  // v2.2.17: 自动写作任务详细配置
+  'auto_instruction_id',
+  'auto_knowledge_id',
+  'auto_agent_profile_id',
+  'auto_cover_image_mode',
+  'auto_illustration_count',
 ] as const;
 
 /** 获取当前用户的 AEO 配额配置 */
@@ -4682,6 +4688,28 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
   if (data.competitor_brands !== undefined) {
     fields.push(`competitor_brands = $${idx++}`);
     values.push(JSON.stringify(data.competitor_brands || []));
+  }
+  // v2.2.17: 自动写作任务详细配置
+  if (data.auto_instruction_id !== undefined) {
+    fields.push(`auto_instruction_id = $${idx++}`);
+    values.push(data.auto_instruction_id === null || data.auto_instruction_id === '' ? null : Number(data.auto_instruction_id));
+  }
+  if (data.auto_knowledge_id !== undefined) {
+    fields.push(`auto_knowledge_id = $${idx++}`);
+    values.push(data.auto_knowledge_id === null || data.auto_knowledge_id === '' ? null : Number(data.auto_knowledge_id));
+  }
+  if (data.auto_agent_profile_id !== undefined) {
+    fields.push(`auto_agent_profile_id = $${idx++}`);
+    values.push(data.auto_agent_profile_id === null || data.auto_agent_profile_id === '' ? null : Number(data.auto_agent_profile_id));
+  }
+  if (data.auto_cover_image_mode !== undefined) {
+    fields.push(`auto_cover_image_mode = $${idx++}`);
+    values.push(['auto', 'none', 'random', 'fixed'].includes(data.auto_cover_image_mode) ? data.auto_cover_image_mode : 'auto');
+  }
+  if (data.auto_illustration_count !== undefined) {
+    fields.push(`auto_illustration_count = $${idx++}`);
+    const n = Number(data.auto_illustration_count);
+    values.push(Number.isFinite(n) ? n : -1);
   }
 
   if (fields.length === 0) return;

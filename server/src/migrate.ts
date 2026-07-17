@@ -980,6 +980,13 @@ export async function migrate() {
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS quota_cycle VARCHAR(10) DEFAULT 'weekly'`);
     // v2.1.3: 重点优化关键词（用户手动设置，驱动自动写作任务的主题方向）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS focus_keywords JSONB`);
+    // v2.2.17: 自动写作任务详细配置（让自动写作和手动写作的8步配置对齐）
+    // 留空(null)/默认值(-1)时自动取客户第一个 active 值（向后兼容）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_instruction_id INTEGER`);         // 指定自动写作使用的指令ID（null=取客户第一个active指令）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_knowledge_id INTEGER`);           // 指定自动写作使用的知识库ID（null=取客户第一个active知识库）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_agent_profile_id INTEGER`);       // 指定自动写作使用的专家角色ID（null=取客户第一个active专家）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_cover_image_mode VARCHAR(20) DEFAULT 'auto'`); // 封面图模式：auto/none/random/fixed（auto=按客户图库自动决定）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_illustration_count INTEGER DEFAULT -1`); // 插画数量：-1=按客户图库自动决定，>=0=固定数量
 
     // v2.0.0: ai_writing_task 表新增 AEO 驱动字段
     // aeo_context: AEO综合建议池（周/月报汇总后注入，直接驱动写作方向）

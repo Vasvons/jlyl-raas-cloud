@@ -2115,16 +2115,27 @@ async function autoCreateWritingTasksFromPeriod(
 
   // 1. 获取用户的默认知识库（取第一个活跃的）
   // v2.2.2：getEnterpriseKnowledges 已按 user_id 过滤，无需改动
+  // v2.2.17：支持通过 AeoQuotaConfig 指定具体 knowledge_id
   const knowledges = await getEnterpriseKnowledges(userIdNum);
   if (knowledges.length === 0) {
     console.warn(`[AEO-Period] 用户 ${userId} 无企业知识库，跳过自动创建写作任务`);
     return 0;
   }
-  const knowledge = knowledges[0];
+  const quotaConfig = await getAeoQuotaConfig(userIdNum);
+
+  // v2.2.17：若配置了 auto_knowledge_id 则用配置值，否则取第一个（向后兼容）
+  const configuredKnowledgeId = quotaConfig?.auto_knowledge_id
+    ? Number(quotaConfig.auto_knowledge_id)
+    : null;
+  const knowledge = configuredKnowledgeId
+    ? (knowledges.find((k: any) => k.id === configuredKnowledgeId) || knowledges[0])
+    : knowledges[0];
+  if (configuredKnowledgeId && knowledge.id !== configuredKnowledgeId) {
+    console.warn(`[AEO-Period] 配置的 auto_knowledge_id=${configuredKnowledgeId} 不属于客户 ${userId}，回退到第一个知识库 id=${knowledge.id}`);
+  }
 
   // 2. v2.2.2：按客户筛选写作指令（替代原 getAllWritingInstructions 全局取第一个）
-  // 原逻辑取全局所有 active 指令的第一个，可能与客户不匹配，导致内容方向偏离
-  // 现改为按 userId 筛选该客户自己的指令，若无则回退到全局指令
+  // v2.2.17：支持通过 AeoQuotaConfig 指定具体 instruction_id
   let instructions = await getWritingInstructions(userIdNum);
   if (instructions.length === 0) {
     console.warn(`[AEO-Period] 用户 ${userId} 无客户专属写作指令，回退到全局指令`);
@@ -2134,20 +2145,41 @@ async function autoCreateWritingTasksFromPeriod(
     console.warn(`[AEO-Period] 无可用写作指令，跳过自动创建写作任务`);
     return 0;
   }
-  const instruction = instructions[0];
+  const configuredInstructionId = quotaConfig?.auto_instruction_id
+    ? Number(quotaConfig.auto_instruction_id)
+    : null;
+  const instruction = configuredInstructionId
+    ? (instructions.find((i: any) => i.id === configuredInstructionId) || instructions[0])
+    : instructions[0];
+  if (configuredInstructionId && instruction.id !== configuredInstructionId) {
+    console.warn(`[AEO-Period] 配置的 auto_instruction_id=${configuredInstructionId} 不属于客户 ${userId}，回退到第一个指令 id=${instruction.id}`);
+  }
 
   // 3. v2.2.2：自动写作也使用专家角色（替代原 agent_profile_id=null）
-  // 查询客户的 agent_profile 列表，选第一个 active 的，注入 L0 专家人格层
-  // 若客户未配置专家角色，则 agentProfileId=null（保持原行为，仅靠指令+知识库驱动）
+  // v2.2.17：支持通过 AeoQuotaConfig 指定具体 agent_profile_id
   let agentProfileId: number | null = null;
   try {
     const agentProfiles = await getAgentProfiles(userIdNum);
-    const activeProfile = agentProfiles.find((p: any) => p.is_active !== false);
-    if (activeProfile) {
-      agentProfileId = activeProfile.id;
-      console.log(`[AEO-Period] 自动写作使用专家角色: userId=${userId}, profileId=${agentProfileId}, name=${activeProfile.name}`);
-    } else {
-      console.warn(`[AEO-Period] 用户 ${userId} 无 active 专家角色，自动写作将不注入 L0 专家人格层`);
+    const configuredAgentId = quotaConfig?.auto_agent_profile_id
+      ? Number(quotaConfig.auto_agent_profile_id)
+      : null;
+    if (configuredAgentId) {
+      const matched = agentProfiles.find((p: any) => p.id === configuredAgentId);
+      if (matched) {
+        agentProfileId = matched.id;
+        console.log(`[AEO-Period] 自动写作使用配置指定的专家角色: userId=${userId}, profileId=${agentProfileId}, name=${matched.name}`);
+      } else {
+        console.warn(`[AEO-Period] 配置的 auto_agent_profile_id=${configuredAgentId} 不属于客户 ${userId}，回退到第一个 active 角色`);
+      }
+    }
+    if (!agentProfileId) {
+      const activeProfile = agentProfiles.find((p: any) => p.is_active !== false);
+      if (activeProfile) {
+        agentProfileId = activeProfile.id;
+        console.log(`[AEO-Period] 自动写作使用第一个 active 专家角色: userId=${userId}, profileId=${agentProfileId}, name=${activeProfile.name}`);
+      } else {
+        console.warn(`[AEO-Period] 用户 ${userId} 无 active 专家角色，自动写作将不注入 L0 专家人格层`);
+      }
     }
   } catch (e: any) {
     console.warn(`[AEO-Period] 查询专家角色失败（不影响任务创建）:`, e.message);
@@ -2160,8 +2192,28 @@ async function autoCreateWritingTasksFromPeriod(
     return 0;
   }
 
-  // 4. 按权重分配文章数
-  const allocation = await allocateArticlesByWeight(quota);
+  // v2.2.17：从写作建议池收集候选平台，让写作建议池真正影响平台投放
+  // writingSuggestions 的 platforms 字段是信源平台名（如 'dy'/'xhs'/'zh'/'bjh'）
+  // 这些平台作为 candidatePlatforms 传给 allocateArticlesByWeight，仅在候选平台内按权重分配
+  // 若 writingSuggestions 为空或未收集到平台，则不传 candidatePlatforms（保持原行为：使用所有有权重的平台）
+  const candidatePlatforms: string[] = [];
+  for (const sug of (writingSuggestions || [])) {
+    if (Array.isArray(sug.platforms)) {
+      for (const p of sug.platforms) {
+        if (typeof p === 'string' && p.trim() && !candidatePlatforms.includes(p)) {
+          candidatePlatforms.push(p);
+        }
+      }
+    }
+  }
+  // v2.2.17：按权重分配文章数（v2.2.17 起支持 candidatePlatforms）
+  const allocation = await allocateArticlesByWeight(
+    quota,
+    candidatePlatforms.length > 0 ? candidatePlatforms : undefined
+  );
+  if (candidatePlatforms.length > 0) {
+    console.log(`[AEO-Period] 写作建议池候选平台: [${candidatePlatforms.join(',')}] → 实际分配: ${JSON.stringify(allocation)}`);
+  }
 
   // 5. 构造 AEO 上下文（注入写作建议池）
   const aeoContext = JSON.stringify({
@@ -2184,7 +2236,7 @@ async function autoCreateWritingTasksFromPeriod(
 
   // v2.1.3：优先使用用户配置的"重点优化关键词"作为写作主题
   // v2.2.2：如果未配置 focus_keywords，则回退到客户全量关键词（蒸馏+品牌），避免 L4 主题参考层为空
-  const quotaConfig = await getAeoQuotaConfig(userIdNum);
+  // v2.2.17：quotaConfig 已在前面读取，这里复用，不再重复查询
   const focusKeywords: string[] = Array.isArray(quotaConfig?.focus_keywords)
     ? quotaConfig.focus_keywords.filter((k: any) => typeof k === 'string' && k.trim())
     : [];
@@ -2219,27 +2271,49 @@ async function autoCreateWritingTasksFromPeriod(
   }
 
   // v2.2.13：取消 cover_image_mode/illustration_count 硬编码，改为查询客户图库
-  // 原 bug：自动写作硬编码 cover_image_mode='none' + illustration_count=0，
-  //   导致自动写作永远不插图，与手动写作质量不对齐
-  // 现改为查询客户插画图库，有图库时默认插 2 张（与飞轮调试 handleTriggerWriting 对齐）
-  // v2.2.16：进一步对齐手动写作
-  //   - cover_image_mode 从 'none' 改为 'random'（有封面图库时随机取一张，与手动默认行为一致）
-  //   - illustration_count 从 Math.min(2,...) 改为 Math.min(5,...)（更接近手动写作默认值）
-  //   - 同时查询封面图库，无封面图库时回退 'none'
+  // v2.2.16：cover_mode='random'，illustration≤5
+  // v2.2.17：支持通过 AeoQuotaConfig 显式配置 auto_cover_image_mode 和 auto_illustration_count
+  //   - auto_cover_image_mode='auto'（默认）→ 按图库自动决定（有封面图=random，无封面图=none）
+  //   - auto_cover_image_mode='none'/'random'/'fixed' → 直接使用配置值
+  //   - auto_illustration_count=-1（默认）→ 按图库自动决定（min(5, 图库数)）
+  //   - auto_illustration_count>=0 → 直接使用配置值
+  const configuredCoverMode = typeof quotaConfig?.auto_cover_image_mode === 'string'
+    ? quotaConfig.auto_cover_image_mode
+    : 'auto';
+  const configuredIllustrationCount = typeof quotaConfig?.auto_illustration_count === 'number'
+    ? quotaConfig.auto_illustration_count
+    : -1;
   let illustrationCount = 0;
   let coverMode = 'none';
   try {
-    const [illuImages, coverImages] = await Promise.all([
-      getImageLibrary(userIdNum, knowledge.id, 'illustration'),
-      getImageLibrary(userIdNum, knowledge.id, 'cover'),
-    ]);
-    illustrationCount = illuImages.length > 0 ? Math.min(5, illuImages.length) : 0;
-    if (coverImages.length > 0) {
-      coverMode = 'random';
+    // 仅在需要按图库自动决定时才查询图库
+    const needQueryLibrary = configuredCoverMode === 'auto' || configuredIllustrationCount === -1;
+    let illuImages: any[] = [];
+    let coverImages: any[] = [];
+    if (needQueryLibrary) {
+      [illuImages, coverImages] = await Promise.all([
+        getImageLibrary(userIdNum, knowledge.id, 'illustration'),
+        getImageLibrary(userIdNum, knowledge.id, 'cover'),
+      ]);
     }
-    console.log(`[AEO-Period] 客户 ${userId} 图库: cover=${coverImages.length}张(模式=${coverMode}), illustration=${illuImages.length}张(取${illustrationCount}张)`);
+    // 决定 coverMode
+    if (configuredCoverMode === 'auto') {
+      coverMode = coverImages.length > 0 ? 'random' : 'none';
+    } else {
+      coverMode = configuredCoverMode;
+    }
+    // 决定 illustrationCount
+    if (configuredIllustrationCount === -1) {
+      illustrationCount = illuImages.length > 0 ? Math.min(5, illuImages.length) : 0;
+    } else {
+      illustrationCount = Math.max(0, configuredIllustrationCount);
+    }
+    console.log(`[AEO-Period] 客户 ${userId} 图库配置: coverMode=${configuredCoverMode}(生效=${coverMode}), illuConfig=${configuredIllustrationCount}(生效=${illustrationCount}), 库存: cover=${coverImages.length}张, illu=${illuImages.length}张`);
   } catch (e: any) {
-    console.warn(`[AEO-Period] 查询客户 ${userId} 图库失败（不插图，继续创建任务）:`, e.message);
+    console.warn(`[AEO-Period] 查询客户 ${userId} 图库失败（按配置降级：coverMode=${configuredCoverMode}, illu=${configuredIllustrationCount}）:`, e.message);
+    // 降级：按配置值生效（如果配置是 auto/-1，则用 none/0）
+    coverMode = configuredCoverMode === 'auto' ? 'none' : configuredCoverMode;
+    illustrationCount = configuredIllustrationCount === -1 ? 0 : Math.max(0, configuredIllustrationCount);
   }
 
   // v2.2.16：total_count 必须乘以平台数，与手动写作 content.ts L838 对齐
