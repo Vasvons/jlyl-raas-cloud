@@ -4623,9 +4623,8 @@ const AEO_QUOTA_FIELDS = [
   'auto_agent_profile_id',
   'auto_cover_image_mode',
   'auto_illustration_count',
-  // v2.2.18: 补齐生成方式/固定封面/目标平台
+  // v2.2.18: 补齐生成方式/目标平台
   'auto_generation_mode',
-  'auto_cover_image_id',
   'auto_target_platforms',
 ] as const;
 
@@ -4715,14 +4714,10 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
     const n = Number(data.auto_illustration_count);
     values.push(Number.isFinite(n) ? n : -1);
   }
-  // v2.2.18: 生成方式/固定封面/目标平台
+  // v2.2.18: 生成方式/目标平台
   if (data.auto_generation_mode !== undefined) {
     fields.push(`auto_generation_mode = $${idx++}`);
     values.push(['expert', 'coze'].includes(data.auto_generation_mode) ? data.auto_generation_mode : 'expert');
-  }
-  if (data.auto_cover_image_id !== undefined) {
-    fields.push(`auto_cover_image_id = $${idx++}`);
-    values.push(data.auto_cover_image_id === null || data.auto_cover_image_id === '' ? null : Number(data.auto_cover_image_id));
   }
   if (data.auto_target_platforms !== undefined) {
     fields.push(`auto_target_platforms = $${idx++}`);

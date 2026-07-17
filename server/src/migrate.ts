@@ -985,11 +985,10 @@ export async function migrate() {
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_instruction_id INTEGER`);         // 指定自动写作使用的指令ID（null=取客户第一个active指令）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_knowledge_id INTEGER`);           // 指定自动写作使用的知识库ID（null=取客户第一个active知识库）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_agent_profile_id INTEGER`);       // 指定自动写作使用的专家角色ID（null=取客户第一个active专家）
-    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_cover_image_mode VARCHAR(20) DEFAULT 'auto'`); // 封面图模式：auto/none/random/fixed（auto=按客户图库自动决定）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_cover_image_mode VARCHAR(20) DEFAULT 'auto'`); // 封面图模式：auto/none/random（auto=按客户图库自动决定，v2.2.18 移除 fixed）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_illustration_count INTEGER DEFAULT -1`); // 插画数量：-1=按客户图库自动决定，>=0=固定数量
-    // v2.2.18: 补齐生成方式/固定封面/目标平台 3 个配置项（让自动写作与手动写作8步完全对齐）
+    // v2.2.18: 补齐生成方式/目标平台 2 个配置项（让自动写作与手动写作步骤对齐）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_generation_mode VARCHAR(20) DEFAULT 'expert'`); // 生成方式：expert/coze（默认 expert，coze 暂未实现）
-    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_cover_image_id INTEGER`);          // fixed 模式下指定的封面图ID（null=由 cover_image_mode 决定）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_target_platforms JSONB`);          // 指定自动写作的目标平台白名单（null=由AEO信源权重自动分配，[]=空数组等价于null）
 
     // v2.0.0: ai_writing_task 表新增 AEO 驱动字段

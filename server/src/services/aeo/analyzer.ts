@@ -2313,11 +2313,14 @@ async function autoCreateWritingTasksFromPeriod(
         getImageLibrary(userIdNum, knowledge.id, 'cover'),
       ]);
     }
-    // 决定 coverMode
+    // 决定 coverMode（v2.2.18：移除 fixed 模式，遇到 fixed/未知值退化为 random）
     if (configuredCoverMode === 'auto') {
       coverMode = coverImages.length > 0 ? 'random' : 'none';
+    } else if (configuredCoverMode === 'none') {
+      coverMode = 'none';
     } else {
-      coverMode = configuredCoverMode;
+      // random / fixed（旧数据兼容）/ 未知值：只要有封面图就 random，否则 none
+      coverMode = coverImages.length > 0 ? 'random' : 'none';
     }
     // 决定 illustrationCount
     if (configuredIllustrationCount === -1) {
@@ -2328,8 +2331,12 @@ async function autoCreateWritingTasksFromPeriod(
     console.log(`[AEO-Period] 客户 ${userId} 图库配置: coverMode=${configuredCoverMode}(生效=${coverMode}), illuConfig=${configuredIllustrationCount}(生效=${illustrationCount}), 库存: cover=${coverImages.length}张, illu=${illuImages.length}张`);
   } catch (e: any) {
     console.warn(`[AEO-Period] 查询客户 ${userId} 图库失败（按配置降级：coverMode=${configuredCoverMode}, illu=${configuredIllustrationCount}）:`, e.message);
-    // 降级：按配置值生效（如果配置是 auto/-1，则用 none/0）
-    coverMode = configuredCoverMode === 'auto' ? 'none' : configuredCoverMode;
+    // 降级：按配置值生效（如果配置是 auto/-1，则用 none/0；fixed/其他退化为 random）
+    if (configuredCoverMode === 'auto' || configuredCoverMode === 'none') {
+      coverMode = 'none';
+    } else {
+      coverMode = 'random';
+    }
     illustrationCount = configuredIllustrationCount === -1 ? 0 : Math.max(0, configuredIllustrationCount);
   }
 
@@ -2343,16 +2350,11 @@ async function autoCreateWritingTasksFromPeriod(
   // v2.2.2：agent_profile_id 改为使用查询到的专家角色（替代原 null）
   // v2.2.13：illustration_count 改为按客户图库实际情况配置（替代硬编码 0）
   // v2.2.16：cover_image_mode 从 'none' 改为 'random'；total_count 乘以平台数
-  // v2.2.18：generation_mode 和 cover_image_id 改为读取配置（替代硬编码）
+  // v2.2.18：generation_mode 改为读取配置（替代硬编码）；cover_image_id 不再支持 fixed 配置，固定 null
   const configuredGenerationMode = typeof quotaConfig?.auto_generation_mode === 'string'
     && ['expert', 'coze'].includes(quotaConfig.auto_generation_mode)
     ? quotaConfig.auto_generation_mode
     : 'expert';
-  const configuredCoverImageId = quotaConfig?.auto_cover_image_id
-    ? Number(quotaConfig.auto_cover_image_id)
-    : null;
-  // v2.2.18：cover_image_id 仅在 fixed 模式下生效；其他模式下强制 null（避免误用）
-  const finalCoverImageId = coverMode === 'fixed' ? configuredCoverImageId : null;
 
   const taskId = await createWritingTask({
     user_id: userIdNum,
@@ -2365,7 +2367,7 @@ async function autoCreateWritingTasksFromPeriod(
     agent_profile_id: agentProfileId,  // v2.2.2：使用专家角色
     total_count: totalCount,  // v2.2.16：quota × 平台数（原仅 quota）
     cover_image_mode: coverMode,  // v2.2.16：有封面图库时 'random'（原硬编码 'none'）
-    cover_image_id: finalCoverImageId,  // v2.2.18：fixed 模式下读取配置（原硬编码 null）
+    cover_image_id: null,  // 自动写作不配置具体封面图（对齐手动流程图库步骤：仅 none/random 两种模式）
     illustration_count: illustrationCount,  // v2.2.13：按客户图库配置（原硬编码 0）
     target_platforms: targetPlatforms,
   });
