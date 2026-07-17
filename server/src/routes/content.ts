@@ -990,6 +990,8 @@ router.get('/articles', async (req: Request, res: Response) => {
       userId = 0; // 0 = 不按 user_id 过滤
     }
     const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
+    // v2.2.18：调试日志，排查"任务显示30篇但文章管理看不到"问题
+    console.log(`[GET /articles] query=`, JSON.stringify(req.query), `→ userId=${userId}, taskId=${taskId}`);
     const result = await getArticles(userId, {
       keyword: req.query.keyword as string,
       status: req.query.status as string,
@@ -998,6 +1000,7 @@ router.get('/articles', async (req: Request, res: Response) => {
       page: Number(req.query.page) || 1,
       pageSize: Number(req.query.pageSize) || 20,
     });
+    console.log(`[GET /articles] userId=${userId} taskId=${taskId} → 返回 ${result.list?.length || 0} 篇 (total=${result.total})`);
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
