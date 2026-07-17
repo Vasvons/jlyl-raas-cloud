@@ -57,8 +57,9 @@ router.get('/results', authMiddleware, async (req, res) => {
   try {
     const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
     const userId = req.query.userId ? String(req.query.userId) : undefined;
-    // 如果传了 userId，校验是否为当前登录用户
-    if (userId && String((req as any).user?.id) !== userId) {
+    // v2.2.11：管理员(level=1)可查询任意客户的日报；普通用户只能查自己的
+    // 原 bug：管理员选客户后传 userId=客户ID，但 req.user.id=管理员ID，返回 403 导致日报列表为空
+    if (userId && String((req as any).user?.id) !== userId && (req as any).user?.level !== '1') {
       return res.status(403).json({ code: 403, message: '无权查询其他用户的报告' });
     }
     const limit = req.query.limit ? Number(req.query.limit) : 30;
