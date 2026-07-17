@@ -75,6 +75,7 @@ function buildDirectionContextForTask(task: any): string {
 /**
  * 检测文本是否像思考过程（而非正常标题/内容）
  * 用于过滤推理模型把思考过程当成标题返回的情况
+ * v2.2.16：新增"提示词模板污染"识别——AI 把 title_prompt 模板内容当标题输出
  */
 function isThinkingProcess(text: string): boolean {
   if (!text || text.length < 5) return false;
@@ -84,6 +85,10 @@ function isThinkingProcess(text: string): boolean {
   if (/用户(的需求|希望|需要|这次|提供)|我的思考|我需要|我打算|我计划|我考虑|分析一下|思考一下|核心诉求|围绕如何|GEO优化|差异化优势|我(已经|将|会|打算)/i.test(text)) return true;
   // 3. 标题过长（正常标题 15-30 字，超过 50 字大概率是思考过程）
   if (text.length > 50) return true;
+  // 4. v2.2.16：提示词模板污染检测
+  //    场景：AI 把 title_prompt 模板内容（如"【爆款自媒体文章标题生成提示词】 ### 标题选项"）当标题输出
+  //    特征词：提示词、标题选项、爆款、prompt、生成提示词、选项 1、选项 2、### 标题
+  if (/(提示词|标题选项|生成提示词|爆款|prompt|###\s*标题|选项\s*[1-9]|标题生成)/i.test(text)) return true;
   return false;
 }
 
@@ -143,6 +148,27 @@ function parseArticleContent(rawContent: string): { title: string; contentHtml: 
   } else {
     // 没有 <body> 标签，去掉 <title> 标签后剩余作为正文
     contentHtml = content.replace(/<title>[\s\S]*?<\/title>/i, '').trim();
+  }
+
+  // v2.2.16：纯文本兜底包装 HTML
+  // 场景：AI 没遵守 HTML 输出规范，返回了纯文本（无 <p>/<h2>/<div> 等标签）
+  // 后果：contentHtml 是纯文本，前端渲染时无段落/标题排版，看起来"完全没有排版"
+  // 修复：检测 contentHtml 是否为纯文本，若是则按空行分段包装 <p> 标签
+  if (contentHtml && !/<(p|div|h[1-6]|ul|ol|li|blockquote|pre|table|br)\b/i.test(contentHtml)) {
+    const plainText = contentHtml.replace(/\r\n/g, '\n').trim();
+    if (plainText) {
+      const paragraphs = plainText.split(/\n\s*\n+/).map(p => p.trim()).filter(Boolean);
+      if (paragraphs.length > 0) {
+        contentHtml = paragraphs
+          .map(p => {
+            // 段内换行转 <br>
+            const withBr = p.replace(/\n/g, '<br>\n');
+            return `<p>${withBr}</p>`;
+          })
+          .join('\n');
+        console.warn(`[ArticleGen] parseArticleContent 检测到纯文本输出，已自动包装 ${paragraphs.length} 个 <p> 段落（原始内容无 HTML 标签）`);
+      }
+    }
   }
 
   // 无标题时从 H1 提取
@@ -628,15 +654,29 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         }
 
         // 3. 组装 messages（systemMessage 含 L0+L1+L2+L3+L5）
-        const messages: { role: 'system' | 'user'; content: string }[] = writingCtx.systemMessage
+        // v2.2.16：字数硬约束同时注入 system message（最高优先级）和 user prompt（末尾强调）
+        //   原 bug：字数约束只在 user prompt 末尾，AI 注意力分散时会忽略，导致抖音 1800 字超限
+        //   修复：在 system message 末尾再次强调字数硬约束，AI 更容易严格遵守
+        let finalSystemMessage = writingCtx.systemMessage;
+        if (currentPlatformRule && finalSystemMessage) {
+          const titleMax = currentPlatformRule.title_max_length ?? 100;
+          const contentMax = currentPlatformRule.content_max_length ?? 50000;
+          const contentMin = currentPlatformRule.content_min_length ?? 100;
+          finalSystemMessage += `\n\n---\n\n## 字数硬约束（系统级强制，必须严格遵守）
+你正在为【${currentPlatformRule.name}】平台创作，字数约束是平台审核的硬性规则，超出会被平台拒绝。
+- 标题：${currentPlatformRule.title_min_length ?? 1}-${titleMax} 字
+- 正文：${contentMin}-${contentMax} 字
+绝对不能超出 ${contentMax} 字，绝对不能少于 ${contentMin} 字。生成前请预估字数，生成后请自检。`;
+        }
+        const messages: { role: 'system' | 'user'; content: string }[] = finalSystemMessage
           ? [
-              { role: 'system', content: writingCtx.systemMessage },
+              { role: 'system', content: finalSystemMessage },
               { role: 'user', content: articlePrompt },
             ]
           : [{ role: 'user', content: articlePrompt }];
 
         // v1.8.1：记录当前篇 prompt 总长度，供 catch 块诊断 token 超限错误
-        currentPromptTotalLen = writingCtx.systemMessage.length + articlePrompt.length;
+        currentPromptTotalLen = finalSystemMessage.length + articlePrompt.length;
 
         // 调AI生成文章正文
         // 注意：不传 maxTokens，让平台用默认值（豆包等平台对 max_tokens 有硬截断行为，
@@ -719,11 +759,48 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           } else {
             title = kw?.value || '未命名文章';
           }
-          console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文标题也是思考过程，用关键词+首段生成标题:`, title);
+          console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文标题也是思考过程/提示词污染，用关键词+首段生成标题:`, title);
         }
         // 空内容校验：AI 返回空内容时跳过保存，避免出现"空文章"
         if (!contentHtml || contentHtml.replace(/<[^>]+>/g, '').trim().length < 50) {
           throw new Error(`AI 返回内容为空或过短（${contentHtml.length} 字符），可能是内容审查触发或平台限流`);
+        }
+        // v2.2.16：平台字数超限硬截断兜底
+        // 场景：AI 不严格遵守字数约束（如抖音限制 1000 字却生成 1800 字）
+        // 修复：保存前检测纯文本字数，超过 content_max_length 时按段落自然截断到限制内
+        if (currentPlatformRule && currentPlatformRule.content_max_length) {
+          const maxLen = Number(currentPlatformRule.content_max_length);
+          const plainTextLen = contentHtml.replace(/<[^>]+>/g, '').length;
+          if (maxLen > 0 && plainTextLen > maxLen) {
+            console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文超限: ${plainTextLen} > ${maxLen}（${currentPlatformRule.name}），执行硬截断`);
+            // 按段落累积截断，保留完整 <p> 结构
+            const paragraphs = contentHtml.split(/(<\/p>\s*)/).filter(Boolean);
+            let accumulated = 0;
+            const kept: string[] = [];
+            for (const chunk of paragraphs) {
+              const chunkTextLen = chunk.replace(/<[^>]+>/g, '').length;
+              if (accumulated + chunkTextLen > maxLen) {
+                // 当前段会超出，截取部分文本
+                const remaining = maxLen - accumulated;
+                if (remaining > 20) {
+                  // 在 chunk 中按字符截取（保留 HTML 标签结构）
+                  const m = chunk.match(/^(\s*<p[^>]*>)([\s\S]*?)(<\/p>\s*)$/i);
+                  if (m) {
+                    const innerText = m[2].replace(/<[^>]+>/g, '');
+                    const keptText = innerText.slice(0, remaining);
+                    kept.push(`${m[1]}${keptText}…${m[3]}`);
+                  }
+                }
+                break;
+              }
+              kept.push(chunk);
+              accumulated += chunkTextLen;
+            }
+            contentHtml = kept.join('');
+            // 末尾加省略号段落提示
+            contentHtml += '\n<p>…（已按平台字数限制截断）</p>';
+            wordCount = contentHtml.replace(/<[^>]+>/g, '').length;
+          }
         }
         modelUsed = modelConfig.model_name;
       }

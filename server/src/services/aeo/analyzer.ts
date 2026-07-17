@@ -2222,21 +2222,36 @@ async function autoCreateWritingTasksFromPeriod(
   // 原 bug：自动写作硬编码 cover_image_mode='none' + illustration_count=0，
   //   导致自动写作永远不插图，与手动写作质量不对齐
   // 现改为查询客户插画图库，有图库时默认插 2 张（与飞轮调试 handleTriggerWriting 对齐）
+  // v2.2.16：进一步对齐手动写作
+  //   - cover_image_mode 从 'none' 改为 'random'（有封面图库时随机取一张，与手动默认行为一致）
+  //   - illustration_count 从 Math.min(2,...) 改为 Math.min(5,...)（更接近手动写作默认值）
+  //   - 同时查询封面图库，无封面图库时回退 'none'
   let illustrationCount = 0;
+  let coverMode = 'none';
   try {
-    const illuImages = await getImageLibrary(userIdNum, knowledge.id, 'illustration');
-    illustrationCount = illuImages.length > 0 ? Math.min(2, illuImages.length) : 0;
-    if (illustrationCount > 0) {
-      console.log(`[AEO-Period] 自动写作将插入 ${illustrationCount} 张插画（客户 ${userId} 知识库 ${knowledge.id} 的插画图库共 ${illuImages.length} 张）`);
+    const [illuImages, coverImages] = await Promise.all([
+      getImageLibrary(userIdNum, knowledge.id, 'illustration'),
+      getImageLibrary(userIdNum, knowledge.id, 'cover'),
+    ]);
+    illustrationCount = illuImages.length > 0 ? Math.min(5, illuImages.length) : 0;
+    if (coverImages.length > 0) {
+      coverMode = 'random';
     }
+    console.log(`[AEO-Period] 客户 ${userId} 图库: cover=${coverImages.length}张(模式=${coverMode}), illustration=${illuImages.length}张(取${illustrationCount}张)`);
   } catch (e: any) {
-    console.warn(`[AEO-Period] 查询客户 ${userId} 插画图库失败（不插图，继续创建任务）:`, e.message);
+    console.warn(`[AEO-Period] 查询客户 ${userId} 图库失败（不插图，继续创建任务）:`, e.message);
   }
+
+  // v2.2.16：total_count 必须乘以平台数，与手动写作 content.ts L838 对齐
+  // 原 bug：total_count=quota，导致 quota=1 平台数=3 时只生成 1 篇文章（仅第 0 个平台）
+  // 修复：total_count = quota × 平台数，确保每个平台都有 quota 篇文章
+  const totalCount = quota * targetPlatforms.length;
 
   // 创建写作任务
   // v2.1.3：auto_publish=true，写作完成后云端自动创建发布任务
   // v2.2.2：agent_profile_id 改为使用查询到的专家角色（替代原 null）
   // v2.2.13：illustration_count 改为按客户图库实际情况配置（替代硬编码 0）
+  // v2.2.16：cover_image_mode 从 'none' 改为 'random'；total_count 乘以平台数
   const taskId = await createWritingTask({
     user_id: userIdNum,
     task_name: taskName,
@@ -2246,8 +2261,8 @@ async function autoCreateWritingTasksFromPeriod(
     model_config_id: modelConfig.id,
     generation_mode: 'expert',
     agent_profile_id: agentProfileId,  // v2.2.2：使用专家角色
-    total_count: quota,
-    cover_image_mode: 'none',
+    total_count: totalCount,  // v2.2.16：quota × 平台数（原仅 quota）
+    cover_image_mode: coverMode,  // v2.2.16：有封面图库时 'random'（原硬编码 'none'）
     cover_image_id: null,
     illustration_count: illustrationCount,  // v2.2.13：按客户图库配置（原硬编码 0）
     target_platforms: targetPlatforms,
@@ -2265,7 +2280,7 @@ async function autoCreateWritingTasksFromPeriod(
     [aeoContext, periodReportId, taskId]
   );
 
-  console.log(`[AEO-Period] 写作任务已创建: taskId=${taskId}, name="${taskName}", total=${quota}, platforms=[${targetPlatforms.join(',')}]`);
+  console.log(`[AEO-Period] 写作任务已创建: taskId=${taskId}, name="${taskName}", total=${totalCount}(quota=${quota}×${targetPlatforms.length}平台), platforms=[${targetPlatforms.join(',')}], cover=${coverMode}, illu=${illustrationCount}`);
 
   // 8. 异步触发写作任务执行（复用现有 executeWritingTask）
   //    使用动态 import 避免循环依赖
@@ -2278,7 +2293,7 @@ async function autoCreateWritingTasksFromPeriod(
     console.warn(`[AEO-Period] 无法触发写作任务执行（articleGenerator 未加载）:`, e.message);
   }
 
-  return quota;
+  return totalCount;
 }
 
 // ============ v2.0.0 P7: 竞品反向 GEO ============
