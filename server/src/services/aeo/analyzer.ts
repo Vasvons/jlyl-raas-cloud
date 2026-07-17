@@ -43,6 +43,7 @@ import {
   getWritingInstructions,
   getAgentProfiles,
   getCustomerKeywordIds,
+  getImageLibrary,
 } from '../../repository';
 import { query as dbQuery } from '../../db';
 import { decrypt } from '../../utils/crypto';
@@ -2217,9 +2218,25 @@ async function autoCreateWritingTasksFromPeriod(
     }
   }
 
+  // v2.2.13：取消 cover_image_mode/illustration_count 硬编码，改为查询客户图库
+  // 原 bug：自动写作硬编码 cover_image_mode='none' + illustration_count=0，
+  //   导致自动写作永远不插图，与手动写作质量不对齐
+  // 现改为查询客户插画图库，有图库时默认插 2 张（与飞轮调试 handleTriggerWriting 对齐）
+  let illustrationCount = 0;
+  try {
+    const illuImages = await getImageLibrary(userIdNum, knowledge.id, 'illustration');
+    illustrationCount = illuImages.length > 0 ? Math.min(2, illuImages.length) : 0;
+    if (illustrationCount > 0) {
+      console.log(`[AEO-Period] 自动写作将插入 ${illustrationCount} 张插画（客户 ${userId} 知识库 ${knowledge.id} 的插画图库共 ${illuImages.length} 张）`);
+    }
+  } catch (e: any) {
+    console.warn(`[AEO-Period] 查询客户 ${userId} 插画图库失败（不插图，继续创建任务）:`, e.message);
+  }
+
   // 创建写作任务
   // v2.1.3：auto_publish=true，写作完成后云端自动创建发布任务
   // v2.2.2：agent_profile_id 改为使用查询到的专家角色（替代原 null）
+  // v2.2.13：illustration_count 改为按客户图库实际情况配置（替代硬编码 0）
   const taskId = await createWritingTask({
     user_id: userIdNum,
     task_name: taskName,
@@ -2232,7 +2249,7 @@ async function autoCreateWritingTasksFromPeriod(
     total_count: quota,
     cover_image_mode: 'none',
     cover_image_id: null,
-    illustration_count: 0,
+    illustration_count: illustrationCount,  // v2.2.13：按客户图库配置（原硬编码 0）
     target_platforms: targetPlatforms,
   });
 
