@@ -621,6 +621,45 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           articlePrompt += `\n\n---\n\n【本篇主题关键词】${kw.value}\n请以这个关键词作为本篇的核心主题，围绕它展开内容。其他关键词作为辅助参考，不要喧宾夺主。`;
         }
 
+        // v2.2.20：FAQ / 对比表 / 创作方向 / 文案类型 强制注入到 userPrompt 末尾
+        //   原 bug：directionCtx 只在 prompt 开头写"【创作方向】xxx"几个字标签，
+        //     include_faq/include_comparison_table 字段从未被注入到 prompt，
+        //     导致 AI 看不到这些要求，自然不生成 FAQ/对比表。
+        //   修复：在 userPrompt 末尾追加"必须生成"的硬性约束（不只是标签）。
+        const includeFaq = task.include_faq === true || task.include_faq === undefined;
+        const includeComparisonTable = task.include_comparison_table === true || task.include_comparison_table === undefined;
+        const mandatoryBlocks: string[] = [];
+        if (directionCtx && directionCtx.trim()) {
+          mandatoryBlocks.push(directionCtx.trim());
+        }
+        if (includeFaq) {
+          mandatoryBlocks.push(`【必须生成的结构块：FAQ】
+文章必须包含一个 FAQ 章节，放在正文末尾（结论之前）。格式要求：
+<h2>常见问题</h2>
+<ul>
+  <li><strong>问题1？</strong>简明回答（50-100字）</li>
+  <li><strong>问题2？</strong>简明回答（50-100字）</li>
+  <li><strong>问题3？</strong>简明回答（50-100字）</li>
+</ul>
+FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和本篇主题生成，不要泛泛而谈。`);
+        }
+        if (includeComparisonTable) {
+          mandatoryBlocks.push(`【必须生成的结构块：对比表】
+文章必须包含一个对比表章节，用于横向对比客户产品/服务与竞品或不同方案的差异。格式要求：
+<h2>方案对比</h2>
+<table>
+  <thead><tr><th>对比维度</th><th>方案A</th><th>方案B</th><th>方案C</th></tr></thead>
+  <tbody>
+    <tr><td>维度1</td><td>...</td><td>...</td><td>...</td></tr>
+    <tr><td>维度2</td><td>...</td><td>...</td><td>...</td></tr>
+  </tbody>
+</table>
+对比维度必须基于客户产品的真实特点，不要编造竞品名称，可以用"传统方案""市面常见方案"等泛指。`);
+        }
+        if (mandatoryBlocks.length > 0) {
+          articlePrompt += '\n\n---\n\n' + mandatoryBlocks.join('\n\n');
+        }
+
         // === 诊断日志：输出各层上下文生效情况（仅第一篇打印，避免刷屏）===
         if (i === 0) {
           console.log('[ArticleGen] 上下文诊断 === 任务', taskId, '===');
@@ -726,6 +765,9 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         if (illustrationImageBlock) {
           articlePrompt += illustrationImageBlock;
         }
+
+        // v2.2.20：图库实际注入诊断日志（每篇都打印，便于排查"图没有"问题）
+        console.log(`[ArticleGen][图库注入] 任务 ${taskId} 第 ${i + 1} 篇: coverUrl=${coverUrlForArticle ? coverUrlForArticle.substring(0, 60) + '...' : '(无)'}, illustrationBlock=${illustrationImageBlock ? `${illustrationImageBlock.length}字符` : '(无)'}`);
 
         // v1.8.0：注入 L6 平台约束层（字数 + 风格 + 话题要求）
         // 仅在平台专属模式下生效，注入到 articlePrompt 末尾，让 AI 按平台约束创作
