@@ -142,18 +142,20 @@ export async function generateAeoReport(taskId: number, userId: string, options?
   const totalRecords = shardReports.reduce((sum, sr) => sum + safeNum(sr.record_count), 0);
   const totalBrandMatched = shardReports.reduce((sum, sr) => sum + safeNum(sr.brand_matched_count), 0);
 
-  // v2.2.23：visible/positive/neutral/negative 改用"按 record_count 加权平均"
-  //   原 bug：简单算术平均（每个分片权重相同），但分片查询量差异巨大（如 5000 vs 50），
-  //     简单平均会被小分片拉偏。改为按 record_count 加权，更贴近真实整体表现。
-  const totalWeight = Math.max(1, totalRecords);
-  const sumWeightedVisibility = shardReports.reduce((sum, sr) => sum + safeNum(sr.visibility_score) * safeNum(sr.record_count), 0);
-  const sumWeightedPositive = shardReports.reduce((sum, sr) => sum + safeNum(sr.positive_ratio) * safeNum(sr.record_count), 0);
-  const sumWeightedNeutral = shardReports.reduce((sum, sr) => sum + safeNum(sr.neutral_ratio) * safeNum(sr.record_count), 0);
-  const sumWeightedNegative = shardReports.reduce((sum, sr) => sum + safeNum(sr.negative_ratio) * safeNum(sr.record_count), 0);
-  const avgVisibility = Math.round(sumWeightedVisibility / totalWeight);
-  const avgPositive = Math.round(sumWeightedPositive / totalWeight);
-  const avgNeutral = Math.round(sumWeightedNeutral / totalWeight);
-  const avgNegative = Math.round(sumWeightedNegative / totalWeight);
+  // v2.2.24：废弃"按 record_count 加权平均"，改用 LLM 输出 + 归一化
+  //   v2.2.23 bug：分片报告 positive_ratio/neutral_ratio/negative_ratio 字段单位不统一
+  //     有的分片存 0-1 小数（如 0.8），有的存 0-100 整数（如 80），混用导致加权后爆炸
+  //     （如 0.8 × 5000 = 4000，除以 1 = 4000%，出现 4200% / 5300% / 500% 等荒谬数据）
+  //   修复：
+  //   1. 不再自己算加权平均，直接用 callLlmForAeoV2 的 LLM 输出
+  //      （LLM 已基于分片 sentiment_dimensions 综合判断，比加权平均更准）
+  //   2. 归一化：ratio <= 1 视为 0-1 范围，×100 转 0-100；ratio > 1 直接用
+  //   3. 三者和约束：positive + neutral + negative 必须 ≤ 100，超出按比例缩放
+  const normalizeRatio = (v: number): number => {
+    const n = safeNum(v);
+    if (n <= 1) return n * 100; // 0-1 范围，转成 0-100
+    return n; // 已经是 0-100
+  };
 
   // 汇总平台分布
   const platformMap: Record<string, { total: number; brand_matched: number }> = {};
@@ -265,6 +267,28 @@ export async function generateAeoReport(taskId: number, userId: string, options?
     }
   );
 
+  // v2.2.24：直接用 LLM 输出的评分 + 归一化 + 三者和约束（不再自己算加权平均）
+  //   原 bug：自己算加权平均时分片 positive_ratio 字段单位混乱（0-1 / 0-100 混用），
+  //     导致出现 4200% / 5300% / 500% 等荒谬数据
+  //   修复：LLM 已基于分片 sentiment_dimensions 综合判断，直接用其输出更准确，
+  //     再做归一化（0-1 转 0-100）和三者和约束（≤100）确保数据合理
+  let finalVisibility = Math.min(100, Math.max(0, safeNum(analysis.visibilityScore)));
+  let finalPositive = normalizeRatio(safeNum(analysis.positiveRatio));
+  let finalNeutral = normalizeRatio(safeNum(analysis.neutralRatio));
+  let finalNegative = normalizeRatio(safeNum(analysis.negativeRatio));
+  // 三者和约束：positive + neutral + negative ≤ 100
+  const ratioSum = finalPositive + finalNeutral + finalNegative;
+  if (ratioSum > 100 && ratioSum > 0) {
+    const scale = 100 / ratioSum;
+    finalPositive = Math.round(finalPositive * scale);
+    finalNeutral = Math.round(finalNeutral * scale);
+    finalNegative = Math.round(finalNegative * scale);
+  } else {
+    finalPositive = Math.round(finalPositive);
+    finalNeutral = Math.round(finalNeutral);
+    finalNegative = Math.round(finalNegative);
+  }
+
   // 构建日报建议（含多维度汇总数据）
   const inclusionRate = totalRecords > 0
     ? Math.round((totalBrandMatched / totalRecords) * 10000) / 100
@@ -275,12 +299,12 @@ export async function generateAeoReport(taskId: number, userId: string, options?
     .map(([name, stat]) => `${name}: ${stat.total}条/命中${stat.brand_matched}条`)
     .join('，');
 
-  // v2.2.23：日报建议重构 - 按需展示竞品，NaN 防护
+  // v2.2.24：日报建议重构 - 直接用 LLM 归一化后的数值
   const competitorLine = enableCompetitorGeo
     ? `【竞品提及】${topCompetitors.length > 0 ? topCompetitors.join('、') : '无竞品提及'}。`
     : ''; // 未启用竞品反向 GEO 时不展示这一行
-  const dailySuggestions = `【今日数据汇总】分片报告 ${shardReports.length} 份，总查询 ${totalRecords} 条，品牌命中 ${totalBrandMatched} 条，收录率 ${inclusionRate}%，平均可见度 ${avgVisibility}分（按查询量加权）。
-【情感分布】正面 ${avgPositive}%，中性 ${avgNeutral}%，负面 ${avgNegative}%（按查询量加权平均）。
+  const dailySuggestions = `【今日数据汇总】分片报告 ${shardReports.length} 份，总查询 ${totalRecords} 条，品牌命中 ${totalBrandMatched} 条，收录率 ${inclusionRate}%，可见度 ${finalVisibility}分。
+【情感分布】正面 ${finalPositive}%，中性 ${finalNeutral}%，负面 ${finalNegative}%。
 【平台分布】${platformSummary || '无平台数据'}。
 ${competitorLine}【负面发现】${allNegativeFindings.length} 条（含具体内容，已传递给 LLM 分析）。
 【LLM 元分析】${analysis.suggestions}`;
@@ -296,11 +320,11 @@ ${competitorLine}【负面发现】${allNegativeFindings.length} 条（含具体
     taskId,
     userId,
     reportDate,
-    visibilityScore: avgVisibility,
+    visibilityScore: finalVisibility,
     mentionCount: totalBrandMatched,
-    positiveRatio: avgPositive,
-    neutralRatio: avgNeutral,
-    negativeRatio: avgNegative,
+    positiveRatio: finalPositive,
+    neutralRatio: finalNeutral,
+    negativeRatio: finalNegative,
     competitorAnalysis: enableCompetitorGeo
       ? (topCompetitors.length > 0 ? `今日竞品提及：${topCompetitors.join('、')}` : '无竞品提及')
       : '未启用竞品反向 GEO',
