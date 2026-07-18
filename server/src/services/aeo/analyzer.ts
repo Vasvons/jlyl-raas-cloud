@@ -44,6 +44,11 @@ import {
   getAgentProfiles,
   getCustomerKeywordIds,
   getImageLibrary,
+  // v2.3.0: 写作建议池持久化与消费
+  insertWritingSuggestions,
+  getSuggestionPoolSourceType,
+  getUnconsumedSuggestionsByLatestPeriod,
+  consumeWritingSuggestions,
 } from '../../repository';
 import { query as dbQuery } from '../../db';
 import { decrypt } from '../../utils/crypto';
@@ -2446,6 +2451,31 @@ async function autoCreateWritingTasksFromPeriod(
   }
   const quotaConfig = await getAeoQuotaConfig(userIdNum);
 
+  // 2.5 读取建议来源配置，从独立建议池消费未消费建议（v2.3.0）
+  let consumedSuggestionIds: number[] = [];
+  let effectiveSuggestions = writingSuggestions;
+  try {
+    const sourceType = await getSuggestionPoolSourceType(userIdNum);
+    // 仅当当前报告类型与配置的源类型匹配时才消费本报告的建议；否则使用传入的 writingSuggestions 作为兜底
+    if (sourceType === periodType) {
+      const unconsumed = await getUnconsumedSuggestionsByLatestPeriod(userIdNum, periodType);
+      if (unconsumed.length > 0) {
+        effectiveSuggestions = unconsumed.map(s => ({
+          topic: s.topic,
+          reason: s.reason,
+          direction: s.direction,
+          platforms: s.platforms,
+          keywords: s.keywords,
+          priority: s.priority,
+          source_type: 'distillate',
+          id: s.id,
+        }));
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[AEO-Period] 读取独立建议池失败，使用报告内建议兜底:`, e.message);
+  }
+
   // v2.2.17：若配置了 auto_knowledge_id 则用配置值，否则取第一个（向后兼容）
   const configuredKnowledgeId = quotaConfig?.auto_knowledge_id
     ? Number(quotaConfig.auto_knowledge_id)
@@ -2535,7 +2565,7 @@ async function autoCreateWritingTasksFromPeriod(
     platformSource = 'configured';
   } else {
     // 未配置，回退到写作建议池的 platforms 字段
-    for (const sug of (writingSuggestions || [])) {
+    for (const sug of (effectiveSuggestions || [])) {
       if (Array.isArray(sug.platforms)) {
         for (const p of sug.platforms) {
           if (typeof p === 'string' && p.trim() && !candidatePlatforms.includes(p)) {
@@ -2559,7 +2589,7 @@ async function autoCreateWritingTasksFromPeriod(
   const aeoContext = JSON.stringify({
     period_report_id: periodReportId,
     period_type: periodType,
-    suggestions: writingSuggestions,
+    suggestions: effectiveSuggestions,
     source_weights: sourceWeights,
     generated_at: new Date().toISOString(),
   });
@@ -2718,6 +2748,19 @@ async function autoCreateWritingTasksFromPeriod(
      WHERE id = $3`,
     [aeoContext, periodReportId, taskId]
   );
+
+  // 标记独立建议池中的建议为已消费（v2.3.0）
+  if (effectiveSuggestions !== writingSuggestions && effectiveSuggestions.length > 0) {
+    try {
+      const suggestionIds = effectiveSuggestions.map((s: any) => s.id).filter((id: any) => typeof id === 'number');
+      if (suggestionIds.length > 0) {
+        const consumedCount = await consumeWritingSuggestions(suggestionIds, taskId);
+        console.log(`[AEO-Period] 已消费 ${consumedCount}/${suggestionIds.length} 条独立建议`);
+      }
+    } catch (e: any) {
+      console.warn(`[AEO-Period] 标记建议消费失败:`, e.message);
+    }
+  }
 
   console.log(`[AEO-Period] 写作任务已创建: taskId=${taskId}, name="${taskName}", total=${totalCount}(quota=${quota}×${targetPlatforms.length}平台), platforms=[${targetPlatforms.join(',')}], cover=${coverMode}, illu=${illustrationCount}`);
 
