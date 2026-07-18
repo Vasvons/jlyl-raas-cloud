@@ -991,6 +991,10 @@ export async function migrate() {
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_generation_mode VARCHAR(20) DEFAULT 'expert'`); // 生成方式：expert/coze（默认 expert，coze 暂未实现）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS auto_target_platforms JSONB`);          // 指定自动写作的目标平台白名单（null=由AEO信源权重自动分配，[]=空数组等价于null）
 
+    // v2.3.0：写作建议池来源周期类型（daily/weekly/monthly）
+    // 用于飞轮总览页面"写作建议池来源"链接开关，决定从哪个周期报告池消费建议
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS suggestion_source_period_type VARCHAR(20) DEFAULT 'daily'`);
+
     // v2.2.18：修复 publish_task / publish_record 外键缺失 ON DELETE CASCADE 导致的 500 错误
     // 原 bug：publish_task.article_id REFERENCES article(id) 和 publish_record.task_id REFERENCES publish_task(id)
     //   都没有 CASCADE，删除 article 时若存在关联 publish_task 会触发外键约束错误
