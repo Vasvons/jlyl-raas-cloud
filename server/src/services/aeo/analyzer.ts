@@ -118,21 +118,42 @@ export async function generateAeoReport(taskId: number, userId: string, options?
     return reportId;
   }
 
-  // 汇总当日所有分片报告的多维度数据
-  const totalRecords = shardReports.reduce((sum, sr) => sum + (sr.record_count || 0), 0);
-  const totalBrandMatched = shardReports.reduce((sum, sr) => sum + (sr.brand_matched_count || 0), 0);
-  const avgVisibility = shardReports.length > 0
-    ? Math.round(shardReports.reduce((sum, sr) => sum + (sr.visibility_score || 0), 0) / shardReports.length)
-    : 0;
-  const avgPositive = shardReports.length > 0
-    ? Math.round(shardReports.reduce((sum, sr) => sum + (sr.positive_ratio || 0), 0) / shardReports.length)
-    : 0;
-  const avgNeutral = shardReports.length > 0
-    ? Math.round(shardReports.reduce((sum, sr) => sum + (sr.neutral_ratio || 0), 0) / shardReports.length)
-    : 0;
-  const avgNegative = shardReports.length > 0
-    ? Math.round(shardReports.reduce((sum, sr) => sum + (sr.negative_ratio || 0), 0) / shardReports.length)
-    : 0;
+  // v2.2.23：日报数据汇总全面重构
+  //   原 bug：
+  //   1. 数值汇总无 NaN 防护，分片字段为 null 时 avgVisibility/avgPositive 等变成 NaN
+  //   2. 未启用竞品反向 GEO 的客户也统计竞品信息，浪费 token
+  //   3. LLM 只看到 raw_contents_sample，没看到分片报告已得出的深度结论（suggestions/sentiment_dimensions）
+  //   4. 负面发现只统计数量（"1342 条需关注"），没把具体内容喂给 LLM
+  //   修复：
+  //   1. 数值汇总加 NaN 防护（null/undefined/NaN 一律按 0 处理）
+  //   2. 读 cloud_api_config.enable_competitor_geo，未启用时不带竞品字段
+  //   3. LLM 输入扩充：分片 suggestions + sentiment_dimensions + 具体负面发现
+  //   4. LLM prompt 重构：基于分片结论做"元分析"，不再从 raw 内容重新分析
+
+  // 读取客户配置（判断是否启用竞品反向 GEO）
+  const aeoConfig = await getAeoQuotaConfig(Number(userId));
+  const enableCompetitorGeo = !!(aeoConfig as any)?.enable_competitor_geo;
+
+  // 数值汇总（v2.2.23：加 NaN 防护）
+  const safeNum = (v: any): number => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const totalRecords = shardReports.reduce((sum, sr) => sum + safeNum(sr.record_count), 0);
+  const totalBrandMatched = shardReports.reduce((sum, sr) => sum + safeNum(sr.brand_matched_count), 0);
+
+  // v2.2.23：visible/positive/neutral/negative 改用"按 record_count 加权平均"
+  //   原 bug：简单算术平均（每个分片权重相同），但分片查询量差异巨大（如 5000 vs 50），
+  //     简单平均会被小分片拉偏。改为按 record_count 加权，更贴近真实整体表现。
+  const totalWeight = Math.max(1, totalRecords);
+  const sumWeightedVisibility = shardReports.reduce((sum, sr) => sum + safeNum(sr.visibility_score) * safeNum(sr.record_count), 0);
+  const sumWeightedPositive = shardReports.reduce((sum, sr) => sum + safeNum(sr.positive_ratio) * safeNum(sr.record_count), 0);
+  const sumWeightedNeutral = shardReports.reduce((sum, sr) => sum + safeNum(sr.neutral_ratio) * safeNum(sr.record_count), 0);
+  const sumWeightedNegative = shardReports.reduce((sum, sr) => sum + safeNum(sr.negative_ratio) * safeNum(sr.record_count), 0);
+  const avgVisibility = Math.round(sumWeightedVisibility / totalWeight);
+  const avgPositive = Math.round(sumWeightedPositive / totalWeight);
+  const avgNeutral = Math.round(sumWeightedNeutral / totalWeight);
+  const avgNegative = Math.round(sumWeightedNegative / totalWeight);
 
   // 汇总平台分布
   const platformMap: Record<string, { total: number; brand_matched: number }> = {};
@@ -141,39 +162,76 @@ export async function generateAeoReport(taskId: number, userId: string, options?
     for (const p of pb) {
       const name = p.platform || 'unknown';
       if (!platformMap[name]) platformMap[name] = { total: 0, brand_matched: 0 };
-      platformMap[name].total += p.total || 0;
-      platformMap[name].brand_matched += p.brand_matched || 0;
+      platformMap[name].total += safeNum(p.total);
+      platformMap[name].brand_matched += safeNum(p.brand_matched);
     }
   }
 
-  // 汇总竞品提及
-  const competitorMap: Record<string, number> = {};
-  for (const sr of shardReports) {
-    const competitors = Array.isArray(sr.competitor_mentions) ? sr.competitor_mentions : [];
-    for (const c of competitors) {
-      const name = c.competitor || '';
-      if (name) competitorMap[name] = (competitorMap[name] || 0) + (c.mention_count || 0);
+  // v2.2.23：竞品信息按需汇总（仅在启用竞品反向 GEO 时）
+  let competitorMap: Record<string, number> = {};
+  let topCompetitors: string[] = [];
+  if (enableCompetitorGeo) {
+    for (const sr of shardReports) {
+      const competitors = Array.isArray(sr.competitor_mentions) ? sr.competitor_mentions : [];
+      for (const c of competitors) {
+        const name = c.competitor || '';
+        if (name) competitorMap[name] = (competitorMap[name] || 0) + safeNum(c.mention_count);
+      }
     }
+    topCompetitors = Object.entries(competitorMap)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => `${name}(${count}次)`);
   }
-  const topCompetitors = Object.entries(competitorMap)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 5)
-    .map(([name, count]) => `${name}(${count}次)`);
 
-  // 汇总负面发现
+  // 汇总负面发现（v2.2.23：保留前 20 条具体内容喂给 LLM，不再只统计数量）
   const allNegativeFindings: any[] = [];
   for (const sr of shardReports) {
     const findings = Array.isArray(sr.negative_findings) ? sr.negative_findings : [];
-    allNegativeFindings.push(...findings);
+    for (const f of findings) {
+      allNegativeFindings.push({
+        queue_id: sr.queue_id,
+        keyword_type: sr.keyword_type,
+        finding: typeof f === 'string' ? f : (f?.description || f?.text || JSON.stringify(f)),
+      });
+      if (allNegativeFindings.length >= 20) break;
+    }
+    if (allNegativeFindings.length >= 20) break;
   }
 
-  // 收集所有分片的内容样本（供 LLM 分析，限制总量避免 token 超限）
+  // v2.2.23：收集分片报告的深度结论（suggestions + sentiment_dimensions）
+  //   原 bug：分片报告的 suggestions（LLM 已得出的 3-5 条结论）从未被汇总到日报，
+  //     日报 LLM 只看到 raw_contents_sample 重新分析，结论泛泛且与分片结论脱节。
+  //   修复：把每个分片的 suggestions 和 sentiment_dimensions 喂给日报 LLM，
+  //     让日报 LLM 做"元分析"（汇总分片结论 + 找出跨分片规律）。
+  const shardConclusions: any[] = [];
+  const shardSentimentDimensions: any[] = [];
+  for (const sr of shardReports.slice(0, 10)) { // 最多取 10 个分片，避免 token 超限
+    if (sr.content_suggestions || sr.raw_analysis) {
+      shardConclusions.push({
+        queue_id: sr.queue_id,
+        keyword_type: sr.keyword_type === 1 ? '品牌词' : '蒸馏词',
+        record_count: safeNum(sr.record_count),
+        brand_matched_count: safeNum(sr.brand_matched_count),
+        visibility_score: safeNum(sr.visibility_score),
+        suggestions: sr.content_suggestions || '',  // 分片 LLM 已得出的结论文本（数据库列名 content_suggestions）
+      });
+    }
+    if (sr.sentiment_dimensions) {
+      shardSentimentDimensions.push({
+        queue_id: sr.queue_id,
+        dimensions: sr.sentiment_dimensions,
+      });
+    }
+  }
+
+  // 收集所有分片的内容样本（保留作为 LLM 兜底输入，但优先用分片结论）
   const allContentSamples: any[] = [];
   for (const sr of shardReports) {
     const samples = Array.isArray(sr.raw_contents_sample) ? sr.raw_contents_sample : [];
     for (const s of samples) {
       allContentSamples.push(s);
-      if (allContentSamples.length >= 30) break; // 限制最多30条样本
+      if (allContentSamples.length >= 30) break;
     }
     if (allContentSamples.length >= 30) break;
   }
@@ -181,7 +239,7 @@ export async function generateAeoReport(taskId: number, userId: string, options?
   // 获取品牌词
   const brandKeywords = await getBrandKeywords(userId);
 
-  // 准备 LLM 分析输入（基于分片报告的内容样本）
+  // 准备 LLM 分析输入
   const analysisInput = allContentSamples.map(s => ({
     platform: s.platform,
     keyword: s.keyword,
@@ -190,8 +248,22 @@ export async function generateAeoReport(taskId: number, userId: string, options?
     brandMatched: s.brand_matched,
   }));
 
-  // 调用 LLM 分析（复用 callLlmForAeo）
-  const analysis = await callLlmForAeo(analysisInput, brandKeywords, userId);
+  // v2.2.23：调用增强版 LLM 分析（传入分片结论 + 情感维度 + 负面发现 + 竞品开关）
+  const analysis = await callLlmForAeoV2(
+    analysisInput,
+    brandKeywords,
+    userId,
+    {
+      shardConclusions,
+      shardSentimentDimensions,
+      negativeFindings: allNegativeFindings,
+      enableCompetitorGeo,
+      topCompetitors,
+      platformStats: platformMap,
+      totalRecords,
+      totalBrandMatched,
+    }
+  );
 
   // 构建日报建议（含多维度汇总数据）
   const inclusionRate = totalRecords > 0
@@ -203,12 +275,15 @@ export async function generateAeoReport(taskId: number, userId: string, options?
     .map(([name, stat]) => `${name}: ${stat.total}条/命中${stat.brand_matched}条`)
     .join('，');
 
-  const dailySuggestions = `【今日数据汇总】分片报告 ${shardReports.length} 份，总查询 ${totalRecords} 条，品牌命中 ${totalBrandMatched} 条，收录率 ${inclusionRate}%，平均可见度 ${avgVisibility}分。
-【情感分布】正面 ${avgPositive}%，中性 ${avgNeutral}%，负面 ${avgNegative}%。
+  // v2.2.23：日报建议重构 - 按需展示竞品，NaN 防护
+  const competitorLine = enableCompetitorGeo
+    ? `【竞品提及】${topCompetitors.length > 0 ? topCompetitors.join('、') : '无竞品提及'}。`
+    : ''; // 未启用竞品反向 GEO 时不展示这一行
+  const dailySuggestions = `【今日数据汇总】分片报告 ${shardReports.length} 份，总查询 ${totalRecords} 条，品牌命中 ${totalBrandMatched} 条，收录率 ${inclusionRate}%，平均可见度 ${avgVisibility}分（按查询量加权）。
+【情感分布】正面 ${avgPositive}%，中性 ${avgNeutral}%，负面 ${avgNegative}%（按查询量加权平均）。
 【平台分布】${platformSummary || '无平台数据'}。
-【竞品提及】${topCompetitors.length > 0 ? topCompetitors.join('、') : '无竞品提及'}。
-【负面发现】${allNegativeFindings.length} 条需关注。
-【LLM 分析】${analysis.suggestions}`;
+${competitorLine}【负面发现】${allNegativeFindings.length} 条（含具体内容，已传递给 LLM 分析）。
+【LLM 元分析】${analysis.suggestions}`;
 
   // 入库
   // v2.2.9：修复 "invalid input syntax for type integer: 'NaN'" 错误
@@ -226,9 +301,9 @@ export async function generateAeoReport(taskId: number, userId: string, options?
     positiveRatio: avgPositive,
     neutralRatio: avgNeutral,
     negativeRatio: avgNegative,
-    competitorAnalysis: topCompetitors.length > 0
-      ? `今日竞品提及：${topCompetitors.join('、')}`
-      : '无竞品提及',
+    competitorAnalysis: enableCompetitorGeo
+      ? (topCompetitors.length > 0 ? `今日竞品提及：${topCompetitors.join('、')}` : '无竞品提及')
+      : '未启用竞品反向 GEO',
     suggestions: dailySuggestions,
     rawAnalysis: JSON.stringify({
       shard_report_count: shardReports.length,
@@ -236,8 +311,12 @@ export async function generateAeoReport(taskId: number, userId: string, options?
       brand_matched: totalBrandMatched,
       inclusion_rate: inclusionRate,
       platform_breakdown: platformMap,
-      competitor_mentions: competitorMap,
+      competitor_mentions: enableCompetitorGeo ? competitorMap : null,
+      competitor_geo_enabled: enableCompetitorGeo,
       negative_findings_count: allNegativeFindings.length,
+      negative_findings_sample: allNegativeFindings.slice(0, 5),
+      shard_conclusions_count: shardConclusions.length,
+      shard_sentiment_dimensions_count: shardSentimentDimensions.length,
       llm_raw: analysis.raw,
       llm_competitor_analysis: analysis.competitorAnalysis,
     }),
@@ -369,6 +448,182 @@ ${JSON.stringify(records.slice(0, 30), null, 2)}
     };
   } catch (e: any) {
     console.error(`[AEO] LLM 调用失败 platform=${modelConfig.platform} model=${model}，使用 fallback 分析:`, e.message);
+    return fallbackAnalysis(records, brandKeywords);
+  }
+}
+
+/**
+ * v2.2.23：增强版 AEO LLM 分析（基于分片报告已得出的结论做"元分析"）
+ *
+ * 与 callLlmForAeo 的区别：
+ *   - callLlmForAeo：把原始记录（raw_contents_sample）喂给 LLM，让它从零开始分析
+ *     → 问题：日报 LLM 重新分析的结论泛泛，与分片报告已得出的深度结论脱节
+ *   - callLlmForAeoV2：把每个分片报告的 suggestions + sentiment_dimensions + 负面发现
+ *     喂给 LLM，让它做"元分析"（汇总分片结论 + 找出跨分片规律 + 指出具体问题点）
+ *     → 优势：继承分片报告的深度结论，日报 LLM 只需做"高阶综合"，结论更具体
+ *
+ * 输入扩展上下文：
+ *   - shardConclusions：每个分片的 LLM 结论文本（已得出的 3-5 条结论）
+ *   - shardSentimentDimensions：每个分片的多维度情感评分（信任度/专业度等）
+ *   - negativeFindings：具体负面发现内容（前 20 条）
+ *   - enableCompetitorGeo / topCompetitors：竞品开关 + 竞品列表
+ *   - platformStats：平台分布统计
+ *   - totalRecords / totalBrandMatched：总查询量 / 品牌命中量
+ */
+async function callLlmForAeoV2(
+  records: any[],
+  brandKeywords: string[],
+  userId: string,
+  context: {
+    shardConclusions: any[];
+    shardSentimentDimensions: any[];
+    negativeFindings: any[];
+    enableCompetitorGeo: boolean;
+    topCompetitors: string[];
+    platformStats: Record<string, { total: number; brand_matched: number }>;
+    totalRecords: number;
+    totalBrandMatched: number;
+  }
+): Promise<{
+  visibilityScore: number;
+  positiveRatio: number;
+  neutralRatio: number;
+  negativeRatio: number;
+  competitorAnalysis: string;
+  suggestions: string;
+  raw: string;
+}> {
+  const {
+    shardConclusions,
+    shardSentimentDimensions,
+    negativeFindings,
+    enableCompetitorGeo,
+    topCompetitors,
+    platformStats,
+    totalRecords,
+    totalBrandMatched,
+  } = context;
+
+  // 从 ai_model_config 表读取 AEO 专用模型
+  const modelConfig = await getAeoModelConfig(userId);
+  if (!modelConfig || !modelConfig.api_key_encrypted) {
+    console.warn(`[AEO-V2] 用户 ${userId} 未配置 AEO 模型，降级用 fallback 分析`);
+    return fallbackAnalysis(records, brandKeywords);
+  }
+
+  let apiKey: string;
+  try {
+    apiKey = decrypt(modelConfig.api_key_encrypted);
+  } catch (e: any) {
+    console.error(`[AEO-V2] API-KEY 解密失败 platform=${modelConfig.platform}:`, e.message);
+    return fallbackAnalysis(records, brandKeywords);
+  }
+
+  const apiUrl = modelConfig.base_url;
+  const model = modelConfig.model_name;
+  console.log(`[AEO-V2] 使用模型: platform=${modelConfig.platform} model=${model} 分片结论=${shardConclusions.length} 情感维度=${shardSentimentDimensions.length} 负面发现=${negativeFindings.length}`);
+
+  // 平台分布汇总
+  const platformSummary = Object.entries(platformStats)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([name, s]) => `${name}: ${s.total}条/命中${s.brand_matched}条(${s.total > 0 ? Math.round(s.brand_matched / s.total * 100) : 0}%)`)
+    .join('；');
+
+  // v2.2.23：构建"元分析" prompt —— 让 LLM 基于分片已得出的结论做综合分析，而非从 raw 内容重新分析
+  // 关键改进：
+  //   1. 输入是"分片 LLM 已得出的结论文本"而非"原始 AI 平台回答内容"
+  //   2. 要求 LLM 指出"具体问题点"（哪个维度、哪个平台、哪个关键词方向）
+  //   3. 竞品分析按需输出（未启用竞品反向 GEO 时不要求 LLM 分析竞品，节省 token）
+  //   4. 要求 LLM 输出与分片结论一致的数值（visibilityScore/情感比例），而非重新估算
+  const competitorSection = enableCompetitorGeo
+    ? `
+【竞品提及数据】（已启用竞品反向 GEO）
+今日提及竞品：${topCompetitors.length > 0 ? topCompetitors.join('、') : '无'}
+请在 "competitorAnalysis" 字段中分析竞品格局，未提及则填"无竞品提及"。`
+    : `
+【竞品分析要求】
+该客户未启用竞品反向 GEO，"competitorAnalysis" 字段固定填"未启用竞品反向 GEO"，不要分析竞品，节省 token。`;
+
+  const prompt = `你是 AEO（Answer Engine Optimization）资深数据分析师，现在要做的是"元分析"（Meta-Analysis）—— 基于分片报告已经得出的结论做高阶综合，而不是从原始内容重新分析。
+
+品牌关键词：${brandKeywords.join('、')}
+
+【今日整体数据】
+- 总查询：${totalRecords} 条
+- 品牌命中：${totalBrandMatched} 条
+- 平台分布：${platformSummary || '无'}
+- 分片报告数：${shardConclusions.length} 份（含深度结论），情感维度报告数：${shardSentimentDimensions.length} 份
+- 负面发现：${negativeFindings.length} 条具体内容
+${competitorSection}
+
+【各分片报告的深度结论】（每个分片已由 LLM 分析得出 3-5 条结论，请基于这些结论做元分析）
+${JSON.stringify(shardConclusions, null, 2)}
+
+【各分片的多维度情感评分】（信任度/专业度/推荐意愿/性价比感知/品牌认知度，0-100 分）
+${JSON.stringify(shardSentimentDimensions, null, 2)}
+
+【负面发现具体内容】（前 20 条，请重点分析这些具体问题点）
+${JSON.stringify(negativeFindings, null, 2)}
+
+【兜底原始记录】（仅作参考，优先使用上面的分片结论）
+${JSON.stringify(records.slice(0, 10), null, 2)}
+
+请基于以上分片结论做"元分析"，返回 JSON 格式（不要 markdown 代码块）：
+{
+  "visibilityScore": 0-100的整数,  // 综合可见度评分（基于分片结论综合判断，不是简单平均）
+  "positiveRatio": 0-100的数字,    // 正面情感占比（基于分片情感维度综合）
+  "neutralRatio": 0-100的数字,     // 中性情感占比
+  "negativeRatio": 0-100的数字,    // 负面情感占比
+  "competitorAnalysis": "${enableCompetitorGeo ? '竞品格局分析文本' : '未启用竞品反向 GEO'}",
+  "suggestions": "元分析结论文本（4-6条，必须具体到点，不要泛泛而谈）"
+}
+
+【suggestions 字段必须包含的内容】（按以下顺序，每条都要具体到点）：
+1. **整体情感健康度评估**：基于分片情感维度的加权综合，指出哪个维度（信任度/专业度/推荐意愿/性价比/品牌认知度）得分最高、哪个最低，分数具体到数字
+2. **具体问题点诊断**：直接引用分片结论中指出的具体问题（如"专利代办负面突出""DeepSeek 和腾讯元宝负面集中"等具体表述），不要只说"有负面舆情"，要说"在 XX 话题上、XX 平台上、具体是什么负面"
+3. **平台差异分析**：哪些平台偏正面、哪些平台偏负面，差异具体表现在哪些话题上
+4. **跨分片规律**：多个分片共同指向的问题（如多个分片都提到某话题负面），这是高优先级问题
+5. **负面舆情风险等级**：基于负面发现的具体内容，判断风险等级（高/中/低），并指出最需要立即处理的 1-2 条
+${enableCompetitorGeo ? '6. **竞品格局**：基于竞品提及数据，分析竞品威胁程度' : ''}
+
+【重要约束】
+- 不要泛泛而谈，每条结论必须具体到维度、平台、话题、关键词
+- 不要重复分片结论的原话，要做"高阶综合"（找出分片之间的规律和差异）
+- visibilityScore / 情感比例 要与分片结论的数值一致（不要凭空估算）
+- 如果某个维度数据缺失（如分片没有 sentiment_dimensions），明确说明"数据不足"而不是填 0`;
+
+  try {
+    const resp = await axios.post(
+      apiUrl,
+      {
+        model,
+        messages: [
+          { role: 'system', content: '你是 AEO 资深数据分析师，专注于基于分片结论做元分析，输出具体到点的问题诊断。只返回 JSON 格式数据。' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.3,
+      },
+      {
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        timeout: 90000,
+      }
+    );
+
+    const content = (resp.data as any)?.choices?.[0]?.message?.content || '';
+    const jsonStr = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const parsed = JSON.parse(jsonStr);
+
+    return {
+      visibilityScore: Math.min(100, Math.max(0, parseInt(parsed.visibilityScore) || 0)),
+      positiveRatio: Math.min(100, Math.max(0, parseFloat(parsed.positiveRatio) || 0)),
+      neutralRatio: Math.min(100, Math.max(0, parseFloat(parsed.neutralRatio) || 0)),
+      negativeRatio: Math.min(100, Math.max(0, parseFloat(parsed.negativeRatio) || 0)),
+      competitorAnalysis: String(parsed.competitorAnalysis || ''),
+      suggestions: String(parsed.suggestions || ''),
+      raw: content,
+    };
+  } catch (e: any) {
+    console.error(`[AEO-V2] LLM 调用失败 platform=${modelConfig.platform} model=${model}，降级用 fallback 分析:`, e.message);
     return fallbackAnalysis(records, brandKeywords);
   }
 }

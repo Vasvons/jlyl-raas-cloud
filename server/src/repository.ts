@@ -1372,6 +1372,10 @@ export interface AeoShardReport {
   hit_rate?: number;               // 命中率（brand_matched_count / record_count * 100）
   share_urls?: any;                // 分享链接列表（用于详情查看）
   raw_contents_sample?: any;       // AI回答内容样本（前N条，供日报/周报LLM分析用）
+  // v2.1.9：品牌词任务多维度情感评分（信任度/专业度/推荐意愿/性价比/品牌认知度）
+  sentiment_dimensions?: any;
+  // v2.1.9：蒸馏词任务提及率分析（含 uncovered_keywords 等）
+  mention_analysis?: any;
 }
 
 /** 获取分片队列信息（含 start_time/end_time/create_time/keywords/task_id/user_id/round_no/keyword_type） */
