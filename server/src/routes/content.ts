@@ -2576,13 +2576,21 @@ router.get('/aeo-shard-reports/:id', async (req: Request, res: Response) => {
 // ============ v2.0.0: 时间维度报告（周/月报）查询 ============
 
 // 获取周期报告列表（分页，可按 period_type 过滤）
+// v2.2.25：支持 start_date/end_date/customer_id 查询参数
+//   - customer_id：管理员视角按客户过滤（与 user_id 互斥，优先 customer_id）
+//   - start_date/end_date：按 period_start/period_end 日期范围过滤
+//     用于日报详情弹窗按 report_date 关联查询同日的 daily 周期报告写作建议
 router.get('/aeo-period-reports', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.2.25：优先用 customer_id（管理员视角），否则用 token 中的 userId
+    const customerId = req.query.customer_id as string | undefined;
+    const userId = customerId || String(getUserId(req));
     const periodType = req.query.period_type as string | undefined;
     const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
-    const result = await getAeoPeriodReports(String(userId), periodType, limit, offset);
+    const startDate = req.query.start_date as string | undefined;
+    const endDate = req.query.end_date as string | undefined;
+    const result = await getAeoPeriodReports(userId, periodType, limit, offset, startDate, endDate);
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });

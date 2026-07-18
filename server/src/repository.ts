@@ -3821,7 +3821,10 @@ export async function getAeoPeriodReports(
   userId?: string,
   periodType?: string,
   limit: number = 50,
-  offset: number = 0
+  offset: number = 0,
+  // v2.2.25：支持按日期范围查询（用于日报详情弹窗按 report_date 关联查询同日的 daily 周期报告写作建议）
+  startDate?: string,
+  endDate?: string
 ): Promise<{ list: AeoPeriodReport[]; total: number }> {
   const conditions: string[] = [];
   const params: any[] = [];
@@ -3832,6 +3835,16 @@ export async function getAeoPeriodReports(
   if (periodType) {
     params.push(periodType);
     conditions.push(`period_type = $${params.length}`);
+  }
+  // v2.2.25：按 period_start/period_end 日期范围过滤
+  //   日报关联查询时 startDate = endDate = report_date，查同日的 daily 周期报告
+  if (startDate) {
+    params.push(startDate);
+    conditions.push(`period_start >= $${params.length}`);
+  }
+  if (endDate) {
+    params.push(endDate);
+    conditions.push(`period_end <= $${params.length}`);
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 

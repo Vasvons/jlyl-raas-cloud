@@ -157,15 +157,30 @@ export async function generateAeoReport(taskId: number, userId: string, options?
     return n; // 已经是 0-100
   };
 
-  // 汇总平台分布
+  // 汇总平台分布（合计 + 按词类型分组）
+  // v2.2.25：区分蒸馏词/品牌词的平台分布
+  //   原因：品牌词任务查询词本身含品牌名，命中率天然 90%+；
+  //         蒸馏词任务查询词是行业通用词，命中率真实反映 GEO 可见度（通常 10-30%）
+  //   合并统计会让蒸馏词的低命中被品牌词的高命中稀释，掩盖真实 GEO 问题
   const platformMap: Record<string, { total: number; brand_matched: number }> = {};
+  // 蒸馏词任务的平台分布（keyword_type !== 1）
+  const platformMapByDistill: Record<string, { total: number; brand_matched: number }> = {};
+  // 品牌词任务的平台分布（keyword_type === 1）
+  const platformMapByBrand: Record<string, { total: number; brand_matched: number }> = {};
   for (const sr of shardReports) {
     const pb = Array.isArray(sr.platform_breakdown) ? sr.platform_breakdown : [];
+    const isBrand = sr.keyword_type === 1;
+    const targetMap = isBrand ? platformMapByBrand : platformMapByDistill;
     for (const p of pb) {
       const name = p.platform || 'unknown';
+      // 合计
       if (!platformMap[name]) platformMap[name] = { total: 0, brand_matched: 0 };
       platformMap[name].total += safeNum(p.total);
       platformMap[name].brand_matched += safeNum(p.brand_matched);
+      // 按词类型分组
+      if (!targetMap[name]) targetMap[name] = { total: 0, brand_matched: 0 };
+      targetMap[name].total += safeNum(p.total);
+      targetMap[name].brand_matched += safeNum(p.brand_matched);
     }
   }
 
@@ -335,6 +350,11 @@ ${competitorLine}【负面发现】${allNegativeFindings.length} 条（含具体
       brand_matched: totalBrandMatched,
       inclusion_rate: inclusionRate,
       platform_breakdown: platformMap,
+      // v2.2.25：按词类型分组的平台分布（蒸馏词 vs 品牌词，命中率差异大需分别展示）
+      platform_breakdown_by_type: {
+        distillate: platformMapByDistill,
+        brand: platformMapByBrand,
+      },
       competitor_mentions: enableCompetitorGeo ? competitorMap : null,
       competitor_geo_enabled: enableCompetitorGeo,
       negative_findings_count: allNegativeFindings.length,
