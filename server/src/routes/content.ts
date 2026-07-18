@@ -121,6 +121,10 @@ import {
   createFlywheelEventLog,
   getFlywheelEventLogs,
   cleanOldFlywheelEventLogs,
+  // v2.3.0：写作建议池
+  getWritingSuggestions,
+  getSuggestionPoolSourceType,
+  setSuggestionPoolSourceType,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
@@ -2609,6 +2613,52 @@ router.get('/aeo-period-reports/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ code: 404, message: '报告不存在' });
     }
     res.json({ code: 200, data: report });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v2.3.0: 写作建议池 ============
+
+// 获取写作建议列表（支持按 consumed/source_type 筛选）
+router.get('/writing-suggestions', async (req: Request, res: Response) => {
+  try {
+    const customerId = req.query.customer_id as string | undefined;
+    const userId = customerId ? Number(customerId) : getUserId(req);
+    const consumed = req.query.consumed === 'true' ? true : req.query.consumed === 'false' ? false : undefined;
+    const sourceType = req.query.source_type as string | undefined;
+    const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    const result = await getWritingSuggestions(userId, { consumed, sourceType, limit, offset });
+    res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 获取当前客户建议来源配置（daily/weekly/monthly）
+router.get('/aeo-pool-source-type', async (req: Request, res: Response) => {
+  try {
+    const customerId = req.query.customer_id as string | undefined;
+    const userId = customerId ? Number(customerId) : getUserId(req);
+    const sourceType = await getSuggestionPoolSourceType(userId);
+    res.json({ code: 200, data: { suggestion_source_period_type: sourceType } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 更新建议来源配置
+router.put('/aeo-pool-source-type', async (req: Request, res: Response) => {
+  try {
+    const customerId = req.query.customer_id as string | undefined;
+    const userId = customerId ? Number(customerId) : getUserId(req);
+    const sourceType = req.body?.suggestion_source_period_type;
+    if (!['daily', 'weekly', 'monthly'].includes(sourceType)) {
+      return res.status(400).json({ code: 400, message: 'source_type 必须是 daily/weekly/monthly' });
+    }
+    await setSuggestionPoolSourceType(userId, sourceType);
+    res.json({ code: 200 });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
