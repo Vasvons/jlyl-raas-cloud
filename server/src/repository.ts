@@ -4629,6 +4629,8 @@ export async function upsertCloudApiConfig(userId: number, data: any): Promise<v
 
 /** AEO 配额字段列表（类型不同于 CLOUD_API_FIELDS，单独管理） */
 const AEO_QUOTA_FIELDS = [
+  // v2.3.0: 统一按天配额（旧字段仅迁移保留，不再参与业务逻辑）
+  'daily_article_quota',
   'weekly_article_quota',
   'monthly_article_quota',
   'article_quota',
@@ -4674,6 +4676,11 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
   const values: any[] = [];
   let idx = 1;
 
+  // v2.3.0: 统一按天配额（优先级最高）
+  if (data.daily_article_quota !== undefined) {
+    fields.push(`daily_article_quota = $${idx++}`);
+    values.push(Number(data.daily_article_quota) || 0);
+  }
   if (data.weekly_article_quota !== undefined) {
     fields.push(`weekly_article_quota = $${idx++}`);
     values.push(Number(data.weekly_article_quota) || 0);

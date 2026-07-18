@@ -1954,20 +1954,21 @@ export async function generatePeriodReport(
     // 4. AI 平台信源权重
     const sourceWeights = await calcSourcePlatformWeights();
 
-    // 5. 客户配额（v2.0.2: 统一配额字段，向后兼容旧字段）
+    // 5. 客户配额（v2.3.0: 统一按天配额，与建议来源周期解耦）
     const quotaConfig = await getAeoQuotaConfig(Number(userId));
-    const configCycle = quotaConfig?.quota_cycle || 'weekly';
-    // 新字段优先：article_quota + quota_cycle
-    // 旧字段兼容：当 article_quota 为 0 但旧字段有值时回退
-    const articleQuota = Number(quotaConfig?.article_quota) || 0;
-    const legacyQuota = periodType === 'weekly'
+    // v2.3.0：自动写作配额只按天设置，日报生成时创建 daily_article_quota 篇任务
+    // 周报/月报仅沉淀写作建议，不再触发自动写作（避免与日报重复创建）
+    const dailyQuota = Number(quotaConfig?.daily_article_quota) || 0;
+    const legacyArticleQuota = Number(quotaConfig?.article_quota) || 0;
+    const legacyCycleQuota = periodType === 'weekly'
       ? (Number(quotaConfig?.weekly_article_quota) || 0)
       : (periodType === 'monthly' ? (Number(quotaConfig?.monthly_article_quota) || 0) : 0);
-    // 只有当当前周期类型 === 配置的周期时才触发自动写作
-    // v2.1.3：支持 'daily' 周期
-    const quota = periodType === configCycle
-      ? (articleQuota > 0 ? articleQuota : legacyQuota)
-      : 0;
+    // 兼容旧配置：daily_article_quota 为 0 时，若旧字段有值则按原周期逻辑回退
+    const quota = periodType === 'daily'
+      ? (dailyQuota > 0 ? dailyQuota : (legacyArticleQuota > 0 ? legacyArticleQuota : legacyCycleQuota))
+      : ((dailyQuota === 0 && legacyArticleQuota > 0 && quotaConfig?.quota_cycle === periodType)
+          ? legacyArticleQuota
+          : 0);
 
     // 6. 汇总分片建议
     const shardSuggestionsSummary = summarizeShardSuggestions(shardReports);
@@ -2452,25 +2453,25 @@ async function autoCreateWritingTasksFromPeriod(
   const quotaConfig = await getAeoQuotaConfig(userIdNum);
 
   // 2.5 读取建议来源配置，从独立建议池消费未消费建议（v2.3.0）
+  // 注意：日报生成任务时，根据 cloud_api_config.suggestion_source_period_type 决定消费哪类周期报告的建议
+  //       例如配置为 weekly 时，每天从最新周报中消费未使用建议，直到下次周报刷新
   let consumedSuggestionIds: number[] = [];
   let effectiveSuggestions = writingSuggestions;
   try {
     const sourceType = await getSuggestionPoolSourceType(userIdNum);
-    // 仅当当前报告类型与配置的源类型匹配时才消费本报告的建议；否则使用传入的 writingSuggestions 作为兜底
-    if (sourceType === periodType) {
-      const unconsumed = await getUnconsumedSuggestionsByLatestPeriod(userIdNum, periodType);
-      if (unconsumed.length > 0) {
-        effectiveSuggestions = unconsumed.map(s => ({
-          topic: s.topic,
-          reason: s.reason,
-          direction: s.direction,
-          platforms: s.platforms,
-          keywords: s.keywords,
-          priority: s.priority,
-          source_type: 'distillate',
-          id: s.id,
-        }));
-      }
+    // 优先消费配置来源类型的未消费建议；若未找到则回退到当前日报自己的 writingSuggestions
+    const unconsumed = await getUnconsumedSuggestionsByLatestPeriod(userIdNum, sourceType);
+    if (unconsumed.length > 0) {
+      effectiveSuggestions = unconsumed.map(s => ({
+        topic: s.topic,
+        reason: s.reason,
+        direction: s.direction,
+        platforms: s.platforms,
+        keywords: s.keywords,
+        priority: s.priority,
+        source_type: 'distillate',
+        id: s.id,
+      }));
     }
   } catch (e: any) {
     console.warn(`[AEO-Period] 读取独立建议池失败，使用报告内建议兜底:`, e.message);
