@@ -24,9 +24,14 @@ export function startAeoScheduler(): void {
     });
   }, 30 * 1000);
 
-  // 每天凌晨 2 点生成 AEO 日报（在巡检任务执行之后）
-  // v2.1.6：改为按客户(userId)去重，每个客户只生成一份日报（跨任务汇总蒸馏词+品牌词）
-  cron.schedule('0 2 * * *', async () => {
+  // 每天凌晨 0 点生成 AEO 日报（覆盖前一天的巡检数据）
+  // v2.2.22：原 cron 是 0 2 * * *（凌晨 2 点），但用户期望 0 点准时生成
+  //   原 bug1：凌晨 2 点才执行，用户感觉"0 点没生成"
+  //   原 bug2：白天 checkAndGeneratePeriodReports 也会触发日报（shouldGenerateDailyReport 返回 true），
+  //     白天生成的日报用当天日期，但当天分片报告还没产出 → 生成空日报占位，
+  //     凌晨再来生成时被 checkAeoReportExists 跳过 → 永远是空日报
+  // 修复：cron 改为 0 0 * * *（凌晨 0 点），且 generateAeoReport 内部用"前一天"日期
+  cron.schedule('0 0 * * *', async () => {
     await generateDailyReports();
   });
 
@@ -40,12 +45,19 @@ export function startAeoScheduler(): void {
     }
   });
 
-  console.log('[AEO] 调度器已启动(每天凌晨2点生成AEO日报 + 每小时检查周/月报 + 启动补生成)');
+  console.log('[AEO] 调度器已启动(每天凌晨0点生成AEO日报+触发自动写作 + 每小时检查周/月报 + 启动补生成)');
 }
 
 /**
  * v2.2.3：生成每日 AEO 日报（抽取为独立函数，供 cron 和启动补生成复用）
  * 按客户(userId)去重，每个客户只生成一份日报（跨任务汇总蒸馏词+品牌词）
+ *
+ * v2.2.22：同时触发 generatePeriodReport(daily) 创建自动写作任务
+ *   原 bug：generateAeoReport 只写 aeo_report 表，不创建写作任务；
+ *     自动写作由 generatePeriodReport(daily) 触发，但 v2.2.22 已移除白天触发，
+ *     导致自动写作永远不会被触发。
+ *   修复：凌晨 0 点 generateAeoReport 完成后，立即调用 generatePeriodReport(daily)
+ *     覆盖前一天的巡检数据，并触发自动写作任务创建。
  */
 async function generateDailyReports(): Promise<void> {
   console.log('[AEO] 开始生成每日 AEO 日报...');
@@ -67,7 +79,23 @@ async function generateDailyReports(): Promise<void> {
       const batch = userTasks.slice(i, i + batchSize);
       await Promise.allSettled(batch.map(async (task) => {
         try {
+          // 1. 生成 aeo_report 日报（覆盖前一天数据）
           await generateAeoReport(task.id, task.user_id);
+
+          // v2.2.22：2. 触发 generatePeriodReport(daily) 创建自动写作任务
+          //   原 bug：generateAeoReport 不创建写作任务，自动写作由 generatePeriodReport 触发
+          //   修复：日报生成完成后立即调用 generatePeriodReport(daily)
+          const periodEnd = new Date();
+          const periodStart = new Date(periodEnd.getTime() - 24 * 60 * 60 * 1000);
+          const periodReportId = await generatePeriodReport(
+            task.user_id,
+            'daily',
+            periodStart,
+            periodEnd
+          );
+          if (periodReportId) {
+            console.log(`[AEO] 用户 ${task.user_id} 日报自动写作任务已创建 periodReportId=${periodReportId}`);
+          }
         } catch (e: any) {
           console.error(`[AEO] 用户 ${task.user_id} 日报生成失败:`, e.message);
         }
@@ -98,13 +126,17 @@ async function checkAndGeneratePeriodReports(): Promise<void> {
   // 依次处理每个用户（非并发，避免 LLM 调用和写作任务创建同时进行导致资源压力）
   for (const userId of userIds) {
     try {
-      // v2.1.3：检查日报（配额周期为 daily 时触发自动写作）
+      // v2.2.22：取消白天的日报生成，避免空占位
+      //   原 bug：shouldGenerateDailyReport 在白天每小时检查都会返回 true（如果当天还没生成日报），
+      //     但白天分片报告还没产出 → 生成空日报 → 凌晨再来生成时被 checkAeoReportExists 跳过
+      //   修复：日报只在凌晨 0 点由 generateDailyReports() 生成（cron 0 0 * * *）
+      //     shouldGenerateDailyReport 仅用于判断"当天是否已生成日报"，不再触发 generatePeriodReport
+      //     周报/月报仍由这里的 shouldGenerateWeeklyReport/MonthlyReport 触发
+      //   注意：如果配额周期是 daily，自动写作任务创建会延迟到凌晨 0 点真正生成日报后触发
+      //     （由 generatePeriodReport 内部根据 last_period_report_at 判断）
       if (await shouldGenerateDailyReport(userId, now)) {
-        const periodEnd = now;
-        const periodStart = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        console.log(`[AEO-Period] 用户 ${userId} 需要生成日报 (${periodStart.toISOString().slice(0,10)}~${periodEnd.toISOString().slice(0,10)})`);
-        const reportId = await generatePeriodReport(userId, 'daily', periodStart, periodEnd);
-        if (reportId) dailyCount++;
+        // 已通过 checkAeoReportExists 防重，这里只记录日志，不触发生成
+        console.log(`[AEO-Period] 用户 ${userId} 当天日报未生成，等待凌晨 0 点由 cron 生成（不在白天生成避免空占位）`);
       }
 
       // 检查周报

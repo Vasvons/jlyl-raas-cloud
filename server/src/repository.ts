@@ -1589,13 +1589,17 @@ export async function getShardReportsByDate(
   userId: string,
   dateStr: string // YYYY-MM-DD（Asia/Shanghai 时区）
 ): Promise<AeoShardReport[]> {
-  // 当日 00:00:00 ~ 次日 00:00:00（按 created_at 过滤，分片报告的创建时间）
+  // v2.2.22：改用 shard_end_time 过滤（分片实际查询结束时间）而不是 created_at（入库时间）
+  //   原 bug：分片报告入库时间可能晚于查询时间（如 7-17 白天查询但 7-18 凌晨才入库），
+  //     用 created_at 过滤 7-17 会查不到这些分片报告 → 日报显示"无分片报告"
+  //   修复：用 shard_end_time 过滤，确保日报覆盖的是"当天查询的数据"而非"当天入库的数据"
+  //   兜底：若 shard_end_time 为 null（旧数据），回退到 created_at
   const result = await query(
     `SELECT * FROM aeo_shard_report
      WHERE user_id = $1
-       AND created_at >= ($2::date)
-       AND created_at < ($2::date + INTERVAL '1 day')
-     ORDER BY created_at ASC`,
+       AND COALESCE(shard_end_time, created_at) >= ($2::date)
+       AND COALESCE(shard_end_time, created_at) < ($2::date + INTERVAL '1 day')
+     ORDER BY COALESCE(shard_end_time, created_at) ASC`,
     [userId, dateStr]
   );
   return result.rows as AeoShardReport[];
