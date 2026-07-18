@@ -1664,6 +1664,30 @@ export async function migrate() {
 
     console.log('[Migrate] v2.0.0 时间维度报告表创建完成（aeo_period_report）');
 
+    // ============ AEO 写作建议池（v2.3.0）============
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS aeo_writing_suggestion (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        period_report_id BIGINT REFERENCES aeo_period_report(id) ON DELETE CASCADE,
+        source_type VARCHAR(20) NOT NULL,
+        report_date DATE NOT NULL,
+        topic TEXT NOT NULL,
+        reason TEXT,
+        direction VARCHAR(100),
+        platforms TEXT[],
+        keywords TEXT[],
+        priority VARCHAR(20) DEFAULT 'medium',
+        consumed BOOLEAN DEFAULT FALSE,
+        consumed_at TIMESTAMP,
+        writing_task_id INTEGER REFERENCES ai_writing_task(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_writing_suggestion_user_consumed ON aeo_writing_suggestion(user_id, consumed)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_writing_suggestion_period_report ON aeo_writing_suggestion(period_report_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_writing_suggestion_report_date ON aeo_writing_suggestion(user_id, source_type, report_date DESC)`);
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
