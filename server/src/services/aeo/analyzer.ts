@@ -2009,6 +2009,30 @@ export async function generatePeriodReport(
       status: 'generated',
     });
 
+    // 11.5 写入独立建议池（v2.3.0）
+    try {
+      if (Array.isArray(writingSuggestions) && writingSuggestions.length > 0) {
+        const reportDateStr = periodStart.toISOString().slice(0, 10);
+        await insertWritingSuggestions(
+          Number(userId),
+          reportId,
+          periodType,
+          reportDateStr,
+          writingSuggestions.map((s: any) => ({
+            topic: String(s.topic || ''),
+            reason: s.reason ? String(s.reason) : undefined,
+            direction: s.direction ? String(s.direction) : undefined,
+            platforms: Array.isArray(s.platforms) ? s.platforms.filter((p: any) => typeof p === 'string') : [],
+            keywords: Array.isArray(s.keywords) ? s.keywords.filter((k: any) => typeof k === 'string') : [],
+            priority: ['high', 'medium', 'low'].includes(s.priority) ? s.priority : 'medium',
+          }))
+        );
+        console.log(`[AEO-Period] 用户 ${userId} ${periodType} 报告已写入 ${writingSuggestions.length} 条独立建议`);
+      }
+    } catch (e: any) {
+      console.warn(`[AEO-Period] 写入独立建议池失败（不阻断报告生成）:`, e.message);
+    }
+
     console.log(`[AEO-Period] 用户 ${userId} ${periodType} 报告生成成功 reportId=${reportId}, 分片数=${shardReports.length}, 建议文章数=${suggestedArticleCount}`);
 
     // 12. 按配额自动创建写作任务（P3-5）
