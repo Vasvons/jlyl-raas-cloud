@@ -5768,6 +5768,169 @@ export async function getKeywordIdsByValues(userId: number, values: string[]): P
   return result.rows.map((r: any) => r.id);
 }
 
+// ============ v2.3.0: AEO 写作建议池 ============
+
+export interface WritingSuggestionRow {
+  id: number;
+  user_id: number;
+  period_report_id: number;
+  source_type: string;
+  report_date: string;
+  topic: string;
+  reason?: string;
+  direction?: string;
+  platforms?: string[];
+  keywords?: string[];
+  priority: string;
+  consumed: boolean;
+  consumed_at?: Date;
+  writing_task_id?: number;
+  created_at: Date;
+}
+
+export async function insertWritingSuggestions(
+  userId: number,
+  periodReportId: number,
+  sourceType: string,
+  reportDate: string,
+  suggestions: Array<{
+    topic: string;
+    reason?: string;
+    direction?: string;
+    platforms?: string[];
+    keywords?: string[];
+    priority?: string;
+  }>
+): Promise<number[]> {
+  const ids: number[] = [];
+  for (const s of suggestions) {
+    const result = await query(
+      `INSERT INTO aeo_writing_suggestion
+       (user_id, period_report_id, source_type, report_date, topic, reason, direction, platforms, keywords, priority)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id`,
+      [
+        userId,
+        periodReportId,
+        sourceType,
+        reportDate,
+        s.topic,
+        s.reason || null,
+        s.direction || null,
+        Array.isArray(s.platforms) ? s.platforms : [],
+        Array.isArray(s.keywords) ? s.keywords : [],
+        s.priority || 'medium',
+      ]
+    );
+    ids.push(result.rows[0].id);
+  }
+  return ids;
+}
+
+export async function getWritingSuggestions(
+  userId: number,
+  options?: {
+    consumed?: boolean;
+    sourceType?: string;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<{ items: WritingSuggestionRow[]; total: number }> {
+  const conditions = ['user_id = $1'];
+  const params: any[] = [userId];
+  if (options?.consumed !== undefined) {
+    params.push(options.consumed);
+    conditions.push(`consumed = $${params.length}`);
+  }
+  if (options?.sourceType) {
+    params.push(options.sourceType);
+    conditions.push(`source_type = $${params.length}`);
+  }
+  const where = conditions.join(' AND ');
+  const countResult = await query(`SELECT COUNT(*) as total FROM aeo_writing_suggestion WHERE ${where}`, params);
+  const total = parseInt(countResult.rows[0].total, 10);
+  const limit = options?.limit ?? 50;
+  const offset = options?.offset ?? 0;
+  const listResult = await query(
+    `SELECT * FROM aeo_writing_suggestion
+     WHERE ${where}
+     ORDER BY consumed ASC, created_at DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset]
+  );
+  return { items: listResult.rows as WritingSuggestionRow[], total };
+}
+
+export async function consumeWritingSuggestions(
+  suggestionIds: number[],
+  writingTaskId: number
+): Promise<number> {
+  if (suggestionIds.length === 0) return 0;
+  const result = await query(
+    `UPDATE aeo_writing_suggestion
+     SET consumed = TRUE, consumed_at = NOW(), writing_task_id = $1
+     WHERE id = ANY($2::int[]) AND consumed = FALSE`,
+    [writingTaskId, suggestionIds]
+  );
+  return result.rowCount || 0;
+}
+
+export async function getUnconsumedSuggestionsByLatestPeriod(
+  userId: number,
+  sourceType: string,
+  limit?: number
+): Promise<WritingSuggestionRow[]> {
+  const periodResult = await query(
+    `SELECT id FROM aeo_period_report
+     WHERE user_id = $1 AND period_type = $2
+     ORDER BY period_start DESC LIMIT 1`,
+    [userId, sourceType]
+  );
+  const periodReportId = periodResult.rows[0]?.id;
+  if (!periodReportId) return [];
+
+  const params: any[] = [userId, periodReportId];
+  let sql = `SELECT * FROM aeo_writing_suggestion
+             WHERE user_id = $1 AND period_report_id = $2 AND consumed = FALSE
+             ORDER BY priority = 'high' DESC, priority = 'medium' DESC, created_at ASC`;
+  if (limit && limit > 0) {
+    params.push(limit);
+    sql += ` LIMIT $${params.length}`;
+  }
+  const result = await query(sql, params);
+  return result.rows as WritingSuggestionRow[];
+}
+
+export async function markSuggestionsPublishedByTask(
+  writingTaskId: number
+): Promise<number> {
+  // 写作任务关联的所有建议统一标记为已发布（调用方在 publish_task 完成后调用）
+  const result = await query(
+    `UPDATE aeo_writing_suggestion
+     SET consumed = TRUE, consumed_at = COALESCE(consumed_at, NOW())
+     WHERE writing_task_id = $1`,
+    [writingTaskId]
+  );
+  return result.rowCount || 0;
+}
+
+export async function getSuggestionPoolSourceType(userId: number): Promise<string> {
+  const result = await query(
+    `SELECT suggestion_source_period_type FROM cloud_api_config WHERE user_id = $1`,
+    [userId]
+  );
+  return result.rows[0]?.suggestion_source_period_type || 'daily';
+}
+
+export async function setSuggestionPoolSourceType(userId: number, sourceType: string): Promise<void> {
+  await query(
+    `INSERT INTO cloud_api_config (user_id, suggestion_source_period_type)
+     VALUES ($1, $2)
+     ON CONFLICT (user_id) DO UPDATE SET suggestion_source_period_type = EXCLUDED.suggestion_source_period_type`,
+    [userId, sourceType]
+  );
+}
+
 /**
  * 获取客户的所有关键词 ID（蒸馏关键词 + 品牌关键词）
  * 用于新建写作任务时自动加载客户整个关键词库
