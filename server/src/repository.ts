@@ -1536,6 +1536,19 @@ export async function checkShardReportExists(queueId: number): Promise<boolean> 
   return result.rows.length > 0;
 }
 
+/**
+ * v2.4.7：删除指定分片的 AEO 报告（用于强制重新生成）
+ *   场景：分片报告因 LLM 调用失败或字段名 bug 导致数据错误，需删除后重新生成
+ *   注意：仅删除 aeo_shard_report 记录，不删除 real_collect_record 原始数据
+ */
+export async function deleteAeoShardReportByQueueId(queueId: number): Promise<number> {
+  const result = await query(
+    `DELETE FROM aeo_shard_report WHERE queue_id = $1 RETURNING id`,
+    [queueId]
+  );
+  return result.rowCount || 0;
+}
+
 /** 查询分片级 AEO 报告列表（分页） */
 export async function getAeoShardReports(
   taskId?: number,

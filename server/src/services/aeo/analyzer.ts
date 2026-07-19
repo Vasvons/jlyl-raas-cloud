@@ -24,6 +24,7 @@ import {
   getRecordsByQueueId,
   insertAeoShardReport,
   checkShardReportExists,
+  deleteAeoShardReportByQueueId,
   // v2.0.0 时间维度报告（周/月报）
   getShardReportsByTimeRange,
   getShardReportsByDate,
@@ -700,18 +701,27 @@ function fallbackAnalysis(
   suggestions: string;
   raw: string;
 } {
+  // v2.4.7：修复字段名 bug（原 camelCase 导致 fallback 时所有命中统计全为 0）
+  //   数据库 real_collect_record 返回的字段是 snake_case：brand_matched / matched_brands / raw_content
+  //   但原代码用 r.brandMatched / r.matchedBrands / r.content 访问，永远拿不到值
+  //   → fallback 时 hitRecords=[] → visibilityScore=0、命中率=0%、情感分布全 0%
+  //   → 用户看到"LLM 调用失败，使用 fallback"时所有数据归零
+  //   修复：统一用 snake_case
+  const isHit = (r: any): boolean =>
+    r.brand_matched === true || (Array.isArray(r.matched_brands) && r.matched_brands.length > 0);
+
   // v2.1.6：按平台统计命中情况
   const platformMap: Record<string, { total: number; hit: number }> = {};
   for (const r of records) {
     const p = r.platform || 'unknown';
     if (!platformMap[p]) platformMap[p] = { total: 0, hit: 0 };
     platformMap[p].total++;
-    if (r.brandMatched === true || (r.matchedBrands && r.matchedBrands.length > 0)) platformMap[p].hit++;
+    if (isHit(r)) platformMap[p].hit++;
   }
   const platformCount = Object.keys(platformMap).length;
   const hitPlatforms = Object.entries(platformMap).filter(([_, s]) => s.hit > 0).length;
   const totalRecords = records.length;
-  const hitRecords = records.filter(r => r.brandMatched === true || (r.matchedBrands && r.matchedBrands.length > 0));
+  const hitRecords = records.filter(isHit);
   const hitCount = hitRecords.length;
   const hitRate = totalRecords > 0 ? hitCount / totalRecords : 0;
 
@@ -722,14 +732,18 @@ function fallbackAnalysis(
   const visibilityScore = Math.round((hitRate * 0.4 + platformBalance * 0.4 + hitCountScore * 0.2) * 100);
 
   // 简单情感判断：基于命中记录
-  const positiveWords = ['好', '优秀', '推荐', '不错', '方便', '好用', '满意', '专业'];
-  const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗'];
+  // v2.4.7：改进关键词列表，避免匹配到无关内容（如"差异化"误匹配"差"、"没问题"误匹配"问题"）
+  //   原关键词：'差', '不好', '问题', '缺点' ... 会匹配到正常文本
+  //   改用更精确的组合词或短语，减少误报
+  const positiveWords = ['好评', '优秀', '推荐', '不错', '方便', '好用', '满意', '专业', '靠谱', '值得'];
+  const negativeWords = ['差评', '不好', '缺点', '不满', '失望', '垃圾', '骗子', '不推荐', '踩雷', '避雷', '投诉', '维权', '质量差', '服务差', '态度差'];
 
   let positive = 0;
   let negative = 0;
   let neutral = 0;
   for (const r of hitRecords) {
-    const text = (r.content || '').toLowerCase();
+    // 修复：字段名从 r.content 改为 r.raw_content（数据库实际字段名）
+    const text = (r.raw_content || '').toLowerCase();
     let posScore = 0;
     let negScore = 0;
     for (const w of positiveWords) {
@@ -840,16 +854,29 @@ async function analyzeBrandShard(
   const hasLlm = modelConfig && modelConfig.api_key_encrypted;
 
   // 命中记录的内容样本（传给 LLM 做深度情感分析）
-  const analysisInput = brandMatchedRecords.map(r => ({
+  // v2.4.7：优化输入规模避免 LLM 超时
+  //   原参数：30 条 × 3000 字符 ≈ 90k 字符（≈ 30k tokens），易导致 LLM 60s 超时
+  //   优化后：15 条 × 1500 字符 ≈ 22k 字符（≈ 8k tokens），缩短响应时间
+  //   均匀采样：从命中记录中等间距取样，避免只看前几条导致偏倚
+  const sampleSize = Math.min(15, brandMatchedRecords.length);
+  const step = Math.max(1, Math.floor(brandMatchedRecords.length / sampleSize));
+  const sampledRecords: any[] = [];
+  for (let i = 0; i < brandMatchedRecords.length && sampledRecords.length < sampleSize; i += step) {
+    sampledRecords.push(brandMatchedRecords[i]);
+  }
+  const analysisInput = sampledRecords.map(r => ({
     platform: r.platform,
     keyword: r.keyword,
-    content: (r.raw_content || '').substring(0, 3000),
+    content: (r.raw_content || '').substring(0, 1500),
     matchedBrands: r.matched_brands,
     shareUrl: r.share_url,
   }));
 
-  // 负面发现（关键词匹配兜底，LLM 分析后会被 LLM 结果覆盖）
-  const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷', '投诉', '维权'];
+  // 负面发现（关键词匹配兜底，LLM 成功时会被 LLM 输出覆盖）
+  // v2.4.7：改进关键词列表，避免误匹配
+  //   原关键词 '差','问题' 等会匹配到 "差异化"、"问题解决"、"没问题" 等正常内容
+  //   改用更精确的组合词或短语，减少误报
+  const negativeWords = ['差评', '不好', '缺点', '不足', '缺陷', '不满', '失望', '垃圾', '骗子', '不推荐', '踩雷', '避雷', '投诉', '维权', '质量差', '服务差', '态度差', '虚假', '夸大'];
   const negativeFindings = brandMatchedRecords
     .filter(r => {
       const text = (r.raw_content || '').toLowerCase();
@@ -913,15 +940,20 @@ async function analyzeBrandShard(
 
   const platformSummary = platformBreakdown.map(p => `${p.platform}: 查询${p.total}条/命中${p.brand_matched}条`).join('；');
 
+  // v2.4.7：LLM prompt 重构
+  //   1. 增加 negativeFindings 字段，让 LLM 真正理解内容后输出负面发现（带分类标签和说明）
+  //      覆盖原 fallback 的简单关键词匹配（原匹配 '差'/'问题' 会误报"差异化"/"问题解决"等正常内容）
+  //   2. 明确要求 LLM 必须阅读每条记录内容后再下结论，禁止仅凭关键词匹配下标签
+  //   3. 增加 problemType 枚举值，让 LLM 用预定义的分类标签
   const prompt = `你是品牌情感分析专家。这是一个品牌词任务的分片报告 —— 查询词本身就包含品牌名，因此 AI 几乎必然提及品牌，命中率不是有意义的指标。
 你的任务是深度分析 AI 回答中对品牌的情感态度和多维度评价。
 
 品牌关键词：${brandKeywords.join('、')}
-本分片查询了 ${totalRecordCount} 条记录，其中 ${brandMatchedCount} 条命中品牌。
+本分片查询了 ${totalRecordCount} 条记录，其中 ${brandMatchedCount} 条命中品牌（均匀采样 ${analysisInput.length} 条供你分析）。
 平台分布：${platformSummary}
 
-【命中记录详情】（请仔细阅读内容，理解 AI 对品牌的评价态度）
-${JSON.stringify(analysisInput.slice(0, 30), null, 2)}
+【命中记录详情】（请仔细阅读每条记录的实际内容，理解 AI 对品牌的评价态度。禁止仅凭关键词匹配下结论）
+${JSON.stringify(analysisInput, null, 2)}
 
 请返回 JSON 格式（不要 markdown 代码块）：
 {
@@ -938,8 +970,26 @@ ${JSON.stringify(analysisInput.slice(0, 30), null, 2)}
     "value_perception": 0-100,            // 性价比感知：AI 对品牌性价比的评价
     "brand_recall": 0-100,                // 品牌认知度：AI 对品牌的了解程度（信息丰富度）
     "dimension_notes": "各维度评分依据说明"
-  }
+  },
+  "negativeFindings": [                   // 负面发现：必须基于实际内容理解，不要仅凭关键词匹配
+    {
+      "keyword": "对应的查询关键词",
+      "platform": "对应的AI平台",
+      "problemType": "问题分类，从以下枚举中选：质量疑虑|价格争议|服务体验|功能局限|信任风险|对比劣势|信息缺失|无负面",
+      "severity": "high|medium|low",
+      "contentPreview": "原文中体现负面的片段（200字以内，必须来自实际内容）",
+      "description": "为什么这段内容是负面的（基于实际语义理解，不要泛泛而谈）"
+    }
+  ]
 }
+
+重要规则：
+1. negativeFindings 必须基于实际阅读内容后的理解，不要仅凭"差"、"问题"等单个关键词就标记为负面
+2. 如果内容是中性客观陈述（如"该品牌成立于2015年"），不要标记为负面
+3. 如果内容是正面评价（如"性价比较高"），不要标记为负面
+4. 只有内容中确实存在对品牌的批评、质疑、负面评价时才加入 negativeFindings
+5. 如果所有命中记录都是中性或正面，返回空数组 []
+6. problemType 必须从枚举值中选，"无负面"仅用于无可分类的情况
 
 评分标准（visibilityScore = 情感健康度）：
 - 正面情感占主导（positiveRatio > 60%）且负面 < 10% = 80-100 分
@@ -950,17 +1000,18 @@ ${JSON.stringify(analysisInput.slice(0, 30), null, 2)}
 - 负面 0% 且正面 > 70% = 90-100 分`;
 
   try {
+    // v2.4.7：延长超时时间到 90s（原 60s 在大模型分析 15 条命中记录时易超时）
     const resp = await axios.post(
       modelConfig.base_url,
       {
         model: modelConfig.model_name,
         messages: [
-          { role: 'system', content: '你是品牌情感分析专家，只返回 JSON 格式数据。重点分析 AI 回答中对品牌的多维度情感态度。' },
+          { role: 'system', content: '你是品牌情感分析专家，只返回 JSON 格式数据。重点分析 AI 回答中对品牌的多维度情感态度。必须基于实际内容理解后下结论，不要仅凭关键词匹配。' },
           { role: 'user', content: prompt },
         ],
         temperature: 0.3,
       },
-      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 60000 }
+      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 90000 }
     );
 
     const content = (resp.data as any)?.choices?.[0]?.message?.content || '';
@@ -983,6 +1034,27 @@ ${JSON.stringify(analysisInput.slice(0, 30), null, 2)}
       trust: 50, professionalism: 50, recommendation_intent: 50, value_perception: 50, brand_recall: 50, dimension_notes: 'LLM 未返回维度评分',
     };
 
+    // v2.4.7：LLM 输出的负面发现覆盖 fallback 的简单关键词匹配
+    //   原逻辑：无论 LLM 是否成功，negativeFindings 都是简单关键词匹配结果
+    //   新逻辑：LLM 成功时用 LLM 输出的 negativeFindings（带分类标签和理解说明）
+    //         LLM 未返回或格式错误时，回退到关键词匹配结果
+    let finalNegativeFindings = negativeFindings;
+    if (Array.isArray(parsed.negativeFindings)) {
+      finalNegativeFindings = parsed.negativeFindings
+        .filter((f: any) => f && typeof f === 'object')
+        .map((f: any) => ({
+          keyword: String(f.keyword || ''),
+          platform: String(f.platform || ''),
+          problemType: String(f.problemType || '未分类'),
+          severity: String(f.severity || 'low'),
+          contentPreview: String(f.contentPreview || '').substring(0, 300),
+          description: String(f.description || ''),
+          // 兼容前端展示：negativeWords 字段保留关键词标签（用 problemType 替代）
+          negativeWords: f.problemType && f.problemType !== '无负面' ? [String(f.problemType)] : [],
+        }));
+      console.log(`[AEO-Brand] 分片负面发现：LLM 输出 ${finalNegativeFindings.length} 条（覆盖 fallback 的 ${negativeFindings.length} 条关键词匹配）`);
+    }
+
     return {
       visibilityScore,
       positiveRatio,
@@ -1000,7 +1072,7 @@ ${JSON.stringify(analysisInput.slice(0, 30), null, 2)}
         dimension_notes: String(sentimentDimensions.dimension_notes || ''),
       },
       brandMentions,
-      negativeFindings,
+      negativeFindings: finalNegativeFindings,
       sentimentSummary: {
         total: totalRecordCount,
         brand_matched: brandMatchedCount,
@@ -1015,7 +1087,7 @@ ${JSON.stringify(analysisInput.slice(0, 30), null, 2)}
       },
     };
   } catch (e: any) {
-    console.error(`[AEO-Brand] LLM 调用失败:`, e.message);
+    console.error(`[AEO-Brand] LLM 调用失败:`, e.message, e?.response?.status, e?.response?.data ? JSON.stringify(e.response.data).substring(0, 500) : '');
     const fallback = fallbackAnalysis(allRecords, brandKeywords);
     return { ...fallback, sentimentDimensions: { trust: 50, professionalism: 50, recommendation_intent: 50, value_perception: 50, brand_recall: 70, dimension_notes: 'LLM 调用失败，使用 fallback' }, brandMentions, negativeFindings, sentimentSummary: { total: totalRecordCount, brand_matched: brandMatchedCount, analysis_mode: 'brand_fallback' } };
   }
@@ -1076,7 +1148,8 @@ async function analyzeDistillateShard(
     contentPreview: (r.raw_content || '').substring(0, 200),
   }));
 
-  const negativeWords = ['差', '不好', '问题', '缺点', '不满', '失望', '垃圾', '骗', '不推荐', '踩雷', '避雷'];
+  // v2.4.7：改进负面发现关键词列表，避免误匹配（同品牌词管道修复）
+  const negativeWords = ['差评', '不好', '缺点', '不足', '缺陷', '不满', '失望', '垃圾', '骗子', '不推荐', '踩雷', '避雷', '投诉', '维权', '质量差', '服务差', '态度差', '虚假', '夸大'];
   const negativeFindings = brandMatchedRecords
     .filter(r => {
       const text = (r.raw_content || '').toLowerCase();
@@ -1153,10 +1226,18 @@ async function analyzeDistillateShard(
     };
   }
 
-  const analysisInput = brandMatchedRecords.slice(0, 20).map(r => ({
+  // v2.4.7：优化 LLM 输入规模（原 20 条 × 2000 字符 ≈ 40k 字符，易超时）
+  //   改为均匀采样 15 条 × 1500 字符 ≈ 22k 字符
+  const sampleSize = Math.min(15, brandMatchedRecords.length);
+  const step = Math.max(1, Math.floor(brandMatchedRecords.length / sampleSize));
+  const sampledRecords: any[] = [];
+  for (let i = 0; i < brandMatchedRecords.length && sampledRecords.length < sampleSize; i += step) {
+    sampledRecords.push(brandMatchedRecords[i]);
+  }
+  const analysisInput = sampledRecords.map(r => ({
     platform: r.platform,
     keyword: r.keyword,
-    content: (r.raw_content || '').substring(0, 2000),
+    content: (r.raw_content || '').substring(0, 1500),
     matchedBrands: r.matched_brands,
   }));
 
@@ -1164,11 +1245,11 @@ async function analyzeDistillateShard(
 命中率（提及率）是这个报告的核心指标。请重点分析提及率、平台覆盖和盲区。
 
 品牌关键词：${brandKeywords.join('、')}
-本分片查询了 ${totalRecordCount} 条记录，其中 ${brandMatchedCount} 条命中品牌，提及率 ${hitRate}%。
+本分片查询了 ${totalRecordCount} 条记录，其中 ${brandMatchedCount} 条命中品牌，提及率 ${hitRate}%（均匀采样 ${analysisInput.length} 条供你分析）。
 平台分布：${platformMentionRates.map(p => `${p.platform}: ${p.mentioned}/${p.total}(${p.rate}%)`).join('；')}
 未命中关键词数：${uncoveredKeywords.length}
 
-【命中记录详情】
+【命中记录详情】（请仔细阅读每条记录的实际内容，理解 AI 是否提及品牌及提及态度。禁止仅凭关键词匹配下结论）
 ${JSON.stringify(analysisInput, null, 2)}
 
 请返回 JSON 格式（不要 markdown 代码块）：
@@ -1183,8 +1264,25 @@ ${JSON.stringify(analysisInput, null, 2)}
     "coverage_gaps": "覆盖盲区说明",       // 详细说明哪些关键词/平台是 GEO 优化盲区
     "cross_platform_consistency": 0-100,  // 跨平台一致性评分
     "mention_notes": "提及率分析说明"       // 对提及率的深度解读
-  }
+  },
+  "negativeFindings": [                   // 负面发现：必须基于实际内容理解，不要仅凭关键词匹配
+    {
+      "keyword": "对应的查询关键词",
+      "platform": "对应的AI平台",
+      "problemType": "问题分类，从以下枚举中选：质量疑虑|价格争议|服务体验|功能局限|信任风险|对比劣势|信息缺失|无负面",
+      "severity": "high|medium|low",
+      "contentPreview": "原文中体现负面的片段（200字以内，必须来自实际内容）",
+      "description": "为什么这段内容是负面的（基于实际语义理解，不要泛泛而谈）"
+    }
+  ]
 }
+
+重要规则：
+1. negativeFindings 必须基于实际阅读内容后的理解，不要仅凭"差"、"问题"等单个关键词就标记为负面
+2. 如果内容是中性客观陈述，不要标记为负面
+3. 如果内容是正面评价，不要标记为负面
+4. 只有内容中确实存在对品牌的批评、质疑、负面评价时才加入 negativeFindings
+5. 如果所有命中记录都是中性或正面，返回空数组 []
 
 评分标准（visibilityScore = 提及率 × 平台覆盖）：
 - 提及率 100% 且覆盖所有平台 = 90-100 分
@@ -1193,17 +1291,18 @@ ${JSON.stringify(analysisInput, null, 2)}
 - 只在单一平台命中（其他全未命中）应扣分，因为 GEO 目标是全平台覆盖`;
 
   try {
+    // v2.4.7：延长超时时间到 90s
     const resp = await axios.post(
       modelConfig.base_url,
       {
         model: modelConfig.model_name,
         messages: [
-          { role: 'system', content: '你是 AEO 分析专家，只返回 JSON 格式数据。重点分析提及率和平台覆盖。' },
+          { role: 'system', content: '你是 AEO 分析专家，只返回 JSON 格式数据。重点分析提及率和平台覆盖。必须基于实际内容理解后下结论，不要仅凭关键词匹配。' },
           { role: 'user', content: prompt },
         ],
         temperature: 0.3,
       },
-      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 60000 }
+      { headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, timeout: 90000 }
     );
 
     const content = (resp.data as any)?.choices?.[0]?.message?.content || '';
@@ -1218,6 +1317,23 @@ ${JSON.stringify(analysisInput, null, 2)}
     const finalVisibilityScore = visibilityScore;
 
     const mentionAnalysisParsed = parsed.mentionAnalysis || {};
+
+    // v2.4.7：LLM 输出的负面发现覆盖 fallback 的简单关键词匹配（同品牌词管道修复）
+    let finalNegativeFindings = negativeFindings;
+    if (Array.isArray(parsed.negativeFindings)) {
+      finalNegativeFindings = parsed.negativeFindings
+        .filter((f: any) => f && typeof f === 'object')
+        .map((f: any) => ({
+          keyword: String(f.keyword || ''),
+          platform: String(f.platform || ''),
+          problemType: String(f.problemType || '未分类'),
+          severity: String(f.severity || 'low'),
+          contentPreview: String(f.contentPreview || '').substring(0, 300),
+          description: String(f.description || ''),
+          negativeWords: f.problemType && f.problemType !== '无负面' ? [String(f.problemType)] : [],
+        }));
+      console.log(`[AEO-Distillate] 分片负面发现：LLM 输出 ${finalNegativeFindings.length} 条（覆盖 fallback 的 ${negativeFindings.length} 条关键词匹配）`);
+    }
 
     return {
       visibilityScore: finalVisibilityScore,
@@ -1235,7 +1351,7 @@ ${JSON.stringify(analysisInput, null, 2)}
         mention_notes: String(mentionAnalysisParsed.mention_notes || ''),
       },
       brandMentions,
-      negativeFindings,
+      negativeFindings: finalNegativeFindings,
       sentimentSummary: {
         total: totalRecordCount,
         brand_matched: brandMatchedCount,
@@ -1251,7 +1367,7 @@ ${JSON.stringify(analysisInput, null, 2)}
       },
     };
   } catch (e: any) {
-    console.error(`[AEO-Distillate] LLM 调用失败:`, e.message);
+    console.error(`[AEO-Distillate] LLM 调用失败:`, e.message, e?.response?.status, e?.response?.data ? JSON.stringify(e.response.data).substring(0, 500) : '');
     // LLM 失败时回退到纯代码分析（蒸馏词管道的核心指标是提及率，代码计算即可）
     return {
       visibilityScore,
@@ -1658,15 +1774,28 @@ function fallbackStrategy(stats: { total: number; goodCount: number; poorCount: 
  * 等待周/月报汇总后统一驱动写作。
  *
  * @param queueId 分片队列 ID
+ * @param options.force 是否强制重新生成（删除旧报告后重新分析）
  * @returns 报告 ID（失败返回 null）
  */
-export async function generateAeoShardReport(queueId: number): Promise<number | null> {
+export async function generateAeoShardReport(
+  queueId: number,
+  options?: { force?: boolean }
+): Promise<number | null> {
   try {
     // 1. 检查是否已生成过报告（避免重复分析）
-    const exists = await checkShardReportExists(queueId);
-    if (exists) {
-      console.log(`[AEO-Shard] 分片 ${queueId} 已有报告，跳过`);
-      return null;
+    // v2.4.7：options.force=true 时先删除旧报告再重新分析
+    //   场景：分片报告因 LLM 调用失败或字段名 bug 导致数据错误，需重新生成
+    if (options?.force) {
+      const deleted = await deleteAeoShardReportByQueueId(queueId);
+      if (deleted > 0) {
+        console.log(`[AEO-Shard] 分片 ${queueId} 强制重新生成：已删除旧报告（${deleted} 条）`);
+      }
+    } else {
+      const exists = await checkShardReportExists(queueId);
+      if (exists) {
+        console.log(`[AEO-Shard] 分片 ${queueId} 已有报告，跳过`);
+        return null;
+      }
     }
 
     // 2. 获取分片队列信息（v2.1.6：含 keyword_type 和 task_name）

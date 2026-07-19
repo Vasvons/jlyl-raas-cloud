@@ -190,6 +190,12 @@ router.post('/shard/backfill', authMiddleware, async (req, res) => {
   try {
     // v2.1.6：支持按客户过滤（管理员从某客户飞轮页面触发时只补该客户的分片）
     const customerId = req.body.customerId ? String(req.body.customerId) : undefined;
+    // v2.4.7：支持强制重新生成已有分片报告（用于修复历史数据错误，如 LLM 调用失败或字段名 bug）
+    //   - force=false（默认）：只补生成"已完成但无报告"的分片
+    //   - force=true：重新生成所有已完成分片（包括已有报告的，先删除旧报告再重新分析）
+    //   - dateFilter：可选，按分片结束时间过滤（YYYY-MM-DD），只重新生成该日期的分片
+    const force = req.body.force === true;
+    const dateFilter = req.body.dateFilter ? String(req.body.dateFilter) : undefined;
 
     // 如果已有任务在运行，返回当前任务状态
     const runningJob = Array.from(backfillJobs.values()).find(j => j.status === 'running');
@@ -209,11 +215,18 @@ router.post('/shard/backfill', authMiddleware, async (req, res) => {
     }
 
     // 查询所有已完成但无报告的分片（v2.1.6：按 customerId 过滤）
+    // v2.4.7：force=true 时查询所有已完成分片（包括已有报告的）
     const params: any[] = [];
-    let whereClause = `WHERE q.status = 'done' AND s.id IS NULL`;
+    let whereClause = force
+      ? `WHERE q.status = 'done'`
+      : `WHERE q.status = 'done' AND s.id IS NULL`;
     if (customerId) {
       params.push(customerId);
       whereClause += ` AND q.user_id = $${params.length}`;
+    }
+    if (dateFilter) {
+      params.push(dateFilter);
+      whereClause += ` AND q.end_time >= $${params.length}::date AND q.end_time < ($${params.length}::date + INTERVAL '1 day')`;
     }
     const result = await dbQuery(
       `SELECT q.id AS queue_id, q.task_id, q.user_id, q.start_time, q.end_time, q.status,
@@ -227,7 +240,7 @@ router.post('/shard/backfill', authMiddleware, async (req, res) => {
     );
     const rows: any[] = result.rows;
     if (rows.length === 0) {
-      return res.json({ code: 200, data: { total: 0, generated: 0, message: '无缺失的分片报告' } });
+      return res.json({ code: 200, data: { total: 0, generated: 0, message: force ? '无符合条件的分片' : '无缺失的分片报告' } });
     }
 
     // 创建 job
@@ -268,7 +281,8 @@ router.post('/shard/backfill', authMiddleware, async (req, res) => {
         const queueId = row.queue_id;
         job.currentQueueId = queueId;
         try {
-          const reportId = await generateAeoShardReport(queueId);
+          // v2.4.7：force=true 时强制重新生成（删除旧报告后再分析）
+          const reportId = await generateAeoShardReport(queueId, { force });
           if (reportId) {
             job.generated++;
           } else {
