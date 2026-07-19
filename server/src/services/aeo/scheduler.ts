@@ -5,7 +5,7 @@
  */
 import cron from 'node-cron';
 import { getActiveTasksForAeo, shouldGenerateDailyReport, shouldGenerateWeeklyReport, shouldGenerateMonthlyReport } from '../../repository';
-import { generateAeoReport, generatePeriodReport } from './analyzer';
+import { generateAeoReport, generatePeriodReportAndBroadcast as generatePeriodReport } from './analyzer';
 // v2.3.4：scheduler.ts 内需要直接查询 aeo_report 表检测占位日报
 import { query as dbQuery } from '../../db';
 

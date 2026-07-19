@@ -130,6 +130,7 @@ import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
 import { executeWritingTask, regenerateArticle } from '../services/content/articleGenerator';
 import { extractTriplesFromKnowledge } from '../services/content/tripleExtractor';
+import { wsBroadcast } from '../wsServer';
 
 const router = Router();
 
@@ -1008,6 +1009,12 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     executeWritingTask(taskId, userId).catch(err => {
       console.error(`Writing task ${taskId} failed:`, err);
     });
+    // v2.4.0：推送写作任务创建事件
+    wsBroadcast('writing_task_changed', {
+      taskId,
+      userId,
+      action: 'created',
+    }, userId);
     res.json({ code: 200, data: { id: taskId } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -1016,7 +1023,17 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
 
 router.delete('/writing-tasks/:id', async (req: Request, res: Response) => {
   try {
-    await deleteWritingTask(Number(req.params.id));
+    const taskId = Number(req.params.id);
+    // v2.4.0：删除前查 userId，用于推送广播
+    const task = await getWritingTaskById(taskId);
+    await deleteWritingTask(taskId);
+    if (task?.user_id) {
+      wsBroadcast('writing_task_changed', {
+        taskId,
+        userId: task.user_id,
+        action: 'deleted',
+      }, task.user_id);
+    }
     res.json({ code: 200 });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -2055,6 +2072,15 @@ router.post('/publish/by-writing-task', async (req: Request, res: Response) => {
       }
     }
 
+    // v2.4.0：推送发布任务创建事件
+    if (createdTasks.length > 0) {
+      wsBroadcast('publish_task_changed', {
+        taskId,
+        userId,
+        action: 'created',
+        count: createdTasks.length,
+      }, userId);
+    }
     res.json({
       code: 200,
       data: {

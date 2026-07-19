@@ -12,6 +12,7 @@ import {
   updateQueueProgress
 } from '../repository';
 import { generateAeoShardReport } from '../services/aeo/analyzer';
+import { wsBroadcast } from '../wsServer';
 
 const router = Router();
 
@@ -24,6 +25,12 @@ router.post('/dequeue', async (req, res) => {
       return res.json({ code: 200, data: null });
     }
     console.log(`[RealCollectQueue] Worker(${workerId}) 消费任务 queueId=${task.queueId} taskId=${task.taskId}`);
+    // v2.4.0：推送分片 dequeue 事件，前端可立即刷新 progressMap
+    wsBroadcast('shard_dequeued', {
+      queueId: task.queueId,
+      taskId: task.taskId,
+      userId: task.userId,
+    }, task.userId);
     res.json({ code: 200, data: task });
   } catch (e: any) {
     console.error('[RealCollectQueue] dequeue失败:', e.message);
@@ -59,6 +66,12 @@ router.post('/complete', async (req, res) => {
         .then(reportId => {
           if (reportId) {
             console.log(`[RealCollectQueue] 分片 ${queueId} AEO报告已生成: reportId=${reportId}`);
+            // v2.4.0：推送分片报告生成完成事件，前端可立即刷新 shardReports
+            wsBroadcast('aeo_shard_report_generated', {
+              reportId,
+              queueId,
+              taskId,
+            }, undefined);
           }
         })
         .catch(e => {
@@ -67,6 +80,16 @@ router.post('/complete', async (req, res) => {
     }
 
     console.log(`[RealCollectQueue] 队列任务完成 queueId=${queueId} records=${recordCount} brands=${brandCount} error=${error || '无'}`);
+    // v2.4.0：推送分片完成事件，前端可立即刷新 progressMap
+    // 注意：taskId/userId 从 req.body 拿（Worker 上报时携带）
+    wsBroadcast('shard_completed', {
+      queueId,
+      taskId,
+      recordCount: recordCount || 0,
+      brandCount: brandCount || 0,
+      success: !error,
+      error: error || null,
+    }, undefined);
     res.json({ code: 200, message: 'ok' });
   } catch (e: any) {
     console.error('[RealCollectQueue] complete失败:', e.message);

@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import http from 'http';
 import { migrate } from './migrate';
 import { seedStepLists } from './services/content/stepListSeeder';
 import { startScheduler, getSchedulerStatus } from './scheduler';
@@ -18,6 +19,7 @@ import aeoRoutes from './routes/aeo';
 import contentRoutes from './routes/content';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
+import { initWsServer } from './wsServer';
 
 dotenv.config();
 
@@ -291,10 +293,14 @@ async function start() {
     // 启动 AEO 日报调度器
     startAeoScheduler();
 
-    // 启动HTTP服务
-    app.listen(PORT, '0.0.0.0', () => {
+    // v2.4.0：启动 HTTP 服务 + 挂载 WebSocket 服务端
+    // 复用 3002 端口，WS 路径 /ws，与 HTTP 路由互不冲突
+    const httpServer = http.createServer(app);
+    initWsServer(httpServer);
+    httpServer.listen(PORT, '0.0.0.0', () => {
       console.log(`[Server] jlyl-cloud 服务已启动，端口: ${PORT}`);
       console.log(`[Server] 健康检查: http://localhost:${PORT}/health`);
+      console.log(`[Server] WebSocket: ws://localhost:${PORT}/ws`);
     });
   } catch (e) {
     console.error('[Server] 启动失败:', e);

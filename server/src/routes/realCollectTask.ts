@@ -15,6 +15,7 @@ import {
   getDistillateKeywords,
 } from '../repository';
 import { enqueueTaskNow } from '../services/realCollect/scheduler';
+import { wsBroadcast } from '../wsServer';
 
 const router = Router();
 
@@ -104,6 +105,8 @@ router.post('/', async (req, res) => {
       // 关键词查询失败不阻塞创建
     }
     const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode });
+    // v2.4.0：推送任务创建事件
+    wsBroadcast('real_collect_task_changed', { taskId: id, userId, action: 'created' }, userId);
     res.json({ code: 200, message: '创建成功', data: { id }, warning });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -113,7 +116,13 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode } = req.body;
-    await updateRealCollectTask(parseInt(req.params.id), { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode });
+    const taskId = parseInt(req.params.id);
+    const task = await getRealCollectTaskById(taskId);
+    await updateRealCollectTask(taskId, { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode });
+    // v2.4.0：推送任务更新事件
+    if (task?.user_id) {
+      wsBroadcast('real_collect_task_changed', { taskId, userId: task.user_id, action: 'updated' }, task.user_id);
+    }
     res.json({ code: 200, message: '更新成功' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -122,7 +131,13 @@ router.put('/:id', async (req, res) => {
 
 router.delete('/:id', async (req, res) => {
   try {
-    await deleteRealCollectTask(parseInt(req.params.id));
+    const taskId = parseInt(req.params.id);
+    const task = await getRealCollectTaskById(taskId);
+    await deleteRealCollectTask(taskId);
+    // v2.4.0：推送任务删除事件
+    if (task?.user_id) {
+      wsBroadcast('real_collect_task_changed', { taskId, userId: task.user_id, action: 'deleted' }, task.user_id);
+    }
     res.json({ code: 200, message: '删除成功' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -136,6 +151,8 @@ router.post('/:id/run', async (req, res) => {
       return res.status(404).json({ code: 404, message: '任务不存在' });
     }
     const queueId = await enqueueTaskNow(task);
+    // v2.4.0：推送任务立即执行事件
+    wsBroadcast('real_collect_task_changed', { taskId: task.id, userId: task.user_id, action: 'run_now' }, task.user_id);
     res.json({ code: 200, message: '任务已加入队列', data: { queueId } });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -144,7 +161,13 @@ router.post('/:id/run', async (req, res) => {
 
 router.post('/:id/pause', async (req, res) => {
   try {
-    await updateRealCollectTask(parseInt(req.params.id), { status: 'paused' });
+    const taskId = parseInt(req.params.id);
+    const task = await getRealCollectTaskById(taskId);
+    await updateRealCollectTask(taskId, { status: 'paused' });
+    // v2.4.0：推送任务暂停事件
+    if (task?.user_id) {
+      wsBroadcast('real_collect_task_changed', { taskId, userId: task.user_id, action: 'paused' }, task.user_id);
+    }
     res.json({ code: 200, message: '任务已暂停' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -153,7 +176,13 @@ router.post('/:id/pause', async (req, res) => {
 
 router.post('/:id/resume', async (req, res) => {
   try {
-    await updateRealCollectTask(parseInt(req.params.id), { status: 'active' });
+    const taskId = parseInt(req.params.id);
+    const task = await getRealCollectTaskById(taskId);
+    await updateRealCollectTask(taskId, { status: 'active' });
+    // v2.4.0：推送任务恢复事件
+    if (task?.user_id) {
+      wsBroadcast('real_collect_task_changed', { taskId, userId: task.user_id, action: 'resumed' }, task.user_id);
+    }
     res.json({ code: 200, message: '任务已恢复' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });

@@ -64,7 +64,10 @@ services:
       # v2.0.0 P6：云端发布 Worker 内部认证密钥
       WORKER_SECRET: ${WORKER_SECRET:-jlyl-cloud-worker-secret-2024}
     ports:
-      - "127.0.0.1:3002:3002"
+      # v2.4.0：从 127.0.0.1:3002:3002 改为 0.0.0.0:3002:3002
+      #   原 bug：仅本机可访问，桌面端 Electron 无法直连云端 WebSocket
+      #   修复：暴露公网，WS 握手时校验 JWT token + Origin 白名单（wsServer.ts）
+      - "0.0.0.0:3002:3002"
     mem_limit: 512m
     logging:
       driver: json-file

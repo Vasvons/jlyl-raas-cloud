@@ -52,6 +52,7 @@ import {
 } from '../../repository';
 import { query as dbQuery } from '../../db';
 import { decrypt } from '../../utils/crypto';
+import { wsBroadcast } from '../../wsServer';
 
 const AEO_RECORD_LIMIT = parseInt(process.env.AEO_RECORD_LIMIT || '200');
 
@@ -373,6 +374,12 @@ ${competitorLine}【负面发现】${allNegativeFindings.length} 条（含具体
   });
 
   console.log(`[AEO] 用户 ${userId} 日报生成成功 reportId=${reportId}, 分片报告=${shardReports.length}, 总查询=${totalRecords}, 品牌命中=${totalBrandMatched}, 收录率=${inclusionRate}%`);
+  // v2.4.0：推送日报生成完成事件，前端可立即刷新 latestAeo/aeoHistory/writingSuggestions/periodReports.daily/poolSuggestions
+  wsBroadcast('aeo_daily_report_generated', {
+    reportId,
+    userId,
+    reportDate: options?.reportDate,
+  }, userId);
   return reportId;
 }
 
@@ -2059,6 +2066,29 @@ export async function generatePeriodReport(
     console.error(`[AEO-Period] 用户 ${userId} ${periodType} 报告生成失败:`, err.message);
     return null;
   }
+}
+
+// v2.4.0：generatePeriodReportWrapper - 包装函数，在成功生成周期报告后推送事件
+//   原 generatePeriodReport 返回 reportId 后调用方无法感知，这里包装一层用于事件广播
+//   注意：实际调用 generatePeriodReport 的地方都需要改为调用此包装函数
+export async function generatePeriodReportAndBroadcast(
+  userId: string,
+  periodType: 'daily' | 'weekly' | 'monthly',
+  periodStart: Date,
+  periodEnd: Date
+): Promise<number | null> {
+  const reportId = await generatePeriodReport(userId, periodType, periodStart, periodEnd);
+  if (reportId) {
+    // v2.4.0：推送周期报告生成完成事件
+    wsBroadcast('aeo_period_report_generated', {
+      reportId,
+      userId,
+      periodType,
+      periodStart: periodStart.toISOString(),
+      periodEnd: periodEnd.toISOString(),
+    }, userId);
+  }
+  return reportId;
 }
 
 /**
