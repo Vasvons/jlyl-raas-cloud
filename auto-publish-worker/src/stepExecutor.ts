@@ -7,11 +7,6 @@ import { getState, clickByIndex, inputByIndex, smartFindElement } from './indexe
 import { humanClick, humanType, humanDelay, randomizedWait } from './behaviorHumanizer';
 
 /**
- * v2.0.0 P6：云端发布 Worker 不支持 ai_action（需多模态 LLM 视觉识别）
- * ai_action 步骤将被跳过并记录警告
- */
-
-/**
  * step_list 通用执行器（spec 6.3）
  *
  * 支持 18 种 step 类型（原 15 种 + 新增 3 种索引化交互 + v1.5.6 新增 ai_action）：
@@ -139,7 +134,31 @@ export async function executeStep(step: Step, ctx: StepExecutionContext): Promis
       case 'click_index':      return await execClickIndex(step, ctx);
       case 'input_index':      return await execInputIndex(step, ctx);
       case 'keyboard_type':    return await execKeyboardType(step, ctx);
-      case 'ai_action':        return await execAiActionNoop(step, ctx);
+      case 'ai_action': {
+        // v2.5.0：云端直调 LLM 视觉识别
+        const { executeAiAction } = await import('./aiActionExecutor');
+        const intent = step.intent || step.descript || '';
+        const action = step.ai_action || 'click';
+        const maxRetries = step.max_retries || 2;
+        if (!intent) {
+          if (step.is_try) {
+            ctx.onLog?.(`ai_action 缺少 intent，跳过`, 'warn');
+            return true;
+          }
+          throw new Error(`ai_action 缺少 intent 描述`);
+        }
+        ctx.onLog?.(`AI 视觉动作: ${intent}（action=${action}, 最大重试=${maxRetries}）`);
+        const result = await executeAiAction(ctx.page, intent, action, step.value, maxRetries);
+        if (!result.success) {
+          if (step.is_try) {
+            ctx.onLog?.(`ai_action 失败但 is_try=true，跳过: ${result.error}`, 'warn');
+            return true;
+          }
+          throw new Error(`AI 视觉动作失败: ${result.error}`);
+        }
+        ctx.onLog?.(`AI 视觉动作成功: (${result.x}, ${result.y}) confidence=${result.confidence}`);
+        return true;
+      }
       default:
         throw new Error(`未知 step 类型: ${step.type}`);
     }
@@ -1743,28 +1762,4 @@ async function tryAiFallback(
   if (!step.ai_fallback) return false;
   ctx.onLog?.(`[AI Action] ⚠ 云端发布 Worker 不支持 AI 视觉兜底，跳过`, 'warn');
   return false;
-}
-
-// ============ AI 视觉动作步骤（v1.5.6 混合模式） ============
-
-/**
- * ai_action 步骤：截图 → 云端多模态 LLM 识别元素坐标 → Playwright 在坐标处执行
- *
- * step 字段：
- *   - intent: 操作意图描述（如"找到标题输入框"）
- *   - ai_action: 动作类型 fill/click/verify
- *   - value: fill 时的值（支持 {title}/{content}/{tags} 占位符替换）
- *   - max_retries: 最大重试次数（默认 2）
- *
- * 适用场景：平台 UI 频繁改版，固定选择器难以维护，用 AI 视觉识别替代选择器
- */
-/**
- * v2.0.0 P6：云端发布 Worker 不支持 ai_action（需多模态 LLM 视觉识别）
- * ai_action 步骤将被跳过（is_try=true 时容错，否则抛错提示用户该步骤不支持云端发布）
- */
-async function execAiActionNoop(step: Step, ctx: StepExecutionContext): Promise<boolean> {
-  const intent = step.intent || '(无 intent)';
-  ctx.onLog?.(`[step] ⚠ ai_action 步骤不支持云端发布，已跳过: ${intent}`, 'warn');
-  // 容错跳过，不中断流程
-  return true;
 }
