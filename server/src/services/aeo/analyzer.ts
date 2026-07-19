@@ -2207,6 +2207,17 @@ async function generateWritingSuggestionsPool(
     ...distillateSuggestions.map(s => ({ ...s, source_type: 'distillate' })),
   ];
 
+  // v2.3.4：LLM 路径返回空时自动回退到 fallback
+  //   原 bug：配置了 AEO 模型但分片为空时，generateSuggestionsForGroup 因 length===0 直接返回 []，
+  //     writingSuggestions 数组为空 → 不写入 aeo_writing_suggestion 表 → 前端写作建议池永远为空
+  //   修复：LLM 路径返回空时（无论是因为分片为空还是 LLM 调用失败），
+  //     自动回退到 fallbackWritingSuggestions，至少产出"品牌核心优势强化"等通用建议，
+  //     确保写作建议池始终有可消费内容
+  if (allSuggestions.length === 0) {
+    console.warn(`[AEO-Period] LLM 路径返回 0 条建议（可能因分片为空或 LLM 异常），自动回退到 fallback 生成通用建议`);
+    return fallbackWritingSuggestions(shardReports, inclusionStats, topPlatforms, [], new Set());
+  }
+
   console.log(`[AEO-Period] 写作建议生成完成: 品牌词建议 ${brandSuggestions.length} 条, 蒸馏词建议 ${distillateSuggestions.length} 条, 合计 ${allSuggestions.length} 条`);
   return allSuggestions;
 }

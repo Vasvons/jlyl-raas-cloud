@@ -1330,12 +1330,19 @@ export async function completeQueueTask(queueId: number, recordCount: number, br
     );
     console.log(`[RealCollectQueue] 分片 ${queueId} 被用户中断，已重新入队 pending（保留断点续查，已清除 abort 标志）`);
   } else {
-    await query(
+    // v2.3.4：加 WHERE status='running' 保护
+    //   原 bug：requeueStaleRunningShards 把卡死分片重置为 pending 后，旧 Worker 完成时仍会强制写为 done，
+    //   导致同一分片被消费两次（数据库记 done 但实际可能数据不全）。
+    //   现在加 status='running' 保护：若 rowCount=0 说明分片已被回收或被其他 Worker 接管，跳过写回。
+    const result = await query(
       `UPDATE real_collect_queue
        SET status = $1, result_record_count = $2, result_brand_count = $3, error = $4, end_time = NOW()
-       WHERE id = $5`,
+       WHERE id = $5 AND status = 'running'`,
       [error ? 'failed' : 'done', recordCount, brandCount, error || null, queueId]
     );
+    if ((result.rowCount || 0) === 0) {
+      console.warn(`[RealCollectQueue] 分片 ${queueId} 回写失败：当前状态非 running（可能已被 requeueStaleRunningShards 回收），跳过`);
+    }
   }
 }
 

@@ -162,12 +162,17 @@ async function checkCompletedRounds(): Promise<void> {
   checkCompletedRunning = true;
   try {
     // 0. 回收超时的 running 分片（Worker 崩溃/OOM/容器重启后会永久卡在 running）
-    // 阈值 30 分钟：正常分片 50 个关键词，单个查询 10-30 秒，最多 25 分钟完成
-    // 超过 30 分钟还在 running 的分片，Worker 一定已经死了
+    // v2.3.4：阈值从 30 分钟提到 180 分钟（3 小时）
+    //   原 30 分钟阈值严重偏低：shard_size=50 × 8 平台 × 单查询 10-30s + 反爬延迟 1-3s，
+    //   正常分片执行时间 60-120 分钟，会被误判为卡死并重置为 pending，
+    //   导致前端 progress API 返回 runningShards=0, pendingShards=1，
+    //   前端按 runningShards>0 判断"处理中"必然落入"队列中"分支，进度条归零
+    //   （用户反馈：Worker 正在执行但前端显示队列中，反复出现）
+    //   3 小时阈值足够覆盖最慢的爬虫模式分片，同时仍能回收真正卡死的分片
     try {
-      const { requeuedCount, resetTaskIds } = await requeueStaleRunningShards(30);
+      const { requeuedCount, resetTaskIds } = await requeueStaleRunningShards(180);
       if (requeuedCount > 0) {
-        console.log(`[RealCollect] 回收 ${requeuedCount} 个超时 running 分片，涉及任务: [${resetTaskIds.join(', ')}]`);
+        console.log(`[RealCollect] 回收 ${requeuedCount} 个超时 running 分片（>180min），涉及任务: [${resetTaskIds.join(', ')}]`);
       }
     } catch (e: any) {
       console.error('[RealCollect] 回收超时 running 分片失败:', e.message);

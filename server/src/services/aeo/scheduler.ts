@@ -6,6 +6,8 @@
 import cron from 'node-cron';
 import { getActiveTasksForAeo, shouldGenerateDailyReport, shouldGenerateWeeklyReport, shouldGenerateMonthlyReport } from '../../repository';
 import { generateAeoReport, generatePeriodReport } from './analyzer';
+// v2.3.4：scheduler.ts 内需要直接查询 aeo_report 表检测占位日报
+import { query as dbQuery } from '../../db';
 
 let aeoSchedulerStarted = false;
 
@@ -18,8 +20,15 @@ export function startAeoScheduler(): void {
 
   // v2.2.3：启动时补生成昨天的日报（防止部署重启导致 cron 0 2 * * * 错过）
   // 延迟 30 秒执行，等数据库连接池就绪
+  // v2.3.4：彻底修复"白天部署启动补生成用今天日期占位导致凌晨 cron 跳过"的 bug
+  //   原 bug：generateAeoReport 内部 hour>=6 时 reportDate=今天，
+  //     白天部署启动补生成 → 生成"今天"日报（分片不全，残缺）
+  //     凌晨 cron 触发 → checkAeoReportExists 返回 true → 跳过
+  //     永远是白天那份残缺日报，用户感知"日报没生成"
+  //   修复：启动补生成显式传入 reportDate=昨天（上海时区），与凌晨 cron 一致
+  //     同时检测已存在的"无数据占位日报"（raw_analysis 含 no_shard_reports）并强制覆盖
   setTimeout(() => {
-    generateDailyReports().catch(e => {
+    generateDailyReports({ isStartupBackfill: true }).catch(e => {
       console.error('[AEO] 启动补生成日报失败:', e.message);
     });
   }, 30 * 1000);
@@ -58,9 +67,28 @@ export function startAeoScheduler(): void {
  *     导致自动写作永远不会被触发。
  *   修复：凌晨 0 点 generateAeoReport 完成后，立即调用 generatePeriodReport(daily)
  *     覆盖前一天的巡检数据，并触发自动写作任务创建。
+ *
+ * v2.3.4：新增 options.isStartupBackfill 参数（启动补生成专用）
+ *   原 bug：白天部署启动补生成时 generateAeoReport 内部 hour>=6 → reportDate=今天，
+ *     生成"今天"残缺日报占位，凌晨 cron 被 checkAeoReportExists 跳过，日报永远是残缺版
+ *   修复：isStartupBackfill=true 时显式传入 reportDate=昨天（上海时区），
+ *     与凌晨 cron 一致，避免占位今天日报
+ *   同时检测已存在的"无数据占位日报"（raw_analysis 含 reason=no_shard_reports）并强制覆盖
  */
-async function generateDailyReports(): Promise<void> {
-  console.log('[AEO] 开始生成每日 AEO 日报...');
+async function generateDailyReports(options?: { isStartupBackfill?: boolean }): Promise<void> {
+  const isStartupBackfill = options?.isStartupBackfill === true;
+  console.log(`[AEO] 开始生成每日 AEO 日报${isStartupBackfill ? '（启动补生成模式）' : ''}...`);
+
+  // v2.3.4：启动补生成显式计算"昨天"日期（上海时区），避免依赖 generateAeoReport 内部 hour 判断
+  let backfillReportDate: string | undefined;
+  if (isStartupBackfill) {
+    const now = new Date();
+    const nowShanghai = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+    const yesterdayShanghai = new Date(nowShanghai.getTime() - 24 * 60 * 60 * 1000);
+    backfillReportDate = yesterdayShanghai.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
+    console.log(`[AEO] 启动补生成使用昨天日期：${backfillReportDate}（避免占位今天日报）`);
+  }
+
   try {
     const tasks = await getActiveTasksForAeo();
     // 按 userId 去重，每个客户取第一个任务作为占位 taskId
@@ -79,8 +107,36 @@ async function generateDailyReports(): Promise<void> {
       const batch = userTasks.slice(i, i + batchSize);
       await Promise.allSettled(batch.map(async (task) => {
         try {
-          // 1. 生成 aeo_report 日报（覆盖前一天数据）
-          await generateAeoReport(task.id, task.user_id);
+          // v2.3.4：启动补生成模式下，检测"无数据占位日报"并强制覆盖
+          //   原 bug：白天部署已写入 no_shard_reports 占位日报，凌晨 cron 被 checkAeoReportExists 跳过
+          //   修复：启动补生成主动查询该客户昨天的日报，若 raw_analysis 含 no_shard_reports 则强制覆盖
+          let needForce = false;
+          if (isStartupBackfill && backfillReportDate) {
+            const existingReport = await dbQuery(
+              'SELECT raw_analysis FROM aeo_report WHERE user_id = $1 AND report_date = $2 LIMIT 1',
+              [task.user_id, backfillReportDate]
+            ).then((r: any) => r.rows[0]).catch(() => null);
+
+            if (existingReport) {
+              const rawAnalysis = String(existingReport.raw_analysis || '');
+              if (rawAnalysis.includes('no_shard_reports')) {
+                needForce = true;
+                console.log(`[AEO] 用户 ${task.user_id} ${backfillReportDate} 检测到无数据占位日报，强制覆盖重新生成`);
+              } else {
+                // 已存在且有数据，跳过
+                console.log(`[AEO] 用户 ${task.user_id} ${backfillReportDate} 日报已存在且有数据，跳过`);
+                return;
+              }
+            }
+          }
+
+          // 1. 生成 aeo_report 日报
+          //   启动补生成模式：传 reportDate=昨天 + force（仅在检测到占位日报时）
+          //   凌晨 cron 模式：不传 reportDate，由 generateAeoReport 内部 hour<6 判断用昨天
+          await generateAeoReport(task.id, task.user_id, {
+            ...(backfillReportDate ? { reportDate: backfillReportDate } : {}),
+            ...(needForce ? { force: true } : {}),
+          });
 
           // v2.2.22：2. 触发 generatePeriodReport(daily) 创建自动写作任务
           //   原 bug：generateAeoReport 不创建写作任务，自动写作由 generatePeriodReport 触发
