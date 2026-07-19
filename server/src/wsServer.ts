@@ -20,13 +20,12 @@ import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'jlyl-raas-cloud-secret-key-2024';
 
-// 允许的 Origin（与 CORS 同策略，防 CSRF）
-const ALLOWED_ORIGIN_PREFIXES = [
-  'http://localhost',
-  'http://127.0.0.1',
-  'file://',
-  'null', // file:// 在某些 Electron 版本下 Origin 为 null
-];
+// v2.4.3：移除 Origin 白名单
+//   原 bug：桌面端 flywheelWsClient.ts 设置 origin = cloudUrl（如 https://report.jlyl.net.cn），
+//     但白名单只有 http://localhost / http://127.0.0.1 / file:// / null，
+//     导致合法的桌面端 WS 请求被 403 拒绝（响应体 'Origin not allowed' = 18 字节，匹配访问日志）
+//   修复：私有部署 + JWT 鉴权已足够，Origin 检查多余且易误伤，直接移除
+//   JWT token 握手时强制校验（无 token 也允许连接，但无法收到定向事件，仅收全局事件）
 
 interface ClientMeta {
   ws: WebSocket;
@@ -47,18 +46,9 @@ export function initWsServer(httpServer: HttpServer): WebSocketServer {
   wssInstance = new WebSocketServer({
     server: httpServer,
     path: '/ws',
-    // 握手时校验 Origin（防 CSRF）
+    // v2.4.3：移除 verifyClient 中的 Origin 白名单检查
+    //   仅保留 JWT token 校验（可选，无 token 允许连接但收不到定向事件）
     verifyClient: (info, cb) => {
-      const origin = info.req.headers.origin || '';
-      // Electron file:// 的 origin 可能是 'null' 或 'file://'
-      const allowed = !origin ||
-        ALLOWED_ORIGIN_PREFIXES.some(p => origin.startsWith(p)) ||
-        origin === 'null';
-      if (!allowed) {
-        cb(false, 403, 'Origin not allowed');
-        return;
-      }
-
       // 校验 JWT token（query 参数 ?token=xxx）
       const url = new URL(info.req.url || '', 'http://localhost');
       const token = url.searchParams.get('token');
