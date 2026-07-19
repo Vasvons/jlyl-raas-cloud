@@ -1884,7 +1884,7 @@ export async function getTaskShardProgress(taskId: number): Promise<{
 export async function resetRunningQueueOnRestart(): Promise<number> {
   const result = await query(
     `UPDATE real_collect_queue
-     SET status = 'pending', worker_id = NULL, start_time = NULL
+     SET status = 'pending', worker_id = NULL, start_time = NULL, priority = 0
      WHERE status = 'running'`
   );
   return result.rowCount || 0;
@@ -1904,7 +1904,7 @@ export async function requeueStaleRunningShards(timeoutMinutes: number = 30): Pr
   // 1. 回收超时的 running 分片
   const result = await query(
     `UPDATE real_collect_queue
-     SET status = 'pending', worker_id = NULL, start_time = NULL
+     SET status = 'pending', worker_id = NULL, start_time = NULL, priority = 0
      WHERE status = 'running' AND start_time < NOW() - ($1 || ' minutes')::INTERVAL
      RETURNING task_id`,
     [String(timeoutMinutes)]
