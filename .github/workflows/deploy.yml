@@ -357,14 +357,52 @@ jobs:
               fi
 
               for conf_file in $NGINX_CONFS; do
-                # 已有 /ws 配置则跳过（幂等）
+                # 检查是否已有 /ws 配置
                 if grep -q -E 'location\s+/ws' "$conf_file" 2>/dev/null; then
-                  echo ">>> [skip] $conf_file 已有 /ws 配置"
-                  continue
+                  # v2.4.1：检查已有 /ws 配置是否指向正确的后端端口（3002）
+                  #   原 bug：云服务器已存在 location /ws { proxy_pass http://127.0.0.1:3011/ws; }
+                  #   指向 web 容器（3011）而非 server 容器（3002），导致 WS 握手 502
+                  #   幂等检查只看"有没有 /ws"不看"对不对"，导致错误配置无法被修复
+                  #   修复：检测 /ws 的 proxy_pass 端口，若非 3002 则强制替换整个 location /ws 块
+                  EXISTING_WS_PORT=$(grep -A 20 -E 'location\s+/ws' "$conf_file" 2>/dev/null | grep -oE 'proxy_pass\s+http://[^:]+:[0-9]+' | grep -oE '[0-9]+$' | head -1)
+                  if [ "$EXISTING_WS_PORT" = "3002" ]; then
+                    echo ">>> [skip] $conf_file 已有 /ws 配置且端口正确（3002）"
+                    continue
+                  else
+                    echo ">>> [warn] $conf_file 已有 /ws 配置但端口错误（$EXISTING_WS_PORT），将强制替换为 3002"
+                    # 备份原文件
+                    cp "$conf_file" "$conf_file.bak.ws"
+                    # 用 awk 删除已有 location /ws { ... } 整块（直到匹配的 } ）
+                    awk '
+                      BEGIN { in_ws = 0; brace_depth = 0 }
+                      /location[[:space:]]+\/ws[[:space:]]*\{/ {
+                        in_ws = 1
+                        brace_depth = 1
+                        next
+                      }
+                      in_ws == 1 {
+                        # 统计 { 和 } 的数量（粗略，不处理字符串内的 {}）
+                        for (i = 1; i <= length($0); i++) {
+                          c = substr($0, i, 1)
+                          if (c == "{") brace_depth++
+                          else if (c == "}") {
+                            brace_depth--
+                            if (brace_depth == 0) {
+                              in_ws = 0
+                              next
+                            }
+                          }
+                        }
+                        next
+                      }
+                      { print }
+                    ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
+                    # 再走下面的"无 /ws 配置"流程插入新配置
+                  fi
                 fi
 
-                # 备份原文件
-                cp "$conf_file" "$conf_file.bak.ws"
+                # 备份原文件（若未备份）
+                [ -f "$conf_file.bak.ws" ] || cp "$conf_file" "$conf_file.bak.ws"
 
                 # 用 awk 在第一个 server_name 行之后插入 WS_BLOCK
                 # 如果没有 server_name，则在第一个 location 行之前插入
