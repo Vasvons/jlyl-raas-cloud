@@ -1727,6 +1727,35 @@ export async function migrate() {
 
       // 删除原唯一索引（基于 task_id 的，task_id 可空后无效）
       await client.query('DROP INDEX IF EXISTS idx_aeo_task_date_unique');
+
+      // v2.4.5：清理 aeo_report 重复数据（保留每组 user_id+report_date 最新的一条）
+      //   原 bug：原唯一索引是 (task_id, report_date)，不同 task_id 可以有相同 (user_id, report_date)
+      //   切换为 (user_id, report_date) 唯一索引时，已有的重复数据会导致创建失败：
+      //   ERROR: could not create unique index "idx_aeo_user_date_unique"
+      //   detail: Key (user_id, report_date)=(4, 2026-07-13) is duplicated.
+      const dupCount = await client.query(`
+        SELECT COUNT(*) as cnt FROM (
+          SELECT user_id, report_date, COUNT(*) as c
+          FROM aeo_report
+          GROUP BY user_id, report_date
+          HAVING COUNT(*) > 1
+        ) t
+      `);
+      const dupTotal = Number(dupCount.rows[0]?.cnt || 0);
+      if (dupTotal > 0) {
+        console.log(`[Migrate] v2.4.5 检测到 ${dupTotal} 组重复 (user_id, report_date)，清理中...`);
+        // 保留每组 id 最大的，删除其余
+        const deletedRes = await client.query(`
+          DELETE FROM aeo_report
+          WHERE id NOT IN (
+            SELECT MAX(id) FROM aeo_report
+            GROUP BY user_id, report_date
+          )
+          RETURNING id
+        `);
+        console.log(`[Migrate] v2.4.5 已清理 ${deletedRes.rowCount || 0} 条重复记录`);
+      }
+
       // 新建基于 (user_id, report_date) 的唯一索引（防止同客户同日重复生成）
       await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_aeo_user_date_unique ON aeo_report(user_id, report_date)`);
       console.log('[Migrate] v2.4.4 aeo_report 唯一索引已切换为 (user_id, report_date)');
