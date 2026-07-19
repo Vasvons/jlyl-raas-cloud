@@ -131,6 +131,7 @@ import { testModelConnection, chatCompletion } from '../services/content/aiClien
 import { executeWritingTask, regenerateArticle } from '../services/content/articleGenerator';
 import { extractTriplesFromKnowledge } from '../services/content/tripleExtractor';
 import { wsBroadcast } from '../wsServer';
+import multer from 'multer';
 
 const router = Router();
 
@@ -1930,6 +1931,59 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
     const valid = enriched.filter(Boolean);
     res.json({ code: 200, data: valid });
   } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// v2.5.0：云端发布 Worker 上传截图（接收二进制，转存 OSS，返回 URL）
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+router.post('/publish/records/:id/screenshot', upload.single('screenshot'), async (req: Request, res: Response) => {
+  try {
+    const recordId = Number(req.params.id);
+    if (!req.file?.buffer) {
+      return res.status(400).json({ code: 400, message: '缺少 screenshot 文件' });
+    }
+
+    // 通过 record_id 反查 user_id（record -> task -> user_id）
+    const recordResult = await query(
+      `SELECT pt.user_id FROM publish_record pr
+       JOIN publish_task pt ON pt.id = pr.task_id
+       WHERE pr.id = $1`,
+      [recordId]
+    );
+    if (recordResult.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '记录不存在' });
+    }
+    const userId = recordResult.rows[0].user_id;
+
+    // 拉取用户的 OSS 配置
+    const cfg = await getCloudApiConfig(userId);
+    if (!cfg?.aliyun_access_key || !cfg?.aliyun_access_secret || !cfg?.aliyun_oss_bucket) {
+      return res.status(400).json({ code: 400, message: '未配置阿里云 OSS' });
+    }
+
+    // 动态 import OSS（避免 server 启动时加载未使用依赖）
+    const OSS = (await import('ali-oss')).default;
+    const client = new OSS({
+      accessKeyId: cfg.aliyun_access_key,
+      accessKeySecret: cfg.aliyun_access_secret,
+      bucket: cfg.aliyun_oss_bucket,
+      endpoint: cfg.aliyun_oss_endpoint || 'oss-cn-hangzhou.aliyuncs.com',
+      secure: true,
+    });
+
+    const today = new Date().toISOString().slice(0, 10);
+    const key = `publish-screenshots/${today}/record-${recordId}-${Date.now()}.png`;
+    await client.put(key, req.file.buffer);
+
+    const cdnBase = cfg.aliyun_oss_cdn ? cfg.aliyun_oss_cdn.replace(/\/$/, '') : '';
+    const url = cdnBase
+      ? `${cdnBase}/${key}`
+      : `https://${cfg.aliyun_oss_bucket}.${(cfg.aliyun_oss_endpoint || 'oss-cn-hangzhou.aliyuncs.com').replace('https://', '')}/${key}`;
+
+    res.json({ code: 200, data: { url } });
+  } catch (err: any) {
+    console.error('[Screenshot Upload] 失败:', err);
     res.status(500).json({ code: 500, message: err.message });
   }
 });

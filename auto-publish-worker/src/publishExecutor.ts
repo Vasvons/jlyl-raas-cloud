@@ -12,8 +12,6 @@
  */
 import { chromium, BrowserContext } from 'playwright';
 import axios from 'axios';
-import fs from 'fs';
-import path from 'path';
 import { getStealthScript, getAntiDetectionArgs, shouldUseHeadless } from './stealthLoader';
 import { getStableFingerprint, fingerprintToContextOptions, getFingerprintInjectionScript } from './fingerprintManager';
 import { normalizeToPlaywrightStorageState, injectStorageState, captureStorageState } from './storageStateManager';
@@ -337,8 +335,27 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     logger.info(`开始执行 step_list（${record.step_list.steps.length} 步）`);
     await executeSteps(record.step_list.steps as Step[], ctx);
 
-    // ---- 4. 截图存证 ----
-    const screenshotPath = await takeScreenshot(page, recordId);
+    // ---- 4. 截图存证（v2.5.0：上传 OSS） ----
+    const screenshotBuffer = await takeScreenshot(page, recordId);
+    let screenshotPath: string | undefined;
+    if (screenshotBuffer) {
+      try {
+        const FormData = (await import('form-data')).default;
+        const formData = new FormData();
+        formData.append('screenshot', screenshotBuffer, { filename: `record-${recordId}.png`, contentType: 'image/png' });
+        const resp = await axios.post(
+          `${SERVER_URL}/content/publish/records/${recordId}/screenshot`,
+          formData,
+          {
+            headers: { 'X-Worker-Secret': WORKER_SECRET, ...formData.getHeaders() },
+            timeout: 30000,
+          }
+        );
+        screenshotPath = resp.data?.data?.url;
+      } catch (e: any) {
+        logger.warn(`截图上传 server 失败: ${e.message}`);
+      }
+    }
 
     // ---- 5. 获取发布后文章 URL ----
     const platformUrl = extractPlatformUrl(ctx.lastEvalResult);
@@ -486,16 +503,13 @@ function classifyError(errorMsg: string): { status: PublishResult['status']; err
   return { status: 'failed', error_type: 'unknown' };
 }
 
-async function takeScreenshot(page: any, recordId: number): Promise<string | undefined> {
+/**
+ * 截图并返回 buffer（v2.5.0：不再写本地文件，直接返回 buffer 供 OSS 上传）
+ */
+async function takeScreenshot(page: any, recordId: number): Promise<Buffer | undefined> {
   try {
-    const screenshotDir = path.join(process.cwd(), 'publish-screenshots');
-    if (!fs.existsSync(screenshotDir)) {
-      fs.mkdirSync(screenshotDir, { recursive: true });
-    }
-    const filename = `record-${recordId}-${Date.now()}.png`;
-    const filepath = path.join(screenshotDir, filename);
-    await page.screenshot({ path: filepath, fullPage: false });
-    return filepath;
+    const buffer = await page.screenshot({ type: 'png', fullPage: false });
+    return buffer as Buffer;
   } catch (e: any) {
     logger.warn(`截图失败: ${e.message}`);
     return undefined;
