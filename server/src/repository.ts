@@ -3551,8 +3551,14 @@ export async function insertAeoReport(params: {
   rawAnalysis: string;
   recordIds: number[];
 }): Promise<number> {
-  // v2.2.9：防御性校验，避免 NaN 传入 SQL 导致 "invalid input syntax for type integer: 'NaN'"
-  const safeTaskId = Number.isFinite(params.taskId) ? params.taskId : 0;
+  // v2.4.4：修复 taskId 非法导致外键约束失败
+  //   原 bug：taskId 非法时降级为 0，但 task_id=0 在 real_collect_task 表中也不存在，
+  //     fk_aeo_task 外键约束拒绝 INSERT，导致日报生成失败
+  //   修复：
+  //   1. migrate.ts 已移除 fk_aeo_task 外键 + task_id 改为可空
+  //   2. 这里 taskId 非法时直接用 NULL（不再降级为 0）
+  //   3. ON CONFLICT 改为 (user_id, report_date)（与 migrate 新建的唯一索引对齐）
+  const safeTaskId = Number.isFinite(params.taskId) && params.taskId > 0 ? params.taskId : null;
   const safeVisibility = Number.isFinite(params.visibilityScore) ? params.visibilityScore : 0;
   const safeMention = Number.isFinite(params.mentionCount) ? params.mentionCount : 0;
   const safePositive = Number.isFinite(params.positiveRatio) ? params.positiveRatio : 0;
@@ -3561,8 +3567,8 @@ export async function insertAeoReport(params: {
   const safeRecordIds = Array.isArray(params.recordIds)
     ? params.recordIds.filter(id => Number.isFinite(id))
     : [];
-  if (!Number.isFinite(params.taskId)) {
-    console.warn(`[insertAeoReport] taskId 非法(${params.taskId})，已降级为 0；userId=${params.userId}, reportDate=${params.reportDate}`);
+  if (!Number.isFinite(params.taskId) || params.taskId <= 0) {
+    console.log(`[insertAeoReport] taskId 非法或无意义(${params.taskId})，使用 NULL；userId=${params.userId}, reportDate=${params.reportDate}`);
   }
   const result = await query(
     `INSERT INTO aeo_report
@@ -3570,7 +3576,7 @@ export async function insertAeoReport(params: {
       positive_ratio, neutral_ratio, negative_ratio,
       competitor_analysis, suggestions, raw_analysis, record_ids)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     ON CONFLICT (task_id, report_date) DO UPDATE SET
+     ON CONFLICT (user_id, report_date) DO UPDATE SET
        visibility_score = EXCLUDED.visibility_score,
        mention_count = EXCLUDED.mention_count,
        positive_ratio = EXCLUDED.positive_ratio,

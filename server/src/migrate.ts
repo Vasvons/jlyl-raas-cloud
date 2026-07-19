@@ -1699,6 +1699,39 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_writing_suggestion_period_report ON aeo_writing_suggestion(period_report_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_aeo_writing_suggestion_report_date ON aeo_writing_suggestion(user_id, source_type, report_date DESC)`);
 
+    // ============ v2.4.4：修复 aeo_report 外键约束导致日报生成失败 ============
+    //   原 bug：aeo_report.task_id 有外键 fk_aeo_task 引用 real_collect_task(id)，
+    //     但日报是跨任务汇总（按 user_id 维度生成），taskId 只是占位。
+    //     当占位 taskId 不存在于 real_collect_task 时（如任务被删除或 id 不匹配），
+    //     INSERT 违反外键约束报错："violates foreign key constraint fk_aeo_task"
+    //     导致 18/19 号日报连续两天没生成。
+    //   修复：
+    //   1. 移除 fk_aeo_task 外键约束（日报不强制绑定具体 task）
+    //   2. task_id 改为可空（BIGINT NOT NULL → BIGINT，允许 NULL）
+    //   3. 删除原唯一索引 idx_aeo_task_date_unique(task_id, report_date)（task_id 为 NULL 时无效）
+    //   4. 新建唯一索引 idx_aeo_user_date_unique(user_id, report_date) 防止同客户同日重复
+    {
+      // 检查 fk_aeo_task 是否存在，存在则移除
+      const fkCheck = await client.query(`
+        SELECT conname FROM pg_constraint
+        WHERE conname = 'fk_aeo_task' AND contype = 'f'
+      `);
+      if (fkCheck.rowCount && fkCheck.rowCount > 0) {
+        await client.query('ALTER TABLE aeo_report DROP CONSTRAINT fk_aeo_task');
+        console.log('[Migrate] v2.4.4 已移除 aeo_report.fk_aeo_task 外键约束');
+      }
+
+      // task_id 改为可空
+      await client.query('ALTER TABLE aeo_report ALTER COLUMN task_id DROP NOT NULL');
+      console.log('[Migrate] v2.4.4 aeo_report.task_id 已改为可空');
+
+      // 删除原唯一索引（基于 task_id 的，task_id 可空后无效）
+      await client.query('DROP INDEX IF EXISTS idx_aeo_task_date_unique');
+      // 新建基于 (user_id, report_date) 的唯一索引（防止同客户同日重复生成）
+      await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_aeo_user_date_unique ON aeo_report(user_id, report_date)`);
+      console.log('[Migrate] v2.4.4 aeo_report 唯一索引已切换为 (user_id, report_date)');
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
