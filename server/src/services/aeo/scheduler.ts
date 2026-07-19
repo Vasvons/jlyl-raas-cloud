@@ -11,12 +11,25 @@ import { query as dbQuery } from '../../db';
 
 let aeoSchedulerStarted = false;
 
+// v2.3.7：显式指定 cron 时区为 Asia/Shanghai
+//   原 bug：cron.schedule 未传 timezone 参数，依赖容器 TZ 环境变量。
+//     虽 Dockerfile 设置了 TZ=Asia/Shanghai，但若部署环境覆盖了 TZ（如 docker-compose.yml
+//     设置 environment.TZ=UTC），cron 会在 UTC 0:00 = 北京 8:00 才触发，
+//     导致 generateAeoReport 内部 hour=8 >= 6 → reportDate=今天 → 生成"今天"残缺日报占位，
+//     凌晨再来时被 checkAeoReportExists 跳过，用户感知"昨天日报没生成"
+//   修复：所有 cron.schedule 显式传 { timezone: 'Asia/Shanghai' }，不依赖环境变量
+const CRON_TZ = 'Asia/Shanghai';
+
 export function startAeoScheduler(): void {
   if (aeoSchedulerStarted) {
     console.log('[AEO] 调度器已启动，跳过');
     return;
   }
   aeoSchedulerStarted = true;
+
+  // v2.3.7：记录调度器启动时间和时区，便于排查"日报没生成"类问题
+  const startupTime = new Date().toLocaleString('sv-SE', { timeZone: CRON_TZ });
+  console.log(`[AEO] 调度器启动 @ ${startupTime} (${CRON_TZ})，下次日报生成: ${getNextCronRunTime('0 0 * * *')}`);
 
   // v2.2.3：启动时补生成昨天的日报（防止部署重启导致 cron 0 2 * * * 错过）
   // 延迟 30 秒执行，等数据库连接池就绪
@@ -40,21 +53,51 @@ export function startAeoScheduler(): void {
   //     白天生成的日报用当天日期，但当天分片报告还没产出 → 生成空日报占位，
   //     凌晨再来生成时被 checkAeoReportExists 跳过 → 永远是空日报
   // 修复：cron 改为 0 0 * * *（凌晨 0 点），且 generateAeoReport 内部用"前一天"日期
+  // v2.3.7：显式 timezone: 'Asia/Shanghai'，不依赖容器环境变量
   cron.schedule('0 0 * * *', async () => {
+    const triggerTime = new Date().toLocaleString('sv-SE', { timeZone: CRON_TZ });
+    console.log(`[AEO] 凌晨 cron 触发 @ ${triggerTime} (${CRON_TZ})，开始生成日报`);
     await generateDailyReports();
-  });
+  }, { timezone: CRON_TZ });
 
   // v2.0.0: 每小时检查是否需要生成周报/月报（按客户创建日计算周期）
   // 依次执行（非并发），避免资源压力
+  // v2.3.7：显式 timezone: 'Asia/Shanghai'
   cron.schedule('0 * * * *', async () => {
     try {
       await checkAndGeneratePeriodReports();
     } catch (e: any) {
       console.error('[AEO-Period] 周期报告调度异常:', e.message);
     }
-  });
+  }, { timezone: CRON_TZ });
 
   console.log('[AEO] 调度器已启动(每天凌晨0点生成AEO日报+触发自动写作 + 每小时检查周/月报 + 启动补生成)');
+}
+
+/**
+ * v2.3.7：计算下一次 cron 触发时间（仅用于日志显示，便于排查）
+ * 简化实现：仅支持 '0 0 * * *' 和 '0 * * * *' 两种表达式
+ */
+function getNextCronRunTime(expression: string): string {
+  try {
+    const now = new Date();
+    const nowShanghai = new Date(now.toLocaleString('en-US', { timeZone: CRON_TZ }));
+    if (expression === '0 0 * * *') {
+      // 明天 0 点
+      const tomorrow = new Date(nowShanghai.getTime() + 24 * 60 * 60 * 1000);
+      tomorrow.setHours(0, 0, 0, 0);
+      return tomorrow.toLocaleString('sv-SE', { timeZone: CRON_TZ });
+    }
+    if (expression === '0 * * * *') {
+      // 下一个小时 0 分
+      const nextHour = new Date(nowShanghai.getTime() + 60 * 60 * 1000);
+      nextHour.setMinutes(0, 0, 0);
+      return nextHour.toLocaleString('sv-SE', { timeZone: CRON_TZ });
+    }
+    return expression;
+  } catch {
+    return expression;
+  }
 }
 
 /**
