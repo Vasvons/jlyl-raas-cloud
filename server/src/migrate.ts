@@ -995,6 +995,13 @@ export async function migrate() {
     // 用于飞轮总览页面"写作建议池来源"链接开关，决定从哪个周期报告池消费建议
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS suggestion_source_period_type VARCHAR(20) DEFAULT 'daily'`);
 
+    // v2.3.5：补齐 daily_article_quota 字段（v2.3.0 引入但 migrate 漏加，导致 PUT /content/aeo-quota 500 错误）
+    //   原 bug：repository.ts AEO_QUOTA_FIELDS 数组里包含 'daily_article_quota'，
+    //     upsertAeoQuotaConfig 也会写入该字段，但 migrate.ts 没有对应的 ALTER TABLE 语句，
+    //     数据库表中不存在该字段，UPDATE 时 PostgreSQL 报 column does not exist 错误，
+    //     路由 catch 后返回 500，前端"自动化写作配置"保存失败
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS daily_article_quota INTEGER DEFAULT 0`);
+
     // v2.2.18：修复 publish_task / publish_record 外键缺失 ON DELETE CASCADE 导致的 500 错误
     // 原 bug：publish_task.article_id REFERENCES article(id) 和 publish_record.task_id REFERENCES publish_task(id)
     //   都没有 CASCADE，删除 article 时若存在关联 publish_task 会触发外键约束错误

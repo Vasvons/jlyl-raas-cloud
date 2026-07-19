@@ -1789,6 +1789,10 @@ export async function getTaskShardProgress(taskId: number): Promise<{
   // 查询本轮命中品牌次数和总查询记录数
   // real_collect_record 表没有 round_no 字段，改用 query_time >= round_start_time 过滤当前轮次
   // 如果 round_start_time 为 NULL，统计该任务的所有记录
+  // v2.3.5：当严格按轮次过滤返回 0 条记录且任务正在执行（runningShards > 0）时，
+  //   回退查询最近 24 小时内的记录，避免新轮次刚开始还没写入记录时前端显示全 0
+  //   原 bug：新轮次刚启动的瞬间，real_collect_record 表里 query_time >= round_start_time 的记录可能为 0，
+  //     导致前端"品牌命中/查询记录/命中率"全显示 0，用户体验差
   let brandHitCount = 0;
   let totalRecords = 0;
   let brandHitRate = 0;
@@ -1803,6 +1807,19 @@ export async function getTaskShardProgress(taskId: number): Promise<{
          WHERE task_id = $1 AND query_time >= $2`,
         [taskId, roundStartTime]
       );
+      // v2.3.5：本轮严格过滤返回 0 但任务正在执行时，回退查最近 24 小时
+      const strictTotal = parseInt(brandResult.rows[0]?.total_records || '0');
+      const runningCount = parseInt(row.running || '0');
+      if (strictTotal === 0 && runningCount > 0) {
+        brandResult = await query(
+          `SELECT
+             COUNT(*) as total_records,
+             COUNT(*) FILTER (WHERE brand_matched = true) as brand_hits
+           FROM real_collect_record
+           WHERE task_id = $1 AND query_time >= NOW() - INTERVAL '24 hours'`,
+          [taskId]
+        );
+      }
     } else {
       // round_start_time 为 NULL，统计该任务的所有记录
       brandResult = await query(
