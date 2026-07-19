@@ -310,6 +310,123 @@ jobs:
                 systemctl start nginx 2>/dev/null || service nginx start 2>/dev/null || nginx 2>&1
                 sleep 3
               fi
+
+              # v2.4.0：自动配置 WebSocket 转发
+              #   原因：Nginx 默认不转发 WS 的 Upgrade/Connection 头，导致桌面端 WS 握手失败
+              #   策略：查找处理 jlyl 域名的 server 块，在第一个 location 之前插入 location /ws
+              #   幂等：已有 /ws 配置则跳过，不重复添加
+              echo ">>> 检查并配置 WebSocket 转发..."
+              python3 << 'PYEOF'
+              import os, re, glob, shutil
+
+              WS_BLOCK = """
+                  # v2.4.0 WebSocket 转发（自动添加，请勿删除）
+                  location /ws {
+                      proxy_pass http://127.0.0.1:3002;
+                      proxy_http_version 1.1;
+                      proxy_set_header Upgrade $http_upgrade;
+                      proxy_set_header Connection "upgrade";
+                      proxy_set_header Host $host;
+                      proxy_read_timeout 86400s;
+                      proxy_send_timeout 86400s;
+                  }
+              """
+
+              # 候选配置文件
+              candidates = []
+              for pattern in ['/etc/nginx/sites-enabled/*', '/etc/nginx/conf.d/*',
+                              '/etc/nginx/sites-available/*', '/etc/nginx/nginx.conf']:
+                  if '*' in pattern:
+                      candidates.extend(glob.glob(pattern))
+                  elif os.path.exists(pattern):
+                      candidates.append(pattern)
+
+              modified = []
+              for conf_file in candidates:
+                  try:
+                      with open(conf_file, 'r', encoding='utf-8', errors='ignore') as f:
+                          content = f.read()
+                  except Exception:
+                      continue
+
+                  # 必须包含 jlyl 域名或 3002 端口（说明是处理 jlyl 业务的配置）
+                  if 'jlyl' not in content and 'report.jlyl' not in content and '3002' not in content:
+                      continue
+
+                  # 已有 /ws 配置则跳过（幂等）
+                  if re.search(r'location\s+/ws', content):
+                      print(f"[skip] {conf_file} 已有 /ws 配置")
+                      continue
+
+                  # 找到第一个 server { ... server_name ...; } 块，在 server_name 行之后插入
+                  # 用正则匹配 server_name 行（含分号），在分号后插入 WS 块
+                  match = re.search(r'(server_name\s+[^;]+;)', content)
+                  if not match:
+                      # 没有 server_name，尝试在第一个 location 之前插入
+                      loc_match = re.search(r'(\s+location\s+)', content)
+                      if not loc_match:
+                          print(f"[skip] {conf_file} 未找到合适的插入位置（无 server_name 也无 location）")
+                          continue
+                      insert_pos = loc_match.start()
+                  else:
+                      insert_pos = match.end()
+
+                  new_content = content[:insert_pos] + WS_BLOCK + content[insert_pos:]
+
+                  # 备份原文件
+                  try:
+                      shutil.copy2(conf_file, conf_file + '.bak.ws')
+                  except Exception as e:
+                      print(f"[warn] 备份 {conf_file} 失败: {e}")
+
+                  try:
+                      with open(conf_file, 'w', encoding='utf-8') as f:
+                          f.write(new_content)
+                      modified.append(conf_file)
+                      print(f"[modified] {conf_file}")
+                  except Exception as e:
+                      print(f"[error] 写入 {conf_file} 失败: {e}")
+
+              if modified:
+                  print(f"共修改 {len(modified)} 个文件: {modified}")
+              else:
+                  print("未找到需要修改的配置文件（可能已配置或无 jlyl 相关 server 块）")
+              PYEOF
+
+              # 测试并重载 nginx
+              echo ">>> 测试 nginx 配置..."
+              if nginx -t 2>&1; then
+                echo ">>> nginx 配置测试通过，重载..."
+                systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || nginx -s reload 2>&1
+                sleep 2
+
+                # 验证 WS 端点是否可访问（curl 升级握手测试）
+                echo ">>> 验证 WebSocket 端点..."
+                WS_TEST=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: report.jlyl.net.cn" \
+                  -H "Upgrade: websocket" \
+                  -H "Connection: Upgrade" \
+                  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+                  -H "Sec-WebSocket-Version: 13" \
+                  -k https://127.0.0.1/ws 2>&1 || echo "CURL_FAILED")
+                echo ">>> WS 握手响应 HTTP 状态码: $WS_TEST"
+                if [ "$WS_TEST" = "101" ] || [ "$WS_TEST" = "426" ] || [ "$WS_TEST" = "400" ]; then
+                  echo ">>> WS 端点响应正常（$WS_TEST 表示 Nginx 已转发到后端）"
+                elif [ "$WS_TEST" = "404" ]; then
+                  echo ">>> 警告：WS 返回 404，可能配置未生效或 server 块不匹配"
+                else
+                  echo ">>> WS 返回: $WS_TEST（可能是鉴权失败，握手流程正确）"
+                fi
+              else
+                echo ">>> 警告：nginx 配置测试失败，回滚 WS 配置"
+                for bak in /etc/nginx/*.bak.ws /etc/nginx/conf.d/*.bak.ws /etc/nginx/sites-enabled/*.bak.ws /etc/nginx/sites-available/*.bak.ws; do
+                  if [ -f "$bak" ]; then
+                    orig="${bak%.bak.ws}"
+                    cp "$bak" "$orig"
+                    echo ">>> 已回滚: $orig"
+                  fi
+                done
+              fi
+
               echo ">>> nginx 状态:"
               systemctl status nginx 2>/dev/null | head -10 || ps aux | grep nginx | head -5
               echo ">>> === nginx 错误日志（最后 30 行）==="
