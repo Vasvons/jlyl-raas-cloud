@@ -315,20 +315,23 @@ jobs:
               #   原因：Nginx 默认不转发 WS 的 Upgrade/Connection 头，导致桌面端 WS 握手失败
               #   策略：查找处理 jlyl 域名的 server 块，在 server_name 行之后插入 location /ws
               #   幂等：已有 /ws 配置则跳过，不重复添加
-              #   实现用纯 bash（awk + sed），避免 Python heredoc 对 CRLF 换行符敏感
+              #   实现用纯 bash（awk + printf），避免多行字符串破坏 YAML 缩进
               echo ">>> 检查并配置 WebSocket 转发..."
 
-              # WS 配置块（多行字符串，用 awk 传参，避免 sed 的特殊字符转义问题）
-              WS_BLOCK='    # v2.4.0 WebSocket 转发（自动添加，请勿删除）
-    location /ws {
-        proxy_pass http://127.0.0.1:3002;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host $host;
-        proxy_read_timeout 86400s;
-        proxy_send_timeout 86400s;
-    }'
+              # WS 配置块写入临时文件（用 printf 逐行拼接，避免多行字符串在 YAML 中的缩进问题）
+              #   单引号内 $ 不展开，$http_upgrade / $host 保持字面量传给 nginx
+              printf '%s\n' \
+                '    # v2.4.0 WebSocket 转发（自动添加，请勿删除）' \
+                '    location /ws {' \
+                '        proxy_pass http://127.0.0.1:3002;' \
+                '        proxy_http_version 1.1;' \
+                '        proxy_set_header Upgrade $http_upgrade;' \
+                '        proxy_set_header Connection "upgrade";' \
+                '        proxy_set_header Host $host;' \
+                '        proxy_read_timeout 86400s;' \
+                '        proxy_send_timeout 86400s;' \
+                '    }' > /tmp/ws_block.conf
+              WS_BLOCK=$(cat /tmp/ws_block.conf)
 
               # 找到包含 jlyl/3002 关键字的 nginx 配置文件
               NGINX_CONFS=""
