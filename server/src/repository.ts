@@ -1880,11 +1880,18 @@ export async function getTaskShardProgress(taskId: number): Promise<{
 
 // ============ 循环调度相关 ============
 
-/** 服务器重启时恢复：将所有 running 状态的队列任务重置为 pending */
+/**
+ * 服务器重启时恢复：将所有 running 状态的队列任务重置为 pending。
+ *
+ * v2.4.8：priority=1（不是 0），让被打断的分片在 dequeue 时通过 `ORDER BY priority DESC`
+ *  排在最前，优先续接部署前正在执行的任务，而不是按公平轮询可能轮到其他任务。
+ *  多个被打断的分片之间再按 last_consumed ASC 公平轮询（同时 running 的分片最多 8 个，
+ *  worker 并发上限）。所有 priority=1 处理完后，回到 priority=0 的普通轮询。
+ */
 export async function resetRunningQueueOnRestart(): Promise<number> {
   const result = await query(
     `UPDATE real_collect_queue
-     SET status = 'pending', worker_id = NULL, start_time = NULL, priority = 0
+     SET status = 'pending', worker_id = NULL, start_time = NULL, priority = 1
      WHERE status = 'running'`
   );
   return result.rowCount || 0;
@@ -1901,10 +1908,10 @@ export async function requeueStaleRunningShards(timeoutMinutes: number = 30): Pr
   requeuedCount: number;
   resetTaskIds: number[];
 }> {
-  // 1. 回收超时的 running 分片
+  // 1. 回收超时的 running 分片（v2.4.8：priority=1 优先续接，与 resetRunningQueueOnRestart 一致）
   const result = await query(
     `UPDATE real_collect_queue
-     SET status = 'pending', worker_id = NULL, start_time = NULL, priority = 0
+     SET status = 'pending', worker_id = NULL, start_time = NULL, priority = 1
      WHERE status = 'running' AND start_time < NOW() - ($1 || ' minutes')::INTERVAL
      RETURNING task_id`,
     [String(timeoutMinutes)]
