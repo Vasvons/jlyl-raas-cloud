@@ -313,85 +313,86 @@ jobs:
 
               # v2.4.0：自动配置 WebSocket 转发
               #   原因：Nginx 默认不转发 WS 的 Upgrade/Connection 头，导致桌面端 WS 握手失败
-              #   策略：查找处理 jlyl 域名的 server 块，在第一个 location 之前插入 location /ws
+              #   策略：查找处理 jlyl 域名的 server 块，在 server_name 行之后插入 location /ws
               #   幂等：已有 /ws 配置则跳过，不重复添加
+              #   实现用纯 bash（awk + sed），避免 Python heredoc 对 CRLF 换行符敏感
               echo ">>> 检查并配置 WebSocket 转发..."
-              python3 << 'PYEOF'
-              import os, re, glob, shutil
 
-              WS_BLOCK = """
-                  # v2.4.0 WebSocket 转发（自动添加，请勿删除）
-                  location /ws {
-                      proxy_pass http://127.0.0.1:3002;
-                      proxy_http_version 1.1;
-                      proxy_set_header Upgrade $http_upgrade;
-                      proxy_set_header Connection "upgrade";
-                      proxy_set_header Host $host;
-                      proxy_read_timeout 86400s;
-                      proxy_send_timeout 86400s;
-                  }
-              """
+              # WS 配置块（多行字符串，用 awk 传参，避免 sed 的特殊字符转义问题）
+              WS_BLOCK='    # v2.4.0 WebSocket 转发（自动添加，请勿删除）
+    location /ws {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 86400s;
+        proxy_send_timeout 86400s;
+    }'
 
-              # 候选配置文件
-              candidates = []
-              for pattern in ['/etc/nginx/sites-enabled/*', '/etc/nginx/conf.d/*',
-                              '/etc/nginx/sites-available/*', '/etc/nginx/nginx.conf']:
-                  if '*' in pattern:
-                      candidates.extend(glob.glob(pattern))
-                  elif os.path.exists(pattern):
-                      candidates.append(pattern)
+              # 找到包含 jlyl/3002 关键字的 nginx 配置文件
+              NGINX_CONFS=""
+              for dir in /etc/nginx/sites-enabled /etc/nginx/conf.d /etc/nginx/sites-available; do
+                if [ -d "$dir" ]; then
+                  for f in "$dir"/*; do
+                    [ -f "$f" ] || continue
+                    if grep -q -E 'jlyl|report\.jlyl|3002' "$f" 2>/dev/null; then
+                      NGINX_CONFS="$NGINX_CONFS $f"
+                    fi
+                  done
+                fi
+              done
+              # 单独检查 nginx.conf
+              if [ -f /etc/nginx/nginx.conf ] && grep -q -E 'jlyl|report\.jlyl|3002' /etc/nginx/nginx.conf 2>/dev/null; then
+                NGINX_CONFS="$NGINX_CONFS /etc/nginx/nginx.conf"
+              fi
 
-              modified = []
-              for conf_file in candidates:
-                  try:
-                      with open(conf_file, 'r', encoding='utf-8', errors='ignore') as f:
-                          content = f.read()
-                  except Exception:
-                      continue
+              if [ -z "$NGINX_CONFS" ]; then
+                echo ">>> 未找到包含 jlyl/3002 的 nginx 配置文件"
+              else
+                echo ">>> 候选配置文件: $NGINX_CONFS"
+              fi
 
-                  # 必须包含 jlyl 域名或 3002 端口（说明是处理 jlyl 业务的配置）
-                  if 'jlyl' not in content and 'report.jlyl' not in content and '3002' not in content:
-                      continue
+              for conf_file in $NGINX_CONFS; do
+                # 已有 /ws 配置则跳过（幂等）
+                if grep -q -E 'location\s+/ws' "$conf_file" 2>/dev/null; then
+                  echo ">>> [skip] $conf_file 已有 /ws 配置"
+                  continue
+                fi
 
-                  # 已有 /ws 配置则跳过（幂等）
-                  if re.search(r'location\s+/ws', content):
-                      print(f"[skip] {conf_file} 已有 /ws 配置")
-                      continue
+                # 备份原文件
+                cp "$conf_file" "$conf_file.bak.ws"
 
-                  # 找到第一个 server { ... server_name ...; } 块，在 server_name 行之后插入
-                  # 用正则匹配 server_name 行（含分号），在分号后插入 WS 块
-                  match = re.search(r'(server_name\s+[^;]+;)', content)
-                  if not match:
-                      # 没有 server_name，尝试在第一个 location 之前插入
-                      loc_match = re.search(r'(\s+location\s+)', content)
-                      if not loc_match:
-                          print(f"[skip] {conf_file} 未找到合适的插入位置（无 server_name 也无 location）")
-                          continue
-                      insert_pos = loc_match.start()
-                  else:
-                      insert_pos = match.end()
-
-                  new_content = content[:insert_pos] + WS_BLOCK + content[insert_pos:]
-
-                  # 备份原文件
-                  try:
-                      shutil.copy2(conf_file, conf_file + '.bak.ws')
-                  except Exception as e:
-                      print(f"[warn] 备份 {conf_file} 失败: {e}")
-
-                  try:
-                      with open(conf_file, 'w', encoding='utf-8') as f:
-                          f.write(new_content)
-                      modified.append(conf_file)
-                      print(f"[modified] {conf_file}")
-                  except Exception as e:
-                      print(f"[error] 写入 {conf_file} 失败: {e}")
-
-              if modified:
-                  print(f"共修改 {len(modified)} 个文件: {modified}")
-              else:
-                  print("未找到需要修改的配置文件（可能已配置或无 jlyl 相关 server 块）")
-              PYEOF
+                # 用 awk 在第一个 server_name 行之后插入 WS_BLOCK
+                # 如果没有 server_name，则在第一个 location 行之前插入
+                if grep -q -E 'server_name\s' "$conf_file"; then
+                  awk -v block="$WS_BLOCK" '
+                    !inserted && /server_name[[:space:]]+[^;]+;/ {
+                      print $0
+                      print block
+                      inserted=1
+                      next
+                    }
+                    { print }
+                  ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
+                  echo ">>> [modified] $conf_file (插入到 server_name 之后)"
+                elif grep -q -E '^[[:space:]]*location[[:space:]]' "$conf_file"; then
+                  awk -v block="$WS_BLOCK" '
+                    !inserted && /^[[:space:]]*location[[:space:]]/ {
+                      print block
+                      print ""
+                      print $0
+                      inserted=1
+                      next
+                    }
+                    { print }
+                  ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
+                  echo ">>> [modified] $conf_file (插入到第一个 location 之前)"
+                else
+                  echo ">>> [skip] $conf_file 未找到合适的插入位置"
+                  rm -f "$conf_file.bak.ws"
+                fi
+              done
 
               # 测试并重载 nginx
               echo ">>> 测试 nginx 配置..."
