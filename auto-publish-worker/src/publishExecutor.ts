@@ -19,6 +19,7 @@ import { getStableFingerprint, fingerprintToContextOptions, getFingerprintInject
 import { normalizeToPlaywrightStorageState, injectStorageState, captureStorageState } from './storageStateManager';
 import { checkLoginState, detectBanSignal, PlatformLoginCheck } from './loginDetector';
 import { executeSteps, Step, StepExecutionContext } from './stepExecutor';
+import { getPlatformAdapter, isPlatformSupported } from './platforms';
 import * as logger from './logger';
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
@@ -227,13 +228,21 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       }
     }
 
-    // ---- 2. 登录预检 ----
-    const loginCheckConfig: PlatformLoginCheck = {
-      login_check_url: record.step_list.login_check_url,
-      login_check_selector: record.step_list.login_check_selector,
-      logout_keywords: record.step_list.logout_keywords,
-      login_check_url_pattern: record.step_list.login_check_url_pattern,
-    };
+    // ---- 2. 登录预检（v2.5.0：走平台适配器，支持 wxgzh #jumpUrl 等特殊处理） ----
+    const adapter = isPlatformSupported(platform) ? getPlatformAdapter(platform) : null;
+    const loginCheckConfig: PlatformLoginCheck = adapter
+      ? {
+          login_check_url: adapter.loginCheck.url,
+          login_check_selector: adapter.loginCheck.selector,
+          logout_keywords: adapter.loginCheck.logoutKeywords,
+          login_check_url_pattern: adapter.loginCheck.urlPattern,
+        }
+      : {
+          login_check_url: record.step_list.login_check_url,
+          login_check_selector: record.step_list.login_check_selector,
+          logout_keywords: record.step_list.logout_keywords,
+          login_check_url_pattern: record.step_list.login_check_url_pattern,
+        };
 
     if (loginCheckConfig.login_check_url) {
       logger.info(`登录预检: 导航到 ${loginCheckConfig.login_check_url}`);
@@ -241,10 +250,19 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
         logger.warn(`预检导航失败: ${e.message}`);
       });
 
-      // 等待页面稳定
-      await page.waitForTimeout(5000);
+      // v2.5.0：调用适配器的 onAfterNavigateForLoginCheck（wxgzh 会自动点 #jumpUrl）
+      if (adapter) {
+        const pushLog = (msg: string, level?: 'info' | 'warn' | 'error') => {
+          if (level === 'error') logger.error(msg);
+          else if (level === 'warn') logger.warn(msg);
+          else logger.info(msg);
+        };
+        await adapter.onAfterNavigateForLoginCheck?.(page, context, { recordId, pushLog });
+      } else {
+        await page.waitForTimeout(5000);
+      }
 
-      // 诊断信息
+      // 诊断信息（保留原有逻辑）
       try {
         const diagUrl = page.url();
         const diagCookies = await context.cookies();
@@ -264,18 +282,32 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
 
       const loginCheck = await checkLoginState(page, platform, loginCheckConfig);
       if (!loginCheck.valid) {
-        // 云端不支持交互式登录恢复，直接报 login_expired
-        logger.error(`登录态失效: ${loginCheck.reason}（云端不支持自动恢复，请重新登录账号）`);
-        void reportFlywheelEvent('login_expired', `[${platform}] 账号登录态失效：${loginCheck.reason}（请在桌面端重新登录）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
-        await reportPublishResult(recordId, {
-          status: 'login_expired',
-          error_msg: `登录态失效: ${loginCheck.reason}（云端发布 Worker 不支持自动登录恢复，请在桌面端重新登录该账号）`,
-        });
-        return;
+        // v2.5.0：先尝试适配器的 recoverLogin（如 wxgzh 点 #jumpUrl），失败再报 login_expired
+        let recovered = false;
+        if (adapter?.recoverLogin) {
+          const pushLog = (msg: string, level?: 'info' | 'warn' | 'error') => {
+            if (level === 'error') logger.error(msg);
+            else if (level === 'warn') logger.warn(msg);
+            else logger.info(msg);
+          };
+          logger.info(`登录态失效，尝试适配器 recoverLogin...`);
+          recovered = await adapter.recoverLogin(page, context, { recordId, pushLog }).catch(() => false);
+        }
+        if (!recovered) {
+          logger.error(`登录态失效: ${loginCheck.reason}（云端不支持交互式登录恢复，请重新登录账号）`);
+          void reportFlywheelEvent('login_expired', `[${platform}] 账号登录态失效：${loginCheck.reason}（请在桌面端重新登录）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
+          await reportPublishResult(recordId, {
+            status: 'login_expired',
+            error_msg: `登录态失效: ${loginCheck.reason}（云端发布 Worker 不支持自动登录恢复，请在桌面端重新登录该账号）`,
+          });
+          return;
+        }
+        logger.info(`适配器 recoverLogin 成功，继续发布`);
+      } else {
+        logger.info(`登录态有效`);
       }
-      logger.info(`登录态有效`);
 
-      // 封禁信号检测
+      // 封禁信号检测（保留原有逻辑）
       const banCheck = await detectBanSignal(page, platform);
       if (banCheck.banned) {
         logger.error(`检测到封禁信号: ${banCheck.reason}`);
