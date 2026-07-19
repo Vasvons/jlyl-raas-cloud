@@ -357,81 +357,61 @@ jobs:
               fi
 
               for conf_file in $NGINX_CONFS; do
-                # 检查是否已有 /ws 配置
-                if grep -q -E 'location\s+/ws' "$conf_file" 2>/dev/null; then
-                  # v2.4.1：检查已有 /ws 配置是否指向正确的后端端口（3002）
-                  #   原 bug：云服务器已存在 location /ws { proxy_pass http://127.0.0.1:3011/ws; }
-                  #   指向 web 容器（3011）而非 server 容器（3002），导致 WS 握手 502
-                  #   幂等检查只看"有没有 /ws"不看"对不对"，导致错误配置无法被修复
-                  #   修复：检测 /ws 的 proxy_pass 端口，若非 3002 则强制替换整个 location /ws 块
-                  EXISTING_WS_PORT=$(grep -A 20 -E 'location\s+/ws' "$conf_file" 2>/dev/null | grep -oE 'proxy_pass\s+http://[^:]+:[0-9]+' | grep -oE '[0-9]+$' | head -1)
-                  if [ "$EXISTING_WS_PORT" = "3002" ]; then
-                    echo ">>> [skip] $conf_file 已有 /ws 配置且端口正确（3002）"
-                    continue
-                  else
-                    echo ">>> [warn] $conf_file 已有 /ws 配置但端口错误（$EXISTING_WS_PORT），将强制替换为 3002"
-                    # 备份原文件
-                    cp "$conf_file" "$conf_file.bak.ws"
-                    # 用 awk 删除已有 location /ws { ... } 整块（直到匹配的 } ）
-                    awk '
-                      BEGIN { in_ws = 0; brace_depth = 0 }
-                      /location[[:space:]]+\/ws[[:space:]]*\{/ {
-                        in_ws = 1
-                        brace_depth = 1
-                        next
-                      }
-                      in_ws == 1 {
-                        # 统计 { 和 } 的数量（粗略，不处理字符串内的 {}）
-                        for (i = 1; i <= length($0); i++) {
-                          c = substr($0, i, 1)
-                          if (c == "{") brace_depth++
-                          else if (c == "}") {
-                            brace_depth--
-                            if (brace_depth == 0) {
-                              in_ws = 0
-                              next
-                            }
-                          }
+                # v2.4.2：跳过备份文件，避免修改 .bak.* 文件
+                case "$conf_file" in
+                  *.bak*) echo ">>> [skip] $conf_file 是备份文件"; continue ;;
+                esac
+
+                # v2.4.2：不再"检测后跳过"，改为每次都重新写入
+                #   原 bug：jlyl-cloud.conf 中有多个 server 块（HTTP 80 + HTTPS 443），
+                #     脚本只检查"文件中是否有 /ws"，看到第一个 server 块有 /ws 就跳过，
+                #     但 443 端口的 server 块可能没有 /ws，导致 wss:// 请求走默认 location / 转发到 3011
+                #   修复：1. 删除所有现有的 location /ws { ... } 块
+                #         2. 在每个 server_name 行之后都插入新的 /ws 配置（确保每个 server 块都有）
+
+                # 备份原文件
+                cp "$conf_file" "$conf_file.bak.ws"
+
+                # 1. 删除所有现有的 location /ws { ... } 块（不管端口对不对）
+                #   用 awk 统计大括号深度，删除整个块
+                awk '
+                  BEGIN { in_ws = 0; brace_depth = 0 }
+                  /location[[:space:]]+\/ws[[:space:]]*\{/ {
+                    in_ws = 1
+                    brace_depth = 1
+                    next
+                  }
+                  in_ws == 1 {
+                    for (i = 1; i <= length($0); i++) {
+                      c = substr($0, i, 1)
+                      if (c == "{") brace_depth++
+                      else if (c == "}") {
+                        brace_depth--
+                        if (brace_depth == 0) {
+                          in_ws = 0
+                          next
                         }
-                        next
                       }
-                      { print }
-                    ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
-                    # 再走下面的"无 /ws 配置"流程插入新配置
-                  fi
-                fi
+                    }
+                    next
+                  }
+                  { print }
+                ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
 
-                # 备份原文件（若未备份）
-                [ -f "$conf_file.bak.ws" ] || cp "$conf_file" "$conf_file.bak.ws"
-
-                # 用 awk 在第一个 server_name 行之后插入 WS_BLOCK
-                # 如果没有 server_name，则在第一个 location 行之前插入
+                # 2. 在每个 server_name 行之后都插入 WS_BLOCK（确保每个 server 块都有 /ws 配置）
                 if grep -q -E 'server_name\s' "$conf_file"; then
                   awk -v block="$WS_BLOCK" '
-                    !inserted && /server_name[[:space:]]+[^;]+;/ {
+                    /server_name[[:space:]]+[^;]+;/ {
                       print $0
                       print block
-                      inserted=1
                       next
                     }
                     { print }
                   ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
-                  echo ">>> [modified] $conf_file (插入到 server_name 之后)"
-                elif grep -q -E '^[[:space:]]*location[[:space:]]' "$conf_file"; then
-                  awk -v block="$WS_BLOCK" '
-                    !inserted && /^[[:space:]]*location[[:space:]]/ {
-                      print block
-                      print ""
-                      print $0
-                      inserted=1
-                      next
-                    }
-                    { print }
-                  ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
-                  echo ">>> [modified] $conf_file (插入到第一个 location 之前)"
+                  SERVER_COUNT=$(grep -c -E 'server_name\s+[^;]+;' "$conf_file")
+                  echo ">>> [modified] $conf_file (删除旧 /ws 块 + 在 $SERVER_COUNT 个 server_name 后插入新 /ws)"
                 else
-                  echo ">>> [skip] $conf_file 未找到合适的插入位置"
-                  rm -f "$conf_file.bak.ws"
+                  echo ">>> [warn] $conf_file 未找到 server_name，跳过插入"
                 fi
               done
 
