@@ -5742,16 +5742,29 @@ export async function deleteArticle(id: number): Promise<void> {
 
 /** 查询图库图片列表（按客户+类型筛选） */
 export async function getImageLibrary(userId: number, knowledgeId?: number, imageType?: string): Promise<any[]> {
-  let sql = `SELECT * FROM image_library WHERE user_id = $1`;
-  const params: any[] = [userId];
-  let idx = 2;
+  // v2.5.20：当 knowledgeId 存在时不按 user_id 过滤
+  //   原 bug：图片上传时 user_id 存的是管理员 ID（getUserId），但 AEO 自动创建写作任务
+  //   时 getImageLibrary 传入客户 ID（task.user_id），导致查询返回空，
+  //   coverMode 被降级为 'none'，illustrationCount 被设为 0，文章永远没图。
+  //   修复：knowledge_id 已能唯一标识图库归属（每个客户有独立知识库），按 knowledge_id 查询更准确。
+  let sql = `SELECT * FROM image_library`;
+  const params: any[] = [];
+  let idx = 1;
   if (knowledgeId !== undefined && knowledgeId !== null) {
-    sql += ` AND knowledge_id = $${idx++}`;
+    sql += ` WHERE knowledge_id = $${idx++}`;
     params.push(knowledgeId);
-  }
-  if (imageType) {
-    sql += ` AND image_type = $${idx++}`;
-    params.push(imageType);
+    if (imageType) {
+      sql += ` AND image_type = $${idx++}`;
+      params.push(imageType);
+    }
+  } else {
+    // 没有 knowledgeId 时，按 user_id 过滤（兼容旧逻辑，如前端图库列表查询未指定 knowledge_id）
+    sql += ` WHERE user_id = $${idx++}`;
+    params.push(userId);
+    if (imageType) {
+      sql += ` AND image_type = $${idx++}`;
+      params.push(imageType);
+    }
   }
   sql += ` ORDER BY sort_order ASC, create_time DESC`;
   const result = await query(sql, params);
@@ -5802,11 +5815,16 @@ export async function deleteImage(id: number): Promise<void> {
 
 /** 随机取 N 张指定类型的图片（用于写作任务插图/封面） */
 export async function getRandomImages(userId: number, knowledgeId: number, imageType: string, count: number): Promise<any[]> {
+  // v2.5.20：取消 user_id 过滤，只按 knowledge_id 和 image_type 查询
+  //   原 bug：图片上传时 user_id 存的是管理员 ID（getUserId），但写作任务运行时
+  //   传入的 userId 是客户 ID（task.user_id），导致查询返回空，文章永远没图。
+  //   修复：knowledge_id 已能唯一标识图库归属（每个客户有独立知识库），不需要再按 user_id 过滤。
+  //   userId 参数保留用于日志诊断，不参与 SQL 查询。
   const result = await query(
     `SELECT * FROM image_library
-     WHERE user_id = $1 AND knowledge_id = $2 AND image_type = $3
-     ORDER BY RANDOM() LIMIT $4`,
-    [userId, knowledgeId, imageType, count]
+     WHERE knowledge_id = $1 AND image_type = $2
+     ORDER BY RANDOM() LIMIT $3`,
+    [knowledgeId, imageType, count]
   );
   return result.rows;
 }
