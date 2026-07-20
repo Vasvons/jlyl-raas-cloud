@@ -1571,18 +1571,21 @@ export async function getAeoShardReports(
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-  // v2.5.13：诊断日志——排查 user_id 不匹配问题
-  console.log(`[AEO-Shard-Repo] SQL: SELECT * FROM aeo_shard_report ${where}, params=${JSON.stringify(params)}`);
-
   const countResult = await query(`SELECT COUNT(*) AS total FROM aeo_shard_report ${where}`, params);
   const total = parseInt(countResult.rows[0].total, 10);
 
-  // v2.5.13：诊断日志——查询结果总数
-  console.log(`[AEO-Shard-Repo] COUNT 返回 total=${total}`);
-
+  // v2.5.14：列表查询只取轻量字段，避免加载 raw_contents_sample / raw_analysis 等
+  //   重 JSONB 字段导致 30s 超时（川务财税 customerId=4 复现）
+  //   详情弹窗走 /aeo-shard-reports/:id 单条 SELECT *，不影响
   params.push(limit, offset);
   const result = await query(
-    `SELECT * FROM aeo_shard_report ${where} ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    `SELECT id, task_id, queue_id, user_id, round_no, keyword_type,
+            record_count, brand_matched_count, visibility_score, hit_rate,
+            positive_ratio, negative_ratio, neutral_ratio,
+            shard_start_time, shard_end_time, created_at
+     FROM aeo_shard_report ${where}
+     ORDER BY created_at DESC
+     LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
   return { list: result.rows as AeoShardReport[], total };

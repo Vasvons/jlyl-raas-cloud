@@ -2634,8 +2634,6 @@ router.get('/aeo-shard-reports', async (req: Request, res: Response) => {
     const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
     const result = await getAeoShardReports(taskId as number | undefined, userId, limit, offset);
-    // v2.5.13：诊断日志——排查"川务财税分片报告加载不出"问题
-    console.log(`[AEO-Shard] 查询分片报告: customerId=${req.query.customer_id}, userId=${userId}, taskId=${taskId}, 返回 ${result.list.length} 条 (total=${result.total})`);
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
