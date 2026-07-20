@@ -2154,7 +2154,11 @@ export async function generatePeriodReport(
     // 11.5 写入独立建议池（v2.3.0）
     try {
       if (Array.isArray(writingSuggestions) && writingSuggestions.length > 0) {
-        const reportDateStr = periodStart.toISOString().slice(0, 10);
+        // v2.5.7：修复 UTC 时区 bug——原 periodStart.toISOString().slice(0,10) 用 UTC，
+        //   上海凌晨 0 点生成的日报 periodStart 是前天 16:00 UTC → slice 得到前天日期
+        //   （例：7/19 凌晨日报实际写入 report_date=7/17，导致前端"建议池停滞"）
+        //   改用上海时区 toLocaleDateString('sv-SE') 得到正确的 YYYY-MM-DD
+        const reportDateStr = periodStart.toLocaleDateString('sv-SE', { timeZone: 'Asia/Shanghai' });
         await insertWritingSuggestions(
           Number(userId),
           reportId,

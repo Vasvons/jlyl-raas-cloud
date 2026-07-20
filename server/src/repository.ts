@@ -6146,9 +6146,11 @@ export async function getPublishTasks(
   const result = await query(
     `SELECT pt.*,
             a.title as article_title,
-            a.core_keyword as article_keyword
+            a.core_keyword as article_keyword,
+            wt.task_name as writing_task_name
      FROM publish_task pt
      LEFT JOIN article a ON a.id = pt.article_id
+     LEFT JOIN ai_writing_task wt ON wt.id = a.task_id
      ${whereClause}
      ORDER BY pt.create_time DESC
      LIMIT $${idx} OFFSET $${idx + 1}`,
