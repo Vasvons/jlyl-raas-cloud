@@ -1405,16 +1405,9 @@ export async function processArticleImages(
 
   console.log(`${logTag}[图库注入] coverUrl=${coverUrl ? coverUrl.substring(0, 60) + '...' : '(无)'}, illustrationUrls=${illustrationUrls.length}张`);
 
-  // v2.5.21：封面兜底——cover 图库为空时用第一张插画作封面
-  //   原 bug：analyzer.ts 决策 coverMode 时，若 coverImages 为空会把 coverMode 降级为 'none'，
-  //   导致 processArticleImages 不取封面。即使配置 random，getRandomImages('cover', 1) 返回空时 coverUrl 也为空。
-  //   修复：coverUrl 为空且 illustrationUrls 不为空时，用第一张插画作封面，避免文章无封面。
-  if (!coverUrl && illustrationUrls.length > 0) {
-    coverUrl = illustrationUrls[0];
-    // 从插画列表中移除已用作封面的那张，避免封面和正文第一张图重复
-    illustrationUrls = illustrationUrls.slice(1);
-    console.log(`${logTag}[封面兜底] cover 图库为空，用第一张插画作封面: ${coverUrl.substring(0, 60)}...`);
-  }
+  // v2.5.25：移除"cover 图库为空时用第一张插画作封面"的兜底逻辑
+  //   用户反馈：图库分了插画图库和封面图库，各取各的，不应因 cover 图库为空就吃掉一张插画。
+  //   修复：封面只从 cover 图库取，取不到就没封面；插画数量严格按 illustration_count 配置，不被封面占用。
 
   // 5. 按段落均匀插入插画（v2.5.17：代码统一插入，不依赖 AI）
   let finalContentHtml = contentHtml;
