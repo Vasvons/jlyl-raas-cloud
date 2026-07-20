@@ -548,6 +548,15 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         contentHtml = result.contentHtml;
         wordCount = result.wordCount;
         modelUsed = 'coze';
+        // v2.5.20：coze 模式也走图片处理流程（原 bug：coze 分支没调用 processArticleImages，导致 coze 模式生成的文章永远没图）
+        try {
+          const imageResult = await processArticleImages(task, userId, contentHtml, `任务${taskId}第${i + 1}篇(coze)`);
+          contentHtml = imageResult.contentHtml;
+          coverUrlForArticle = imageResult.coverUrl;
+          wordCount = contentHtml.replace(/<[^>]+>/g, '').length;
+        } catch (err: any) {
+          console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇(coze)图片处理失败:`, err?.message || err);
+        }
       } else {
         // 专家系统模式
         const directionCtx = buildDirectionContextForTask(task);
@@ -1079,12 +1088,24 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
   if (generationMode === 'coze') {
     const enterpriseInfo = buildEnterpriseInfo(task);
     const result = await generateByCoze(task, article.core_keyword, enterpriseInfo, userId);
+    // v2.5.20：coze 模式也走图片处理流程（原 bug：early return 导致 coze 重写永远没图）
+    let finalContentHtml = result.contentHtml;
+    let coverUrlForArticle = '';
+    try {
+      const imageResult = await processArticleImages(task, userId, result.contentHtml, `${articleId}(coze)`);
+      finalContentHtml = imageResult.contentHtml;
+      coverUrlForArticle = imageResult.coverUrl;
+    } catch (err: any) {
+      console.warn(`[ArticleGen] 文章 ${articleId}(coze) 图片处理失败:`, err?.message || err);
+    }
+    const finalWordCount = finalContentHtml.replace(/<[^>]+>/g, '').length;
     const { updateArticle } = await import('../../repository');
     await updateArticle(articleId, {
       title: result.title,
-      content_html: result.contentHtml,
-      word_count: result.wordCount,
+      content_html: finalContentHtml,
+      word_count: finalWordCount,
       model_used: 'coze',
+      cover_image_url: coverUrlForArticle || null,
       status: 'generated',
     });
     return;
