@@ -2631,6 +2631,10 @@ async function autoCreateWritingTasksFromPeriod(
   //       例如配置为 weekly 时，每天从最新周报中消费未使用建议，直到下次周报刷新
   let consumedSuggestionIds: number[] = [];
   let effectiveSuggestions = writingSuggestions;
+  // v2.5.29：记录实际驱动来源类型——当独立建议池替换了当前 periodType 的建议时，
+  //   任务名应该用实际来源（如 weekly）命名，而不是当前 periodType（如 daily）
+  //   原 bug：用户配置 sourceType=weekly，但日报生成时任务名仍叫"日报驱动写作任务"
+  let effectiveSourceType: string = periodType;
   try {
     const sourceType = await getSuggestionPoolSourceType(userIdNum);
     // 优先消费配置来源类型的未消费建议；若未找到则回退到当前日报自己的 writingSuggestions
@@ -2646,6 +2650,8 @@ async function autoCreateWritingTasksFromPeriod(
         source_type: 'distillate',
         id: s.id,
       }));
+      // 实际驱动来源是独立建议池的 sourceType（如 weekly），不是当前 periodType
+      effectiveSourceType = sourceType;
     }
   } catch (e: any) {
     console.warn(`[AEO-Period] 读取独立建议池失败，使用报告内建议兜底:`, e.message);
@@ -2783,7 +2789,7 @@ async function autoCreateWritingTasksFromPeriod(
     return 0;
   }
 
-  const taskName = `[AEO自动] ${periodType === 'daily' ? '日报' : periodType === 'weekly' ? '周报' : '月报'}驱动写作任务 ${new Date().toISOString().slice(0, 10)}`;
+  const taskName = `[AEO自动] ${effectiveSourceType === 'daily' ? '日报' : effectiveSourceType === 'weekly' ? '周报' : '月报'}驱动写作任务 ${new Date().toISOString().slice(0, 10)}`;
 
   // v2.1.3：优先使用用户配置的"重点优化关键词"作为写作主题
   // v2.2.2：如果未配置 focus_keywords，则回退到客户全量关键词（蒸馏+品牌），避免 L4 主题参考层为空
