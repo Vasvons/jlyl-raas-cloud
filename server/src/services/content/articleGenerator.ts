@@ -1360,12 +1360,184 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     console.warn(`[ArticleGen] 文章 ${articleId} 正文标题也是思考过程，用关键词+首段生成标题:`, title);
   }
 
+  // v2.5.19：重新生成时也走图片处理流程（原 bug：regenerateArticle 完全没有图片处理逻辑，
+  //   导致用户点"重写"后文章永远没图）
+  //   调用公共函数 processArticleImages，与 executeWritingTask 共用同一套逻辑
+  let finalContentHtml = contentHtml;
+  let coverUrlForArticle = '';
+  try {
+    const imageResult = await processArticleImages(task, userId, contentHtml, articleId);
+    finalContentHtml = imageResult.contentHtml;
+    coverUrlForArticle = imageResult.coverUrl;
+    // 重新计算字数（插图 <img> 不计入字数，但 contentHtml 已变）
+  } catch (err: any) {
+    console.warn(`[ArticleGen] 文章 ${articleId} 图片处理失败:`, err?.message || err);
+  }
+  const finalWordCount = finalContentHtml.replace(/<[^>]+>/g, '').length;
+
   const { updateArticle } = await import('../../repository');
   await updateArticle(articleId, {
     title,
-    content_html: contentHtml,
-    word_count: wordCount,
+    content_html: finalContentHtml,
+    word_count: finalWordCount,
     model_used: modelConfig.model_name,
+    cover_image_url: coverUrlForArticle || null,  // v2.5.19：保存封面图 URL
     status: 'generated',
   });
+}
+
+// v2.5.19：图片处理公共函数（取封面 + 取插画 + 按段落均匀插入 <img>）
+//   executeWritingTask 和 regenerateArticle 共用此函数，避免代码重复
+//   返回 { coverUrl, contentHtml } —— 调用方需用这两个值更新文章
+export async function processArticleImages(
+  task: any,
+  userId: number,
+  contentHtml: string,
+  articleIdForLog?: string | number
+): Promise<{ coverUrl: string; contentHtml: string }> {
+  const logTag = articleIdForLog != null ? `[Article ${articleIdForLog}]` : `[ArticleGen]`;
+
+  // 1. 解析封面模式
+  const rawCoverMode = task.cover_image_mode || 'none';
+  let coverMode: 'none' | 'random' | 'fixed' | 'auto';
+  if (rawCoverMode === 'auto' || rawCoverMode === 'none' || rawCoverMode === 'random' || rawCoverMode === 'fixed') {
+    coverMode = rawCoverMode;
+  } else {
+    coverMode = 'none';
+  }
+
+  // 2. 解析插画数量（v2.5.17：尊重用户配置——设几就取几，不设置/0/-1 都不插图）
+  const rawIlluCountConfig = Number(task.illustration_count);
+  let illuCountConfig: number;
+  if (Number.isFinite(rawIlluCountConfig) && rawIlluCountConfig > 0) {
+    illuCountConfig = Math.min(20, rawIlluCountConfig);
+  } else {
+    illuCountConfig = 0;
+  }
+
+  console.log(`${logTag}[图库配置] cover_image_mode=${task.cover_image_mode}(生效=${coverMode}), illustration_count=${task.illustration_count}(生效=${illuCountConfig}), knowledge_id=${task.knowledge_id}, user_id=${userId}`);
+
+  let coverUrl = '';
+  let coverFingerprint: { name: string; size: number } | null = null;
+
+  // 3. 取封面图
+  if (coverMode === 'fixed' && task.cover_image_id) {
+    try {
+      const coverImg = await getImageById(task.cover_image_id);
+      if (coverImg) {
+        coverUrl = coverImg.url;
+        if (coverImg.original_name && coverImg.file_size != null) {
+          coverFingerprint = { name: coverImg.original_name, size: coverImg.file_size };
+        }
+      }
+    } catch (err) {
+      console.warn(`${logTag} 获取指定封面图失败:`, err);
+    }
+  } else if ((coverMode === 'random' || coverMode === 'auto') && task.knowledge_id) {
+    try {
+      const randomCovers = await getRandomImages(userId, task.knowledge_id, 'cover', 1);
+      if (randomCovers.length > 0) {
+        coverUrl = randomCovers[0].url;
+        const c = randomCovers[0];
+        if (c.original_name && c.file_size != null) {
+          coverFingerprint = { name: c.original_name, size: c.file_size };
+        }
+      } else {
+        console.warn(`${logTag}[图库诊断] ${coverMode} 模式：封面图库查询返回空（userId=${userId}, knowledgeId=${task.knowledge_id}, imageType=cover）`);
+      }
+    } catch (err) {
+      console.warn(`${logTag} 取随机封面失败:`, err);
+    }
+  } else if ((coverMode === 'random' || coverMode === 'auto') && !task.knowledge_id) {
+    console.warn(`${logTag}[图库诊断] ${coverMode} 模式：task.knowledge_id 为空，无法取封面图`);
+  }
+
+  // 4. 取插画
+  let illustrationUrls: string[] = [];
+  if (illuCountConfig > 0 && task.knowledge_id) {
+    try {
+      const fetchCount = illuCountConfig + 5;
+      let randomIllus = await getRandomImages(userId, task.knowledge_id, 'illustration', fetchCount);
+      if (randomIllus.length > 0 && coverFingerprint) {
+        randomIllus = randomIllus.filter((img: any) => {
+          return !(
+            img.original_name &&
+            img.original_name === coverFingerprint!.name &&
+            img.file_size != null &&
+            img.file_size === coverFingerprint!.size
+          );
+        });
+      }
+      if (randomIllus.length > 0) {
+        const finalCount = Math.min(illuCountConfig, randomIllus.length);
+        illustrationUrls = randomIllus.slice(0, finalCount).map((img: any) => img.url);
+      } else {
+        console.warn(`${logTag}[图库诊断] 插画图库查询返回空（userId=${userId}, knowledgeId=${task.knowledge_id}, imageType=illustration）`);
+      }
+    } catch (err) {
+      console.warn(`${logTag} 取插画失败:`, err);
+    }
+  }
+
+  console.log(`${logTag}[图库注入] coverUrl=${coverUrl ? coverUrl.substring(0, 60) + '...' : '(无)'}, illustrationUrls=${illustrationUrls.length}张`);
+
+  // 5. 按段落均匀插入插画（v2.5.17：代码统一插入，不依赖 AI）
+  let finalContentHtml = contentHtml;
+  let effectiveIllusUrls = illustrationUrls;
+  if (effectiveIllusUrls.length === 0 && task.knowledge_id && illuCountConfig > 0) {
+    // 取图失败时重查兜底（仅当用户确实配了插图数量时才重查）
+    try {
+      const retryCount = Math.min(3, illuCountConfig);
+      const retryImgs = await getRandomImages(userId, task.knowledge_id, 'illustration', retryCount);
+      if (retryImgs.length > 0) {
+        effectiveIllusUrls = retryImgs.map((img: any) => img.url);
+        console.warn(`${logTag}[图库Fallback] 原取图为空，重查成功 ${retryImgs.length} 张`);
+      } else {
+        console.warn(`${logTag}[图库Fallback] 重查仍为空（userId=${userId}, knowledgeId=${task.knowledge_id}, imageType=illustration）`);
+      }
+    } catch (err: any) {
+      console.warn(`${logTag}[图库Fallback] 重查图库失败:`, err?.message || err);
+    }
+  }
+  if (effectiveIllusUrls.length > 0) {
+    const existingImgMatches = finalContentHtml.match(/<img[^>]*\ssrc\s*=\s*["'][^"']+["']/gi) || [];
+    const existingImgCount = existingImgMatches.length;
+    if (existingImgCount < effectiveIllusUrls.length) {
+      const missingUrls = effectiveIllusUrls.slice(existingImgCount);
+      console.log(`${logTag}[代码插图] 现有 ${existingImgCount}/${effectiveIllusUrls.length} 张，代码补插 ${missingUrls.length} 张`);
+
+      const paragraphEnds: number[] = [];
+      let searchFrom = 0;
+      while (true) {
+        const idx = finalContentHtml.indexOf('</p>', searchFrom);
+        if (idx === -1) break;
+        paragraphEnds.push(idx + 4);
+        searchFrom = idx + 4;
+      }
+      if (paragraphEnds.length === 0) {
+        const imgTags = missingUrls.map((url, idx) => `<p><img src="${url}" alt="插图${existingImgCount + idx + 1}"></p>`).join('\n');
+        finalContentHtml += '\n' + imgTags;
+      } else {
+        const insertPositions: number[] = [];
+        for (let k = 0; k < missingUrls.length; k++) {
+          const posIdx = Math.floor((k + 1) * paragraphEnds.length / (missingUrls.length + 1));
+          insertPositions.push(paragraphEnds[Math.min(posIdx, paragraphEnds.length - 1)]);
+        }
+        insertPositions.sort((a, b) => b - a);
+        let modifiedHtml = finalContentHtml;
+        for (let k = 0; k < missingUrls.length; k++) {
+          const pos = insertPositions[k];
+          const url = missingUrls[k];
+          const imgTag = `\n<p><img src="${url}" alt="插图${existingImgCount + k + 1}"></p>\n`;
+          modifiedHtml = modifiedHtml.slice(0, pos) + imgTag + modifiedHtml.slice(pos);
+        }
+        finalContentHtml = modifiedHtml;
+      }
+      console.log(`${logTag}[代码插图] 插入完成，总图数=${existingImgCount + missingUrls.length}`);
+    } else {
+      console.log(`${logTag}[代码插图] 已有 ${existingImgCount} 张图，无需补插`);
+    }
+  }
+
+  return { coverUrl, contentHtml: finalContentHtml };
 }
