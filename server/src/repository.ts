@@ -3782,11 +3782,33 @@ export async function getAeoReportStartDate(userId: string): Promise<Date> {
   return new Date();
 }
 
-/** 检查客户今天是否需要生成周报（按创建日计算周期） */
+/**
+ * 检查客户今天是否需要生成周报
+ *
+ * v2.5.26：原逻辑 `daysSinceStart % 7 === 0` 过于严苛——只在客户创建日后的第7、14、21...
+ * 天才会触发；其他日子用户连线到周报池永远看不到周报数据。
+ * 修复策略：
+ *   1. 优先查 aeo_period_report 表中该用户最近一份 weekly 报告的 period_end
+ *   2. 若距今 >= 7 天，就生成新周报（不再要求整除）
+ *   3. 若从未生成过周报，回退到原逻辑（按客户创建日 +7 天判断），避免首次使用立即生成空周报
+ */
 export async function shouldGenerateWeeklyReport(userId: string, now: Date = new Date()): Promise<boolean> {
+  // v2.5.26：先查最近一份周报
+  const lastResult = await query(
+    `SELECT period_end FROM aeo_period_report
+     WHERE user_id = $1 AND period_type = 'weekly'
+     ORDER BY period_end DESC LIMIT 1`,
+    [userId]
+  );
+  if (lastResult.rows.length > 0) {
+    const lastEnd = new Date(lastResult.rows[0].period_end);
+    const daysSinceLast = Math.floor((now.getTime() - lastEnd.getTime()) / (24 * 60 * 60 * 1000));
+    return daysSinceLast >= 7;
+  }
+  // 从未生成过周报：回退到原逻辑，等客户创建满 7 天后才生成
   const startDate = await getAeoReportStartDate(userId);
   const daysSinceStart = Math.floor((now.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000));
-  return daysSinceStart >= 7 && daysSinceStart % 7 === 0;
+  return daysSinceStart >= 7;
 }
 
 /** v2.1.3：检查客户今天是否需要生成日报（每日都生成） */
@@ -3795,9 +3817,33 @@ export async function shouldGenerateDailyReport(userId: string, now: Date = new 
   return true;
 }
 
-/** 检查客户今天是否需要生成月报（按创建日的日期，每月该日） */
+/**
+ * 检查客户今天是否需要生成月报
+ *
+ * v2.5.26：原逻辑 `todayDay === startDay` 过于严苛——只在每月客户创建日当天才生成；
+ * 其他日子用户连线到月报池永远看不到月报数据。
+ * 修复策略：
+ *   1. 优先查 aeo_period_report 表中该用户最近一份 monthly 报告的 period_end
+ *   2. 若距今 >= 30 天，就生成新月报（不再要求日号匹配）
+ *   3. 若从未生成过月报，回退到原逻辑（按客户创建日 +30 天判断）
+ */
 export async function shouldGenerateMonthlyReport(userId: string, now: Date = new Date()): Promise<boolean> {
+  // v2.5.26：先查最近一份月报
+  const lastResult = await query(
+    `SELECT period_end FROM aeo_period_report
+     WHERE user_id = $1 AND period_type = 'monthly'
+     ORDER BY period_end DESC LIMIT 1`,
+    [userId]
+  );
+  if (lastResult.rows.length > 0) {
+    const lastEnd = new Date(lastResult.rows[0].period_end);
+    const daysSinceLast = Math.floor((now.getTime() - lastEnd.getTime()) / (24 * 60 * 60 * 1000));
+    return daysSinceLast >= 30;
+  }
+  // 从未生成过月报：回退到原逻辑，按客户创建日的日号匹配
   const startDate = await getAeoReportStartDate(userId);
+  const daysSinceStart = Math.floor((now.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000));
+  if (daysSinceStart < 30) return false;
   const todayDay = now.getDate();
   const startDay = startDate.getDate();
   // 如果起始日在28日之后，取每月最后一天

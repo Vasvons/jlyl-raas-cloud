@@ -1034,6 +1034,15 @@ router.delete('/writing-tasks/:id', async (req: Request, res: Response) => {
         userId: task.user_id,
         action: 'deleted',
       }, task.user_id);
+      // v2.5.26：删除写作任务会级联删除 publish_record / publish_task / article
+      //   原 bug：只广播 writing_task_changed，前端"内容发布"卡片监听的是 publish_task_changed，
+      //     收不到更新事件，所以删除任务后发布卡片仍显示原 20 篇文章
+      //   修复：同步广播 publish_task_changed，让前端发布卡片立即刷新
+      wsBroadcast('publish_task_changed', {
+        taskId,
+        userId: task.user_id,
+        action: 'deleted',
+      }, task.user_id);
     }
     res.json({ code: 200 });
   } catch (err: any) {
