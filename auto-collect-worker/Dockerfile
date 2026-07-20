@@ -1,5 +1,8 @@
 FROM node:18-alpine
 
+# v2.5.20：替换为阿里云 Alpine 镜像源（原 dl-cdn.alpinelinux.org 在服务器上被拒访问）
+RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
+
 # 设置时区为 Asia/Shanghai
 RUN apk add --no-cache tzdata && \
     cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
