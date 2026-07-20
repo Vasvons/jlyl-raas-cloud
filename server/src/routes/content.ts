@@ -130,6 +130,7 @@ import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
 import { executeWritingTask, regenerateArticle } from '../services/content/articleGenerator';
 import { extractTriplesFromKnowledge } from '../services/content/tripleExtractor';
+import { autoCreateWritingFromLatestPeriod } from '../services/aeo/analyzer';
 import { wsBroadcast } from '../wsServer';
 import multer from 'multer';
 
@@ -2435,6 +2436,43 @@ router.post('/publish-accounts/:id/check-login', async (req: Request, res: Respo
 // 由桌面端 flywheelDaemon 上报关键事件（tick/AEO完成/自动创建写作任务/
 // 自动创建发布任务/错误等），持久化到云端，供前端展示飞轮云端工作日志。
 // 与桌面端内存日志不同：云端日志重启不丢失、可跨设备查看。
+
+/**
+ * v2.5.29：飞轮"创建"按钮——基于建议来源类型触发自动写作
+ *
+ * 与飞轮守护进程自动触发不同，此路由复用最新一份周期报告（不重新生成），
+ * 按 cloud_api_config.suggestion_source_period_type 配置读取对应类型报告，
+ * 调用 autoCreateWritingTasksFromPeriod 走完整 AEO 自动写作链路：
+ *   - 任务名按 effectiveSourceType 命名（如"周报驱动写作任务"）
+ *   - 消费独立建议池未消费建议
+ *   - 按 AeoQuotaConfig 配额创建
+ *
+ * Body: { user_id: number }  // 客户 ID（管理员为客户触发）
+ */
+router.post('/flywheel/auto-create-writing', async (req: Request, res: Response) => {
+  try {
+    const customerId = req.body?.user_id ?? req.query?.customer_id;
+    const userId = customerId ? Number(customerId) : getUserId(req);
+    if (!userId || userId <= 0) {
+      return res.status(400).json({ code: 400, message: 'user_id 必填（客户 ID）' });
+    }
+    const result = await autoCreateWritingFromLatestPeriod(userId);
+    // 广播 writing_task_changed 让前端立即刷新
+    wsBroadcast('writing_task_changed', {
+      userId,
+      action: 'created',
+      count: result.createdCount,
+      sourceType: result.sourceType,
+    }, userId);
+    res.json({
+      code: 200,
+      data: result,
+      message: `已基于 ${result.sourceType} 周期报告 #${result.periodReportId} 创建 ${result.createdCount}/${result.quota} 篇写作任务`,
+    });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
 
 /**
  * 查询飞轮事件日志

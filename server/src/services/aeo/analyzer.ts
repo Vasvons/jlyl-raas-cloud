@@ -50,6 +50,8 @@ import {
   getSuggestionPoolSourceType,
   getUnconsumedSuggestionsByLatestPeriod,
   consumeWritingSuggestions,
+  // v2.5.29: 飞轮"创建"按钮基于建议来源类型触发自动写作
+  getLatestPeriodReportByType,
 } from '../../repository';
 import { query as dbQuery } from '../../db';
 import { decrypt } from '../../utils/crypto';
@@ -2225,6 +2227,70 @@ export async function generatePeriodReportAndBroadcast(
 }
 
 /**
+ * v2.5.29：基于最新周期报告自动创建写作任务（飞轮"创建"按钮调用）
+ *
+ * 与 generatePeriodReport 末尾的自动创建逻辑等价，但不重新生成报告，直接复用最新一份。
+ * 流程：
+ * 1. 读取用户配置的 suggestion_source_period_type（如 weekly）
+ * 2. 查询最新的对应类型周期报告（如最新周报），获取 reportId 和 writing_suggestions
+ * 3. 读取 quota 配置（daily_article_quota）
+ * 4. 调用 autoCreateWritingTasksFromPeriod 触发自动写作
+ *
+ * 任务名会按 effectiveSourceType 命名（如"周报驱动写作任务"），与 AEO 自动写作链路一致。
+ *
+ * @returns { createdCount, periodReportId, sourceType, quota } 或抛错
+ */
+export async function autoCreateWritingFromLatestPeriod(
+  userId: number
+): Promise<{ createdCount: number; periodReportId: number; sourceType: string; quota: number }> {
+  // 1. 读取建议来源配置
+  const sourceType = await getSuggestionPoolSourceType(userId);
+
+  // 2. 查询最新的对应类型周期报告
+  const periodResult = await getLatestPeriodReportByType(userId, sourceType);
+  if (!periodResult) {
+    throw new Error(`客户无 ${sourceType} 周期报告，请先触发 AEO 分析生成报告`);
+  }
+  const { reportId, writingSuggestions } = periodResult;
+
+  // 3. 读取配额（按天配额，与日报生成时一致）
+  const quotaConfig = await getAeoQuotaConfig(userId);
+  const dailyQuota = Number(quotaConfig?.daily_article_quota) || 0;
+  const legacyArticleQuota = Number(quotaConfig?.article_quota) || 0;
+  const quota = dailyQuota > 0
+    ? dailyQuota
+    : (legacyArticleQuota > 0 ? legacyArticleQuota : 1); // 兜底至少创建 1 篇
+
+  if (quota <= 0) {
+    throw new Error(`客户 ${userId} 配额为 0（daily_article_quota=${dailyQuota}, article_quota=${legacyArticleQuota}），请先在 AEO 配置中设置每日写作配额`);
+  }
+
+  if (!Array.isArray(writingSuggestions) || writingSuggestions.length === 0) {
+    throw new Error(`周期报告 #${reportId} 无写作建议（writing_suggestions 为空），请等待 AEO 重新生成`);
+  }
+
+  // 4. 获取信源权重
+  const sourceWeights = await calcSourcePlatformWeights();
+
+  // 5. 调用自动写作（任务名会按 effectiveSourceType 命名）
+  const createdCount = await autoCreateWritingTasksFromPeriod(
+    String(userId),
+    reportId,
+    quota,
+    writingSuggestions,
+    sourceWeights,
+    sourceType
+  );
+
+  if (createdCount > 0) {
+    await updatePeriodReportArticleCount(reportId, createdCount);
+    console.log(`[AEO-Flywheel] 用户 ${userId} 基于 ${sourceType} 周期报告 #${reportId} 自动创建 ${createdCount}/${quota} 篇写作任务`);
+  }
+
+  return { createdCount, periodReportId: reportId, sourceType, quota };
+}
+
+/**
  * 汇总所有分片报告的内容建议
  */
 function summarizeShardSuggestions(shardReports: any[]): string {
@@ -2605,7 +2671,7 @@ function fallbackWritingSuggestions(
  *
  * @returns 实际创建的写作任务数
  */
-async function autoCreateWritingTasksFromPeriod(
+export async function autoCreateWritingTasksFromPeriod(
   userId: string,
   periodReportId: number,
   quota: number,
