@@ -1761,6 +1761,63 @@ export async function migrate() {
       console.log('[Migrate] v2.4.4 aeo_report 唯一索引已切换为 (user_id, report_date)');
     }
 
+    // ============ v2.5.29：回填 aeo_writing_suggestion 独立建议池表 ============
+    //   原 bug：v2.3.0 之前生成的周期报告（aeo_period_report）只把 writing_suggestions
+    //   存到 JSON 字段中，未写入独立的 aeo_writing_suggestion 表。导致前端"写作建议池"
+    //   组件按 source_type 查询独立表时返回空——用户看到周报里有建议但建议池里没有。
+    //   修复：扫描所有 aeo_period_report，如果对应 report_id 在独立表中无记录，
+    //        则从 JSON 字段解析回填到独立表。
+    try {
+      const backfillRes = await client.query(`
+        SELECT id, user_id, period_type, period_start, writing_suggestions
+        FROM aeo_period_report
+        WHERE writing_suggestions IS NOT NULL
+          AND jsonb_array_length(writing_suggestions) > 0
+          AND NOT EXISTS (
+            SELECT 1 FROM aeo_writing_suggestion WHERE period_report_id = aeo_period_report.id
+          )
+      `);
+      let backfillCount = 0;
+      for (const row of backfillRes.rows) {
+        const userIdNum = Number(row.user_id);
+        if (!Number.isFinite(userIdNum)) continue; // user_id 非数字跳过
+        const suggestions = row.writing_suggestions;
+        if (!Array.isArray(suggestions)) continue;
+        const reportDateStr = row.period_start instanceof Date
+          ? row.period_start.toISOString().slice(0, 10)
+          : String(row.period_start).slice(0, 10);
+        for (const s of suggestions) {
+          try {
+            await client.query(
+              `INSERT INTO aeo_writing_suggestion
+               (user_id, period_report_id, source_type, report_date, topic, reason, direction, platforms, keywords, priority)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              [
+                userIdNum,
+                row.id,
+                row.period_type,
+                reportDateStr,
+                String(s.topic || ''),
+                s.reason ? String(s.reason) : null,
+                s.direction ? String(s.direction) : null,
+                Array.isArray(s.platforms) ? s.platforms.filter((p: any) => typeof p === 'string') : [],
+                Array.isArray(s.keywords) ? s.keywords.filter((k: any) => typeof k === 'string') : [],
+                ['high', 'medium', 'low'].includes(s.priority) ? s.priority : 'medium',
+              ]
+            );
+            backfillCount++;
+          } catch (e: any) {
+            // 单条失败不影响其他
+          }
+        }
+      }
+      if (backfillCount > 0) {
+        console.log(`[Migrate] v2.5.29 已回填 ${backfillCount} 条写作建议到独立建议池表`);
+      }
+    } catch (e: any) {
+      console.warn('[Migrate] v2.5.29 回填写作建议池失败（不阻断）:', e.message);
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

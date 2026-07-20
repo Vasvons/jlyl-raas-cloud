@@ -1733,7 +1733,17 @@ router.post('/publish/tasks/:id/resume', async (req: Request, res: Response) => 
 router.delete('/publish/tasks/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
+    const userId = getUserId(req);
     await deletePublishTask(id);
+    // v2.5.29：广播 publish_task_changed，前端"内容发布"卡片立即刷新
+    //   原 bug：只删了数据库记录，前端没收到 WS 事件，导致卡片仍显示已删除的任务
+    if (userId > 0) {
+      wsBroadcast('publish_task_changed', {
+        taskId: id,
+        userId,
+        action: 'deleted',
+      }, userId);
+    }
     res.json({ code: 200, data: { ok: true } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -1773,6 +1783,15 @@ router.delete('/publish/batch/:batchId', async (req: Request, res: Response) => 
       return res.status(400).json({ code: 400, message: 'batchId 必填' });
     }
     const result = await batchDeleteByBatch(userId, batchId);
+    // v2.5.29：广播 publish_task_changed，前端"内容发布"卡片立即刷新
+    if (userId > 0) {
+      wsBroadcast('publish_task_changed', {
+        userId,
+        batchId,
+        action: 'deleted',
+        count: result.deleted,
+      }, userId);
+    }
     res.json({ code: 200, data: result });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
