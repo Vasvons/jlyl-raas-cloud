@@ -1565,13 +1565,20 @@ export async function getAeoShardReports(
   if (userId) {
     // user_id 列是 TEXT 类型，插入时存的是 string（如 "2"），查询时传 number（如 2）
     // 显式转成 string 确保类型一致，避免 PG 隐式类型转换导致匹配失败
-    params.push(String(userId));
+    const userIdStr = String(userId).trim();
+    params.push(userIdStr);
     conditions.push(`user_id = $${params.length}`);
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
+  // v2.5.13：诊断日志——排查 user_id 不匹配问题
+  console.log(`[AEO-Shard-Repo] SQL: SELECT * FROM aeo_shard_report ${where}, params=${JSON.stringify(params)}`);
+
   const countResult = await query(`SELECT COUNT(*) AS total FROM aeo_shard_report ${where}`, params);
   const total = parseInt(countResult.rows[0].total, 10);
+
+  // v2.5.13：诊断日志——查询结果总数
+  console.log(`[AEO-Shard-Repo] COUNT 返回 total=${total}`);
 
   params.push(limit, offset);
   const result = await query(
