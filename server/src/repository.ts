@@ -17,6 +17,12 @@ export interface User {
   date_time: string;
   create_time: Date;
   update_time: Date;
+  // v2.5.35：代理客户端账号系统字段
+  role?: 'super_admin' | 'admin' | 'agent' | 'customer';
+  parent_admin_id?: number | null;
+  status?: 'active' | 'disabled' | 'expired';
+  expire_at?: Date | null;
+  license_key?: string | null;
 }
 
 export async function findUserByUsername(username: string): Promise<User | null> {
@@ -114,6 +120,242 @@ export async function updateUser(id: number, user: any): Promise<void> {
 
 export async function deleteUser(id: number): Promise<void> {
   await query('DELETE FROM users WHERE id = $1', [id]);
+}
+
+// ============ v2.5.35 代理客户端账号系统 ============
+
+/** 查询管理员列表（role 为 super_admin 或 admin） */
+export async function getAdminAccounts(): Promise<any[]> {
+  const result = await query(
+    `SELECT u.id, u.username, u.phone, u.email, u.role, u.status, u.create_time, u.update_time,
+            (SELECT COUNT(*) FROM admin_agent_assign aaa WHERE aaa.admin_user_id = u.id) AS agent_count
+     FROM users u
+     WHERE u.role IN ('super_admin', 'admin') OR u.level = '1'
+     ORDER BY CASE WHEN u.role = 'super_admin' THEN 0 ELSE 1 END, u.id`
+  );
+  return result.rows;
+}
+
+/** 创建管理员账号 */
+export async function createAdminAccount(data: {
+  username: string;
+  password: string;
+  phone?: string;
+  email?: string;
+  role?: 'admin';
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO users (username, password, phone, email, level, role, status)
+     VALUES ($1, $2, $3, $4, '1', 'admin', 'active') RETURNING id`,
+    [data.username, data.password, data.phone || '', data.email || '']
+  );
+  return result.rows[0].id;
+}
+
+/** 查询代理列表 */
+export async function getAgentAccounts(): Promise<any[]> {
+  const result = await query(
+    `SELECT u.id, u.username, u.phone, u.email, u.role, u.status, u.expire_at, u.license_key,
+            u.parent_admin_id, u.create_time,
+            p.username AS parent_admin_name,
+            (SELECT MAX(heartbeat_at) FROM agent_heartbeat ah WHERE ah.agent_user_id = u.id) AS last_heartbeat,
+            (SELECT COUNT(*) FROM agent_device_binding adb WHERE adb.agent_user_id = u.id) AS device_count,
+            (SELECT json_agg(module_code) FROM agent_module_grant amg
+             WHERE amg.agent_user_id = u.id AND amg.status = 'active') AS granted_modules
+     FROM users u
+     LEFT JOIN users p ON p.id = u.parent_admin_id
+     WHERE u.role = 'agent'
+     ORDER BY u.id`
+  );
+  return result.rows;
+}
+
+/** 创建代理账号 */
+export async function createAgentAccount(data: {
+  username: string;
+  password: string;
+  phone?: string;
+  email?: string;
+  parent_admin_id?: number;
+  expire_at?: Date | null;
+}): Promise<{ id: number; license_key: string }> {
+  // 生成 license_key：32 字节随机 + hex
+  const licenseKey = crypto.randomBytes(32).toString('hex');
+  const result = await query(
+    `INSERT INTO users (username, password, phone, email, level, role, status, parent_admin_id, expire_at, license_key)
+     VALUES ($1, $2, $3, $4, '2', 'agent', 'active', $5, $6, $7) RETURNING id, license_key`,
+    [data.username, data.password, data.phone || '', data.email || '',
+     data.parent_admin_id || null, data.expire_at || null, licenseKey]
+  );
+  return { id: result.rows[0].id, license_key: result.rows[0].license_key };
+}
+
+/** 通用更新用户字段（含代理字段） */
+export async function updateUserV2(id: number, data: {
+  password?: string;
+  phone?: string;
+  email?: string;
+  status?: 'active' | 'disabled' | 'expired';
+  parent_admin_id?: number | null;
+  expire_at?: Date | null;
+}): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let paramIndex = 1;
+  if (data.password !== undefined) { fields.push(`password = $${paramIndex++}`); values.push(data.password); }
+  if (data.phone !== undefined) { fields.push(`phone = $${paramIndex++}`); values.push(data.phone); }
+  if (data.email !== undefined) { fields.push(`email = $${paramIndex++}`); values.push(data.email); }
+  if (data.status !== undefined) { fields.push(`status = $${paramIndex++}`); values.push(data.status); }
+  if (data.parent_admin_id !== undefined) { fields.push(`parent_admin_id = $${paramIndex++}`); values.push(data.parent_admin_id); }
+  if (data.expire_at !== undefined) { fields.push(`expire_at = $${paramIndex++}`); values.push(data.expire_at); }
+  if (fields.length === 0) return;
+  fields.push(`update_time = CURRENT_TIMESTAMP`);
+  values.push(id);
+  await query(`UPDATE users SET ${fields.join(', ')} WHERE id = $${paramIndex}`, values);
+}
+
+/** 分配代理给管理员 */
+export async function assignAgentToAdmin(adminUserId: number, agentUserId: number): Promise<void> {
+  await query(
+    `INSERT INTO admin_agent_assign (admin_user_id, agent_user_id) VALUES ($1, $2)
+     ON CONFLICT (admin_user_id, agent_user_id) DO NOTHING`,
+    [adminUserId, agentUserId]
+  );
+}
+
+/** 取消代理与管理员的分配 */
+export async function unassignAgentFromAdmin(adminUserId: number, agentUserId: number): Promise<void> {
+  await query(
+    `DELETE FROM admin_agent_assign WHERE admin_user_id = $1 AND agent_user_id = $2`,
+    [adminUserId, agentUserId]
+  );
+}
+
+/** 查询某管理员负责的代理 */
+export async function getAgentsByAdminId(adminUserId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT u.id, u.username, u.phone, u.email, u.status, u.expire_at
+     FROM admin_agent_assign aaa
+     JOIN users u ON u.id = aaa.agent_user_id
+     WHERE aaa.admin_user_id = $1 AND u.role = 'agent'
+     ORDER BY u.id`,
+    [adminUserId]
+  );
+  return result.rows;
+}
+
+/** 查询某代理的板块授权 */
+export async function getAgentGrants(agentUserId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT amg.*, g.username AS granter_name
+     FROM agent_module_grant amg
+     LEFT JOIN users g ON g.id = amg.granted_by
+     WHERE amg.agent_user_id = $1
+     ORDER BY amg.granted_at DESC`,
+    [agentUserId]
+  );
+  return result.rows;
+}
+
+/** 授权代理使用某板块 */
+export async function grantAgentModule(data: {
+  agent_user_id: number;
+  module_code: string;
+  granted_by: number;
+  expire_at?: Date | null;
+  config?: any;
+}): Promise<void> {
+  await query(
+    `INSERT INTO agent_module_grant (agent_user_id, module_code, granted_by, expire_at, config, status)
+     VALUES ($1, $2, $3, $4, $5, 'active')
+     ON CONFLICT (agent_user_id, module_code)
+     DO UPDATE SET granted_by = $3, expire_at = $4, config = $5, status = 'active', granted_at = NOW()`,
+    [data.agent_user_id, data.module_code, data.granted_by, data.expire_at || null, JSON.stringify(data.config || {})]
+  );
+}
+
+/** 撤销代理某板块授权 */
+export async function revokeAgentModule(agentUserId: number, moduleCode: string): Promise<void> {
+  await query(
+    `UPDATE agent_module_grant SET status = 'revoked' WHERE agent_user_id = $1 AND module_code = $2`,
+    [agentUserId, moduleCode]
+  );
+}
+
+/** 记录代理心跳 */
+export async function recordAgentHeartbeat(data: {
+  agent_user_id: number;
+  client_version?: string;
+  ip?: string;
+  machine_id?: string;
+}): Promise<void> {
+  await query(
+    `INSERT INTO agent_heartbeat (agent_user_id, client_version, ip, machine_id)
+     VALUES ($1, $2, $3::inet, $4)`,
+    [data.agent_user_id, data.client_version || null, data.ip || null, data.machine_id || null]
+  );
+  // 同步更新设备绑定的最后心跳时间
+  if (data.machine_id) {
+    await query(
+      `UPDATE agent_device_binding SET last_heartbeat_at = NOW()
+       WHERE agent_user_id = $1 AND machine_id = $2`,
+      [data.agent_user_id, data.machine_id]
+    );
+  }
+}
+
+/** 绑定代理设备（超出限制返回 false） */
+export async function bindAgentDevice(
+  agentUserId: number,
+  machineId: string,
+  machineInfo: any,
+  maxDevices: number = 2
+): Promise<boolean> {
+  // 检查是否已绑定
+  const existing = await query(
+    `SELECT id FROM agent_device_binding WHERE agent_user_id = $1 AND machine_id = $2`,
+    [agentUserId, machineId]
+  );
+  if (existing.rows.length > 0) {
+    // 已绑定，更新心跳时间
+    await query(
+      `UPDATE agent_device_binding SET last_heartbeat_at = NOW(), machine_info = $3
+       WHERE agent_user_id = $1 AND machine_id = $2`,
+      [agentUserId, machineId, JSON.stringify(machineInfo || {})]
+    );
+    return true;
+  }
+  // 检查设备数量
+  const countResult = await query(
+    `SELECT COUNT(*) as count FROM agent_device_binding WHERE agent_user_id = $1`,
+    [agentUserId]
+  );
+  if (parseInt(countResult.rows[0].count) >= maxDevices) {
+    return false;
+  }
+  await query(
+    `INSERT INTO agent_device_binding (agent_user_id, machine_id, machine_info) VALUES ($1, $2, $3)`,
+    [agentUserId, machineId, JSON.stringify(machineInfo || {})]
+  );
+  return true;
+}
+
+/** 查询代理已绑定设备列表 */
+export async function getAgentDevices(agentUserId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT machine_id, machine_info, first_bind_at, last_heartbeat_at
+     FROM agent_device_binding WHERE agent_user_id = $1 ORDER BY first_bind_at`,
+    [agentUserId]
+  );
+  return result.rows;
+}
+
+/** 解绑代理设备 */
+export async function unbindAgentDevice(agentUserId: number, machineId: string): Promise<void> {
+  await query(
+    `DELETE FROM agent_device_binding WHERE agent_user_id = $1 AND machine_id = $2`,
+    [agentUserId, machineId]
+  );
 }
 
 export async function updateUserDateTime(userId: string, dateTime: string): Promise<void> {

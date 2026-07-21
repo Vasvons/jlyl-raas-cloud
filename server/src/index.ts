@@ -17,6 +17,7 @@ import platformAuthRoutes from './routes/platformAuth';
 import workerLogRoutes from './routes/workerLog';
 import aeoRoutes from './routes/aeo';
 import contentRoutes from './routes/content';
+import agentRoutes from './routes/agent';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
 import { initWsServer } from './wsServer';
@@ -251,6 +252,7 @@ app.use('/platform-auth', platformAuthRoutes);
 app.use('/real-collect/logs', workerLogRoutes);
 app.use('/aeo', aeoRoutes);
 app.use('/content', contentRoutes);
+app.use('/api/agent', agentRoutes);
 
 // ===== 临时调试 API：查看 server 内存日志（无需上服务器）=====
 // 用法：GET /debug/memory-logs?lines=200&filter=AI

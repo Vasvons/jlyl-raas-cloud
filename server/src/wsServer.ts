@@ -76,7 +76,8 @@ export function initWsServer(httpServer: HttpServer): WebSocketServer {
     const meta: ClientMeta = {
       ws,
       userId: auth.id != null ? String(auth.id) : null,
-      isAdmin: auth.level === '1' || auth.level === 1 || auth.username === 'admin',
+      // v2.5.35：清理 username === 'admin' 硬编码，统一用 level + role 判断
+      isAdmin: auth.level === '1' || auth.level === 1 || auth.role === 'super_admin' || auth.role === 'admin',
     };
     clients.add(meta);
     console.log(`[WS] 客户端连接，当前连接数: ${clients.size}（userId=${meta.userId}, isAdmin=${meta.isAdmin}）`);

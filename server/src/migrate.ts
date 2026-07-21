@@ -28,6 +28,88 @@ export async function migrate() {
       )
     `);
 
+    // v2.5.35：users 表新增 role/parent_admin_id/status/expire_at/license_key 字段（代理客户端账号系统）
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'customer'`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS parent_admin_id BIGINT`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active'`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS expire_at TIMESTAMP`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS license_key VARCHAR(64)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_license_key ON users(license_key) WHERE license_key IS NOT NULL`);
+    // 回填历史 admin 账号的 role='super_admin'
+    await client.query(`UPDATE users SET role = 'super_admin' WHERE level = '1' AND role = 'customer'`);
+
+    // v2.5.35：管理员-代理分配表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS admin_agent_assign (
+        id BIGSERIAL PRIMARY KEY,
+        admin_user_id BIGINT NOT NULL,
+        agent_user_id BIGINT NOT NULL,
+        assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (admin_user_id, agent_user_id)
+      )
+    `);
+
+    // v2.5.35：代理板块授权表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_module_grant (
+        id BIGSERIAL PRIMARY KEY,
+        agent_user_id BIGINT NOT NULL,
+        module_code VARCHAR(50) NOT NULL,
+        granted_by BIGINT NOT NULL,
+        granted_at TIMESTAMP DEFAULT NOW(),
+        expire_at TIMESTAMP,
+        config JSONB DEFAULT '{}',
+        status VARCHAR(20) DEFAULT 'active',
+        UNIQUE (agent_user_id, module_code)
+      )
+    `);
+
+    // v2.5.35：代理心跳日志表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_heartbeat (
+        id BIGSERIAL PRIMARY KEY,
+        agent_user_id BIGINT NOT NULL,
+        heartbeat_at TIMESTAMP DEFAULT NOW(),
+        client_version VARCHAR(20),
+        ip INET,
+        machine_id VARCHAR(64)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_agent_heartbeat_user_time ON agent_heartbeat(agent_user_id, heartbeat_at DESC)`);
+
+    // v2.5.35：代理设备绑定表（每个 license_key 默认 2 台设备）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_device_binding (
+        id BIGSERIAL PRIMARY KEY,
+        agent_user_id BIGINT NOT NULL,
+        machine_id VARCHAR(64) NOT NULL,
+        machine_info JSONB,
+        first_bind_at TIMESTAMP DEFAULT NOW(),
+        last_heartbeat_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (agent_user_id, machine_id)
+      )
+    `);
+
+    // v2.5.35：桌面端更新发布历史表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS desktop_update_release (
+        id BIGSERIAL PRIMARY KEY,
+        version VARCHAR(20) NOT NULL UNIQUE,
+        changelog TEXT,
+        release_type VARCHAR(20) DEFAULT 'optional',
+        rollout_strategy VARCHAR(20) DEFAULT 'full',
+        gray_agent_ids BIGINT[],
+        oss_exe_url TEXT NOT NULL,
+        oss_blockmap_url TEXT,
+        latest_yml TEXT NOT NULL,
+        published_by BIGINT NOT NULL,
+        published_at TIMESTAMP DEFAULT NOW(),
+        status VARCHAR(20) DEFAULT 'published',
+        downloaded_count INT DEFAULT 0,
+        installed_count INT DEFAULT 0
+      )
+    `);
+
     // 平台表
     await client.query(`
       CREATE TABLE IF NOT EXISTS pt (
@@ -292,14 +374,14 @@ export async function migrate() {
     }
 
     // 初始化管理员账号
-    const adminCount = await client.query("SELECT COUNT(*) as count FROM users WHERE username = $1", [process.env.ADMIN_USERNAME || 'admin']);
+    const adminCount = await client.query("SELECT COUNT(*) as count FROM users WHERE role = 'super_admin' OR level = '1'");
     if (parseInt(adminCount.rows[0].count) === 0) {
       const hashedPassword = await bcrypt.hash(process.env.ADMIN_PASSWORD || 'admin123', 10);
       await client.query(
-        'INSERT INTO users (username, password, level) VALUES ($1, $2, $3)',
+        "INSERT INTO users (username, password, level, role) VALUES ($1, $2, $3, 'super_admin')",
         [process.env.ADMIN_USERNAME || 'admin', hashedPassword, '1']
       );
-      console.log('[Migrate] 已创建管理员账号:', process.env.ADMIN_USERNAME || 'admin');
+      console.log('[Migrate] 已创建超级管理员账号:', process.env.ADMIN_USERNAME || 'admin');
     }
 
     // ===== 真实收录查询功能相关表 =====

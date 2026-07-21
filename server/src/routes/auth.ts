@@ -30,7 +30,17 @@ router.post('/login', async (req, res) => {
       return res.json({ code: 400, message: '密码错误' });
     }
 
-    const token = generateToken({ id: user.id, username: user.username, level: user.level });
+    const token = generateToken({ id: user.id, username: user.username, level: user.level, role: user.role || (user.level === '1' ? 'super_admin' : 'customer') });
+
+    // v2.5.35：校验代理账号状态和到期时间
+    if (user.role === 'agent') {
+      if (user.status === 'disabled') {
+        return res.json({ code: 403, message: '账号已被禁用，请联系管理员' });
+      }
+      if (user.status === 'expired' || (user.expire_at && new Date(user.expire_at) < new Date())) {
+        return res.json({ code: 403, message: '账号已过期，请联系管理员续费' });
+      }
+    }
 
     // 获取最新数据时间
     const latestDataTime = await getUserLatestDataTime(user.id.toString());
@@ -48,6 +58,10 @@ router.post('/login', async (req, res) => {
           url: user.url,
           address: user.address,
           level: user.level,
+          role: user.role || (user.level === '1' ? 'super_admin' : 'customer'),
+          parent_admin_id: user.parent_admin_id,
+          expire_at: user.expire_at,
+          status: user.status,
           cid: user.cid,
           dateTime: latestDataTime || user.date_time,
         }
