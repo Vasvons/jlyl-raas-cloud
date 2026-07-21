@@ -2985,15 +2985,20 @@ export async function autoCreateWritingTasksFromPeriod(
   });
 
   // 7. 补充 AEO 相关字段（createWritingTask 未包含这些字段）
-  // v2.1.3：auto_publish=true 让云端 articleGenerator 完成后自动创建发布任务
+  // v2.5.32：auto_publish 改为受 AEO 配额配置的 auto_publish_enabled 控制（原硬编码 true 是 bug）
+  //   - auto_publish_enabled=true：写入 true，云端 articleGenerator 完成后自动创建发布任务
+  //   - auto_publish_enabled=false：写入 false，不自动发布
+  //   配合桌面端 daemon.autoPublish 开关形成双开关校验：
+  //   仅当 auto_publish_enabled=true（功能总开关）且 daemon.autoPublish=true（流程连通）时才执行自动发布
+  const autoPublishEnabled = quotaConfig?.auto_publish_enabled === true;
   await dbQuery(
     `UPDATE ai_writing_task
      SET aeo_context = $1,
-         auto_publish = true,
+         auto_publish = $2,
          auto_generated = true,
-         trigger_period_report_id = $2
-     WHERE id = $3`,
-    [aeoContext, periodReportId, taskId]
+         trigger_period_report_id = $3
+     WHERE id = $4`,
+    [aeoContext, autoPublishEnabled, periodReportId, taskId]
   );
 
   // 标记独立建议池中的建议为已消费（v2.3.0）
