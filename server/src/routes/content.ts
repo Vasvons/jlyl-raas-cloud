@@ -2538,12 +2538,16 @@ router.get('/flywheel/event-logs', async (req: Request, res: Response) => {
     const eventTypes = eventTypesRaw
       ? eventTypesRaw.split(',').map((s) => s.trim()).filter(Boolean)
       : undefined;
+    // v2.5.33：支持按天数过滤（最近 N 天），用于自动发布日志窗口持久显示一周
+    const daysRaw = req.query.days as string | undefined;
+    const days = daysRaw ? Number(daysRaw) : undefined;
     const limit = Number(req.query.limit) || 100;
     const offset = Number(req.query.offset) || 0;
     const data = await getFlywheelEventLogs({
       userId: targetUserId,
       eventType: eventType || undefined,
       eventTypes: eventTypes && eventTypes.length > 0 ? eventTypes : undefined,
+      days: days && days > 0 ? days : undefined,
       limit,
       offset,
     });

@@ -52,6 +52,8 @@ import {
   consumeWritingSuggestions,
   // v2.5.29: 飞轮"创建"按钮基于建议来源类型触发自动写作
   getLatestPeriodReportByType,
+  // v2.5.33: 周报池耗尽时写入事件日志告知用户
+  createFlywheelEventLog,
 } from '../../repository';
 import { query as dbQuery } from '../../db';
 import { decrypt } from '../../utils/crypto';
@@ -2718,6 +2720,20 @@ export async function autoCreateWritingTasksFromPeriod(
       }));
       // 实际驱动来源是独立建议池的 sourceType（如 weekly），不是当前 periodType
       effectiveSourceType = sourceType;
+    } else if (sourceType !== periodType) {
+      // v2.5.33：用户配置了非当前 periodType 的建议池（如 weekly），但该池未消费建议已耗尽
+      //   原 bug：此时会回退到日报建议，effectiveSourceType 保持 daily，任务名变成"日报驱动"
+      //   修复：保持 effectiveSourceType = sourceType（weekly），让任务名正确显示"周报驱动"
+      //         并写入事件日志告知用户周报池已耗尽，等待下次周报生成补充
+      //   注意：effectiveSuggestions 仍用 writingSuggestions（日报建议）作为兜底内容，
+      //         但任务名标识为周报驱动，让用户知道建议来源配置生效了
+      effectiveSourceType = sourceType;
+      console.warn(`[AEO-Period] 用户 ${userId} 配置的建议池 ${sourceType} 已无未消费建议，使用日报建议兜底但保留 ${sourceType} 驱动标识`);
+      await createFlywheelEventLog({
+        user_id: userIdNum,
+        event_type: 'info',
+        message: `配置的建议池（${sourceType === 'weekly' ? '周报' : sourceType === 'monthly' ? '月报' : '日报'}）已无未消费建议，本次写作任务使用日报建议兜底，等待下次${sourceType === 'weekly' ? '周报' : sourceType === 'monthly' ? '月报' : '日报'}生成补充新建议`,
+      }).catch(() => {});
     }
   } catch (e: any) {
     console.warn(`[AEO-Period] 读取独立建议池失败，使用报告内建议兜底:`, e.message);

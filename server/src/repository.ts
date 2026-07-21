@@ -7546,6 +7546,8 @@ export async function getFlywheelEventLogs(params: {
   eventType?: string;
   /** v2.5.33：支持多事件类型过滤（OR 关系），用于自动发布日志窗口按 publish_* 系列事件过滤 */
   eventTypes?: string[];
+  /** v2.5.33：只返回最近 N 天的日志，用于自动发布日志窗口持久显示一周记录 */
+  days?: number;
   limit?: number;
   offset?: number;
 }): Promise<{ list: any[]; total: number }> {
@@ -7566,6 +7568,11 @@ export async function getFlywheelEventLogs(params: {
   if (params.eventTypes && params.eventTypes.length > 0) {
     queryParams.push(params.eventTypes);
     whereParts.push(`event_type = ANY($${queryParams.length}::text[])`);
+  }
+  // v2.5.33：时间范围过滤（最近 N 天），让自动发布日志窗口持久显示一周记录
+  if (params.days && params.days > 0) {
+    queryParams.push(params.days);
+    whereParts.push(`created_at >= NOW() - ($${queryParams.length} || ' days')::interval`);
   }
   const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
 
