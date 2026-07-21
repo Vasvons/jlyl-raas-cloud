@@ -54,6 +54,8 @@ import {
   getLatestPeriodReportByType,
   // v2.5.33: 周报池耗尽时写入事件日志告知用户
   createFlywheelEventLog,
+  // v2.5.33：获取最新周期报告的所有建议（不过滤 consumed），让周报/月报池驱动整个周期
+  getLatestPeriodSuggestions,
 } from '../../repository';
 import { query as dbQuery } from '../../db';
 import { decrypt } from '../../utils/crypto';
@@ -2694,46 +2696,46 @@ export async function autoCreateWritingTasksFromPeriod(
   }
   const quotaConfig = await getAeoQuotaConfig(userIdNum);
 
-  // 2.5 读取建议来源配置，从独立建议池消费未消费建议（v2.3.0）
-  // 注意：日报生成任务时，根据 cloud_api_config.suggestion_source_period_type 决定消费哪类周期报告的建议
-  //       例如配置为 weekly 时，每天从最新周报中消费未使用建议，直到下次周报刷新
+  // 2.5 读取建议来源配置，从独立建议池取建议（v2.3.0）
+  // v2.5.33 业务语义修正（用户明确要求）：
+  //   - 日报池：当天消耗驱动当天写作
+  //   - 周报池：一次生成，驱动接下来一整周的写作（每天从池中取建议，已消费的也算"还在池子里"）
+  //   - 月报池：同理，驱动一整月
+  //   - 只有当下一份新周报/月报生成时，才切换到新报告的建议池
+  //   - 绝不因周报池建议"耗尽"而退回日报池给建议
   let consumedSuggestionIds: number[] = [];
   let effectiveSuggestions = writingSuggestions;
-  // v2.5.29：记录实际驱动来源类型——当独立建议池替换了当前 periodType 的建议时，
-  //   任务名应该用实际来源（如 weekly）命名，而不是当前 periodType（如 daily）
-  //   原 bug：用户配置 sourceType=weekly，但日报生成时任务名仍叫"日报驱动写作任务"
   let effectiveSourceType: string = periodType;
   try {
     const sourceType = await getSuggestionPoolSourceType(userIdNum);
-    // 优先消费配置来源类型的未消费建议；若未找到则回退到当前日报自己的 writingSuggestions
-    const unconsumed = await getUnconsumedSuggestionsByLatestPeriod(userIdNum, sourceType);
-    if (unconsumed.length > 0) {
-      effectiveSuggestions = unconsumed.map(s => ({
-        topic: s.topic,
-        reason: s.reason,
-        direction: s.direction,
-        platforms: s.platforms,
-        keywords: s.keywords,
-        priority: s.priority,
-        source_type: 'distillate',
-        id: s.id,
-      }));
-      // 实际驱动来源是独立建议池的 sourceType（如 weekly），不是当前 periodType
-      effectiveSourceType = sourceType;
-    } else if (sourceType !== periodType) {
-      // v2.5.33：用户配置了非当前 periodType 的建议池（如 weekly），但该池未消费建议已耗尽
-      //   原 bug：此时会回退到日报建议，effectiveSourceType 保持 daily，任务名变成"日报驱动"
-      //   修复：保持 effectiveSourceType = sourceType（weekly），让任务名正确显示"周报驱动"
-      //         并写入事件日志告知用户周报池已耗尽，等待下次周报生成补充
-      //   注意：effectiveSuggestions 仍用 writingSuggestions（日报建议）作为兜底内容，
-      //         但任务名标识为周报驱动，让用户知道建议来源配置生效了
-      effectiveSourceType = sourceType;
-      console.warn(`[AEO-Period] 用户 ${userId} 配置的建议池 ${sourceType} 已无未消费建议，使用日报建议兜底但保留 ${sourceType} 驱动标识`);
-      await createFlywheelEventLog({
-        user_id: userIdNum,
-        event_type: 'info',
-        message: `配置的建议池（${sourceType === 'weekly' ? '周报' : sourceType === 'monthly' ? '月报' : '日报'}）已无未消费建议，本次写作任务使用日报建议兜底，等待下次${sourceType === 'weekly' ? '周报' : sourceType === 'monthly' ? '月报' : '日报'}生成补充新建议`,
-      }).catch(() => {});
+    if (sourceType !== periodType) {
+      // 配置了非当前 periodType 的建议池（如 weekly/monthly）
+      // v2.5.33：用 getLatestPeriodSuggestions 取最新报告的所有建议（包括已消费的），
+      //   让周报/月报池在整个周期内持续驱动写作，不因消费完而退回日报
+      const poolSuggestions = await getLatestPeriodSuggestions(userIdNum, sourceType);
+      if (poolSuggestions.length > 0) {
+        effectiveSuggestions = poolSuggestions.map(s => ({
+          topic: s.topic,
+          reason: s.reason,
+          direction: s.direction,
+          platforms: s.platforms,
+          keywords: s.keywords,
+          priority: s.priority,
+          source_type: 'distillate',
+          id: s.id,
+        }));
+        effectiveSourceType = sourceType;
+        console.log(`[AEO-Period] 用户 ${userId} 使用 ${sourceType} 建议池（最新报告 ${poolSuggestions.length} 条建议，含已消费）`);
+      } else {
+        // 周报/月报尚未生成过，无建议可用——不退回日报，跳过本次写作任务创建
+        console.warn(`[AEO-Period] 用户 ${userId} 配置的建议池 ${sourceType} 尚无报告，跳过本次写作任务创建（等待${sourceType === 'weekly' ? '周报' : '月报'}生成）`);
+        await createFlywheelEventLog({
+          user_id: userIdNum,
+          event_type: 'info',
+          message: `配置的建议池（${sourceType === 'weekly' ? '周报' : sourceType === 'monthly' ? '月报' : '日报'}）尚未生成报告，本次跳过写作任务创建，等待${sourceType === 'weekly' ? '周报' : '月报'}生成后自动恢复`,
+        }).catch(() => {});
+        return 0;
+      }
     }
   } catch (e: any) {
     console.warn(`[AEO-Period] 读取独立建议池失败，使用报告内建议兜底:`, e.message);
@@ -3017,16 +3019,17 @@ export async function autoCreateWritingTasksFromPeriod(
     [aeoContext, autoPublishEnabled, periodReportId, taskId]
   );
 
-  // 标记独立建议池中的建议为已消费（v2.3.0）
+  // v2.5.33：不再调用 consumeWritingSuggestions 标记建议为已消费
+  //   原设计：每次写作任务创建后把用过的建议标记 consumed=true，导致下次查询返回空，回退到日报
+  //   新设计：周报/月报池的建议在整个周期内持续有效（已消费的也算"还在池子里"），
+  //          只有下一份新周报/月报生成时才切换到新建议池
+  //   注意：consumed 字段仍保留用于"已发布"标记（markSuggestionsPublishedByTask 在发布完成后调用），
+  //          但不再用于"是否可用"的判断
   if (effectiveSuggestions !== writingSuggestions && effectiveSuggestions.length > 0) {
-    try {
-      const suggestionIds = effectiveSuggestions.map((s: any) => s.id).filter((id: any) => typeof id === 'number');
-      if (suggestionIds.length > 0) {
-        const consumedCount = await consumeWritingSuggestions(suggestionIds, taskId);
-        console.log(`[AEO-Period] 已消费 ${consumedCount}/${suggestionIds.length} 条独立建议`);
-      }
-    } catch (e: any) {
-      console.warn(`[AEO-Period] 标记建议消费失败:`, e.message);
+    // 仅记录日志，不标记消费
+    const suggestionIds = effectiveSuggestions.map((s: any) => s.id).filter((id: any) => typeof id === 'number');
+    if (suggestionIds.length > 0) {
+      console.log(`[AEO-Period] 本次写作任务使用 ${suggestionIds.length} 条${effectiveSourceType === 'weekly' ? '周报' : effectiveSourceType === 'monthly' ? '月报' : '日报'}池建议（不标记消费，整个周期内持续可用）`);
     }
   }
 

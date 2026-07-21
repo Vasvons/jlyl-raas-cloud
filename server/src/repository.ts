@@ -6076,6 +6076,45 @@ export async function getUnconsumedSuggestionsByLatestPeriod(
   return result.rows as WritingSuggestionRow[];
 }
 
+/**
+ * v2.5.33：获取最新周期报告的所有写作建议（不过滤 consumed）
+ *
+ * 业务语义（用户明确要求）：
+ *  - 周报池的建议生成后，驱动接下来一整周的写作（每天从池中取建议，已消费的也算"还在池子里"）
+ *  - 月报池的建议生成后，驱动接下来一整月的写作
+ *  - 日报池的建议当天消耗驱动当天写作
+ *  - 只有当下一份新周报/月报生成时，才切换到新报告的建议池
+ *
+ * 与 getUnconsumedSuggestionsByLatestPeriod 的差异：
+ *  - 后者只返回 consumed=FALSE 的建议，一旦消费完就返回空，导致回退到日报
+ *  - 本函数返回最新报告的所有建议（包括已消费的），让周报/月报池在整个周期内持续驱动写作
+ */
+export async function getLatestPeriodSuggestions(
+  userId: number,
+  sourceType: string,
+  limit?: number
+): Promise<WritingSuggestionRow[]> {
+  const periodResult = await query(
+    `SELECT id FROM aeo_period_report
+     WHERE user_id = $1 AND period_type = $2
+     ORDER BY period_start DESC LIMIT 1`,
+    [userId, sourceType]
+  );
+  const periodReportId = periodResult.rows[0]?.id;
+  if (!periodReportId) return [];
+
+  const params: any[] = [userId, periodReportId];
+  let sql = `SELECT * FROM aeo_writing_suggestion
+             WHERE user_id = $1 AND period_report_id = $2
+             ORDER BY priority = 'high' DESC, priority = 'medium' DESC, created_at ASC`;
+  if (limit && limit > 0) {
+    params.push(limit);
+    sql += ` LIMIT $${params.length}`;
+  }
+  const result = await query(sql, params);
+  return result.rows as WritingSuggestionRow[];
+}
+
 export async function markSuggestionsPublishedByTask(
   writingTaskId: number
 ): Promise<number> {
