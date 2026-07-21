@@ -6233,10 +6233,12 @@ export async function createPublishTask(data: {
     // v1.8.4：若未提供 batch_id，自动生成一个（单条调用场景）
     const batchId = data.batch_id || crypto.randomUUID();
 
-    // 0. 检查重复发布：该文章+平台是否已有成功发布记录
+    // 0. 检查重复发布：该文章+平台是否已有成功发布记录 或 已有未完成的发布任务
+    // v2.5.34：增加 pending/processing 状态检查，防止同一文章+平台被重复创建发布任务
     const skipped: { platform: string; reason: string }[] = [];
     const platformsToCreate: string[] = [];
     for (const platform of data.target_platforms) {
+      // 0.1 检查是否已有成功发布记录
       const dupCheck = await client.query(
         `SELECT id FROM publish_record
          WHERE platform = $1
@@ -6247,6 +6249,22 @@ export async function createPublishTask(data: {
       );
       if (dupCheck.rows.length > 0) {
         skipped.push({ platform, reason: `该文章已成功发布到 ${platform}，跳过重复发布` });
+        continue;
+      }
+      // 0.2 v2.5.34：检查是否已有未完成的发布任务（pending/processing record）
+      // 防止写作任务重试或并发调用时重复创建发布任务
+      const pendingCheck = await client.query(
+        `SELECT pr.id FROM publish_record pr
+         JOIN publish_task pt ON pt.id = pr.task_id
+         WHERE pt.article_id = $1
+           AND pr.platform = $2
+           AND pr.status IN ('pending', 'processing')
+           AND pt.status IN ('pending', 'processing')
+         LIMIT 1`,
+        [data.article_id, platform]
+      );
+      if (pendingCheck.rows.length > 0) {
+        skipped.push({ platform, reason: `该文章在 ${platform} 已有未完成的发布任务，跳过` });
         continue;
       }
       platformsToCreate.push(platform);
@@ -6339,17 +6357,28 @@ export async function updatePublishTaskStatus(
   completedDelta = 0,
   failedDelta = 0
 ): Promise<void> {
-  // 注意：$2 同时用于 SET 和 CASE 表达式会导致 PostgreSQL prepared statement
-  // "inconsistent types deduced for parameter $2" 错误，用 $5 重复传入 status 参数
+  // v2.5.34：原子地更新进度 + 自动判断终态，修复竞态条件导致的"进度条跑完但状态仍为 pending/processing"
+  //   原 bug：直接 SET status = $2，依赖 routes/content.ts 二次查询设置终态，
+  //   两个 worker 并发回写时二次查询可能漏掉终态设置。
+  //   现改为：在同一个 UPDATE 中用 CASE 根据 completed_count+failed_count vs total_count 自动判断。
   await query(
     `UPDATE publish_task
-     SET status = $2,
-         completed_count = completed_count + $3,
+     SET completed_count = completed_count + $3,
          failed_count = failed_count + $4,
-         started_at = CASE WHEN $5 = 'processing' AND started_at IS NULL THEN NOW() ELSE started_at END,
-         finished_at = CASE WHEN $5 IN ('completed', 'failed', 'partial') THEN NOW() ELSE finished_at END
+         status = CASE
+           WHEN completed_count + $3 + failed_count + $4 >= total_count THEN
+             CASE WHEN failed_count + $4 = 0 THEN 'completed'
+                  WHEN completed_count + $3 = 0 THEN 'failed'
+                  ELSE 'partial' END
+           WHEN completed_count + $3 + failed_count + $4 > 0 THEN 'processing'
+           ELSE $2
+         END,
+         started_at = CASE WHEN started_at IS NULL AND (completed_count + $3 + failed_count + $4) > 0 THEN NOW() ELSE started_at END,
+         finished_at = CASE
+           WHEN completed_count + $3 + failed_count + $4 >= total_count THEN NOW()
+           ELSE finished_at END
      WHERE id = $1`,
-    [id, status, completedDelta, failedDelta, status]
+    [id, status, completedDelta, failedDelta]
   );
 }
 

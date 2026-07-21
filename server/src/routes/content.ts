@@ -2082,20 +2082,9 @@ router.post('/publish/records/:id/result', async (req: Request, res: Response) =
       const { task_id, platform_auth_id } = recordResult.rows[0];
       const completedDelta = status === 'success' ? 1 : 0;
       const failedDelta = status === 'success' ? 0 : 1;
+      // v2.5.34：updatePublishTaskStatus 内部已自动判断终态（completed/failed/partial/processing），
+      // 不再需要二次查询+设置终态（原逻辑有竞态条件）
       await updatePublishTaskStatus(task_id, 'processing', completedDelta, failedDelta);
-
-      // 3. 重新查询 task 总体状态，更新最终状态
-      const taskResult = await query('SELECT total_count, completed_count, failed_count FROM publish_task WHERE id = $1', [task_id]);
-      if (taskResult.rows.length > 0) {
-        const t = taskResult.rows[0];
-        const done = Number(t.completed_count) + Number(t.failed_count);
-        if (done >= Number(t.total_count)) {
-          const finalStatus = Number(t.failed_count) === 0 ? 'completed'
-            : Number(t.completed_count) === 0 ? 'failed'
-            : 'partial';
-          await updatePublishTaskStatus(task_id, finalStatus, 0, 0);
-        }
-      }
 
       // 4. 兼容旧版 account_health 参数（新版已在 updatePublishRecordResult 内处理）
       if (platform_auth_id && account_health) {

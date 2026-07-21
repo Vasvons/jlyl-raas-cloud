@@ -1841,6 +1841,34 @@ export async function migrate() {
       console.warn('[Migrate] v2.5.33 回填 publish_* 事件 user_id 失败（不阻断）:', e.message);
     }
 
+    // v2.5.34：修复历史 publish_task 状态不一致（进度条跑完但 status 仍为 pending/processing）
+    // 根因：旧版 updatePublishTaskStatus 直接 SET status=$2，依赖二次查询设置终态，
+    //       并发回写时竞态条件导致终态设置被跳过。
+    // 修复：根据 completed_count/failed_count/total_count 重新计算正确状态。
+    try {
+      const fixTaskResult = await client.query(
+        `UPDATE publish_task
+         SET status = CASE
+           WHEN completed_count + failed_count >= total_count THEN
+             CASE WHEN failed_count = 0 THEN 'completed'
+                  WHEN completed_count = 0 THEN 'failed'
+                  ELSE 'partial' END
+           WHEN completed_count + failed_count > 0 THEN 'processing'
+           ELSE 'pending'
+         END,
+         finished_at = CASE
+           WHEN completed_count + failed_count >= total_count THEN COALESCE(finished_at, NOW())
+           ELSE finished_at END
+         WHERE status IN ('pending', 'processing')
+           AND completed_count + failed_count >= total_count`
+      );
+      if (fixTaskResult.rowCount && fixTaskResult.rowCount > 0) {
+        console.log(`[Migrate] v2.5.34 已修正 ${fixTaskResult.rowCount} 个 publish_task 的终态状态`);
+      }
+    } catch (e: any) {
+      console.warn('[Migrate] v2.5.34 修正 publish_task 终态失败（不阻断）:', e.message);
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
