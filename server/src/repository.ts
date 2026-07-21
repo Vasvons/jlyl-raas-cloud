@@ -6781,6 +6781,10 @@ export async function retryPublishRecordsByBatch(
   userId: number,
   batchId: string
 ): Promise<{ reset_count: number }> {
+  // v2.5.33：userId <= 0（管理员未指定客户）时不按 user_id 过滤
+  const userClause = userId > 0 ? `AND pt.user_id = $1` : '';
+  const params = userId > 0 ? [userId, batchId] : [batchId];
+  const batchParamIdx = userId > 0 ? 2 : 1;
   // 1. 重置 publish_record（限定当前用户 + batch_id，防越权）
   const recordResult = await query(
     `UPDATE publish_record pr
@@ -6790,18 +6794,20 @@ export async function retryPublishRecordsByBatch(
          published_at = NULL
      FROM publish_task pt
      WHERE pr.task_id = pt.id
-       AND pt.user_id = $1
-       AND pt.batch_id = $2
+       AND pt.batch_id = $${batchParamIdx}
+       ${userClause}
        AND pr.status IN ('failed', 'login_expired')`,
-    [userId, batchId]
+    params
   );
   // 2. 把 publish_task 从 failed/completed 恢复为 pending
+  const taskUserClause = userId > 0 ? `AND user_id = $1` : '';
   await query(
     `UPDATE publish_task
      SET status = 'pending'
-     WHERE user_id = $1 AND batch_id = $2
+     WHERE batch_id = $${batchParamIdx}
+       ${taskUserClause}
        AND status IN ('failed', 'completed')`,
-    [userId, batchId]
+    params
   );
   return { reset_count: recordResult.rowCount || 0 };
 }
@@ -6934,6 +6940,9 @@ export async function getPublishTasksByBatch(
   userId: number,
   batchId: string
 ): Promise<any[]> {
+  // v2.5.33：userId <= 0（管理员未指定客户）时不按 user_id 过滤，与一级聚合视图行为一致
+  const userClause = userId > 0 ? `AND pt.user_id = $1` : '';
+  const params = userId > 0 ? [userId, batchId] : [batchId];
   const result = await query(
     `SELECT pt.*,
             a.title as article_title,
@@ -6942,9 +6951,9 @@ export async function getPublishTasksByBatch(
             a.task_id as writing_task_id
      FROM publish_task pt
      JOIN article a ON a.id = pt.article_id
-     WHERE pt.user_id = $1 AND pt.batch_id = $2
+     WHERE pt.batch_id = $${userId > 0 ? 2 : 1} ${userClause}
      ORDER BY pt.id ASC`,
-    [userId, batchId]
+    params
   );
   return result.rows;
 }
@@ -6998,14 +7007,18 @@ export async function batchPauseResumeByBatch(
   batchId: string,
   action: 'pause' | 'resume'
 ): Promise<{ affected: number }> {
+  // v2.5.33：userId <= 0（管理员未指定客户）时不按 user_id 过滤
+  const userClause = userId > 0 ? `AND user_id = $1` : '';
+  const params = userId > 0 ? [userId, batchId] : [batchId];
+  const batchParamIdx = userId > 0 ? 2 : 1;
   if (action === 'pause') {
     const result = await query(
       `UPDATE publish_task
        SET status = 'paused'
-       WHERE user_id = $1
-         AND batch_id = $2
+       WHERE batch_id = $${batchParamIdx}
+         ${userClause}
          AND status IN ('pending', 'processing')`,
-      [userId, batchId]
+      params
     );
     return { affected: result.rowCount || 0 };
   } else {
@@ -7018,10 +7031,10 @@ export async function batchPauseResumeByBatch(
                 ELSE 'partial' END
          ELSE 'pending'
        END
-       WHERE user_id = $1
-         AND batch_id = $2
+       WHERE batch_id = $${batchParamIdx}
+         ${userClause}
          AND status = 'paused'`,
-      [userId, batchId]
+      params
     );
     return { affected: result.rowCount || 0 };
   }
@@ -7050,10 +7063,14 @@ export async function batchDeleteByBatch(
   userId: number,
   batchId: string
 ): Promise<{ deleted: number }> {
+  // v2.5.33：userId <= 0（管理员未指定客户）时不按 user_id 过滤
+  const userClause = userId > 0 ? `AND user_id = $1` : '';
+  const params = userId > 0 ? [userId, batchId] : [batchId];
+  const batchParamIdx = userId > 0 ? 2 : 1;
   // 查出该批次下所有 publish_task.id
   const idsResult = await query(
-    `SELECT id FROM publish_task WHERE user_id = $1 AND batch_id = $2`,
-    [userId, batchId]
+    `SELECT id FROM publish_task WHERE batch_id = $${batchParamIdx} ${userClause}`,
+    params
   );
   const ids = idsResult.rows.map((r: any) => r.id);
   if (ids.length === 0) return { deleted: 0 };

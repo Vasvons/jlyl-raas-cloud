@@ -166,6 +166,29 @@ function getCustomerId(req: Request): number {
   return getUserId(req);
 }
 
+/**
+ * v2.5.33：解析批次操作的 userId（与 /publish/grouped-by-batch 对齐）
+ *
+ * 自动发布批次的 user_id 是飞轮守护进程配置的客户 ID，与管理员账号 ID 不同。
+ * 管理员（level='1'）且未指定 customer_id 时返回 0，仓库层据此不按 user_id 过滤，
+ * 否则管理员在"自动发布"Tab 点开批次详情会因 user_id 不匹配而看不到文章列表。
+ *
+ * customer_id 可能在 query（GET）或 body（POST/DELETE）里，统一兼容。
+ */
+function resolveBatchUserId(req: Request): number {
+  const rawQ = req.query.customer_id as string | undefined;
+  const rawB = req.body?.customer_id as string | number | undefined;
+  const raw = rawQ ?? rawB;
+  if (raw != null && !Number.isNaN(Number(raw))) {
+    return Number(raw);
+  }
+  const caller = (req as any).user;
+  if (caller && caller.level === '1') {
+    return 0;
+  }
+  return getUserId(req);
+}
+
 // ============ AI模型配置 ============
 
 // 返回支持的7个平台及其默认配置
@@ -1690,7 +1713,9 @@ router.get('/publish/grouped-by-batch', async (req: Request, res: Response) => {
  */
 router.get('/publish/by-batch/:batchId', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.5.33：用 resolveBatchUserId 替代 getUserId，管理员未指定 customer_id 时返回 0 不过滤
+    // （自动发布批次的 user_id 是客户 ID，与管理员账号 ID 不同，否则查不到文章列表）
+    const userId = resolveBatchUserId(req);
     const batchId = req.params.batchId;
     if (!batchId) {
       return res.status(400).json({ code: 400, message: 'batchId 必填' });
@@ -1757,7 +1782,8 @@ router.delete('/publish/tasks/:id', async (req: Request, res: Response) => {
  */
 router.post('/publish/batch/:batchId', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.5.33：用 resolveBatchUserId 对齐管理员逻辑（同 /publish/by-batch）
+    const userId = resolveBatchUserId(req);
     const batchId = req.params.batchId;
     const action = req.body?.action;
     if (!batchId) {
@@ -1778,7 +1804,8 @@ router.post('/publish/batch/:batchId', async (req: Request, res: Response) => {
  */
 router.delete('/publish/batch/:batchId', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.5.33：用 resolveBatchUserId 对齐管理员逻辑（同 /publish/by-batch）
+    const userId = resolveBatchUserId(req);
     const batchId = req.params.batchId;
     if (!batchId) {
       return res.status(400).json({ code: 400, message: 'batchId 必填' });
@@ -1816,7 +1843,8 @@ router.post('/publish/tasks/:id/retry', async (req: Request, res: Response) => {
  */
 router.post('/publish/batch/:batchId/retry', async (req: Request, res: Response) => {
   try {
-    const userId = getUserId(req);
+    // v2.5.33：用 resolveBatchUserId 对齐管理员逻辑（同 /publish/by-batch）
+    const userId = resolveBatchUserId(req);
     const batchId = req.params.batchId;
     if (!batchId) {
       return res.status(400).json({ code: 400, message: 'batchId 必填' });
