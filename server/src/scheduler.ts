@@ -33,6 +33,24 @@ export function startScheduler() {
   cron.schedule('*/10 * * * *', async () => {
     await runQueryDisplay();
   });
+
+  // v2.5.33：每天 0 点重置发布账号的日限额计数器
+  //   原设计是"惰性重置"（dequeue 时按 publish_last_used_date < CURRENT_DATE 判断），
+  //   但 publish_used_today 字段本身不会自动归零，导致前端显示历史遗留值，误导用户。
+  //   这里在 0 点主动重置，让前端显示和后端判断保持一致。
+  cron.schedule('0 0 * * *', async () => {
+    try {
+      const result = await query(
+        `UPDATE platform_auth
+         SET publish_used_today = 0
+         WHERE platform_type IN ('publish', 'both')
+           AND (publish_used_today > 0 OR publish_last_used_date = CURRENT_DATE)`
+      );
+      console.log(`[Scheduler] 0点重置发布账号日限额: ${result.rowCount} 行已重置 publish_used_today=0`);
+    } catch (e: any) {
+      console.error(`[Scheduler] 重置发布账号日限额失败: ${e.message}`);
+    }
+  });
 }
 
 // 获取调度器状态（供诊断接口使用）
