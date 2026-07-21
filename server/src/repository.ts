@@ -7544,6 +7544,8 @@ export async function createFlywheelEventLog(params: {
 export async function getFlywheelEventLogs(params: {
   userId?: number | null;
   eventType?: string;
+  /** v2.5.33：支持多事件类型过滤（OR 关系），用于自动发布日志窗口按 publish_* 系列事件过滤 */
+  eventTypes?: string[];
   limit?: number;
   offset?: number;
 }): Promise<{ list: any[]; total: number }> {
@@ -7559,6 +7561,11 @@ export async function getFlywheelEventLogs(params: {
   if (params.eventType) {
     queryParams.push(params.eventType);
     whereParts.push(`event_type = $${queryParams.length}`);
+  }
+  // v2.5.33：多事件类型过滤（与 eventType 互斥，优先使用 eventTypes）
+  if (params.eventTypes && params.eventTypes.length > 0) {
+    queryParams.push(params.eventTypes);
+    whereParts.push(`event_type = ANY($${queryParams.length}::text[])`);
   }
   const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
 

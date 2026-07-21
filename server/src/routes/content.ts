@@ -2533,11 +2533,17 @@ router.get('/flywheel/event-logs', async (req: Request, res: Response) => {
       }
     }
     const eventType = req.query.event_type as string | undefined;
+    // v2.5.33：支持多事件类型过滤（逗号分隔），用于自动发布日志窗口
+    const eventTypesRaw = req.query.event_types as string | undefined;
+    const eventTypes = eventTypesRaw
+      ? eventTypesRaw.split(',').map((s) => s.trim()).filter(Boolean)
+      : undefined;
     const limit = Number(req.query.limit) || 100;
     const offset = Number(req.query.offset) || 0;
     const data = await getFlywheelEventLogs({
       userId: targetUserId,
       eventType: eventType || undefined,
+      eventTypes: eventTypes && eventTypes.length > 0 ? eventTypes : undefined,
       limit,
       offset,
     });
