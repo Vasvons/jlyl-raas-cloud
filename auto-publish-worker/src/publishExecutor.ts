@@ -42,6 +42,8 @@ export interface PublishRecord {
   account_name?: string;
   account_storage_state: any;
   account_proxy?: any;
+  /** v2.5.33：客户 ID，用于推送事件时带上正确的 user_id（原 bug：worker 推送事件 user_id=0 导致前端查不到） */
+  user_id?: number;
   article: {
     id: number;
     title: string;
@@ -90,7 +92,7 @@ export async function processRecord(record: PublishRecord): Promise<void> {
   logger.info(`开始处理 [${platform}] "${articleTitle}"`);
 
   // v2.1.0：推送事件到云端 flywheel_event_log（让桌面端"自动写作"Tab 的云端日志能看到）
-  void reportFlywheelEvent('publish_started', `开始发布 [${platform}] "${articleTitle}"（record #${recordId}）`, { record_id: recordId, platform, task_id: record.task_id }).catch(() => {});
+  void reportFlywheelEvent('publish_started', `开始发布 [${platform}] "${articleTitle}"（record #${recordId}）`, { record_id: recordId, platform, task_id: record.task_id }, record.user_id).catch(() => {});
 
   // v2.1.0：同平台锁 5 分钟超时（防 context.close() 卡住导致同平台饿死）
   const prevLock = platformLocks.get(platform) || Promise.resolve();
@@ -119,7 +121,7 @@ export async function processRecord(record: PublishRecord): Promise<void> {
     const isTimeout = err.message?.includes('执行超时');
     if (isTimeout) {
       logger.error(`record #${recordId} 超时: ${err.message}`);
-      void reportFlywheelEvent('publish_failed', `[${platform}] record #${recordId} 执行超时（8分钟）`, { record_id: recordId, platform, reason: 'timeout' }).catch(() => {});
+      void reportFlywheelEvent('publish_failed', `[${platform}] record #${recordId} 执行超时（8分钟）`, { record_id: recordId, platform, reason: 'timeout' }, record.user_id).catch(() => {});
       await reportPublishResult(recordId, {
         status: 'failed',
         error_type: 'timeout',
@@ -401,7 +403,7 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     }
 
     const result = classifyError(errorMsg);
-    void reportFlywheelEvent('publish_failed', `[${platform}] 发布失败 "${articleTitle}": ${errorMsg}（类型: ${result.error_type}）`, { record_id: recordId, platform, error_type: result.error_type, error_msg: errorMsg }).catch(() => {});
+    void reportFlywheelEvent('publish_failed', `[${platform}] 发布失败 "${articleTitle}": ${errorMsg}（类型: ${result.error_type}）`, { record_id: recordId, platform, error_type: result.error_type, error_msg: errorMsg }, record.user_id).catch(() => {});
     await reportPublishResult(recordId, {
       status: result.status,
       error_type: result.error_type,
@@ -547,19 +549,29 @@ async function reportPublishResult(recordId: number, result: PublishResult): Pro
 
 /**
  * v2.1.0：推送事件到云端 flywheel_event_log 表
- * 让桌面端"自动写作"Tab 的"云端工作日志"Timeline 能看到云端 worker 的执行过程
+ * 让桌面端"自动发布"Tab 的"云端发布日志"能看到云端 worker 的执行过程
  *
  * 事件类型：publish_started / publish_success / publish_failed / login_expired / banned
  * 复用 v2.0.9 新建的 flywheel_event_log 表和 POST /content/flywheel/event-logs 路由
+ *
+ * v2.5.33 修复：新增 userId 参数，显式传 user_id 给后端
+ *   原 bug：worker 鉴权后 req.user.id=0（硬编码），不传 user_id 时后端写入 user_id=0，
+ *          前端按客户 ID 过滤查不到日志，窗口空空如也
  */
-async function reportFlywheelEvent(eventType: string, message: string, data?: any): Promise<void> {
+async function reportFlywheelEvent(
+  eventType: string,
+  message: string,
+  data?: any,
+  userId?: number
+): Promise<void> {
   await axios.post(
     `${SERVER_URL}/content/flywheel/event-logs`,
     {
       event_type: eventType,
       message,
       data,
-      // user_id 不传，路由层会用 caller 的 user_id（worker 是 level=1 管理员）
+      // v2.5.33：显式传 user_id，让事件归属于正确的客户
+      user_id: userId && userId > 0 ? userId : undefined,
     },
     {
       headers: { 'X-Worker-Secret': WORKER_SECRET },

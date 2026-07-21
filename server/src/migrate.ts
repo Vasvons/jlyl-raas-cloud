@@ -1818,6 +1818,29 @@ export async function migrate() {
       console.warn('[Migrate] v2.5.29 回填写作建议池失败（不阻断）:', e.message);
     }
 
+    // v2.5.33：修复历史 publish_* 飞轮事件 user_id=0 的问题
+    // 根因：worker 鉴权后 req.user.id=0，旧版 reportFlywheelEvent 不传 user_id，
+    //       导致事件写入 user_id=0，前端按客户 ID 过滤查不到日志。
+    // 修复：根据 data.record_id 关联 publish_record → publish_task.user_id 回填。
+    try {
+      const fixResult = await client.query(
+        `UPDATE flywheel_event_log fel
+         SET user_id = pt.user_id
+         FROM publish_record pr
+         JOIN publish_task pt ON pt.id = pr.task_id
+         WHERE fel.user_id = 0
+           AND fel.event_type LIKE 'publish_%'
+           AND fel.data ? 'record_id'
+           AND (fel.data->>'record_id')::int = pr.id
+           AND pt.user_id > 0`
+      );
+      if (fixResult.rowCount && fixResult.rowCount > 0) {
+        console.log(`[Migrate] v2.5.33 已回填 ${fixResult.rowCount} 条 publish_* 事件的 user_id`);
+      }
+    } catch (e: any) {
+      console.warn('[Migrate] v2.5.33 回填 publish_* 事件 user_id 失败（不阻断）:', e.message);
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

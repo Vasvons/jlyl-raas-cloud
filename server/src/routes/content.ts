@@ -1960,6 +1960,8 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
           account_name: r.account_name,
           account_storage_state: r.account_storage_state,
           account_proxy: accountProxy,
+          // v2.5.33：返回 user_id，让 worker 推送事件时能带上正确的客户 ID
+          user_id: r.user_id,
           article: {
             id: r.article_id,
             title: r.article_title,
