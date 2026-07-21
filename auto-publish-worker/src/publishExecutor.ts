@@ -139,6 +139,8 @@ export async function processRecord(record: PublishRecord): Promise<void> {
  */
 async function processRecordInner(record: PublishRecord, recordId: number, platform: string, articleTitle: string): Promise<void> {
   let context: BrowserContext | null = null;
+  // v2.5.34：page 提到 try 外，catch 块也能访问（用于失败时截图 + 诊断）
+  let page: any = null;
 
   try {
     // ---- 前置校验 ----
@@ -218,7 +220,7 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     await context.addInitScript(getFingerprintInjectionScript(fingerprint));
     logger.info(`已注入 WebGL/Canvas 噪声指纹脚本（vendor=${fingerprint.webglVendor.slice(0, 20)}...）`);
 
-    const page = await context.newPage();
+    page = await context.newPage();
 
     // 兜底：若原生 storageState 注入失败，用补丁式注入
     if (!normalizedStorageState) {
@@ -398,16 +400,71 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     let errorMsg = err.message || String(err);
     logger.error(`发布失败: ${errorMsg}`);
 
+    // v2.5.34：失败时截图 + 抓取页面诊断信息，帮助定位根因
+    // 之前 bug：只有成功时才截图，失败时用户看不到当时页面状态（弹窗/错误提示/按钮状态）
+    let pageDiagnostic = '';
+    let failScreenshotPath: string | undefined;
+    if (page) {
+      try {
+        // 截图
+        const failScreenshotBuffer = await page.screenshot({ fullPage: false }).catch(() => null);
+        if (failScreenshotBuffer) {
+          try {
+            const FormData = (await import('form-data')).default;
+            const formData = new FormData();
+            formData.append('screenshot', failScreenshotBuffer, { filename: `record-${recordId}-fail.png`, contentType: 'image/png' });
+            const resp = await axios.post(
+              `${SERVER_URL}/content/publish/records/${recordId}/screenshot`,
+              formData,
+              { headers: { 'X-Worker-Secret': WORKER_SECRET, ...formData.getHeaders() }, timeout: 15000 }
+            );
+            failScreenshotPath = resp.data?.data?.url;
+          } catch {}
+        }
+        // 抓取页面诊断信息
+        const diag = await page.evaluate(() => {
+          const url = window.location.href;
+          const title = document.title;
+          // 弹窗
+          const dialogs = Array.from(document.querySelectorAll('[role="dialog"], .byte-modal, .semi-modal, [class*="modal"], [class*="dialog"], [class*="drawer"]'));
+          const dialogTexts = dialogs.map((d: any) => (d.innerText || '').slice(0, 300)).filter((t: string) => t.trim());
+          // toast / notification / error
+          const toasts = Array.from(document.querySelectorAll('[class*="toast"], [class*="notification"], [class*="message"], [class*="error"], [class*="warning"], .ant-message-notice, .ant-notification-notice'));
+          const toastTexts = toasts.map((t: any) => (t.innerText || '').slice(0, 200)).filter((t: string) => t.trim());
+          // 发布相关按钮状态
+          const buttons = Array.from(document.querySelectorAll('button')).filter((b: any) => {
+            const t = (b.innerText || '').trim();
+            return t.includes('发布') || t.includes('确认') || t.includes('确定') || t.includes('提交');
+          }).map((b: any) => ({ text: (b.innerText || '').trim().slice(0, 30), disabled: b.disabled, visible: b.getBoundingClientRect().width > 0 }));
+          // body 前 500 字（排查页面报错/验证码）
+          const bodyText = (document.body?.innerText || '').slice(0, 500).replace(/\n/g, ' ');
+          return { url, title, dialogTexts: dialogTexts.slice(0, 3), toastTexts: toastTexts.slice(0, 5), buttons: buttons.slice(0, 5), bodyText };
+        }).catch(() => null);
+        if (diag) {
+          pageDiagnostic = `\n[页面诊断] URL=${diag.url}, title="${diag.title}"`;
+          if (diag.dialogTexts.length > 0) pageDiagnostic += `\n[弹窗] ${JSON.stringify(diag.dialogTexts)}`;
+          if (diag.toastTexts.length > 0) pageDiagnostic += `\n[提示] ${JSON.stringify(diag.toastTexts)}`;
+          if (diag.buttons.length > 0) pageDiagnostic += `\n[按钮] ${JSON.stringify(diag.buttons)}`;
+          if (diag.bodyText) pageDiagnostic += `\n[页面文本] ${diag.bodyText.slice(0, 300)}`;
+          logger.info(`失败页面诊断:${pageDiagnostic}`);
+        }
+      } catch (e: any) {
+        logger.warn(`失败页面诊断抓取失败: ${e.message}`);
+      }
+    }
+
     if (record.step_list?.is_placeholder) {
       errorMsg = `[模板需调整] ${errorMsg}。该平台 step_list 为模板，请基于失败截图调整选择器后重试。`;
     }
 
-    const result = classifyError(errorMsg);
-    void reportFlywheelEvent('publish_failed', `[${platform}] 发布失败 "${articleTitle}": ${errorMsg}（类型: ${result.error_type}）`, { record_id: recordId, platform, error_type: result.error_type, error_msg: errorMsg }, record.user_id).catch(() => {});
+    const fullErrorMsg = errorMsg + (pageDiagnostic || '');
+    const result = classifyError(fullErrorMsg);
+    void reportFlywheelEvent('publish_failed', `[${platform}] 发布失败 "${articleTitle}": ${fullErrorMsg}（类型: ${result.error_type}）`, { record_id: recordId, platform, error_type: result.error_type, error_msg: fullErrorMsg, screenshot_path: failScreenshotPath }, record.user_id).catch(() => {});
     await reportPublishResult(recordId, {
       status: result.status,
       error_type: result.error_type,
-      error_msg: errorMsg,
+      error_msg: fullErrorMsg,
+      screenshot_path: failScreenshotPath,
     }).catch(() => {});
   } finally {
     if (context) {
