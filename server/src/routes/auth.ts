@@ -213,10 +213,46 @@ router.post('/update', authMiddleware, adminMiddleware, async (req, res) => {
 router.post('/delete', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { id } = req.body;
-    await deleteUser(parseInt(id));
+    const userId = parseInt(id);
+
+    // v2.5.35：保护超级管理员账号，防止误删导致无法登录
+    const target = await findUserById(userId);
+    if (!target) {
+      return res.json({ code: 404, message: '用户不存在' });
+    }
+    if ((target as any).role === 'super_admin' || (target.level === '1' && (target as any).role !== 'admin')) {
+      return res.json({ code: 403, message: '不能删除超级管理员账号。如需更换，请先修改其用户名和密码' });
+    }
+
+    // v2.5.35：删除前检查外键依赖，给出明确提示
+    const depChecks = [
+      { table: 'ai_model_config', label: 'AI模型配置' },
+      { table: 'writing_instruction', label: '写作指令' },
+      { table: 'enterprise_knowledge', label: '企业知识库' },
+      { table: 'cloud_api_config', label: '云接口配置' },
+      { table: 'article', label: '文章' },
+      { table: 'publish_task', label: '发布任务' },
+      { table: 'real_collect_task', label: '查询任务' },
+      { table: 'aeo_full_report', label: 'AEO报告' },
+    ];
+    const blockers: string[] = [];
+    for (const dep of depChecks) {
+      const r = await query(`SELECT COUNT(*) as n FROM ${dep.table} WHERE user_id = $1`, [userId]);
+      const n = parseInt(r.rows[0].n);
+      if (n > 0) blockers.push(`${dep.label}(${n})`);
+    }
+    if (blockers.length > 0) {
+      return res.json({
+        code: 403,
+        message: `该账号下存在业务数据，无法直接删除：${blockers.join('、')}。请先迁移或清理这些数据`,
+      });
+    }
+
+    await deleteUser(userId);
     res.json({ code: 200, message: '删除成功' });
-  } catch (e) {
-    res.json({ code: 500, message: '服务器错误' });
+  } catch (e: any) {
+    console.error('[Delete User] 删除失败:', e);
+    res.json({ code: 500, message: '删除失败: ' + (e.message || '服务器错误') });
   }
 });
 
