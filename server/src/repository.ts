@@ -5954,6 +5954,9 @@ export interface WritingSuggestionRow {
   consumed_at?: Date;
   writing_task_id?: number;
   created_at: Date;
+  /** v2.5.29：LEFT JOIN aeo_period_report 取得，周报/月报标签显示完整时间段用 */
+  period_start?: string;
+  period_end?: string;
 }
 
 export async function insertWritingSuggestions(
@@ -6004,25 +6007,29 @@ export async function getWritingSuggestions(
     offset?: number;
   }
 ): Promise<{ items: WritingSuggestionRow[]; total: number }> {
-  const conditions = ['user_id = $1'];
+  const conditions = ['s.user_id = $1'];
   const params: any[] = [userId];
   if (options?.consumed !== undefined) {
     params.push(options.consumed);
-    conditions.push(`consumed = $${params.length}`);
+    conditions.push(`s.consumed = $${params.length}`);
   }
   if (options?.sourceType) {
     params.push(options.sourceType);
-    conditions.push(`source_type = $${params.length}`);
+    conditions.push(`s.source_type = $${params.length}`);
   }
   const where = conditions.join(' AND ');
-  const countResult = await query(`SELECT COUNT(*) as total FROM aeo_writing_suggestion WHERE ${where}`, params);
+  const countResult = await query(`SELECT COUNT(*) as total FROM aeo_writing_suggestion s WHERE ${where}`, params);
   const total = parseInt(countResult.rows[0].total, 10);
   const limit = options?.limit ?? 50;
   const offset = options?.offset ?? 0;
+  // v2.5.29：LEFT JOIN aeo_period_report 拿 period_start / period_end，
+  //   前端写作建议池标签周报/月报显示完整时间段（仅年月日），日报显示 report_date
   const listResult = await query(
-    `SELECT * FROM aeo_writing_suggestion
+    `SELECT s.*, p.period_start, p.period_end
+     FROM aeo_writing_suggestion s
+     LEFT JOIN aeo_period_report p ON s.period_report_id = p.id
      WHERE ${where}
-     ORDER BY consumed ASC, created_at DESC
+     ORDER BY s.consumed ASC, s.created_at DESC
      LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, limit, offset]
   );
