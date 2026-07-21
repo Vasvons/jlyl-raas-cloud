@@ -6404,6 +6404,11 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
     );
 
     // 2. 选出每个平台最早的 pending record id（先不锁，仅候选）
+    //    v2.5.33：修复"有账号的平台轮不到"bug——原 SQL 按 platform 字母序 + LIMIT N，
+    //    导致排在前面但无可用账号的平台（如 dy offline）占用候选名额，
+    //    有账号的平台（如 zh/xhs）永远轮不到。
+    //    修复：LEFT JOIN platform_auth 统计可用账号数，按可用账号数降序优先排序，
+    //    无账号的平台排到最后（但仍保留在候选中，避免饿死）。
     const candidateResult = await client.query(
       `WITH candidate AS (
          SELECT pr.id, pr.platform
@@ -6412,14 +6417,33 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
          WHERE pr.status = 'pending'
            AND pt.status IN ('pending', 'processing')
            AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
-         ORDER BY pr.platform, pr.create_time ASC
        ),
        ranked AS (
-         SELECT id, platform,
-                ROW_NUMBER() OVER (PARTITION BY platform ORDER BY id) as rn
-         FROM candidate
+         SELECT c.id, c.platform,
+                ROW_NUMBER() OVER (PARTITION BY c.platform ORDER BY c.id) as rn
+         FROM candidate c
+       ),
+       -- v2.5.33：统计每个平台的可用账号数（与 selectBestAccountForPublish 条件一致）
+       platform_avail AS (
+         SELECT platform, COUNT(*) AS avail_count
+         FROM platform_auth
+         WHERE platform_type IN ('publish', 'both')
+           AND status = 'active'
+           AND health_status = 'normal'
+           AND publish_fail_count < 3
+           AND (
+             publish_last_used_date IS NULL
+             OR publish_last_used_date < CURRENT_DATE
+             OR publish_used_today < publish_daily_limit
+           )
+         GROUP BY platform
        )
-       SELECT id, platform FROM ranked WHERE rn = 1 LIMIT $1`,
+       SELECT r.id, r.platform
+       FROM ranked r
+       LEFT JOIN platform_avail pa ON pa.platform = r.platform
+       WHERE r.rn = 1
+       ORDER BY COALESCE(pa.avail_count, 0) DESC, r.platform ASC
+       LIMIT $1`,
       [limit]
     );
 

@@ -435,21 +435,36 @@ async function execContent(step: Step, ctx: StepExecutionContext): Promise<boole
     ctx.onLog?.(`[step] content clear_first 已清空已有内容`, 'info');
   }
 
+  // v2.5.33：统计原始 HTML 中的关键标签数量，用于后续校验编辑器是否过滤了内容
+  //   百家号 ueditor 等编辑器会过滤 <table>/<img> 等标签，导致发布后表格变问号、图片丢失
+  const rawTableCount = (html.match(/<table\b/gi) || []).length;
+  const rawImgCount = (html.match(/<img\b/gi) || []).length;
+
   // 策略1：剪贴板粘贴（推荐，最接近真实用户操作）
   const clipboardOk = await tryClipboardPaste(page, html);
   if (clipboardOk) {
-    ctx.onLog?.(`[step] content 已通过剪贴板粘贴`, 'info');
-    return true;
+    // v2.5.33：校验剪贴板粘贴后内容是否被编辑器过滤
+    const verified = await verifyContentIntegrity(page, selector, rawTableCount, rawImgCount);
+    if (verified) {
+      ctx.onLog?.(`[step] content 已通过剪贴板粘贴`, 'info');
+      return true;
+    }
+    ctx.onLog?.(`[step] content 剪贴板粘贴后被编辑器过滤（table/img 丢失），降级到 insertHTML`, 'warn');
   }
 
   // 策略2：insertHTML
   const insertOk = await tryInsertHTML(page, selector, html);
   if (insertOk) {
-    ctx.onLog?.(`[step] content 已通过 insertHTML 注入`, 'info');
-    return true;
+    // v2.5.33：校验 insertHTML 后内容是否被编辑器过滤
+    const verified = await verifyContentIntegrity(page, selector, rawTableCount, rawImgCount);
+    if (verified) {
+      ctx.onLog?.(`[step] content 已通过 insertHTML 注入`, 'info');
+      return true;
+    }
+    ctx.onLog?.(`[step] content insertHTML 注入后被编辑器过滤（table/img 丢失），降级到 innerHTML`, 'warn');
   }
 
-  // 策略3：innerHTML + dispatchEvent 兜底
+  // 策略3：innerHTML + dispatchEvent 兜底（绕过编辑器命令，直接写 DOM）
   const fallbackOk = await tryInnerHTML(page, selector, html);
   if (fallbackOk) {
     ctx.onLog?.(`[step] content 已通过 innerHTML 兜底注入`, 'info');
@@ -462,6 +477,54 @@ async function execContent(step: Step, ctx: StepExecutionContext): Promise<boole
 /**
  * 策略1：通过 Clipboard API 写入 HTML，然后 Ctrl+V 粘贴
  */
+
+/**
+ * v2.5.33：校验编辑器内容完整性
+ *
+ * 某些编辑器（如百家号 ueditor）会过滤 <table>/<img> 等标签，导致发布后表格变问号、图片丢失。
+ * 本函数在内容注入后检查编辑器 DOM 中这些关键标签的数量是否与原始 HTML 一致。
+ *
+ * @param page Playwright Page 或 Frame（iframe 场景下是 frame）
+ * @param selector 编辑器选择器
+ * @param rawTableCount 原始 HTML 中的 <table> 数量
+ * @param rawImgCount 原始 HTML 中的 <img> 数量
+ * @returns true=内容完整未被过滤，false=关键标签被过滤
+ */
+async function verifyContentIntegrity(
+  page: Page,
+  selector: string,
+  rawTableCount: number,
+  rawImgCount: number
+): Promise<boolean> {
+  // 没有关键标签时无需校验，直接通过
+  if (rawTableCount === 0 && rawImgCount === 0) {
+    return true;
+  }
+  try {
+    const counts = await page.evaluate((sel) => {
+      const el = document.querySelector(sel) as HTMLElement;
+      if (!el) return null;
+      return {
+        tableCount: el.querySelectorAll('table').length,
+        imgCount: el.querySelectorAll('img').length,
+      };
+    }, parseSelectors(selector)[0]);
+    if (!counts) return false;
+    // 表格必须完整保留（表格被过滤是严重问题）
+    if (counts.tableCount < rawTableCount) {
+      return false;
+    }
+    // 图片允许部分丢失（某些外链图片可能加载失败被编辑器移除），但至少要保留一半
+    if (rawImgCount > 0 && counts.imgCount < Math.ceil(rawImgCount / 2)) {
+      return false;
+    }
+    return true;
+  } catch {
+    // 校验失败时保守返回 true，避免误降级
+    return true;
+  }
+}
+
 async function tryClipboardPaste(page: Page, html: string): Promise<boolean> {
   try {
     // 授予剪贴板权限
