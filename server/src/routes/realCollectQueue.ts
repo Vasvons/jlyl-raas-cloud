@@ -20,7 +20,9 @@ const router = Router();
 router.post('/dequeue', async (req, res) => {
   try {
     const workerId = req.body.workerId || `worker-${req.ip}-${Date.now()}`;
-    const task = await dequeueRealCollectTask(workerId);
+    // v2.5.36：支持按 agent_user_id 路由（混合模式 worker 分布式架构）
+    const agentUserId = req.body.agent_user_id ? Number(req.body.agent_user_id) : undefined;
+    const task = await dequeueRealCollectTask(workerId, agentUserId);
     if (!task) {
       return res.json({ code: 200, data: null });
     }

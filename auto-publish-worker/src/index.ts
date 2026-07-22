@@ -17,6 +17,7 @@ import axios from 'axios';
 import http from 'http';
 import { processRecord, PublishRecord } from './publishExecutor';
 import * as logger from './logger';
+import { isPrivateDeployMode, activatePrivateDeploy, startHeartbeat, stopHeartbeat, getAgentUserId } from './privateDeploy';
 
 dotenv.config();
 
@@ -81,7 +82,10 @@ async function pollAndExecute(): Promise<void> {
     const resp = await axios.get(
       `${SERVER_URL}/content/publish/records/dequeue`,
       {
-        params: { limit: availableSlots },
+        params: {
+          limit: availableSlots,
+          ...(getAgentUserId() ? { agent_user_id: getAgentUserId() } : {}),
+        },
         headers: { 'X-Worker-Secret': WORKER_SECRET },
         timeout: 15000,
       }
@@ -116,23 +120,41 @@ async function pollAndExecute(): Promise<void> {
   }
 }
 
-// 启动轮询
-pollTimer = setInterval(() => {
-  pollAndExecute().catch(e => {
-    logger.error(`轮询异常: ${e.message}`);
-  });
-}, POLL_INTERVAL);
+// v2.5.36：私有部署模式下，先激活再启动轮询；否则直接启动
+(async () => {
+  if (isPrivateDeployMode()) {
+    logger.info(`[PrivateDeploy] 检测到 LICENSE_KEY，启动私有部署模式`);
+    const ok = await activatePrivateDeploy();
+    if (ok) {
+      startHeartbeat();
+    } else {
+      logger.error(`[PrivateDeploy] 激活失败，5 秒后退出`);
+      await new Promise((r) => setTimeout(r, 5000));
+      process.exit(1);
+    }
+  }
 
-// 启动时立即执行一次
-pollAndExecute().catch(e => {
-  logger.error(`启动轮询异常: ${e.message}`);
-});
+  // 启动轮询
+  pollTimer = setInterval(() => {
+    pollAndExecute().catch(e => {
+      logger.error(`轮询异常: ${e.message}`);
+    });
+  }, POLL_INTERVAL);
+
+  // 启动时立即执行一次
+  pollAndExecute().catch(e => {
+    logger.error(`启动轮询异常: ${e.message}`);
+  });
+})();
 
 // 优雅停机
 async function shutdown(signal: string): Promise<void> {
   if (isShuttingDown) return;
   isShuttingDown = true;
   logger.info(`收到${signal}信号，准备优雅退出`);
+
+  // 停止私有部署心跳
+  stopHeartbeat();
 
   // 关闭健康检查服务器
   if (healthServer) {

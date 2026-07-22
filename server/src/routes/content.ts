@@ -1871,7 +1871,11 @@ router.post('/publish/records/:id/retry', async (req: Request, res: Response) =>
 router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 2, 8);
-    const records = await getPendingPublishRecords(limit);
+    // v2.5.36：混合模式 worker 路由——代理专属 worker（云端增强包/私有部署）只拉取自己的任务
+    //   agent_user_id 通过 query 传递，本地 worker 不传则拉取全部（向后兼容）
+    const agentUserIdRaw = req.query.agent_user_id as string | undefined;
+    const agentUserId = agentUserIdRaw ? Number(agentUserIdRaw) : undefined;
+    const records = await getPendingPublishRecords(limit, agentUserId);
 
     // v1.9.2：当拉取到 0 条记录时，查询诊断信息返回给 Worker，让用户知道"没反应"的原因
     if (records.length === 0) {

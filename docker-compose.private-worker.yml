@@ -1,0 +1,92 @@
+# ====================================================================
+# 聚量引力 RaaS 平台 — 私有部署 Worker（v2.5.36 阶段六）
+# ====================================================================
+#
+# 代理客户购买「私有部署」套餐后，在自备服务器上使用本文件启动 worker。
+# 容器启动后会自动激活授权码（绑定服务器指纹），并每 60 秒上报心跳。
+#
+# 使用方式：
+#   1. 复制 .env.private-worker.example → .env，填写授权码等信息
+#   2. docker compose -f docker-compose.private-worker.yml up -d
+#   3. docker compose -f docker-compose.private-worker.yml logs -f 查看日志
+#   4. docker compose -f docker-compose.private-worker.yml down 停止
+#
+# 前置条件：
+#   - 已购买私有部署套餐，获得授权码（LICENSE_KEY）
+#   - 服务器已安装 Docker 和 docker-compose（v2+）
+#   - 服务器可访问公网（CLOUD_API_URL 指定的云端地址）
+#
+# 迁移服务器：
+#   1. 在客户端「订阅管理 → 私有部署」中点击「解绑」
+#   2. 在新服务器上修改 .env 中的 SERVER_NAME，重新 docker compose up -d
+# ====================================================================
+
+services:
+  # 私有部署 — 自动收录查询 Worker（巡检任务）
+  private-collect-worker:
+    build:
+      context: ./auto-collect-worker
+      dockerfile: Dockerfile
+    container_name: jlyl-private-collect-worker
+    restart: always
+    environment:
+      # 云端 API 地址（公网地址，不是内网 docker 网络地址）
+      SERVER_URL: ${CLOUD_API_URL:-https://report.jlyl.net.cn}
+      WORKER_PORT: 3003
+      POLL_INTERVAL: "2000"
+      MAX_CONCURRENCY: ${COLLECT_MAX_CONCURRENCY:-4}
+      # 私有部署授权
+      LICENSE_KEY: ${LICENSE_KEY}
+      SERVER_NAME: ${SERVER_NAME:-未命名服务器}
+      SHM_SIZE: "512m"
+    ports:
+      - "127.0.0.1:3003:3003"
+    mem_limit: 2g
+    memswap_limit: 2g
+    shm_size: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3003/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # 私有部署 — 自动发布 Worker（发布任务）
+  private-publish-worker:
+    build:
+      context: ./auto-publish-worker
+      dockerfile: Dockerfile
+    container_name: jlyl-private-publish-worker
+    restart: always
+    environment:
+      # 云端 API 地址
+      SERVER_URL: ${CLOUD_API_URL:-https://report.jlyl.net.cn}
+      WORKER_PORT: 3004
+      POLL_INTERVAL: "30000"
+      MAX_CONCURRENT: ${PUBLISH_MAX_CONCURRENT:-2}
+      WORKER_SECRET: ${WORKER_SECRET:-jlyl-cloud-worker-secret-2024}
+      STEALTH_HEADLESS: "true"
+      # 私有部署授权（与 collect-worker 共用同一授权码）
+      LICENSE_KEY: ${LICENSE_KEY}
+      SERVER_NAME: ${SERVER_NAME:-未命名服务器}
+    ports:
+      - "127.0.0.1:3004:3004"
+    mem_limit: 1g
+    memswap_limit: 1g
+    shm_size: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3004/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s

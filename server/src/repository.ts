@@ -1512,11 +1512,12 @@ export async function enqueueRealCollectTask(task: any, keywords: string[], prio
 // 严格轮询策略：优先级高的先执行；同优先级内，选择"最近最少执行"的task的下一个分片
 // 重要：必须 JOIN real_collect_task 过滤 t.status='active'，否则暂停（status='paused'）
 // 的任务其 pending 分片仍会被消费，导致"暂停后日志依旧在更新"的问题。
-export async function dequeueRealCollectTask(workerId: string): Promise<any | null> {
+export async function dequeueRealCollectTask(workerId: string, agentUserId?: number): Promise<any | null> {
   // 使用子查询找出"该task最近一次running/done的时间"最早的task，
   // 然后从该task的pending分片中取最早入队的一个
   // v2.1.9：只消费当前轮次的分片（q.round_no = t.round_no），避免旧轮次的 pending 分片被误执行
   //   旧轮次的 pending 分片应由 startNewRound 的清理逻辑或 recoverOnRestart 删除
+  // v2.5.36：支持按 agent_user_id 路由（混合模式 worker 分布式架构）
   const result = await query(
     `UPDATE real_collect_queue
      SET status = 'running', worker_id = $1, start_time = NOW(), abort_requested = false
@@ -1538,6 +1539,7 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
          WHERE q.status = 'pending'
            AND t.status = 'active'
            AND COALESCE(q.round_no, 0) = COALESCE(t.round_no, 0)
+           ${agentUserId ? 'AND t.user_id = $2' : ''}
        )
        SELECT r.id FROM ranked r
        ORDER BY r.priority DESC, r.last_consumed ASC, r.create_time ASC
@@ -1545,7 +1547,7 @@ export async function dequeueRealCollectTask(workerId: string): Promise<any | nu
        FOR UPDATE SKIP LOCKED
      )
      RETURNING id, task_id, user_id, keyword_type, platforms, keywords, last_keyword_index`,
-    [workerId]
+    agentUserId ? [workerId, agentUserId] : [workerId]
   );
   if (result.rows.length === 0) return null;
   const row = result.rows[0];
@@ -6703,7 +6705,7 @@ async function selectBestAccountForPublish(
  * 4. 加 FOR UPDATE SKIP LOCKED 行级锁，避免并发 dequeue 拿到相同记录
  * 5. 同平台串行：每个 platform 只取 1 条最早的 pending
  */
-export async function getPendingPublishRecords(limit: number): Promise<any[]> {
+export async function getPendingPublishRecords(limit: number, agentUserId?: number): Promise<any[]> {
   const client = await (await import('./db')).pool.connect();
   try {
     await client.query('BEGIN');
@@ -6728,6 +6730,7 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
     //    有账号的平台（如 zh/xhs）永远轮不到。
     //    修复：LEFT JOIN platform_auth 统计可用账号数，按可用账号数降序优先排序，
     //    无账号的平台排到最后（但仍保留在候选中，避免饿死）。
+    //    v2.5.36：支持按 agent_user_id 路由（混合模式 worker 分布式架构）
     const candidateResult = await client.query(
       `WITH candidate AS (
          SELECT pr.id, pr.platform
@@ -6736,6 +6739,7 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
          WHERE pr.status = 'pending'
            AND pt.status IN ('pending', 'processing')
            AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
+           ${agentUserId ? 'AND pt.user_id = $2' : ''}
        ),
        ranked AS (
          SELECT c.id, c.platform,
@@ -6763,7 +6767,7 @@ export async function getPendingPublishRecords(limit: number): Promise<any[]> {
        WHERE r.rn = 1
        ORDER BY COALESCE(pa.avail_count, 0) DESC, r.platform ASC
        LIMIT $1`,
-      [limit]
+      agentUserId ? [limit, agentUserId] : [limit]
     );
 
     if (candidateResult.rows.length === 0) {

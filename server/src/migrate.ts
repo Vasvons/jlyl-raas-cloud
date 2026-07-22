@@ -2078,6 +2078,116 @@ export async function migrate() {
       console.warn('[Migrate] v2.5.34 修正 publish_task 终态失败（不阻断）:', e.message);
     }
 
+    // ============ v2.5.36 阶段六：混合模式 Worker 分布式架构 ============
+    // 1. 云端 worker 配额表（记录每个代理购买的并发配额，云端增强包 + 私有部署共用）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_worker_quota (
+        id BIGSERIAL PRIMARY KEY,
+        agent_user_id BIGINT NOT NULL,
+        quota_type VARCHAR(20) NOT NULL,
+        max_concurrency INT NOT NULL DEFAULT 2,
+        source VARCHAR(20) DEFAULT 'cloud',
+        order_id BIGINT,
+        expire_at TIMESTAMP,
+        status VARCHAR(20) DEFAULT 'active',
+        private_server_id VARCHAR(128),
+        private_server_name VARCHAR(100),
+        private_last_heartbeat TIMESTAMP,
+        private_config JSONB,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_worker_quota_agent ON agent_worker_quota(agent_user_id, status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_worker_quota_expire ON agent_worker_quota(expire_at) WHERE status = 'active'`);
+
+    // 2. 云端 worker 容器实例表（共享池中的运行实例，docker 容器跟踪）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS worker_instance (
+        id BIGSERIAL PRIMARY KEY,
+        instance_id VARCHAR(64) NOT NULL UNIQUE,
+        worker_type VARCHAR(20) NOT NULL,
+        agent_user_id BIGINT,
+        server_node VARCHAR(50) NOT NULL DEFAULT 'default',
+        status VARCHAR(20) DEFAULT 'starting',
+        current_task_id BIGINT,
+        max_concurrency INT DEFAULT 2,
+        started_at TIMESTAMP DEFAULT NOW(),
+        last_heartbeat TIMESTAMP,
+        cpu_percent FLOAT DEFAULT 0,
+        memory_mb INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_worker_instance_status ON worker_instance(status, agent_user_id)`);
+
+    // 3. 私有部署授权码表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS private_deploy_license (
+        id BIGSERIAL PRIMARY KEY,
+        license_key VARCHAR(128) NOT NULL UNIQUE,
+        agent_user_id BIGINT NOT NULL,
+        order_id BIGINT,
+        server_fingerprint VARCHAR(128),
+        server_name VARCHAR(100),
+        max_concurrency INT DEFAULT 8,
+        status VARCHAR(20) DEFAULT 'pending',
+        activated_at TIMESTAMP,
+        expire_at TIMESTAMP,
+        last_heartbeat TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_private_license_agent ON private_deploy_license(agent_user_id, status)`);
+
+    // 4. worker 节点配置表（管理员配置云端 worker 服务器池）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS worker_node_config (
+        id BIGSERIAL PRIMARY KEY,
+        node_name VARCHAR(50) NOT NULL UNIQUE,
+        docker_host VARCHAR(200) NOT NULL,
+        docker_tls_cert_path VARCHAR(500),
+        api_version VARCHAR(20) DEFAULT 'v1.41',
+        max_replicas INT DEFAULT 4,
+        current_replicas INT DEFAULT 0,
+        status VARCHAR(20) DEFAULT 'offline',
+        last_check_at TIMESTAMP,
+        config JSONB,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // 5. agent_subscription_plan 新增 plan_type 字段（区分板块/云worker/私有部署）
+    await client.query(`ALTER TABLE agent_subscription_plan ADD COLUMN IF NOT EXISTS plan_type VARCHAR(20) DEFAULT 'module'`);
+
+    // 6. 插入 worker 增强包 + 私有部署套餐（如果不存在）
+    const workerPlanCount = await client.query(
+      "SELECT COUNT(*) as count FROM agent_subscription_plan WHERE plan_type = 'cloud_worker' OR plan_type = 'private_deploy'"
+    );
+    if (parseInt(workerPlanCount.rows[0].count) === 0) {
+      const workerPlans = [
+        { code: 'cloud_worker_5_monthly',  module: 'cloud_worker',   name: '云端增强包·5并发·月度',   price: 9900,   period: 'monthly', ptype: 'cloud_worker',   sort: 101 },
+        { code: 'cloud_worker_5_yearly',   module: 'cloud_worker',   name: '云端增强包·5并发·年度',   price: 99900,  period: 'yearly',  ptype: 'cloud_worker',   sort: 102 },
+        { code: 'cloud_worker_10_monthly', module: 'cloud_worker',   name: '云端增强包·10并发·月度',  price: 17900,  period: 'monthly', ptype: 'cloud_worker',   sort: 103 },
+        { code: 'cloud_worker_10_yearly',  module: 'cloud_worker',   name: '云端增强包·10并发·年度',  price: 179900, period: 'yearly',  ptype: 'cloud_worker',   sort: 104 },
+        { code: 'cloud_worker_20_monthly', module: 'cloud_worker',   name: '云端增强包·20并发·月度',  price: 32900,  period: 'monthly', ptype: 'cloud_worker',   sort: 105 },
+        { code: 'cloud_worker_20_yearly',  module: 'cloud_worker',   name: '云端增强包·20并发·年度',  price: 329900, period: 'yearly',  ptype: 'cloud_worker',   sort: 106 },
+        { code: 'cloud_worker_50_monthly', module: 'cloud_worker',   name: '云端增强包·50并发·月度',  price: 79900,  period: 'monthly', ptype: 'cloud_worker',   sort: 107 },
+        { code: 'cloud_worker_50_yearly',  module: 'cloud_worker',   name: '云端增强包·50并发·年度',  price: 799900, period: 'yearly',  ptype: 'cloud_worker',   sort: 108 },
+        { code: 'private_deploy_monthly',  module: 'private_deploy', name: '私有部署授权·月度',       price: 29900,  period: 'monthly', ptype: 'private_deploy', sort: 201 },
+        { code: 'private_deploy_yearly',   module: 'private_deploy', name: '私有部署授权·年度',       price: 299900, period: 'yearly',  ptype: 'private_deploy', sort: 202 },
+      ];
+      for (const p of workerPlans) {
+        await client.query(
+          `INSERT INTO agent_subscription_plan (plan_code, module_code, name, price_fen, period, plan_type, sort_order)
+           VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (plan_code) DO NOTHING`,
+          [p.code, p.module, p.name, p.price, p.period, p.ptype, p.sort]
+        );
+      }
+      console.log('[Migrate] v2.5.36 已初始化 worker 套餐:', workerPlans.length, '项');
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

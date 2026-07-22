@@ -20,6 +20,7 @@ import contentRoutes from './routes/content';
 import agentRoutes from './routes/agent';
 import updateRoutes from './routes/update';
 import subscriptionRoutes, { wechatNotifyHandler } from './routes/subscription';
+import workerRoutes, { startWorkerExpiryScheduler } from './routes/worker';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
 import { initWsServer } from './wsServer';
@@ -259,6 +260,7 @@ app.use('/content', contentRoutes);
 app.use('/agent', agentRoutes);
 app.use('/updates', updateRoutes);
 app.use('/subscription', subscriptionRoutes);
+app.use('/worker', workerRoutes);
 
 // 微信支付回调（无需鉴权，单独注册）
 app.post('/subscription/wechat/notify', wechatNotifyHandler);
@@ -313,6 +315,10 @@ async function start() {
       console.log(`[Server] 健康检查: http://localhost:${PORT}/health`);
       console.log(`[Server] WebSocket: ws://localhost:${PORT}/ws`);
     });
+
+    // v2.5.36：启动 worker 到期回收调度器（在 WS 服务端初始化之后，确保 wsBroadcast 可用）
+    // 每 5 分钟扫描：过期配额/授权码回收 + 心跳超时检测 + WS 通知代理客户端
+    startWorkerExpiryScheduler();
   } catch (e) {
     console.error('[Server] 启动失败:', e);
     process.exit(1);

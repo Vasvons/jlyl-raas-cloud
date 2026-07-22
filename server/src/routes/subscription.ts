@@ -199,8 +199,9 @@ async function decryptWechatResource(ciphertext: string, associatedData: string,
 
 router.get('/plans', async (req: Request, res: Response) => {
   try {
+    // v2.5.36：返回 plan_type 字段，支持前端按类型分组展示
     const result = await query(
-      `SELECT id, plan_code, module_code, name, description, price_fen, period, features, sort_order
+      `SELECT id, plan_code, module_code, name, description, price_fen, period, features, sort_order, plan_type
        FROM agent_subscription_plan
        WHERE status = 'active'
        ORDER BY sort_order ASC`
@@ -428,7 +429,11 @@ const wechatNotifyHandler = async (req: Request, res: Response) => {
 
     // 查询订单
     const orderResult = await query(
-      `SELECT id, agent_user_id, module_code, period, plan_id FROM agent_order WHERE order_no = $1`,
+      `SELECT o.id, o.agent_user_id, o.module_code, o.period, o.plan_id,
+              p.plan_code, p.plan_type
+       FROM agent_order o
+       LEFT JOIN agent_subscription_plan p ON p.id = o.plan_id
+       WHERE o.order_no = $1`,
       [out_trade_no]
     );
     if (orderResult.rows.length === 0) {
@@ -453,22 +458,38 @@ const wechatNotifyHandler = async (req: Request, res: Response) => {
       expireAt.setMonth(expireAt.getMonth() + 1);
     }
 
-    // 授予板块权限（写入 agent_module_grant 表）
-    const grantResult = await grantAgentModule({
-      agent_user_id: order.agent_user_id,
-      module_code: order.module_code,
-      granted_by: 0, // 系统自动授权
-      expire_at: expireAt,
-      config: { source: 'subscription', order_id: order.id, plan_id: order.plan_id },
-    });
-
-    // 关联 grant_id 到订单
-    await query(
-      `UPDATE agent_order SET grant_id = $1 WHERE id = $2`,
-      [grantResult.id, order.id]
-    );
-
-    console.log(`[WechatPay] 订单 ${out_trade_no} 支付成功，已授权模块 ${order.module_code}`);
+    // v2.5.36：根据 plan_type 分流开通逻辑
+    const planType = order.plan_type || 'module';
+    if (planType === 'cloud_worker') {
+      // 云端增强包：开通 worker 配额 + 启动容器
+      const { provisionCloudQuota } = require('./worker');
+      const result = await provisionCloudQuota(order.agent_user_id, order.id, order.plan_code, expireAt);
+      console.log(`[WechatPay] 订单 ${out_trade_no} 支付成功，已开通云端增强包 ${result.max_concurrency} 并发`);
+    } else if (planType === 'private_deploy') {
+      // 私有部署：生成授权码
+      const { provisionPrivateDeployLicense } = require('./worker');
+      const result = await provisionPrivateDeployLicense(order.agent_user_id, order.id, expireAt);
+      // 把授权码存到订单的 wechat_prepay_id 字段（复用字段，避免改表）
+      await query(
+        `UPDATE agent_order SET wechat_prepay_id = $1 WHERE id = $2`,
+        [result.license_key, order.id]
+      );
+      console.log(`[WechatPay] 订单 ${out_trade_no} 支付成功，已生成私有部署授权码 ${result.license_key.substring(0, 16)}...`);
+    } else {
+      // 默认：板块订阅授权
+      const grantResult = await grantAgentModule({
+        agent_user_id: order.agent_user_id,
+        module_code: order.module_code,
+        granted_by: 0, // 系统自动授权
+        expire_at: expireAt,
+        config: { source: 'subscription', order_id: order.id, plan_id: order.plan_id },
+      });
+      await query(
+        `UPDATE agent_order SET grant_id = $1 WHERE id = $2`,
+        [grantResult.id, order.id]
+      );
+      console.log(`[WechatPay] 订单 ${out_trade_no} 支付成功，已授权模块 ${order.module_code}`);
+    }
     res.json({ code: 'SUCCESS', message: '成功' });
   } catch (e: any) {
     console.error('[WechatPay] 回调处理异常:', e);
