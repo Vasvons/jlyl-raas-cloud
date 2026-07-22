@@ -2,35 +2,104 @@
  * SaaS 订阅 + 微信支付（v2.5.35 阶段五）
  *
  * 路由列表：
- *   GET  /api/subscription/plans              - 查询所有可用套餐
+ *   GET  /api/subscription/plans              - 查询所有可用套餐（代理端）
  *   GET  /api/subscription/my                 - 查询当前代理的有效订阅
  *   POST /api/subscription/orders             - 创建订单（返回微信支付二维码 URL）
  *   GET  /api/subscription/orders/:id         - 查询订单状态
  *   GET  /api/subscription/orders             - 查询我的订单列表
  *   POST /api/subscription/wechat/notify      - 微信支付回调（不需要鉴权）
  *   POST /api/subscription/orders/:id/cancel  - 取消未支付订单
+ *
+ *   ---- 管理员路由（定价管理页面）----
+ *   GET    /api/subscription/admin/plans        - 查询所有套餐（含已下架）
+ *   POST   /api/subscription/admin/plans        - 新增套餐
+ *   PUT    /api/subscription/admin/plans/:id    - 编辑套餐
+ *   DELETE /api/subscription/admin/plans/:id    - 删除套餐
+ *   GET    /api/subscription/admin/config       - 读取解锁配置
+ *   PUT    /api/subscription/admin/config       - 保存解锁配置
+ *   GET    /api/subscription/admin/wechat-pay   - 读取微信支付配置
+ *   PUT    /api/subscription/admin/wechat-pay   - 保存微信支付配置
  */
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
 import { authMiddleware } from '../auth';
 import { query } from '../db';
 import { grantAgentModule } from '../repository';
+import { encrypt, decrypt } from '../utils/crypto';
 
 const router = Router();
-
-// 微信支付配置（从环境变量读取）
-const WECHAT_APPID = process.env.WECHAT_APPID || '';
-const WECHAT_MCHID = process.env.WECHAT_MCHID || '';
-const WECHAT_APIV3_KEY = process.env.WECHAT_APIV3_KEY || '';
-const WECHAT_SERIAL_NO = process.env.WECHAT_SERIAL_NO || '';
-const WECHAT_PRIVATE_KEY = process.env.WECHAT_PRIVATE_KEY || ''; // PEM 格式
-const WECHAT_NOTIFY_URL = process.env.WECHAT_NOTIFY_URL || '';
 
 router.use(authMiddleware);
 
 function getUserId(req: Request): number {
   const user = (req as any).user;
   return Number(user?.id ?? 0);
+}
+
+function isAdmin(req: Request): boolean {
+  const user = (req as any).user;
+  return user?.level === '1' || user?.role === 'super_admin' || user?.role === 'admin';
+}
+
+// ============ 微信支付配置（从数据库读取，带缓存）============
+
+interface WechatPayConfig {
+  appid: string;
+  mchid: string;
+  api_v3_key: string;
+  serial_no: string;
+  private_key: string;
+  notify_url: string;
+  enabled: boolean;
+}
+
+let cachedWechatConfig: WechatPayConfig | null = null;
+let cacheExpiry = 0;
+
+/** 从数据库读取微信支付配置（带 60 秒缓存） */
+async function getWechatPayConfig(): Promise<WechatPayConfig | null> {
+  if (cachedWechatConfig && Date.now() < cacheExpiry) {
+    return cachedWechatConfig;
+  }
+  try {
+    const result = await query(
+      `SELECT appid, mchid, api_v3_key, serial_no, private_key, notify_url, enabled
+       FROM wechat_pay_config WHERE id = 1`
+    );
+    if (result.rows.length === 0 || !result.rows[0].enabled) {
+      cachedWechatConfig = null;
+      cacheExpiry = Date.now() + 10000; // 短缓存
+      return null;
+    }
+    const row = result.rows[0];
+    // private_key 加密存储，使用前解密
+    let privateKey = row.private_key || '';
+    try {
+      if (privateKey) privateKey = decrypt(privateKey);
+    } catch {
+      // 解密失败保持原样
+    }
+    cachedWechatConfig = {
+      appid: row.appid || '',
+      mchid: row.mchid || '',
+      api_v3_key: row.api_v3_key || '',
+      serial_no: row.serial_no || '',
+      private_key: privateKey,
+      notify_url: row.notify_url || '',
+      enabled: !!row.enabled,
+    };
+    cacheExpiry = Date.now() + 60000; // 60 秒缓存
+    return cachedWechatConfig;
+  } catch (e) {
+    console.error('[WechatPay] 读取配置失败:', e);
+    return null;
+  }
+}
+
+/** 清除配置缓存（管理员保存后调用） */
+function invalidateWechatConfigCache() {
+  cachedWechatConfig = null;
+  cacheExpiry = 0;
 }
 
 /** 生成订单号：JLYL + 时间戳 + 随机数 */
@@ -46,17 +115,18 @@ async function createWechatNativePay(
   amountFen: number,
   description: string
 ): Promise<{ prepay_id: string; qrcode_url: string }> {
-  if (!WECHAT_APPID || !WECHAT_MCHID) {
-    throw new Error('微信支付未配置（缺 WECHAT_APPID 或 WECHAT_MCHID）');
+  const cfg = await getWechatPayConfig();
+  if (!cfg || !cfg.appid || !cfg.mchid) {
+    throw new Error('微信支付未配置（管理员尚未在定价管理中配置支付参数）');
   }
 
   const payload = {
-    appid: WECHAT_APPID,
-    mchid: WECHAT_MCHID,
+    appid: cfg.appid,
+    mchid: cfg.mchid,
     description,
     out_trade_no: orderNo,
     time_expire: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-    notify_url: WECHAT_NOTIFY_URL,
+    notify_url: cfg.notify_url,
     amount: { total: amountFen, currency: 'CNY' },
   };
 
@@ -70,9 +140,9 @@ async function createWechatNativePay(
   const sign = crypto
     .createSign('RSA-SHA256')
     .update(signatureBase)
-    .sign(WECHAT_PRIVATE_KEY, 'base64');
+    .sign(cfg.private_key, 'base64');
 
-  const authorization = `WECHATPAY2-SHA256-RSA2048 mchid="${WECHAT_MCHID}",nonce_str="${nonceStr}",timestamp="${timestamp}",serial_no="${WECHAT_SERIAL_NO}",signature="${sign}"`;
+  const authorization = `WECHATPAY2-SHA256-RSA2048 mchid="${cfg.mchid}",nonce_str="${nonceStr}",timestamp="${timestamp}",serial_no="${cfg.serial_no}",signature="${sign}"`;
 
   const resp = await fetch(url, {
     method: 'POST',
@@ -109,8 +179,12 @@ function verifyWechatNotifySignature(
 }
 
 /** 解密微信支付回调资源（AES-256-GCM） */
-function decryptWechatResource(ciphertext: string, associatedData: string, nonce: string): any {
-  const key = Buffer.from(WECHAT_APIV3_KEY, 'utf-8');
+async function decryptWechatResource(ciphertext: string, associatedData: string, nonce: string): Promise<any> {
+  const cfg = await getWechatPayConfig();
+  if (!cfg || !cfg.api_v3_key) {
+    throw new Error('微信支付未配置 api_v3_key');
+  }
+  const key = Buffer.from(cfg.api_v3_key, 'utf-8');
   const cipherBuf = Buffer.from(ciphertext, 'base64');
   const authTag = cipherBuf.subarray(cipherBuf.length - 16);
   const encryptedData = cipherBuf.subarray(0, cipherBuf.length - 16);
@@ -340,7 +414,7 @@ const wechatNotifyHandler = async (req: Request, res: Response) => {
     }
 
     // 解密资源数据
-    const decrypted = decryptWechatResource(
+    const decrypted = await decryptWechatResource(
       resource.ciphertext,
       resource.associated_data,
       resource.nonce
@@ -404,5 +478,235 @@ const wechatNotifyHandler = async (req: Request, res: Response) => {
 
 // 导出 wechatNotifyHandler 供 index.ts 单独注册（无需 authMiddleware）
 export { wechatNotifyHandler };
+
+// ============ 管理员：套餐 CRUD ============
+
+// 查询所有套餐（含已下架）
+router.get('/admin/plans', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const result = await query(
+      `SELECT id, plan_code, module_code, name, description, price_fen, period, features, status, sort_order, created_at
+       FROM agent_subscription_plan
+       ORDER BY sort_order ASC, id ASC`
+    );
+    res.json({ code: 200, data: result.rows });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 新增套餐
+router.post('/admin/plans', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const { plan_code, module_code, name, description, price_fen, period, features, status, sort_order } = req.body;
+    if (!plan_code || !module_code || !name || price_fen == null) {
+      return res.status(400).json({ code: 400, message: 'plan_code/module_code/name/price_fen 必填' });
+    }
+    const result = await query(
+      `INSERT INTO agent_subscription_plan
+        (plan_code, module_code, name, description, price_fen, period, features, status, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id`,
+      [
+        plan_code,
+        module_code,
+        name,
+        description || null,
+        Number(price_fen),
+        period || 'monthly',
+        features ? JSON.stringify(features) : null,
+        status || 'active',
+        sort_order || 0,
+      ]
+    );
+    res.json({ code: 200, data: { id: result.rows[0].id }, message: '套餐创建成功' });
+  } catch (e: any) {
+    if (e.code === '23505') {
+      return res.status(409).json({ code: 409, message: '套餐编码已存在' });
+    }
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 编辑套餐
+router.put('/admin/plans/:id', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    const { plan_code, module_code, name, description, price_fen, period, features, status, sort_order } = req.body;
+    const result = await query(
+      `UPDATE agent_subscription_plan SET
+        plan_code = COALESCE($1, plan_code),
+        module_code = COALESCE($2, module_code),
+        name = COALESCE($3, name),
+        description = COALESCE($4, description),
+        price_fen = COALESCE($5, price_fen),
+        period = COALESCE($6, period),
+        features = COALESCE($7, features),
+        status = COALESCE($8, status),
+        sort_order = COALESCE($9, sort_order)
+       WHERE id = $10 RETURNING id`,
+      [
+        plan_code || null,
+        module_code || null,
+        name || null,
+        description !== undefined ? description : null,
+        price_fen != null ? Number(price_fen) : null,
+        period || null,
+        features ? JSON.stringify(features) : null,
+        status || null,
+        sort_order != null ? Number(sort_order) : null,
+        id,
+      ]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '套餐不存在' });
+    }
+    res.json({ code: 200, message: '套餐已更新' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 删除套餐（如果有订单关联则改为下架）
+router.delete('/admin/plans/:id', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    // 检查是否有关联订单
+    const orderCount = await query('SELECT COUNT(*) as count FROM agent_order WHERE plan_id = $1', [id]);
+    if (parseInt(orderCount.rows[0].count) > 0) {
+      // 有关联订单，改为下架
+      await query(`UPDATE agent_subscription_plan SET status = 'inactive' WHERE id = $1`, [id]);
+      return res.json({ code: 200, message: '套餐已有关联订单，已改为下架' });
+    }
+    await query('DELETE FROM agent_subscription_plan WHERE id = $1', [id]);
+    res.json({ code: 200, message: '套餐已删除' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// ============ 管理员：解锁配置 ============
+
+router.get('/admin/config', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const result = await query(
+      `SELECT trial_days, free_modules, grace_days, lock_on_expire, updated_at
+       FROM agent_subscription_config WHERE id = 1`
+    );
+    if (result.rows.length === 0) {
+      return res.json({ code: 200, data: { trial_days: 0, free_modules: [], grace_days: 3, lock_on_expire: true } });
+    }
+    res.json({ code: 200, data: result.rows[0] });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+router.put('/admin/config', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const { trial_days, free_modules, grace_days, lock_on_expire } = req.body;
+    await query(
+      `UPDATE agent_subscription_config SET
+        trial_days = COALESCE($1, trial_days),
+        free_modules = COALESCE($2, free_modules),
+        grace_days = COALESCE($3, grace_days),
+        lock_on_expire = COALESCE($4, lock_on_expire),
+        updated_at = NOW()
+       WHERE id = 1`,
+      [
+        trial_days != null ? Number(trial_days) : null,
+        Array.isArray(free_modules) ? free_modules : null,
+        grace_days != null ? Number(grace_days) : null,
+        lock_on_expire != null ? !!lock_on_expire : null,
+      ]
+    );
+    res.json({ code: 200, message: '解锁配置已保存' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// ============ 管理员：微信支付配置 ============
+
+router.get('/admin/wechat-pay', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const result = await query(
+      `SELECT appid, mchid, api_v3_key, serial_no, notify_url, enabled, updated_at
+       FROM wechat_pay_config WHERE id = 1`
+    );
+    if (result.rows.length === 0) {
+      return res.json({ code: 200, data: { appid: '', mchid: '', api_v3_key: '', serial_no: '', notify_url: '', enabled: false } });
+    }
+    const row = result.rows[0];
+    // 不返回 private_key，仅返回是否已配置标识
+    res.json({
+      code: 200,
+      data: {
+        appid: row.appid || '',
+        mchid: row.mchid || '',
+        api_v3_key: row.api_v3_key ? '******' : '', // 脱敏显示
+        serial_no: row.serial_no || '',
+        notify_url: row.notify_url || '',
+        enabled: !!row.enabled,
+        has_private_key: !!row.private_key,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+router.put('/admin/wechat-pay', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const { appid, mchid, api_v3_key, serial_no, private_key, notify_url, enabled } = req.body;
+
+    // 构建动态 UPDATE（private_key 可选更新，api_v3_key '******' 表示不改）
+    const updates: string[] = [];
+    const params: any[] = [];
+    let paramIdx = 1;
+
+    if (appid !== undefined) { updates.push(`appid = $${paramIdx++}`); params.push(appid || ''); }
+    if (mchid !== undefined) { updates.push(`mchid = $${paramIdx++}`); params.push(mchid || ''); }
+    if (api_v3_key !== undefined && api_v3_key !== '******') {
+      updates.push(`api_v3_key = $${paramIdx++}`);
+      params.push(api_v3_key || '');
+    }
+    if (serial_no !== undefined) { updates.push(`serial_no = $${paramIdx++}`); params.push(serial_no || ''); }
+    if (private_key !== undefined && private_key !== '') {
+      // 加密存储私钥
+      const encrypted = private_key ? encrypt(private_key) : null;
+      updates.push(`private_key = $${paramIdx++}`);
+      params.push(encrypted);
+    }
+    if (notify_url !== undefined) { updates.push(`notify_url = $${paramIdx++}`); params.push(notify_url || ''); }
+    if (enabled !== undefined) { updates.push(`enabled = $${paramIdx++}`); params.push(!!enabled); }
+
+    if (updates.length === 0) {
+      return res.json({ code: 200, message: '无字段需要更新' });
+    }
+
+    updates.push(`updated_at = NOW()`);
+    params.push(1); // WHERE id = 1
+
+    await query(
+      `UPDATE wechat_pay_config SET ${updates.join(', ')} WHERE id = $${paramIdx}`,
+      params
+    );
+
+    // 清除缓存，让新配置立即生效
+    invalidateWechatConfigCache();
+    res.json({ code: 200, message: '微信支付配置已保存' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
 
 export default router;

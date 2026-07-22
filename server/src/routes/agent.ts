@@ -20,6 +20,7 @@ import {
   unbindAgentDevice,
   findUserById,
 } from '../repository';
+import { query } from '../db';
 
 const router = Router();
 
@@ -349,6 +350,32 @@ router.post('/verify-license', async (req: Request, res: Response) => {
       g.status === 'active' && (!g.expire_at || new Date(g.expire_at) > new Date())
     );
 
+    // 4.1 读取订阅解锁配置（试用天数/免费板块白名单/宽限期/到期锁定）
+    let unlockConfig: any = { trial_days: 0, free_modules: [], grace_days: 3, lock_on_expire: true };
+    try {
+      const cfgResult = await query(
+        `SELECT trial_days, free_modules, grace_days, lock_on_expire FROM agent_subscription_config WHERE id = 1`
+      );
+      if (cfgResult.rows.length > 0) {
+        unlockConfig = cfgResult.rows[0];
+      }
+    } catch {
+      // 表不存在时使用默认值
+    }
+
+    // 4.2 计算试用状态
+    // 试用逻辑：若 agent 账号创建时间在 trial_days 天内，且没有任何有效订阅(grant)，则进入试用期
+    // 客户端据此显示"试用中"标识，试用期内免费_modules 内的板块可用
+    const userCreatedAt = (user as any).create_time ? new Date((user as any).create_time) : null;
+    const trialDays = Number(unlockConfig.trial_days) || 0;
+    let inTrial = false;
+    let trialEndAt: string | null = null;
+    if (trialDays > 0 && userCreatedAt) {
+      const trialEnd = new Date(userCreatedAt.getTime() + trialDays * 24 * 60 * 60 * 1000);
+      trialEndAt = trialEnd.toISOString();
+      inTrial = new Date() < trialEnd;
+    }
+
     // 5. 签名返回（防中间人篡改）
     const signature = signGrants(activeGrants);
 
@@ -361,6 +388,17 @@ router.post('/verify-license', async (req: Request, res: Response) => {
       server_time: new Date().toISOString(),
       offline_grace_ms: OFFLINE_GRACE_PERIOD_MS,
       signature,
+      // 解锁策略（v2.5.35 阶段五新增）
+      unlock_config: {
+        trial_days: trialDays,
+        free_modules: unlockConfig.free_modules || [],
+        grace_days: Number(unlockConfig.grace_days) || 3,
+        lock_on_expire: unlockConfig.lock_on_expire !== false,
+      },
+      // 试用状态
+      in_trial: inTrial,
+      trial_end_at: trialEndAt,
+      user_created_at: userCreatedAt ? userCreatedAt.toISOString() : null,
     });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });

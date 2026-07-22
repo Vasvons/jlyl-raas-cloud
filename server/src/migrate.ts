@@ -190,6 +190,53 @@ export async function migrate() {
       console.log('[Migrate] 已初始化默认订阅套餐:', defaultPlans.length, '项');
     }
 
+    // v2.5.35 阶段五：订阅解锁配置表（单行配置，管理员可改）
+    // 试用天数 / 免费板块白名单 / 宽限期天数 / 到期立即锁定
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_subscription_config (
+        id INT PRIMARY KEY DEFAULT 1,
+        trial_days INT DEFAULT 0,
+        free_modules TEXT[] DEFAULT '{}',
+        grace_days INT DEFAULT 3,
+        lock_on_expire BOOLEAN DEFAULT true,
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT single_row CHECK (id = 1)
+      )
+    `);
+    // 确保单行存在
+    const configCount = await client.query("SELECT COUNT(*) as count FROM agent_subscription_config");
+    if (parseInt(configCount.rows[0].count) === 0) {
+      await client.query(`
+        INSERT INTO agent_subscription_config (id, trial_days, free_modules, grace_days, lock_on_expire)
+        VALUES (1, 0, '{}', 3, true)
+      `);
+      console.log('[Migrate] 已初始化订阅解锁配置');
+    }
+
+    // v2.5.35 阶段五：微信支付配置表（单行，加密存储私钥）
+    // 不再使用环境变量，改为数据库存储，管理员可在桌面端配置
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS wechat_pay_config (
+        id INT PRIMARY KEY DEFAULT 1,
+        appid VARCHAR(64),
+        mchid VARCHAR(64),
+        api_v3_key VARCHAR(128),
+        serial_no VARCHAR(128),
+        private_key TEXT,
+        notify_url TEXT,
+        enabled BOOLEAN DEFAULT false,
+        updated_at TIMESTAMP DEFAULT NOW(),
+        CONSTRAINT single_row CHECK (id = 1)
+      )
+    `);
+    const wechatCount = await client.query("SELECT COUNT(*) as count FROM wechat_pay_config");
+    if (parseInt(wechatCount.rows[0].count) === 0) {
+      await client.query(`
+        INSERT INTO wechat_pay_config (id, enabled) VALUES (1, false)
+      `);
+      console.log('[Migrate] 已初始化微信支付配置');
+    }
+
     // 平台表
     await client.query(`
       CREATE TABLE IF NOT EXISTS pt (
