@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { authMiddleware, hashPassword } from '../auth';
 import {
   getAdminAccounts,
@@ -22,6 +23,13 @@ import {
 
 const router = Router();
 
+// v2.5.35：代理客户端授权校验密钥（用于签名授权数据，防中间人篡改）
+const LICENSE_SIGN_SECRET = process.env.LICENSE_SIGN_SECRET || 'jlyl-license-sign-secret-v2.5.35';
+// 离线宽限期：7 天（单位：毫秒）
+const OFFLINE_GRACE_PERIOD_MS = 7 * 24 * 60 * 60 * 1000;
+// 每个代理最多绑定设备数
+const MAX_DEVICES_PER_AGENT = 2;
+
 // 所有接口都需要登录鉴权
 router.use(authMiddleware);
 
@@ -40,6 +48,12 @@ function isAdmin(req: Request): boolean {
 function isSuperAdmin(req: Request): boolean {
   const user = (req as any).user;
   return user?.role === 'super_admin' || (user?.level === '1' && user?.role !== 'admin');
+}
+
+/** 对授权数据签名（HMAC-SHA256），防中间人篡改 */
+function signGrants(grants: any[]): string {
+  const json = JSON.stringify(grants);
+  return crypto.createHmac('sha256', LICENSE_SIGN_SECRET).update(json).digest('hex');
 }
 
 // ============ 管理员管理 ============
@@ -260,6 +274,99 @@ router.delete('/agents/:id/devices/:machineId', async (req: Request, res: Respon
   }
 });
 
+// ============ 代理客户端授权校验（代理自身调用） ============
+
+// 查询自己的授权（代理客户端启动时调用）
+router.get('/my-grants', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    if (userId === 0) return res.status(401).json({ code: 401, message: '未登录' });
+
+    const grants = await getAgentGrants(userId);
+    const activeGrants = grants.filter((g: any) =>
+      g.status === 'active' && (!g.expire_at || new Date(g.expire_at) > new Date())
+    );
+    const user = await findUserById(userId);
+
+    res.json({
+      code: 200,
+      data: {
+        grants: activeGrants,
+        expire_at: (user as any)?.expire_at,
+        status: (user as any)?.status,
+        role: (user as any)?.role,
+        server_time: new Date().toISOString(),
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 授权校验 + 心跳（代理客户端每 5 分钟调用一次）
+router.post('/verify-license', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    if (userId === 0) return res.status(401).json({ code: 401, message: '未登录' });
+
+    const { client_version, machine_id, machine_info } = req.body;
+
+    // 1. 校验账号状态
+    const user = await findUserById(userId);
+    if (!user) return res.json({ code: 403, valid: false, reason: '账号不存在' });
+    if ((user as any).role !== 'agent') {
+      return res.json({ code: 403, valid: false, reason: '非代理账号，无权使用代理客户端' });
+    }
+    if ((user as any).status === 'disabled') {
+      return res.json({ code: 403, valid: false, reason: '账号已被禁用，请联系管理员' });
+    }
+    if ((user as any).status === 'expired' || ((user as any).expire_at && new Date((user as any).expire_at) < new Date())) {
+      return res.json({ code: 403, valid: false, reason: '账号已过期，请联系管理员续费' });
+    }
+
+    // 2. 设备绑定校验（每个 license 默认 2 台）
+    if (machine_id) {
+      const ok = await bindAgentDevice(userId, machine_id, machine_info, MAX_DEVICES_PER_AGENT);
+      if (!ok) {
+        return res.json({
+          code: 403, valid: false,
+          reason: `超出设备数量限制（最多 ${MAX_DEVICES_PER_AGENT} 台），请联系管理员解绑旧设备`,
+        });
+      }
+    }
+
+    // 3. 记录心跳
+    await recordAgentHeartbeat({
+      agent_user_id: userId,
+      client_version,
+      ip: req.ip,
+      machine_id,
+    });
+
+    // 4. 拉取有效授权
+    const grants = await getAgentGrants(userId);
+    const activeGrants = grants.filter((g: any) =>
+      g.status === 'active' && (!g.expire_at || new Date(g.expire_at) > new Date())
+    );
+
+    // 5. 签名返回（防中间人篡改）
+    const signature = signGrants(activeGrants);
+
+    res.json({
+      code: 200,
+      valid: true,
+      grants: activeGrants,
+      expire_at: (user as any).expire_at,
+      status: (user as any).status,
+      server_time: new Date().toISOString(),
+      offline_grace_ms: OFFLINE_GRACE_PERIOD_MS,
+      signature,
+    });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
 // ============ 代理客户端心跳（代理自身调用） ============
 
 router.post('/heartbeat', async (req: Request, res: Response) => {
@@ -278,9 +385,9 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
 
     // 设备绑定（每个 license 默认 2 台）
     if (machine_id) {
-      const ok = await bindAgentDevice(userId, machine_id, machine_info, 2);
+      const ok = await bindAgentDevice(userId, machine_id, machine_info, MAX_DEVICES_PER_AGENT);
       if (!ok) {
-        return res.json({ code: 403, message: '超出设备数量限制（最多 2 台），请联系管理员解绑旧设备' });
+        return res.json({ code: 403, message: `超出设备数量限制（最多 ${MAX_DEVICES_PER_AGENT} 台），请联系管理员解绑旧设备` });
       }
     }
 

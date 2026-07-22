@@ -110,6 +110,86 @@ export async function migrate() {
       )
     `);
 
+    // v2.5.35 阶段三：代理客户端下载/安装记录表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS desktop_update_download (
+        id BIGSERIAL PRIMARY KEY,
+        release_id BIGINT NOT NULL REFERENCES desktop_update_release(id) ON DELETE CASCADE,
+        agent_user_id BIGINT NOT NULL,
+        machine_id VARCHAR(64),
+        status VARCHAR(20) DEFAULT 'pending',
+        downloaded_at TIMESTAMP,
+        installed_at TIMESTAMP,
+        client_version_before VARCHAR(20),
+        client_version_after VARCHAR(20),
+        error_msg TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE (release_id, agent_user_id, machine_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_du_download_agent ON desktop_update_download(agent_user_id, created_at DESC)`);
+
+    // v2.5.35 阶段五：SaaS 订阅相关表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_subscription_plan (
+        id BIGSERIAL PRIMARY KEY,
+        plan_code VARCHAR(50) NOT NULL UNIQUE,
+        module_code VARCHAR(50) NOT NULL,
+        name VARCHAR(100) NOT NULL,
+        description TEXT,
+        price_fen INT NOT NULL,
+        period VARCHAR(20) DEFAULT 'monthly',
+        features JSONB,
+        status VARCHAR(20) DEFAULT 'active',
+        sort_order INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS agent_order (
+        id BIGSERIAL PRIMARY KEY,
+        order_no VARCHAR(64) NOT NULL UNIQUE,
+        agent_user_id BIGINT NOT NULL,
+        plan_id BIGINT NOT NULL REFERENCES agent_subscription_plan(id),
+        module_code VARCHAR(50) NOT NULL,
+        amount_fen INT NOT NULL,
+        period VARCHAR(20) DEFAULT 'monthly',
+        status VARCHAR(20) DEFAULT 'pending',
+        wechat_prepay_id VARCHAR(128),
+        wechat_transaction_id VARCHAR(128),
+        pay_qrcode_url TEXT,
+        paid_at TIMESTAMP,
+        expire_at TIMESTAMP,
+        grant_id BIGINT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_agent_order_agent ON agent_order(agent_user_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_agent_order_status ON agent_order(status, created_at DESC)`);
+
+    // v2.5.35 阶段五：初始化默认订阅套餐
+    const planCount = await client.query("SELECT COUNT(*) as count FROM agent_subscription_plan");
+    if (parseInt(planCount.rows[0].count) === 0) {
+      const defaultPlans = [
+        { code: 'harness_monthly', module: 'harness', name: '智能体公司·月度', price: 9900, period: 'monthly', sort: 1 },
+        { code: 'harness_yearly', module: 'harness', name: '智能体公司·年度', price: 99000, period: 'yearly', sort: 2 },
+        { code: 'sites_monthly', module: 'sites', name: '灵犀站点引擎·月度', price: 14900, period: 'monthly', sort: 3 },
+        { code: 'sites_yearly', module: 'sites', name: '灵犀站点引擎·年度', price: 149000, period: 'yearly', sort: 4 },
+        { code: 'geo_monthly', module: 'geo', name: '聚量GEO中枢·月度', price: 19900, period: 'monthly', sort: 5 },
+        { code: 'geo_yearly', module: 'geo', name: '聚量GEO中枢·年度', price: 199000, period: 'yearly', sort: 6 },
+        { code: 'all_monthly', module: 'all', name: '全功能·月度', price: 39900, period: 'monthly', sort: 7 },
+        { code: 'all_yearly', module: 'all', name: '全功能·年度', price: 399000, period: 'yearly', sort: 8 },
+      ];
+      for (const p of defaultPlans) {
+        await client.query(
+          `INSERT INTO agent_subscription_plan (plan_code, module_code, name, price_fen, period, sort_order)
+           VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (plan_code) DO NOTHING`,
+          [p.code, p.module, p.name, p.price, p.period, p.sort]
+        );
+      }
+      console.log('[Migrate] 已初始化默认订阅套餐:', defaultPlans.length, '项');
+    }
+
     // 平台表
     await client.query(`
       CREATE TABLE IF NOT EXISTS pt (

@@ -271,14 +271,16 @@ export async function grantAgentModule(data: {
   granted_by: number;
   expire_at?: Date | null;
   config?: any;
-}): Promise<void> {
-  await query(
+}): Promise<{ id: number }> {
+  const result = await query(
     `INSERT INTO agent_module_grant (agent_user_id, module_code, granted_by, expire_at, config, status)
      VALUES ($1, $2, $3, $4, $5, 'active')
      ON CONFLICT (agent_user_id, module_code)
-     DO UPDATE SET granted_by = $3, expire_at = $4, config = $5, status = 'active', granted_at = NOW()`,
+     DO UPDATE SET granted_by = $3, expire_at = $4, config = $5, status = 'active', granted_at = NOW()
+     RETURNING id`,
     [data.agent_user_id, data.module_code, data.granted_by, data.expire_at || null, JSON.stringify(data.config || {})]
   );
+  return { id: result.rows[0]?.id || 0 };
 }
 
 /** 撤销代理某板块授权 */
