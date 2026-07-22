@@ -1126,4 +1126,164 @@ async function stopInstancesForQuota(quotaId: number, agentUserId: number): Prom
   }
 }
 
+// ============================================================
+// 第六部分：Docker Compose 部署模式 - 生成部署文件
+// ============================================================
+
+/**
+ * 生成 Docker Compose 部署文件（管理员用，无需开放 docker daemon 远程 API）
+ * GET /worker/admin/generate-compose?server_name=xxx&collect_concurrency=4&publish_concurrent=2
+ *
+ * 返回：
+ *   - docker_compose_yml: docker-compose.yml 文件内容
+ *   - env_content: .env 文件内容（含管理员预生成的 LICENSE_KEY）
+ *   - commands: 部署命令列表
+ *   - license_key: 生成的授权码（也写入 private_deploy_license 表）
+ */
+router.get('/admin/generate-compose', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const serverName = (req.query.server_name as string) || `cloud-worker-${Date.now()}`;
+    const collectConcurrency = Math.min(8, Math.max(1, Number(req.query.collect_concurrency) || 4));
+    const publishConcurrent = Math.min(4, Math.max(1, Number(req.query.publish_concurrent) || 2));
+    const adminUserId = getUserId(req);
+
+    // 推断云端 API 地址：优先用请求头 host（公网域名），其次用环境变量
+    const proto = (req.headers['x-forwarded-proto'] as string) || (req.secure ? 'https' : 'http');
+    const host = req.headers.host || process.env.PUBLIC_API_URL || 'https://report.jlyl.net.cn';
+    const cloudApiUrl = `${proto}://${host}`;
+
+    // 为管理员预生成一个授权码（agent_user_id=admin，便于在订阅管理中统一查看）
+    const licenseKey = generateLicenseKey();
+    await query(
+      `INSERT INTO private_deploy_license
+       (license_key, agent_user_id, order_id, status, expire_at, server_name)
+       VALUES ($1, $2, NULL, 'pending', NULL, $3)`,
+      [licenseKey, adminUserId, serverName]
+    );
+
+    // docker-compose.yml 内容（与 docker-compose.private-worker.yml 同构，但环境变量已预填）
+    const dockerComposeYml = `# 聚量引力 RaaS 平台 — 云端 Worker 节点（管理员部署）
+# 在 worker 服务器上执行：
+#   1. 把 docker-compose.yml 和 .env 放到同一目录
+#   2. docker compose up -d
+#   3. docker compose logs -f  查看日志
+#   4. docker compose down  停止
+
+services:
+  cloud-collect-worker:
+    build:
+      context: ./auto-collect-worker
+      dockerfile: Dockerfile
+    container_name: jlyl-cloud-collect-worker
+    restart: always
+    environment:
+      SERVER_URL: \${CLOUD_API_URL}
+      WORKER_PORT: "3003"
+      POLL_INTERVAL: "2000"
+      MAX_CONCURRENCY: \${COLLECT_MAX_CONCURRENCY}
+      LICENSE_KEY: \${LICENSE_KEY}
+      SERVER_NAME: \${SERVER_NAME}
+      SHM_SIZE: "512m"
+    ports:
+      - "127.0.0.1:3003:3003"
+    mem_limit: 2g
+    memswap_limit: 2g
+    shm_size: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3003/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  cloud-publish-worker:
+    build:
+      context: ./auto-publish-worker
+      dockerfile: Dockerfile
+    container_name: jlyl-cloud-publish-worker
+    restart: always
+    environment:
+      SERVER_URL: \${CLOUD_API_URL}
+      WORKER_PORT: "3004"
+      POLL_INTERVAL: "30000"
+      MAX_CONCURRENT: \${PUBLISH_MAX_CONCURRENT}
+      WORKER_SECRET: \${WORKER_SECRET}
+      STEALTH_HEADLESS: "true"
+      LICENSE_KEY: \${LICENSE_KEY}
+      SERVER_NAME: \${SERVER_NAME}
+    ports:
+      - "127.0.0.1:3004:3004"
+    mem_limit: 1g
+    memswap_limit: 1g
+    shm_size: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3004/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+`;
+
+    // .env 内容（含预生成的 LICENSE_KEY + 推断的 CLOUD_API_URL）
+    const envContent = `# 聚量引力云端 Worker 节点配置（管理员预生成）
+# 修改后保存为 .env 与 docker-compose.yml 同目录
+
+# 云端 API 地址（已自动填写为云端公网地址，如有反向代理请改为对外域名）
+CLOUD_API_URL=${cloudApiUrl}
+
+# 授权码（已预生成，容器启动后会自动激活并绑定本服务器指纹）
+LICENSE_KEY=${licenseKey}
+
+# 服务器名称（在管理后台显示用，可改）
+SERVER_NAME=${serverName}
+
+# 巡检 Worker 最大并发（建议 2-8，超过 8 易 Page crashed）
+COLLECT_MAX_CONCURRENCY=${collectConcurrency}
+
+# 发布 Worker 最大并发（建议 1-2）
+PUBLISH_MAX_CONCURRENT=${publishConcurrent}
+
+# 发布 Worker 调用云端 API 时的密钥（与云端 .env 中的 WORKER_SECRET 保持一致）
+WORKER_SECRET=${process.env.WORKER_SECRET || 'jlyl-cloud-worker-secret-2024'}
+`;
+
+    const commands = [
+      `# 1. 把 docker-compose.yml 和 .env 上传到 worker 服务器（如 /opt/jlyl-worker/）`,
+      `# 2. 在服务器上启动`,
+      `cd /opt/jlyl-worker && docker compose up -d`,
+      `# 3. 查看日志`,
+      `docker compose logs -f`,
+      `# 4. 健康检查`,
+      `curl http://localhost:3003/health && curl http://localhost:3004/health`,
+      `# 5. 停止`,
+      `docker compose down`,
+    ];
+
+    res.json({
+      code: 200,
+      data: {
+        license_key: licenseKey,
+        docker_compose_yml: dockerComposeYml,
+        env_content: envContent,
+        commands,
+        cloud_api_url: cloudApiUrl,
+        server_name: serverName,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
 export default router;
