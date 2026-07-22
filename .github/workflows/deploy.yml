@@ -234,8 +234,11 @@ jobs:
             fi
 
             # 启动其余服务（web 和 worker，它们依赖 server 健康）
-            echo ">>> 启动 web 和 worker 服务..."
-            $DC up -d
+            # v2.5.35：用 --no-deps 单独启动 web 和 worker，避免 $DC up -d 触发 server 容器 recreate 导致容器名冲突
+            echo ">>> 启动 web 和 worker 服务（不重启 server）..."
+            $DC up -d --no-deps web
+            $DC up -d --no-deps auto-collect-worker 2>/dev/null || true
+            $DC up -d --no-deps auto-publish-worker 2>/dev/null || true
 
             # 等待服务启动
             echo ">>> 等待所有服务启动..."
