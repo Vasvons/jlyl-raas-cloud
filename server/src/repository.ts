@@ -43,10 +43,17 @@ export async function getAllUsers(): Promise<any[]> {
 // 分页查询用户
 export async function getUsersByPage(pageNum: number, pageSize: number): Promise<{ list: any[]; total: number }> {
   const offset = (pageNum - 1) * pageSize;
-  const countResult = await query('SELECT COUNT(*) as total FROM users');
+  // v2.5.35：只返回客户账号（role='customer' 或 level='0'），排除管理员/代理账号
+  // 这里是聚量GEO中枢的客户管理页面，不应显示管理员账号
+  const countResult = await query(
+    `SELECT COUNT(*) as total FROM users WHERE (role = 'customer' OR role IS NULL) AND (level = '0' OR level IS NULL)`
+  );
   const total = parseInt(countResult.rows[0].total);
   const result = await query(
-    'SELECT id, username, phone, email, url, address, level, cid, date_time, create_time FROM users ORDER BY id LIMIT $1 OFFSET $2',
+    `SELECT id, username, phone, email, url, address, level, cid, date_time, create_time
+     FROM users
+     WHERE (role = 'customer' OR role IS NULL) AND (level = '0' OR level IS NULL)
+     ORDER BY id LIMIT $1 OFFSET $2`,
     [pageSize, offset]
   );
   return { list: result.rows, total };
