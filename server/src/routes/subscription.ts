@@ -709,4 +709,145 @@ router.put('/admin/wechat-pay', async (req: Request, res: Response) => {
   }
 });
 
+// ============ 管理员：测试微信支付配置 ============
+// 调用微信支付 v3 /v3/certificates 接口验证 mchid + serial_no + private_key 是否正确
+// 支持两种模式：
+//   1. body 中传入临时配置（未保存前测试）
+//   2. 不传 body，使用已保存的配置
+
+router.post('/admin/wechat-pay/test', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const body = req.body || {};
+
+    // 读取已保存的配置作为基础，body 中的字段覆盖
+    const savedResult = await query(
+      `SELECT appid, mchid, api_v3_key, serial_no, private_key, notify_url, enabled
+       FROM wechat_pay_config WHERE id = 1`
+    );
+    const saved = savedResult.rows[0] || {};
+
+    const appid = body.appid !== undefined ? body.appid : (saved.appid || '');
+    const mchid = body.mchid !== undefined ? body.mchid : (saved.mchid || '');
+    const apiV3Key = (body.api_v3_key && body.api_v3_key !== '******')
+      ? body.api_v3_key
+      : (saved.api_v3_key || '');
+    const serialNo = body.serial_no !== undefined ? body.serial_no : (saved.serial_no || '');
+    const notifyUrl = body.notify_url !== undefined ? body.notify_url : (saved.notify_url || '');
+
+    // private_key：body 传入时用 body 的，否则解密已保存的
+    let privateKey = '';
+    if (body.private_key && body.private_key !== '') {
+      privateKey = body.private_key;
+    } else if (saved.private_key) {
+      try {
+        privateKey = decrypt(saved.private_key);
+      } catch {
+        privateKey = saved.private_key; // 解密失败，按原样尝试
+      }
+    }
+
+    // 基础校验
+    if (!mchid) return res.json({ code: 200, success: false, message: '缺少商户号 MchID' });
+    if (!serialNo) return res.json({ code: 200, success: false, message: '缺少证书序列号 serial_no' });
+    if (!privateKey) return res.json({ code: 200, success: false, message: '缺少商户私钥 private_key' });
+    if (!privateKey.includes('BEGIN')) {
+      return res.json({
+        code: 200,
+        success: false,
+        message: '私钥格式错误：需为 PEM 格式（应包含 -----BEGIN PRIVATE KEY----- 头部）',
+      });
+    }
+
+    // 调用微信支付 v3 /v3/certificates 接口
+    // 此接口仅需 mchid + serial_no + private_key 签名正确即可访问
+    const url = 'https://api.mch.weixin.qq.com/v3/certificates';
+    const timestamp = Math.floor(Date.now() / 1000).toString();
+    const nonceStr = crypto.randomBytes(16).toString('hex');
+
+    // 签名串：HTTP方法\nURL路径\n时间戳\n随机串\n请求体\n
+    const signatureBase = `GET\n/v3/certificates\n${timestamp}\n${nonceStr}\n\n`;
+    let sign: string;
+    try {
+      sign = crypto
+        .createSign('RSA-SHA256')
+        .update(signatureBase)
+        .sign(privateKey, 'base64');
+    } catch (e: any) {
+      return res.json({
+        code: 200,
+        success: false,
+        message: `私钥签名失败：${e.message}（请确认私钥为 RSA 格式且 PEM 内容完整）`,
+      });
+    }
+
+    const authorization = `WECHATPAY2-SHA256-RSA2048 mchid="${mchid}",nonce_str="${nonceStr}",timestamp="${timestamp}",serial_no="${serialNo}",signature="${sign}"`;
+
+    const startTs = Date.now();
+    const resp = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+        'Authorization': authorization,
+      },
+    });
+    const elapsedMs = Date.now() - startTs;
+    const respText = await resp.text();
+
+    if (resp.ok) {
+      // 解析证书列表，进一步确认配置正确
+      let certCount = 0;
+      try {
+        const data = JSON.parse(respText);
+        certCount = Array.isArray(data.data) ? data.data.length : 0;
+      } catch { /* 忽略解析错误 */ }
+
+      // 检查 appid 是否已填写（certificates 接口不验证 appid，单独提示）
+      const warnings: string[] = [];
+      if (!appid) warnings.push('AppID 未填写（下单时必填，请补全）');
+      if (!apiV3Key) warnings.push('APIv3 密钥未填写（回调验签时必填，请补全）');
+      if (!notifyUrl) warnings.push('回调 URL 未填写（支付成功后无法通知，请补全）');
+
+      let message = `微信支付配置验证成功（商户号: ${mchid}, 平台证书 ${certCount} 个, 耗时 ${elapsedMs}ms）`;
+      if (warnings.length > 0) {
+        message += `；⚠️ 注意：${warnings.join('、')}`;
+      }
+
+      return res.json({
+        code: 200,
+        success: true,
+        message,
+        data: { mchid, cert_count: certCount, elapsedMs, warnings },
+      });
+    }
+
+    // 失败：解析微信返回的错误
+    let friendly = `HTTP ${resp.status}: ${respText}`;
+    try {
+      const errJson = JSON.parse(respText);
+      const code = errJson.code || '';
+      const msg = errJson.message || '';
+      if (code === 'SIGN_ERROR') {
+        friendly = `签名错误（SIGN_ERROR）：${msg}（请检查私钥 private_key 与证书序列号 serial_no 是否匹配）`;
+      } else if (code === 'MCH_NOT_EXISTS') {
+        friendly = `商户号不存在（MCH_NOT_EXISTS）：${msg}（请检查 MchID 是否正确）`;
+      } else if (code === 'NO_AUTH') {
+        friendly = `无权限（NO_AUTH）：${msg}（请检查商户号是否已开通 Native 支付产品）`;
+      } else if (code === 'PARAM_ERROR') {
+        friendly = `参数错误（PARAM_ERROR）：${msg}（请检查证书序列号 serial_no 格式）`;
+      } else if (resp.status === 401) {
+        friendly = `认证失败（401）：${msg || '签名或证书序列号错误'}`;
+      } else if (resp.status === 403) {
+        friendly = `权限不足（403）：${msg || '商户号未开通相关权限'}`;
+      } else {
+        friendly = `微信支付返回错误 [${code}]: ${msg}`;
+      }
+    } catch { /* 非 JSON 错误，返回原始文本 */ }
+
+    return res.json({ code: 200, success: false, message: friendly, http_status: resp.status });
+  } catch (e: any) {
+    return res.json({ code: 200, success: false, message: '测试异常: ' + e.message });
+  }
+});
+
 export default router;

@@ -2684,6 +2684,69 @@ router.put('/cloud-api', async (req: Request, res: Response) => {
   }
 });
 
+// ============ 云接口配置：测试 OSS 连通性 ============
+
+router.post('/cloud-api/test-oss', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    // 优先用 body 传入的临时配置（未保存时也能测试），否则用已保存的配置
+    const body = req.body || {};
+    let cfg = await getCloudApiConfig(userId);
+    const accessKey = body.aliyun_access_key || cfg?.aliyun_access_key;
+    const accessSecret = body.aliyun_access_secret || cfg?.aliyun_access_secret;
+    const bucket = body.aliyun_oss_bucket || cfg?.aliyun_oss_bucket;
+    const endpoint = (body.aliyun_oss_endpoint || cfg?.aliyun_oss_endpoint || 'oss-cn-hangzhou.aliyuncs.com')
+      .trim()
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/+$/, '');
+
+    if (!accessKey || !accessSecret) {
+      return res.json({ code: 400, success: false, message: '缺少 AccessKey ID 或 AccessKey Secret' });
+    }
+    if (!bucket) {
+      return res.json({ code: 400, success: false, message: '缺少 Bucket 名称' });
+    }
+
+    const OSS = (await import('ali-oss')).default;
+    const client = new OSS({
+      accessKeyId: accessKey,
+      accessKeySecret: accessSecret,
+      bucket,
+      endpoint,
+      secure: true,
+    });
+
+    // 用 list 列出前 5 个对象验证凭证 + bucket 可访问
+    const startTs = Date.now();
+    const listResult = await client.list({ 'max-keys': 5 }, {});
+    const elapsedMs = Date.now() - startTs;
+    const objectCount = listResult.objects?.length || 0;
+    res.json({
+      code: 200,
+      success: true,
+      message: `OSS 连接成功（Bucket: ${bucket}, Endpoint: ${endpoint}, ${objectCount} 个对象, 耗时 ${elapsedMs}ms）`,
+      data: { bucket, endpoint, objectCount, elapsedMs },
+    });
+  } catch (err: any) {
+    // 解析常见错误，给出友好提示
+    let friendly = err.message || '未知错误';
+    if (err.code === 'NoSuchBucket' || /NoSuchBucket/i.test(friendly)) {
+      friendly = `Bucket 不存在：${err.bucketName || ''}（请确认 Bucket 名称和 Endpoint 地域是否匹配）`;
+    } else if (err.code === 'SignatureDoesNotMatch' || /SignatureDoesNotMatch/i.test(friendly)) {
+      friendly = 'AccessKey Secret 错误（签名不匹配）';
+    } else if (err.code === 'InvalidAccessKeyId' || /InvalidAccessKeyId/i.test(friendly)) {
+      friendly = 'AccessKey ID 不存在或已被禁用';
+    } else if (err.code === 'AccessDenied' || /AccessDenied/i.test(friendly)) {
+      friendly = '访问被拒绝（请检查 RAM 子账号权限，需授予 oss:ListObjects 权限）';
+    } else if (err.code === 'ENOTFOUND' || /ENOTFOUND/i.test(friendly)) {
+      friendly = `Endpoint 域名无法解析：${err.host || ''}（请检查 Endpoint 是否正确）`;
+    } else if (err.code === 'ECONNREFUSED' || /ECONNREFUSED/i.test(friendly)) {
+      friendly = '连接被拒绝（请检查 Endpoint 是否正确）';
+    }
+    res.json({ code: 200, success: false, message: friendly, error: err.code || err.name });
+  }
+});
+
 // ============ v2.0.0: AEO闭环配额配置 ============
 
 // 获取 AEO 配额配置（支持 ?customer_id=N 管理员模式）
