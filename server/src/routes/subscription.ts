@@ -637,8 +637,9 @@ router.put('/admin/config', async (req: Request, res: Response) => {
 router.get('/admin/wechat-pay', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
+    // 注意：必须 SELECT private_key 才能判断是否已配置（不返回内容，仅判断非空）
     const result = await query(
-      `SELECT appid, mchid, api_v3_key, serial_no, notify_url, enabled, updated_at
+      `SELECT appid, mchid, api_v3_key, serial_no, private_key, notify_url, enabled, updated_at
        FROM wechat_pay_config WHERE id = 1`
     );
     if (result.rows.length === 0) {
