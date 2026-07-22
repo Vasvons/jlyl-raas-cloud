@@ -254,12 +254,14 @@ app.use('/platform-auth', platformAuthRoutes);
 app.use('/real-collect/logs', workerLogRoutes);
 app.use('/aeo', aeoRoutes);
 app.use('/content', contentRoutes);
-app.use('/api/agent', agentRoutes);
-app.use('/api/updates', updateRoutes);
-app.use('/api/subscription', subscriptionRoutes);
+// 注意：Nginx 配置 `proxy_pass http://127.0.0.1:3002/;`（末尾带 /）会剥离 /api/ 前缀
+// 因此后端路由注册时不能带 /api 前缀，与其他路由保持一致
+app.use('/agent', agentRoutes);
+app.use('/updates', updateRoutes);
+app.use('/subscription', subscriptionRoutes);
 
 // 微信支付回调（无需鉴权，单独注册）
-app.post('/api/subscription/wechat/notify', wechatNotifyHandler);
+app.post('/subscription/wechat/notify', wechatNotifyHandler);
 
 // ===== 临时调试 API：查看 server 内存日志（无需上服务器）=====
 // 用法：GET /debug/memory-logs?lines=200&filter=AI
