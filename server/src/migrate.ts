@@ -1809,6 +1809,32 @@ export async function migrate() {
 
     console.log('[Migrate] v2.0.0 AI平台流量权重层创建完成（ai_platform_weight + ai_platform_source_mapping）');
 
+    // ============ v2.5.37: 平台约束规则 + AI平台权重 按代理隔离（加 user_id 字段） ============
+    // user_id 为空字符串 '' 表示全局规则（管理员配置，所有代理可见）
+    // user_id = 代理id 表示代理私有规则（仅该代理可见，影响自己账号内的文章生成）
+    // 代理视角：WHERE user_id = '' OR user_id = $agentUserId（看到全局 + 自己的）
+    // 管理员视角：看所有
+
+    // platform_content_rule: 加 user_id，主键改为 (platform, user_id)
+    await client.query(`ALTER TABLE platform_content_rule ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
+    await client.query(`UPDATE platform_content_rule SET user_id = '' WHERE user_id IS NULL`);
+    await client.query(`ALTER TABLE platform_content_rule DROP CONSTRAINT IF EXISTS platform_content_rule_pkey`);
+    await client.query(`ALTER TABLE platform_content_rule ADD PRIMARY KEY (platform, user_id)`);
+
+    // ai_platform_weight: 加 user_id，唯一约束改为 (platform, user_id)
+    await client.query(`ALTER TABLE ai_platform_weight ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
+    await client.query(`UPDATE ai_platform_weight SET user_id = '' WHERE user_id IS NULL`);
+    await client.query(`ALTER TABLE ai_platform_weight DROP CONSTRAINT IF EXISTS ai_platform_weight_platform_key`);
+    await client.query(`ALTER TABLE ai_platform_weight ADD UNIQUE (platform, user_id)`);
+
+    // ai_platform_source_mapping: 加 user_id，唯一约束改为 (ai_platform, source_platform, user_id)
+    await client.query(`ALTER TABLE ai_platform_source_mapping ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
+    await client.query(`UPDATE ai_platform_source_mapping SET user_id = '' WHERE user_id IS NULL`);
+    await client.query(`ALTER TABLE ai_platform_source_mapping DROP CONSTRAINT IF EXISTS ai_platform_source_mapping_ai_platform_source_platform_key`);
+    await client.query(`ALTER TABLE ai_platform_source_mapping ADD UNIQUE (ai_platform, source_platform, user_id)`);
+
+    console.log('[Migrate] v2.5.37 平台规则 + AI权重按代理隔离字段添加完成（user_id）');
+
     // ============ v2.0.0: 分片级 AEO 报告（只存储，不触发写作） ============
 
     // aeo_shard_report: 分片级 AEO 报告

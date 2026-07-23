@@ -160,6 +160,26 @@ function isAgent(req: any): boolean {
   return userLevel !== '1' && userRole === 'agent';
 }
 
+/**
+ * v2.5.37：代理数据隔离 — 归属校验
+ * 代理（isAgent=true）只能操作 user_id 等于自己 id 的账号；管理员不校验。
+ * 返回 true 表示通过（可继续执行），false 表示已响应错误（应直接 return）。
+ */
+async function checkOwnership(req: any, res: any, id: number): Promise<boolean> {
+  if (!isAgent(req)) return true; // 管理员不校验
+  const auth = await getPlatformAuthById(id);
+  if (!auth) {
+    res.status(404).json({ code: 404, message: '账号不存在' });
+    return false;
+  }
+  const callerUserId = String(req.user?.id);
+  if (String(auth.user_id) !== callerUserId) {
+    res.status(403).json({ code: 403, message: '无权操作此账号' });
+    return false;
+  }
+  return true;
+}
+
 // 查询账号池列表（代理强制只看自己的账号）
 router.get('/list', async (req, res) => {
   try {
@@ -259,7 +279,9 @@ router.patch('/:id/daily-limit', async (req, res) => {
 // 查询可用账号数统计
 router.get('/stats/available', async (req, res) => {
   try {
-    const stats = await getAvailableAuthCount();
+    // v2.5.37：代理数据隔离 — 仅统计该代理名下可用账号
+    const userId = isAgent(req) ? String(getUserId(req)) : undefined;
+    const stats = await getAvailableAuthCount(userId);
     res.json({ code: 200, data: stats });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -270,6 +292,7 @@ router.get('/stats/available', async (req, res) => {
 router.post('/:id/reset-health', async (req, res) => {
   try {
     const id = parseInt(req.params.id);
+    if (!(await checkOwnership(req, res, id))) return;
     await resetAccountHealth(id);
     res.json({ code: 200, message: '账号健康状态已重置' });
   } catch (e: any) {

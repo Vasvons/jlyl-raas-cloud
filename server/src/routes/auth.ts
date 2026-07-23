@@ -456,4 +456,138 @@ router.post('/deleteShareToken', authMiddleware, async (req, res) => {
   }
 });
 
+// ============ v2.5.37：代理客户管理 ============
+// 代理可 CRUD 自己名下的客户（parent_admin_id = 代理 id）
+// 仅需 authMiddleware，代理（role='agent'）可访问
+
+// GET /users/my-customers — 获取代理名下的客户列表
+router.get('/my-customers', authMiddleware, async (req, res) => {
+  try {
+    const callerLevel = String((req as any).user?.level ?? '');
+    const callerRole = String((req as any).user?.role ?? '');
+    // 仅代理可调用
+    if (callerLevel === '1' || callerRole !== 'agent') {
+      return res.json({ code: 403, message: '仅代理账号可调用此接口' });
+    }
+    const agentId = (req as any).user?.id;
+    const result = await query(
+      `SELECT id, username, phone, email, url, address, level, role, parent_admin_id, status, expire_at, create_time
+       FROM users WHERE parent_admin_id = $1 ORDER BY create_time DESC`,
+      [agentId]
+    );
+    res.json({ code: 200, data: { list: result.rows, total: result.rows.length } });
+  } catch (e) {
+    res.json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// POST /users/my-customers — 代理创建客户
+router.post('/my-customers', authMiddleware, async (req, res) => {
+  try {
+    const callerLevel = String((req as any).user?.level ?? '');
+    const callerRole = String((req as any).user?.role ?? '');
+    if (callerLevel === '1' || callerRole !== 'agent') {
+      return res.json({ code: 403, message: '仅代理账号可调用此接口' });
+    }
+    const agentId = (req as any).user?.id;
+    const { username, password, phone, email, url, address } = req.body;
+    if (!username || !password) {
+      return res.json({ code: 400, message: '用户名和密码不能为空' });
+    }
+    // 检查用户名是否已存在（复用 findUserByUsername）
+    const existing = await findUserByUsername(username);
+    if (existing) {
+      return res.json({ code: 400, message: '用户名已存在' });
+    }
+    // 创建客户：level='2', role='customer', parent_admin_id=代理id
+    const hashedPassword = hashPassword(password);
+    await query(
+      `INSERT INTO users (username, password, phone, email, url, address, level, role, parent_admin_id, status)
+       VALUES ($1, $2, $3, $4, $5, $6, '2', 'customer', $7, 'active')`,
+      [username, hashedPassword, phone || null, email || null, url || null, address || null, agentId]
+    );
+    res.json({ code: 200, message: '客户创建成功' });
+  } catch (e: any) {
+    res.json({ code: 500, message: e.message || '服务器错误' });
+  }
+});
+
+// POST /users/my-customers/update — 代理更新客户信息
+router.post('/my-customers/update', authMiddleware, async (req, res) => {
+  try {
+    const callerLevel = String((req as any).user?.level ?? '');
+    const callerRole = String((req as any).user?.role ?? '');
+    if (callerLevel === '1' || callerRole !== 'agent') {
+      return res.json({ code: 403, message: '仅代理账号可调用此接口' });
+    }
+    const agentId = (req as any).user?.id;
+    const { id, password, phone, email, url, address, status, expire_at } = req.body;
+    if (!id) {
+      return res.json({ code: 400, message: '客户 id 必填' });
+    }
+    // 校验该客户确实属于此代理
+    const checkResult = await query(
+      `SELECT id FROM users WHERE id = $1 AND parent_admin_id = $2`,
+      [id, agentId]
+    );
+    if (checkResult.rows.length === 0) {
+      return res.json({ code: 403, message: '无权操作此客户' });
+    }
+    // 更新字段
+    const updates: string[] = [];
+    const params: any[] = [];
+    let paramIdx = 1;
+    if (password) {
+      updates.push(`password = $${paramIdx++}`);
+      params.push(hashPassword(password));
+    }
+    if (phone !== undefined) { updates.push(`phone = $${paramIdx++}`); params.push(phone || null); }
+    if (email !== undefined) { updates.push(`email = $${paramIdx++}`); params.push(email || null); }
+    if (url !== undefined) { updates.push(`url = $${paramIdx++}`); params.push(url || null); }
+    if (address !== undefined) { updates.push(`address = $${paramIdx++}`); params.push(address || null); }
+    if (status !== undefined) { updates.push(`status = $${paramIdx++}`); params.push(status); }
+    if (expire_at !== undefined) { updates.push(`expire_at = $${paramIdx++}`); params.push(expire_at || null); }
+    if (updates.length === 0) {
+      return res.json({ code: 200, message: '无更新字段' });
+    }
+    params.push(id);
+    await query(
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramIdx}`,
+      params
+    );
+    res.json({ code: 200, message: '客户更新成功' });
+  } catch (e: any) {
+    res.json({ code: 500, message: e.message || '服务器错误' });
+  }
+});
+
+// POST /users/my-customers/delete — 代理删除客户
+router.post('/my-customers/delete', authMiddleware, async (req, res) => {
+  try {
+    const callerLevel = String((req as any).user?.level ?? '');
+    const callerRole = String((req as any).user?.role ?? '');
+    if (callerLevel === '1' || callerRole !== 'agent') {
+      return res.json({ code: 403, message: '仅代理账号可调用此接口' });
+    }
+    const agentId = (req as any).user?.id;
+    const { id } = req.body;
+    if (!id) {
+      return res.json({ code: 400, message: '客户 id 必填' });
+    }
+    // 校验该客户确实属于此代理
+    const checkResult = await query(
+      `SELECT id FROM users WHERE id = $1 AND parent_admin_id = $2`,
+      [id, agentId]
+    );
+    if (checkResult.rows.length === 0) {
+      return res.json({ code: 403, message: '无权操作此客户' });
+    }
+    // 删除客户（TODO: 可加外键依赖检查，当前简化处理）
+    await query(`DELETE FROM users WHERE id = $1 AND parent_admin_id = $2`, [id, agentId]);
+    res.json({ code: 200, message: '客户删除成功' });
+  } catch (e: any) {
+    res.json({ code: 500, message: e.message || '服务器错误' });
+  }
+});
+
 export default router;

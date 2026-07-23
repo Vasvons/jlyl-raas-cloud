@@ -445,7 +445,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   const platformRulesMap = new Map<string, any>();
   if (targetPlatforms.length > 0) {
     try {
-      const rules = await getPlatformRulesByPlatforms(targetPlatforms);
+      const rules = await getPlatformRulesByPlatforms(targetPlatforms, task.user_id ? String(task.user_id) : undefined);
       for (const r of rules) platformRulesMap.set(r.platform, r);
       // 过滤掉无规则的平台（避免生成无约束的文章）
       const validPlatforms = targetPlatforms.filter(p => platformRulesMap.has(p));

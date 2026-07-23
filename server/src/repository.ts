@@ -3681,10 +3681,30 @@ export async function updatePlatformAuthDailyLimit(id: number, dailyLimit: numbe
 }
 
 /** 获取可用账号数统计 */
-export async function getAvailableAuthCount(): Promise<{ total: number; byPlatform: Record<string, number> }> {
+export async function getAvailableAuthCount(userId?: string): Promise<{ total: number; byPlatform: Record<string, number> }> {
+  // v2.5.37：代理数据隔离 — userId 有值时仅统计该代理名下可用账号
+  if (userId) {
+    const result = await query(
+      `SELECT platform, COUNT(*) as count
+       FROM platform_auth
+       WHERE health_status = 'normal'
+         AND (expires_at IS NULL OR expires_at > NOW())
+         AND last_query_count < daily_limit
+         AND user_id = $1
+       GROUP BY platform`,
+      [userId]
+    );
+    const byPlatform: Record<string, number> = {};
+    let total = 0;
+    for (const row of result.rows) {
+      byPlatform[row.platform] = parseInt(row.count);
+      total += parseInt(row.count);
+    }
+    return { total, byPlatform };
+  }
   const result = await query(
-    `SELECT platform, COUNT(*) as count 
-     FROM platform_auth 
+    `SELECT platform, COUNT(*) as count
+     FROM platform_auth
      WHERE health_status = 'normal'
        AND (expires_at IS NULL OR expires_at > NOW())
        AND last_query_count < daily_limit
@@ -7530,19 +7550,24 @@ export async function getPublishAccountById(id: number): Promise<any | null> {
  * 获取所有平台约束规则
  * @param onlyActive true 时只返回 is_active=true 的平台（前端选目标平台时用）
  */
-export async function getPlatformRules(onlyActive: boolean = false): Promise<any[]> {
+export async function getPlatformRules(onlyActive: boolean = false, userId?: string): Promise<any[]> {
+  // v2.5.37：按代理隔离 — userId 有值时看全局('') + 自己的；undefined 时看全局
+  const userFilter = userId ? `(user_id = '' OR user_id = $1)` : `user_id = ''`;
+  const params = userId ? [userId] : [];
   const sql = onlyActive
-    ? `SELECT * FROM platform_content_rule WHERE is_active = true ORDER BY sort_order ASC, platform ASC`
-    : `SELECT * FROM platform_content_rule ORDER BY sort_order ASC, platform ASC`;
-  const result = await query(sql);
+    ? `SELECT * FROM platform_content_rule WHERE is_active = true AND ${userFilter} ORDER BY sort_order ASC, platform ASC`
+    : `SELECT * FROM platform_content_rule WHERE ${userFilter} ORDER BY sort_order ASC, platform ASC`;
+  const result = await query(sql, params);
   return result.rows;
 }
 
 /** 获取单个平台约束规则 */
-export async function getPlatformRule(platform: string): Promise<any | null> {
+export async function getPlatformRule(platform: string, userId?: string): Promise<any | null> {
+  const userFilter = userId ? `(user_id = '' OR user_id = $2)` : `user_id = ''`;
+  const params = userId ? [platform, userId] : [platform];
   const result = await query(
-    `SELECT * FROM platform_content_rule WHERE platform = $1`,
-    [platform]
+    `SELECT * FROM platform_content_rule WHERE platform = $1 AND ${userFilter}`,
+    params
   );
   return result.rows[0] || null;
 }
@@ -7550,19 +7575,24 @@ export async function getPlatformRule(platform: string): Promise<any | null> {
 /**
  * 批量获取平台规则（写作任务生成时用，按 target_platforms 数组查）
  * 缺失的平台会被忽略（不报错），返回结果按 platform 升序
+ * v2.5.37：按 userId 隔离，代理读取全局 + 自己的规则
  */
-export async function getPlatformRulesByPlatforms(platforms: string[]): Promise<any[]> {
+export async function getPlatformRulesByPlatforms(platforms: string[], userId?: string): Promise<any[]> {
   if (!platforms || platforms.length === 0) return [];
+  const userFilter = userId ? `(user_id = '' OR user_id = $2)` : `user_id = ''`;
+  const params = userId ? [platforms, userId] : [platforms];
   const result = await query(
-    `SELECT * FROM platform_content_rule WHERE platform = ANY($1::text[]) ORDER BY sort_order ASC`,
-    [platforms]
+    `SELECT * FROM platform_content_rule WHERE platform = ANY($1::text[]) AND ${userFilter} ORDER BY sort_order ASC`,
+    params
   );
   return result.rows;
 }
 
 /**
  * 新增或更新平台约束规则（UPSERT）
- * platform 为主键，存在则更新
+ * v2.5.37：主键为 (platform, user_id)，userId 决定写入的 user_id
+ * - userId 有值：写入代理私有规则（user_id = userId）
+ * - userId 为空/undefined：写入全局规则（user_id = ''）
  */
 export async function upsertPlatformRule(data: {
   platform: string;
@@ -7579,14 +7609,15 @@ export async function upsertPlatformRule(data: {
   cover_image_mode?: string;
   is_active?: boolean;
   sort_order?: number;
-}): Promise<void> {
+}, userId?: string): Promise<void> {
+  const effectiveUserId = userId || '';
   await query(
     `INSERT INTO platform_content_rule
       (platform, name, title_min_length, title_max_length, content_min_length, content_max_length,
        style_prompt, require_tags, tags_min_count, tags_max_count, cover_image_required, cover_image_mode,
-       is_active, sort_order)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-     ON CONFLICT (platform) DO UPDATE SET
+       is_active, sort_order, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     ON CONFLICT (platform, user_id) DO UPDATE SET
        name = EXCLUDED.name,
        title_min_length = EXCLUDED.title_min_length,
        title_max_length = EXCLUDED.title_max_length,
@@ -7612,13 +7643,15 @@ export async function upsertPlatformRule(data: {
       data.cover_image_mode || 'none',
       data.is_active ?? true,
       data.sort_order ?? 0,
+      effectiveUserId,
     ]
   );
 }
 
-/** 删除平台约束规则 */
-export async function deletePlatformRule(platform: string): Promise<void> {
-  await query(`DELETE FROM platform_content_rule WHERE platform = $1`, [platform]);
+/** 删除平台约束规则（v2.5.37：按 user_id 隔离，只能删自己的） */
+export async function deletePlatformRule(platform: string, userId?: string): Promise<void> {
+  const effectiveUserId = userId || '';
+  await query(`DELETE FROM platform_content_rule WHERE platform = $1 AND user_id = $2`, [platform, effectiveUserId]);
 }
 
 // ============ v2.0.0: AI平台流量权重层（ai_platform_weight + ai_platform_source_mapping） ============
@@ -7645,25 +7678,29 @@ export interface AiPlatformSourceMapping {
   updated_at: string;
 }
 
-/** 获取所有AI平台流量权重 */
-export async function getAiPlatformWeights(onlyEnabled: boolean = false): Promise<AiPlatformWeight[]> {
+/** 获取所有AI平台流量权重（v2.5.37：按 userId 隔离） */
+export async function getAiPlatformWeights(onlyEnabled: boolean = false, userId?: string): Promise<AiPlatformWeight[]> {
+  const userFilter = userId ? `(user_id = '' OR user_id = $1)` : `user_id = ''`;
+  const params = userId ? [userId] : [];
   const sql = onlyEnabled
-    ? `SELECT * FROM ai_platform_weight WHERE is_enabled = true ORDER BY user_volume_level DESC, platform ASC`
-    : `SELECT * FROM ai_platform_weight ORDER BY user_volume_level DESC, platform ASC`;
-  const result = await query(sql);
+    ? `SELECT * FROM ai_platform_weight WHERE is_enabled = true AND ${userFilter} ORDER BY user_volume_level DESC, platform ASC`
+    : `SELECT * FROM ai_platform_weight WHERE ${userFilter} ORDER BY user_volume_level DESC, platform ASC`;
+  const result = await query(sql, params);
   return result.rows as AiPlatformWeight[];
 }
 
-/** 获取单个AI平台流量权重 */
-export async function getAiPlatformWeight(platform: string): Promise<AiPlatformWeight | null> {
+/** 获取单个AI平台流量权重（v2.5.37：按 userId 隔离） */
+export async function getAiPlatformWeight(platform: string, userId?: string): Promise<AiPlatformWeight | null> {
+  const userFilter = userId ? `(user_id = '' OR user_id = $2)` : `user_id = ''`;
+  const params = userId ? [platform, userId] : [platform];
   const result = await query(
-    `SELECT * FROM ai_platform_weight WHERE platform = $1`,
-    [platform]
+    `SELECT * FROM ai_platform_weight WHERE platform = $1 AND ${userFilter}`,
+    params
   );
   return (result.rows[0] as AiPlatformWeight) || null;
 }
 
-/** 新增/更新AI平台流量权重（UPSERT） */
+/** 新增/更新AI平台流量权重（UPSERT）（v2.5.37：按 userId 隔离） */
 export async function upsertAiPlatformWeight(data: {
   platform: string;
   display_name: string;
@@ -7671,12 +7708,13 @@ export async function upsertAiPlatformWeight(data: {
   traffic_weight?: number;
   is_enabled?: boolean;
   notes?: string;
-}): Promise<void> {
+}, userId?: string): Promise<void> {
+  const effectiveUserId = userId || '';
   await query(
     `INSERT INTO ai_platform_weight
-      (platform, display_name, user_volume_level, traffic_weight, is_enabled, notes)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (platform) DO UPDATE SET
+      (platform, display_name, user_volume_level, traffic_weight, is_enabled, notes, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (platform, user_id) DO UPDATE SET
        display_name = EXCLUDED.display_name,
        user_volume_level = EXCLUDED.user_volume_level,
        traffic_weight = EXCLUDED.traffic_weight,
@@ -7690,37 +7728,50 @@ export async function upsertAiPlatformWeight(data: {
       data.traffic_weight ?? 1.0,
       data.is_enabled ?? true,
       data.notes || null,
+      effectiveUserId,
     ]
   );
 }
 
-/** 删除AI平台流量权重 */
-export async function deleteAiPlatformWeight(platform: string): Promise<void> {
-  await query(`DELETE FROM ai_platform_weight WHERE platform = $1`, [platform]);
+/** 删除AI平台流量权重（v2.5.37：按 userId 隔离，只能删自己的） */
+export async function deleteAiPlatformWeight(platform: string, userId?: string): Promise<void> {
+  const effectiveUserId = userId || '';
+  await query(`DELETE FROM ai_platform_weight WHERE platform = $1 AND user_id = $2`, [platform, effectiveUserId]);
 }
 
-/** 获取所有AI平台 → 信源映射 */
-export async function getAiPlatformSourceMappings(aiPlatform?: string): Promise<AiPlatformSourceMapping[]> {
-  const sql = aiPlatform
-    ? `SELECT * FROM ai_platform_source_mapping WHERE ai_platform = $1 ORDER BY source_weight DESC, source_platform ASC`
-    : `SELECT * FROM ai_platform_source_mapping ORDER BY ai_platform ASC, source_weight DESC, source_platform ASC`;
-  const params = aiPlatform ? [aiPlatform] : [];
-  const result = await query(sql, params);
+/** 获取所有AI平台 → 信源映射（v2.5.37：按 userId 隔离） */
+export async function getAiPlatformSourceMappings(aiPlatform?: string, userId?: string): Promise<AiPlatformSourceMapping[]> {
+  const userFilter = userId ? `(user_id = '' OR user_id = $2)` : `user_id = ''`;
+  if (aiPlatform) {
+    const params = userId ? [aiPlatform, userId] : [aiPlatform];
+    const result = await query(
+      `SELECT * FROM ai_platform_source_mapping WHERE ai_platform = $1 AND ${userFilter} ORDER BY source_weight DESC, source_platform ASC`,
+      params
+    );
+    return result.rows as AiPlatformSourceMapping[];
+  }
+  // 无 aiPlatform 过滤
+  const params = userId ? [userId] : [];
+  const result = await query(
+    `SELECT * FROM ai_platform_source_mapping WHERE ${userFilter} ORDER BY ai_platform ASC, source_weight DESC, source_platform ASC`,
+    params
+  );
   return result.rows as AiPlatformSourceMapping[];
 }
 
-/** 新增/更新AI平台 → 信源映射（UPSERT） */
+/** 新增/更新AI平台 → 信源映射（UPSERT）（v2.5.37：按 userId 隔离） */
 export async function upsertAiPlatformSourceMapping(data: {
   ai_platform: string;
   source_platform: string;
   source_weight?: number;
   notes?: string;
-}): Promise<void> {
+}, userId?: string): Promise<void> {
+  const effectiveUserId = userId || '';
   await query(
     `INSERT INTO ai_platform_source_mapping
-      (ai_platform, source_platform, source_weight, notes)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (ai_platform, source_platform) DO UPDATE SET
+      (ai_platform, source_platform, source_weight, notes, user_id)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (ai_platform, source_platform, user_id) DO UPDATE SET
        source_weight = EXCLUDED.source_weight,
        notes = EXCLUDED.notes,
        updated_at = CURRENT_TIMESTAMP`,
@@ -7729,41 +7780,40 @@ export async function upsertAiPlatformSourceMapping(data: {
       data.source_platform,
       data.source_weight ?? 1.0,
       data.notes || null,
+      effectiveUserId,
     ]
   );
 }
 
-/** 删除AI平台 → 信源映射 */
-export async function deleteAiPlatformSourceMapping(aiPlatform: string, sourcePlatform: string): Promise<void> {
+/** 删除AI平台 → 信源映射（v2.5.37：按 userId 隔离，只能删自己的） */
+export async function deleteAiPlatformSourceMapping(aiPlatform: string, sourcePlatform: string, userId?: string): Promise<void> {
+  const effectiveUserId = userId || '';
   await query(
-    `DELETE FROM ai_platform_source_mapping WHERE ai_platform = $1 AND source_platform = $2`,
-    [aiPlatform, sourcePlatform]
+    `DELETE FROM ai_platform_source_mapping WHERE ai_platform = $1 AND source_platform = $2 AND user_id = $3`,
+    [aiPlatform, sourcePlatform, effectiveUserId]
   );
 }
 
 /**
  * 计算各自媒体平台的综合投放权重（v2.0.0 核心函数）
+ * v2.5.37：按 userId 隔离，代理计算时用全局 + 自己的权重
  *
  * 公式：自媒体平台X的投放权重 = Σ(启用的AI平台流量权重 × 该AI平台→X的信源权重)
- *
- * 高用户量AI平台的信源平台会自动获得更高的综合投放权重，
- * 用于指导周报/月报投放建议、写作任务平台侧重、发布任务平台分配。
- *
- * @returns { sourcePlatform: weight } 按权重降序排列
  */
-export async function calcSourcePlatformWeights(): Promise<Record<string, number>> {
-  // 一次查询完成聚合计算：JOIN ai_platform_weight 和 ai_platform_source_mapping
+export async function calcSourcePlatformWeights(userId?: string): Promise<Record<string, number>> {
+  const userFilter = userId ? `(m.user_id = '' OR m.user_id = $1) AND (w.user_id = '' OR w.user_id = $1)` : `m.user_id = '' AND w.user_id = ''`;
+  const params = userId ? [userId] : [];
   const sql = `
     SELECT
       m.source_platform,
       SUM(w.traffic_weight * m.source_weight) AS total_weight
     FROM ai_platform_source_mapping m
     INNER JOIN ai_platform_weight w ON w.platform = m.ai_platform
-    WHERE w.is_enabled = true
+    WHERE w.is_enabled = true AND ${userFilter}
     GROUP BY m.source_platform
     ORDER BY total_weight DESC
   `;
-  const result = await query(sql);
+  const result = await query(sql, params);
   const weights: Record<string, number> = {};
   for (const row of result.rows) {
     weights[row.source_platform] = parseFloat(row.total_weight);
@@ -7773,19 +7823,14 @@ export async function calcSourcePlatformWeights(): Promise<Record<string, number
 
 /**
  * 按综合投放权重分配文章数量（v2.0.0）
- *
- * 根据各自媒体平台的综合权重比例，将 totalArticles 篇文章分配到各平台。
- * 权重高的平台分配更多文章，权重为 0 或极低的平台不分配。
- *
- * @param totalArticles 本批计划投放的总文章数
- * @param candidatePlatforms 候选平台列表（可选，不传则使用所有有权重的平台）
- * @returns { platform: articleCount } 各平台分配的文章数（总和≈totalArticles）
+ * v2.5.37：按 userId 隔离
  */
 export async function allocateArticlesByWeight(
   totalArticles: number,
-  candidatePlatforms?: string[]
+  candidatePlatforms?: string[],
+  userId?: string
 ): Promise<Record<string, number>> {
-  const allWeights = await calcSourcePlatformWeights();
+  const allWeights = await calcSourcePlatformWeights(userId);
 
   // 过滤候选平台
   const weights: Record<string, number> = {};

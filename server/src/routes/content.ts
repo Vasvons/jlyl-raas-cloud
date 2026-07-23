@@ -1489,7 +1489,7 @@ router.put('/platform-rules/:platform', async (req: Request, res: Response) => {
       cover_image_mode: req.body.cover_image_mode ?? existing.cover_image_mode,
       is_active: req.body.is_active ?? existing.is_active,
       sort_order: req.body.sort_order ?? existing.sort_order,
-    });
+    }, isAgent(req) ? String(getUserId(req)) : undefined);
     res.json({ code: 200, data: { platform } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -1550,7 +1550,7 @@ router.post('/ai-platform-weights', async (req: Request, res: Response) => {
 router.put('/ai-platform-weights/:platform', async (req: Request, res: Response) => {
   try {
     const platform = req.params.platform;
-    const existing = await getAiPlatformWeight(platform);
+    const existing = await getAiPlatformWeight(platform, isAgent(req) ? String(getUserId(req)) : undefined);
     if (!existing) {
       return res.status(404).json({ code: 404, message: `AI平台 ${platform} 不存在` });
     }
@@ -1571,7 +1571,7 @@ router.put('/ai-platform-weights/:platform', async (req: Request, res: Response)
 // 删除AI平台流量权重
 router.delete('/ai-platform-weights/:platform', async (req: Request, res: Response) => {
   try {
-    await deleteAiPlatformWeight(req.params.platform);
+    await deleteAiPlatformWeight(req.params.platform, isAgent(req) ? String(getUserId(req)) : undefined);
     res.json({ code: 200, data: { ok: true } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
@@ -1638,7 +1638,8 @@ router.post('/allocate-articles', async (req: Request, res: Response) => {
     }
     const allocation = await allocateArticlesByWeight(
       total,
-      Array.isArray(candidate_platforms) ? candidate_platforms : undefined
+      Array.isArray(candidate_platforms) ? candidate_platforms : undefined,
+      isAgent(req) ? String(getUserId(req)) : undefined
     );
     res.json({ code: 200, data: allocation });
   } catch (err: any) {

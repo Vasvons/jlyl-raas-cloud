@@ -2846,7 +2846,8 @@ export async function autoCreateWritingTasksFromPeriod(
   // 按权重分配文章数（candidatePlatforms 为空时不传，使用所有有权重的平台）
   const allocation = await allocateArticlesByWeight(
     quota,
-    candidatePlatforms.length > 0 ? candidatePlatforms : undefined
+    candidatePlatforms.length > 0 ? candidatePlatforms : undefined,
+    userId ? String(userId) : undefined
   );
   console.log(`[AEO-Period] 平台分配来源=${platformSource}, 候选=[${candidatePlatforms.join(',')}], 实际分配=${JSON.stringify(allocation)}`);
 
