@@ -1942,7 +1942,15 @@ export async function getQueueRunningCount(): Promise<number> {
 }
 
 // 请求中断指定队列任务
-export async function requestQueueAbort(queueId: number): Promise<boolean> {
+export async function requestQueueAbort(queueId: number, userId?: number): Promise<boolean> {
+  // v2.5.37：支持按 user_id 过滤，代理只能中断自己名下的任务
+  if (userId && userId > 0) {
+    const result = await query(
+      `UPDATE real_collect_queue SET abort_requested = true WHERE id = $1 AND status = 'running' AND user_id = $2`,
+      [queueId, userId]
+    );
+    return (result.rowCount || 0) > 0;
+  }
   const result = await query(
     `UPDATE real_collect_queue SET abort_requested = true WHERE id = $1 AND status = 'running'`,
     [queueId]
@@ -1960,7 +1968,15 @@ export async function checkQueueAbort(queueId: number): Promise<boolean> {
 }
 
 // 中断所有正在运行的队列任务（用于紧急停止）
-export async function abortAllRunningTasks(): Promise<number> {
+export async function abortAllRunningTasks(userId?: number): Promise<number> {
+  // v2.5.37：支持按 user_id 过滤，代理只能中断自己名下的任务
+  if (userId && userId > 0) {
+    const result = await query(
+      `UPDATE real_collect_queue SET abort_requested = true WHERE status = 'running' AND user_id = $1`,
+      [userId]
+    );
+    return result.rowCount || 0;
+  }
   const result = await query(
     `UPDATE real_collect_queue SET abort_requested = true WHERE status = 'running'`
   );
@@ -1968,7 +1984,19 @@ export async function abortAllRunningTasks(): Promise<number> {
 }
 
 // 获取当前正在运行的队列任务
-export async function getRunningQueueTask(): Promise<any | null> {
+export async function getRunningQueueTask(userId?: number): Promise<any | null> {
+  // v2.5.37：支持按 user_id 过滤，代理只看自己名下任务的运行状态
+  if (userId && userId > 0) {
+    const result = await query(
+      `SELECT id, task_id, user_id, keyword_type, platforms, start_time, abort_requested
+       FROM real_collect_queue
+       WHERE status = 'running' AND user_id = $1
+       ORDER BY start_time DESC
+       LIMIT 1`,
+      [userId]
+    );
+    return result.rows[0] || null;
+  }
   const result = await query(
     `SELECT id, task_id, user_id, keyword_type, platforms, start_time, abort_requested
      FROM real_collect_queue

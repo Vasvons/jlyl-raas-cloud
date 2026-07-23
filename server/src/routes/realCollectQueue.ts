@@ -16,6 +16,18 @@ import { wsBroadcast } from '../wsServer';
 
 const router = Router();
 
+// v2.5.37：获取当前登录用户ID（token payload 字段名为 'id'）
+function getUserId(req: any): number {
+  return Number(req.user?.id ?? req.user?.userId ?? 0);
+}
+
+// v2.5.37：判断是否为代理账号（level≠'1' 且 role='agent'）
+function isAgent(req: any): boolean {
+  const userLevel = String(req.user?.level ?? '');
+  const userRole = String(req.user?.role ?? '');
+  return userLevel !== '1' && userRole === 'agent';
+}
+
 // Worker消费队列任务（不需要鉴权，由Worker内部调用）
 router.post('/dequeue', async (req, res) => {
   try {
@@ -142,7 +154,9 @@ router.get('/pending-count', async (req, res) => {
 // 获取当前正在运行的任务（供前端显示，需要鉴权）
 router.get('/running', authMiddleware, async (req, res) => {
   try {
-    const task = await getRunningQueueTask();
+    // v2.5.37：代理只看自己名下任务的运行状态，管理员看全局
+    const userId = isAgent(req) ? getUserId(req) : undefined;
+    const task = await getRunningQueueTask(userId);
     res.json({ code: 200, data: task });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
@@ -156,7 +170,9 @@ router.post('/:id/abort', authMiddleware, async (req, res) => {
     if (!queueId) {
       return res.status(400).json({ code: 400, message: '缺少queueId' });
     }
-    const success = await requestQueueAbort(queueId);
+    // v2.5.37：代理只能中断自己名下的任务
+    const userId = isAgent(req) ? getUserId(req) : undefined;
+    const success = await requestQueueAbort(queueId, userId);
     if (success) {
       console.log(`[RealCollectQueue] 任务 queueId=${queueId} 已请求中断`);
       res.json({ code: 200, message: '中断请求已发送' });
@@ -171,7 +187,9 @@ router.post('/:id/abort', authMiddleware, async (req, res) => {
 // 紧急中断所有正在运行的任务（需要鉴权）
 router.post('/abort-all', authMiddleware, async (req, res) => {
   try {
-    const count = await abortAllRunningTasks();
+    // v2.5.37：代理只能中断自己名下的任务
+    const userId = isAgent(req) ? getUserId(req) : undefined;
+    const count = await abortAllRunningTasks(userId);
     console.log(`[RealCollectQueue] 已请求中断 ${count} 个运行中的任务`);
     res.json({ code: 200, message: `已请求中断 ${count} 个任务`, data: { count } });
   } catch (e: any) {
