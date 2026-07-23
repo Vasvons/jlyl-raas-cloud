@@ -2208,8 +2208,18 @@ router.post('/publish/by-writing-task', async (req: Request, res: Response) => {
 router.get('/publish-accounts', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
-    const poolType = (req.query.pool_type as string) || 'all';
-    const customerId = req.query.customer_id ? Number(req.query.customer_id) : undefined;
+    const userLevel = String((req as any).user?.level ?? '');
+    const userRole = String((req as any).user?.role ?? '');
+    // v2.5.36：数据隔离 - 代理账号（level != '1' 或 role='agent'）只能看自己的私有账号
+    // 管理端创建的公共池账号（user_id IS NULL）对代理不可见
+    const isAgent = userLevel !== '1' && userRole === 'agent';
+    let poolType = (req.query.pool_type as string) || 'all';
+    let customerId = req.query.customer_id ? Number(req.query.customer_id) : undefined;
+    if (isAgent) {
+      // 强制只看自己的私有账号
+      poolType = 'private';
+      customerId = userId;
+    }
     const list = await getPublishAccounts(
       userId,
       poolType as 'public' | 'private' | 'all',
@@ -2316,8 +2326,19 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
     if (!platform || !account_name || !storage_state) {
       return res.status(400).json({ code: 400, message: 'platform, account_name, storage_state 必填' });
     }
-    // 公共池：user_id = null；私有池：user_id = customer_id
-    const userId = pool_type === 'public' ? null : (customer_id ? Number(customer_id) : getUserId(req));
+    // v2.5.36：数据隔离 - 代理账号（role='agent'）只能创建私有账号，强制 user_id = 自己
+    const callerUserId = getUserId(req);
+    const userLevel = String((req as any).user?.level ?? '');
+    const userRole = String((req as any).user?.role ?? '');
+    const isAgent = userLevel !== '1' && userRole === 'agent';
+    let userId: number | null;
+    if (isAgent) {
+      // 代理创建的账号强制归属自己，不允许创建公共池账号
+      userId = callerUserId;
+    } else {
+      // 管理员：公共池 user_id=null；私有池 user_id=customer_id
+      userId = pool_type === 'public' ? null : (customer_id ? Number(customer_id) : callerUserId);
+    }
     const id = await createPublishAccount({
       user_id: userId,
       platform,
@@ -2384,6 +2405,18 @@ router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
 router.delete('/publish-accounts/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
+    // v2.5.36：数据隔离 - 代理账号只能删除自己的账号
+    const callerUserId = getUserId(req);
+    const userLevel = String((req as any).user?.level ?? '');
+    const userRole = String((req as any).user?.role ?? '');
+    const isAgent = userLevel !== '1' && userRole === 'agent';
+    if (isAgent) {
+      // 校验该账号是否属于当前代理
+      const acct = await query('SELECT user_id FROM platform_auth WHERE id = $1', [id]);
+      if (!acct.rows[0] || String(acct.rows[0].user_id) !== String(callerUserId)) {
+        return res.status(403).json({ code: 403, message: '无权删除此账号' });
+      }
+    }
     await deletePublishAccount(id);
     res.json({ code: 200, data: { ok: true } });
   } catch (err: any) {

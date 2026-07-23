@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'crypto';
-import { authMiddleware, hashPassword } from '../auth';
+import { authMiddleware, hashPassword, comparePassword } from '../auth';
 import {
   getAdminAccounts,
   createAdminAccount,
@@ -444,6 +444,36 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
         server_time: new Date().toISOString(),
       },
     });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// v2.5.36：代理客户端自助修改密码
+router.post('/change-password', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    if (userId === 0) return res.status(401).json({ code: 401, message: '未登录' });
+    const { old_password, new_password } = req.body;
+    if (!old_password || !new_password) {
+      return res.status(400).json({ code: 400, message: '缺少 old_password 或 new_password' });
+    }
+    if (typeof new_password !== 'string' || new_password.length < 6) {
+      return res.status(400).json({ code: 400, message: '新密码至少 6 位' });
+    }
+    const user = await findUserById(userId);
+    if (!user) {
+      return res.status(404).json({ code: 404, message: '用户不存在' });
+    }
+    // 校验旧密码
+    const valid = await comparePassword(old_password, (user as any).password);
+    if (!valid) {
+      return res.status(400).json({ code: 400, message: '当前密码不正确' });
+    }
+    // 更新为新密码
+    const newHash = await hashPassword(new_password);
+    await query('UPDATE users SET password = $1, update_time = NOW() WHERE id = $2', [newHash, userId]);
+    res.json({ code: 200, message: '密码修改成功' });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }
