@@ -261,7 +261,19 @@ export async function getAgentGrants(agentUserId: number): Promise<any[]> {
      ORDER BY amg.granted_at DESC`,
     [agentUserId]
   );
-  return result.rows;
+  // v2.5.36：兼容旧版 module_code（agent_company/lingxi_site/geo_hub → harness/sites/geo）
+  // 旧版管理后台用错了代码，这里运行时转换，保证已创建的授权仍能被代理端识别
+  const CODE_MAP: Record<string, string> = {
+    agent_company: 'harness',
+    lingxi_site: 'sites',
+    geo_hub: 'geo',
+  };
+  return result.rows.map((row: any) => {
+    if (row.module_code && CODE_MAP[row.module_code]) {
+      return { ...row, module_code: CODE_MAP[row.module_code] };
+    }
+    return row;
+  });
 }
 
 /** 授权代理使用某板块 */

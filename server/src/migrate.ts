@@ -69,6 +69,23 @@ export async function migrate() {
         UNIQUE (agent_user_id, module_code)
       )
     `);
+    // v2.5.36：回填存量授权记录的 module_code（旧版管理后台用了错误代码）
+    // agent_company → harness, lingxi_site → sites, geo_hub → geo
+    // 这样回填后与 AgentLayout 的 MODULE_GROUPS.moduleCode 一致，hasModuleGrant 可正确匹配
+    const grantBackfill = await client.query(`
+      UPDATE agent_module_grant
+      SET module_code = CASE module_code
+        WHEN 'agent_company' THEN 'harness'
+        WHEN 'lingxi_site' THEN 'sites'
+        WHEN 'geo_hub' THEN 'geo'
+        ELSE module_code
+      END
+      WHERE module_code IN ('agent_company', 'lingxi_site', 'geo_hub')
+      RETURNING id
+    `);
+    if (grantBackfill.rows.length > 0) {
+      console.log(`[Migrate] 已回填 ${grantBackfill.rows.length} 条旧版 module_code 授权记录`);
+    }
 
     // v2.5.35：代理心跳日志表
     await client.query(`
