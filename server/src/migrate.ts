@@ -37,6 +37,12 @@ export async function migrate() {
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_license_key ON users(license_key) WHERE license_key IS NOT NULL`);
     // 回填历史 admin 账号的 role='super_admin'
     await client.query(`UPDATE users SET role = 'super_admin' WHERE level = '1' AND role = 'customer'`);
+    // v2.5.36：回填历史代理账号（level='2' 但 role 仍为默认 'customer'）为 'agent'
+    // 这类账号是在 role 列添加之前创建的，migrate 给了默认值 'customer'，导致 verify-license 校验失败
+    const backfillResult = await client.query(`UPDATE users SET role = 'agent' WHERE level = '2' AND role = 'customer' RETURNING id, username`);
+    if (backfillResult.rows.length > 0) {
+      console.log(`[Migrate] 已回填 ${backfillResult.rows.length} 个历史代理账号 role='agent':`, backfillResult.rows.map((r: any) => r.username));
+    }
 
     // v2.5.35：管理员-代理分配表
     await client.query(`

@@ -315,8 +315,9 @@ router.post('/verify-license', async (req: Request, res: Response) => {
     // 1. 校验账号状态
     const user = await findUserById(userId);
     if (!user) return res.json({ code: 403, valid: false, reason: '账号不存在' });
+    console.log(`[verify-license] userId=${userId} username=${(user as any).username} role=${(user as any).role} level=${(user as any).level} status=${(user as any).status}`);
     if ((user as any).role !== 'agent') {
-      return res.json({ code: 403, valid: false, reason: '非代理账号，无权使用代理客户端' });
+      return res.json({ code: 403, valid: false, reason: `非代理账号（当前 role=${(user as any).role || 'null'}，level=${(user as any).level}），无权使用代理客户端` });
     }
     if ((user as any).status === 'disabled') {
       return res.json({ code: 403, valid: false, reason: '账号已被禁用，请联系管理员' });
