@@ -6,20 +6,31 @@ import { query as dbQuery } from '../db';
 
 const router = Router();
 
-// v2.2.15：权限模型回滚到正确设计
-// 整个软件只有管理员会登录，level='0' 的"客户"是管理员管理的数据对象，不是登录用户。
-// 因此所有接口只需 authMiddleware（登录校验），不需要越权防护。
-// v2.2.12 加的 requireAdminOrSelf/requireAdminOrOwner 已全部移除。
+// v2.5.36：代理数据隔离
+// 代理（role='agent' 且 level≠'1'）登录后只能操作自己名下的 AEO 数据，
+// 管理员（level='1'）可操作任意客户。与 content.ts 的 isAgent 保持一致。
+function getUserId(req: any): number {
+  return Number(req.user?.id ?? req.user?.userId ?? 0);
+}
 
-// 触发 AEO 分析（登录即可，登录的永远是管理员）
+function isAgent(req: any): boolean {
+  const userLevel = String(req.user?.level ?? '');
+  const userRole = String(req.user?.role ?? '');
+  return userLevel !== '1' && userRole === 'agent';
+}
+
+// 触发 AEO 分析
+// v2.5.36：代理只能为自己的 userId 触发分析，管理员可为任意客户
 router.post('/analyze', authMiddleware, async (req, res) => {
   try {
     const { taskId, userId } = req.body;
     if (!taskId || !userId || !Number.isFinite(Number(taskId))) {
       return res.json({ code: 400, message: '缺少 taskId 或 userId，或 taskId 格式无效' });
     }
+    // v2.5.36：代理强制用自己的 userId，忽略 body 传入的 userId
+    const effectiveUserId = isAgent(req) ? String(getUserId(req)) : String(userId);
     const taskIdNum = Number(taskId);
-    const reportId = await generateAeoReport(taskIdNum, String(userId));
+    const reportId = await generateAeoReport(taskIdNum, effectiveUserId);
     if (reportId === null) {
       res.json({ code: 200, message: '今日日报已生成，无需重复生成', data: { reportId: null, skipped: true } });
     } else {
@@ -47,10 +58,11 @@ router.delete('/by-task/:taskId', authMiddleware, async (req, res) => {
 });
 
 // 查询 AEO 报告列表
+// v2.5.36：代理强制按自己的 userId 过滤，管理员可传任意 userId
 router.get('/results', authMiddleware, async (req, res) => {
   try {
     const taskId = req.query.taskId ? Number(req.query.taskId) : undefined;
-    const userId = req.query.userId ? String(req.query.userId) : undefined;
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId ? String(req.query.userId) : undefined);
     const limit = req.query.limit ? Number(req.query.limit) : 30;
     const reports = await getAeoReports({ taskId, userId, limit });
     res.json({ code: 200, data: reports });
@@ -74,9 +86,10 @@ router.get('/latest', authMiddleware, async (req, res) => {
 });
 
 // v2.2.4：按 userId 查最新日报
+// v2.5.36：代理强制用自己 userId，管理员可传任意 userId
 router.get('/latest-by-user', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId ? String(req.query.userId) : undefined;
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId ? String(req.query.userId) : undefined);
     if (!userId) {
       return res.json({ code: 400, message: '缺少 userId' });
     }
@@ -88,9 +101,10 @@ router.get('/latest-by-user', authMiddleware, async (req, res) => {
 });
 
 // v2.2.5：补生成指定日期的 AEO 日报
+// v2.5.36：代理强制用自己 userId，管理员可传任意 userId
 router.post('/backfill-daily', authMiddleware, async (req, res) => {
   try {
-    const userId = req.body.userId ? String(req.body.userId) : undefined;
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.body.userId ? String(req.body.userId) : undefined);
     if (!userId) {
       return res.json({ code: 400, message: '缺少 userId' });
     }
@@ -188,8 +202,10 @@ const backfillJobs = new Map<string, BackfillJob>();
 // 触发补生成（异步）：立即返回 jobId，后台逐个处理
 router.post('/shard/backfill', authMiddleware, async (req, res) => {
   try {
-    // v2.1.6：支持按客户过滤（管理员从某客户飞轮页面触发时只补该客户的分片）
-    const customerId = req.body.customerId ? String(req.body.customerId) : undefined;
+    // v2.5.36：代理强制用自己的 customerId，管理员可传任意 customerId 或不传（补全部）
+    const customerId = isAgent(req)
+      ? String(getUserId(req))
+      : (req.body.customerId ? String(req.body.customerId) : undefined);
     // v2.4.7：支持强制重新生成已有分片报告（用于修复历史数据错误，如 LLM 调用失败或字段名 bug）
     //   - force=false（默认）：只补生成"已完成但无报告"的分片
     //   - force=true：重新生成所有已完成分片（包括已有报告的，先删除旧报告再重新分析）

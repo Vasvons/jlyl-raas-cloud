@@ -152,13 +152,31 @@ function getUserId(req: Request): number {
 }
 
 /**
+ * v2.5.36：判断当前登录用户是否为代理账号
+ *
+ * 代理（role='agent' 且 level≠'1'）登录后只能看自己名下的数据，
+ * 管理员（level='1'）可查看任意客户数据。
+ * 与 GET /publish-accounts 的 isAgent 判断保持一致。
+ */
+function isAgent(req: Request): boolean {
+  const userLevel = String((req as any).user?.level ?? '');
+  const userRole = String((req as any).user?.role ?? '');
+  return userLevel !== '1' && userRole === 'agent';
+}
+
+/**
  * 解析 customer_id 查询参数：
- * - 登录的永远是管理员，传入 ?customer_id=N 时使用该值（查看指定客户的数据）
+ * - 管理员传入 ?customer_id=N 时使用该值（查看指定客户的数据）
  * - 未传时回退到当前登录用户 ID
  *
- * v2.2.15：回滚越权防护。整个软件只有管理员会登录，level='0' 的"客户"是数据对象不是登录用户。
+ * v2.5.36：代理账号强制返回自己的 userId，忽略任何 customer_id 参数，
+ * 防止代理通过传 ?customer_id=N 越权查看其他客户数据。
+ * 这是飞轮总览、数据监控等页面的统一数据隔离收口点。
  */
 function getCustomerId(req: Request): number {
+  if (isAgent(req)) {
+    return getUserId(req);
+  }
   const raw = req.query.customer_id as string | undefined;
   if (raw && !Number.isNaN(Number(raw))) {
     return Number(raw);
@@ -176,6 +194,10 @@ function getCustomerId(req: Request): number {
  * customer_id 可能在 query（GET）或 body（POST/DELETE）里，统一兼容。
  */
 function resolveBatchUserId(req: Request): number {
+  // v2.5.36：代理强制只看自己的批次，忽略任何 customer_id 参数
+  if (isAgent(req)) {
+    return getUserId(req);
+  }
   const rawQ = req.query.customer_id as string | undefined;
   const rawB = req.body?.customer_id as string | number | undefined;
   const raw = rawQ ?? rawB;
@@ -2645,11 +2667,22 @@ router.delete('/flywheel/event-logs', async (req: Request, res: Response) => {
 });
 
 // ============ 客户列表 ============
-// v2.2.15：回滚到 authMiddleware。登录的永远是管理员，无需 requireAdmin 限制
+// v2.5.36：代理账号只能看自己，管理员可看全部 level='0' 客户
 router.get('/customers', authMiddleware, async (req: Request, res: Response) => {
   try {
+    // v2.5.36：数据隔离 - 代理只返回自己，避免在客户选择器看到全部客户
+    if (isAgent(req)) {
+      const me = getUserId(req);
+      const result = await query(
+        `SELECT id, username, phone, email, level, create_time
+         FROM users
+         WHERE id = $1
+         ORDER BY id ASC`,
+        [me]
+      );
+      return res.json({ code: 200, data: result.rows });
+    }
     // v2.0.5：过滤 level='1' 的管理员，只返回 level='0' 的真实客户
-    // 与 repository.ts 的 getUserDataStats 保持一致
     const result = await query(
       `SELECT id, username, phone, email, level, create_time
        FROM users
@@ -2814,12 +2847,12 @@ router.put('/aeo-quota', async (req: Request, res: Response) => {
 router.get('/aeo-shard-reports', async (req: Request, res: Response) => {
   try {
     const taskId = req.query.task_id ? Number(req.query.task_id) : undefined;
-    // v2.1.5：支持 customer_id 参数（管理员查看指定客户）和 all=1（管理员查看全部）
-    // v2.1.6：customer_id 优先于 all，飞轮页面按客户过滤
-    // v2.2.12：修复 ?all=1 越权漏洞——必须管理员才能查看所有客户的分片报告
-    // getAeoShardReports 的 userId 参数已支持 string | number（内部统一 String() 转换）
+    // v2.5.36：代理强制按自己的 userId 过滤，忽略 customer_id 和 all 参数
+    // 管理员可传 customer_id 看指定客户，或 all=1 看全部
     let userId: string | number | undefined;
-    if (req.query.customer_id) {
+    if (isAgent(req)) {
+      userId = String(getUserId(req));
+    } else if (req.query.customer_id) {
       userId = String(req.query.customer_id);
     } else if (req.query.all === '1' && (req as any).user?.level === '1') {
       userId = undefined;
@@ -2861,9 +2894,9 @@ router.get('/aeo-shard-reports/:id', async (req: Request, res: Response) => {
 //     用于日报详情弹窗按 report_date 关联查询同日的 daily 周期报告写作建议
 router.get('/aeo-period-reports', async (req: Request, res: Response) => {
   try {
-    // v2.2.25：优先用 customer_id（管理员视角），否则用 token 中的 userId
+    // v2.5.36：代理强制用自己 userId，管理员可传 customer_id 看指定客户
     const customerId = req.query.customer_id as string | undefined;
-    const userId = customerId || String(getUserId(req));
+    const userId = isAgent(req) ? String(getUserId(req)) : (customerId || String(getUserId(req)));
     const periodType = req.query.period_type as string | undefined;
     const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
     const offset = req.query.offset ? Number(req.query.offset) : 0;
@@ -2898,8 +2931,9 @@ router.get('/aeo-period-reports/:id', async (req: Request, res: Response) => {
 // 获取写作建议列表（支持按 consumed/source_type 筛选）
 router.get('/writing-suggestions', async (req: Request, res: Response) => {
   try {
+    // v2.5.36：代理强制用自己 userId，管理员可传 customer_id
     const customerId = req.query.customer_id as string | undefined;
-    const userId = customerId ? Number(customerId) : getUserId(req);
+    const userId = isAgent(req) ? getUserId(req) : (customerId ? Number(customerId) : getUserId(req));
     const consumed = req.query.consumed === 'true' ? true : req.query.consumed === 'false' ? false : undefined;
     const sourceType = req.query.source_type as string | undefined;
     const limit = req.query.limit ? Math.min(Number(req.query.limit), 200) : 50;
@@ -2914,8 +2948,9 @@ router.get('/writing-suggestions', async (req: Request, res: Response) => {
 // 获取当前客户建议来源配置（daily/weekly/monthly）
 router.get('/aeo-pool-source-type', async (req: Request, res: Response) => {
   try {
+    // v2.5.36：代理强制用自己 userId
     const customerId = req.query.customer_id as string | undefined;
-    const userId = customerId ? Number(customerId) : getUserId(req);
+    const userId = isAgent(req) ? getUserId(req) : (customerId ? Number(customerId) : getUserId(req));
     const sourceType = await getSuggestionPoolSourceType(userId);
     res.json({ code: 200, data: { suggestion_source_period_type: sourceType } });
   } catch (err: any) {
@@ -2926,8 +2961,9 @@ router.get('/aeo-pool-source-type', async (req: Request, res: Response) => {
 // 更新建议来源配置
 router.put('/aeo-pool-source-type', async (req: Request, res: Response) => {
   try {
+    // v2.5.36：代理强制用自己 userId（写越权防护）
     const customerId = req.query.customer_id as string | undefined;
-    const userId = customerId ? Number(customerId) : getUserId(req);
+    const userId = isAgent(req) ? getUserId(req) : (customerId ? Number(customerId) : getUserId(req));
     const sourceType = req.body?.suggestion_source_period_type;
     if (!['daily', 'weekly', 'monthly'].includes(sourceType)) {
       return res.status(400).json({ code: 400, message: 'source_type 必须是 daily/weekly/monthly' });

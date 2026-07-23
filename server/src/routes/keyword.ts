@@ -19,6 +19,29 @@ import {
 
 const router = Router();
 
+// v2.5.36：代理数据隔离辅助函数（与 content.ts / aeo.ts 保持一致）
+function getUserId(req: any): number {
+  return Number(req.user?.id ?? req.user?.userId ?? 0);
+}
+
+function isAgent(req: any): boolean {
+  const userLevel = String(req.user?.level ?? '');
+  const userRole = String(req.user?.role ?? '');
+  return userLevel !== '1' && userRole === 'agent';
+}
+
+/**
+ * v2.5.36：解析 GEO 报告兼容路由的 userId 参数
+ * - 代理强制返回自己的 userId，忽略 query 传入的 userId（防越权）
+ * - 管理员/客户按原逻辑使用 query 传入的 userId
+ */
+function resolveGeoUserId(req: any): string | undefined {
+  if (isAgent(req)) {
+    return String(getUserId(req));
+  }
+  return req.query.userId as string | undefined;
+}
+
 // ============ 品牌关键词 ============
 router.get('/pp/list', authMiddleware, adminMiddleware, async (req, res) => {
   try {
@@ -290,11 +313,12 @@ router.get('/pt/list', async (req, res) => {
 
 // ============ 兼容 GEO 报告页面旧路径 ============
 // 前端 dashboard 页面使用旧路径，这里提供兼容路由
+// v2.5.36：所有兼容路由加 authMiddleware + isAgent 数据隔离
 
 // 搜索排名列表（兼容 /keywordsearchrank/keypage）
-router.get('/keywordsearchrank/keypage', async (req, res) => {
+router.get('/keywordsearchrank/keypage', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId as string;
+    const userId = resolveGeoUserId(req);
     if (!userId) return res.json({ code: 400, message: '缺少userId' });
 
     const data = await getKeywordSearchRank({
@@ -335,9 +359,9 @@ router.get('/keywordsearchrank/keypage', async (req, res) => {
 });
 
 // 平台占比（兼容 /keywordsearchrank/platformRatio）
-router.get('/keywordsearchrank/platformRatio', async (req, res) => {
+router.get('/keywordsearchrank/platformRatio', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId as string;
+    const userId = resolveGeoUserId(req);
     if (!userId) return res.json({ code: 400, message: '缺少userId' });
 
     const type = req.query.type as string | undefined;
@@ -356,9 +380,9 @@ router.get('/keywordsearchrank/platformRatio', async (req, res) => {
 });
 
 // 核心关键词排名（兼容 /keywordsearchrank/keywordcound）
-router.get('/keywordsearchrank/keywordcound', async (req, res) => {
+router.get('/keywordsearchrank/keywordcound', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId as string;
+    const userId = resolveGeoUserId(req);
     if (!userId) return res.json({ code: 400, message: '缺少userId' });
 
     const data = await getCoreKeywordRank(userId, 20);
@@ -376,9 +400,9 @@ router.get('/keywordsearchrank/keywordcound', async (req, res) => {
 });
 
 // 关键词数量统计（兼容 /dstillateKeyword/countDstillateKeyword）
-router.get('/dstillateKeyword/countDstillateKeyword', async (req, res) => {
+router.get('/dstillateKeyword/countDstillateKeyword', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId as string;
+    const userId = resolveGeoUserId(req);
     if (!userId) return res.json({ code: 400, message: '缺少userId' });
 
     // 核心关键词数（distillate_keyword 表）
