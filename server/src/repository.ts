@@ -4643,22 +4643,15 @@ export async function checkAeoReportExists(userId: string, reportDate: string): 
 // ============ 内容中枢：AI模型配置 ============
 
 export async function getAiModelConfigs(userId: number): Promise<any[]> {
-  // 返回用户自有配置 + 平台共享配置（user_id IS NULL）
-  //
-  // ⚠️ v1.4.4 修复"部署后配置丢失"问题：
-  //   旧 SQL `WHERE user_id = $1 OR user_id IS NULL` 在 userId=0 时（token 失效/解析异常）
-  //   只能查到共享配置（无 api_key，开关为默认值），导致用户看到"配置被清空"。
-  //   但智能巡检的 getApiConfigForCollect 不依赖 user_id，仍能查到配置，说明数据没丢。
-  //
-  //   新 SQL 增加 fallback：查询范围扩大到"所有有 api_key 的配置"，通过 ORDER BY 优先级
-  //   确保正常情况下仍返回当前用户的配置，仅在 userId=0 时 fallback 到其他用户的有 KEY 配置。
-  //   这样部署后 token 失效也能自动恢复显示，无需用户手动重新输入。
+  // v2.5.37：严格按 user_id 隔离，不再 fallback 到其他用户的有 KEY 配置
+  //   - 代理：只看自己的配置（user_id = $1），不看管理员的配置
+  //   - 管理员：看自己的配置 + 平台共享配置（user_id IS NULL）
+  //   - userId=0（异常）：只看共享配置，避免泄露其他用户的 KEY
   //
   // 排序优先级（DESC/ASC 配合 DISTINCT ON 取每组第一条）：
   //   1. (user_id = $1) DESC — 当前用户的配置最优先
-  //   2. (api_key_encrypted IS NOT NULL) DESC — 有 api_key 的优于无 KEY 的共享配置
-  //   3. (user_id IS NULL) ASC — 用户私有配置（非 null）优于共享配置
-  //   4. update_time DESC, id DESC — 最新的优先
+  //   2. (api_key_encrypted IS NOT NULL) DESC — 有 api_key 的优于无 KEY 的
+  //   3. update_time DESC, id DESC — 最新的优先
   const result = await query(
     `SELECT DISTINCT ON (platform)
             id, user_id, platform, model_name, base_url, max_tokens, temperature,
@@ -4669,11 +4662,10 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
             CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN '已配置' ELSE NULL END AS api_key_masked,
             create_time, update_time
      FROM ai_model_config
-     WHERE user_id = $1 OR user_id IS NULL OR api_key_encrypted IS NOT NULL
+     WHERE user_id = $1 OR user_id IS NULL
      ORDER BY platform,
               (user_id = $1) DESC,
               (api_key_encrypted IS NOT NULL) DESC,
-              (user_id IS NULL) ASC,
               update_time DESC, id DESC`,
     [userId]
   );

@@ -2671,13 +2671,14 @@ router.delete('/flywheel/event-logs', async (req: Request, res: Response) => {
 // v2.5.36：代理账号只能看自己，管理员可看全部 level='0' 客户
 router.get('/customers', authMiddleware, async (req: Request, res: Response) => {
   try {
-    // v2.5.36：数据隔离 - 代理只返回自己，避免在客户选择器看到全部客户
+    // v2.5.37：数据隔离 - 代理返回自己名下的客户（parent_admin_id = 代理 id）
+    //   之前错误地返回代理自己（WHERE id = $1），导致飞轮页面 filter level='0' 后为空
     if (isAgent(req)) {
       const me = getUserId(req);
       const result = await query(
         `SELECT id, username, phone, email, level, create_time
          FROM users
-         WHERE id = $1
+         WHERE parent_admin_id = $1 AND level = '2'
          ORDER BY id ASC`,
         [me]
       );
