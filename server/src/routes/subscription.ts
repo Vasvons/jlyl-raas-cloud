@@ -109,8 +109,11 @@ function generateOrderNo(): string {
   return `JLYL${ts}${rand}`;
 }
 
-/** 生成微信支付二维码 URL（Native 扫码支付） */
-async function createWechatNativePay(
+/**
+ * 生成微信支付二维码 URL（Native 扫码支付）
+ * v3.0：导出供 module.ts 复用（板块订阅在线支付）
+ */
+export async function createWechatNativePay(
   orderNo: string,
   amountFen: number,
   description: string

@@ -2235,6 +2235,98 @@ export async function migrate() {
       console.log('[Migrate] v2.5.36 已初始化 worker 套餐:', workerPlans.length, '项');
     }
 
+    // ===== v3.0 两层架构重构：板块管理 + 门户轮播 =====
+
+    // 板块元数据表（第一层门户的卡片数据来源）
+    // 与 agent_subscription_plan.module_code / agent_module_grant.module_code 通过 code 字段关联（不加外键，因为 cloud_worker/private_deploy 等服务代码不在本表）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS module (
+        id BIGSERIAL PRIMARY KEY,
+        code VARCHAR(50) NOT NULL UNIQUE,
+        name VARCHAR(100) NOT NULL,
+        description TEXT,
+        icon VARCHAR(100),
+        status VARCHAR(20) NOT NULL DEFAULT 'developing',
+        is_system BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INT NOT NULL DEFAULT 0,
+        preview_info JSONB,
+        preview_assets JSONB,
+        publish_config JSONB,
+        offline_reason TEXT,
+        offline_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // 门户轮播表（后台可配置的广告营销区）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS portal_carousel (
+        id BIGSERIAL PRIMARY KEY,
+        title VARCHAR(200),
+        image_url TEXT NOT NULL,
+        link_type VARCHAR(20) NOT NULL DEFAULT 'none',
+        link_target VARCHAR(200),
+        target_audience VARCHAR(20) NOT NULL DEFAULT 'all',
+        sort_order INT NOT NULL DEFAULT 0,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        start_at TIMESTAMP,
+        end_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_portal_carousel_active ON portal_carousel(is_active, sort_order)`);
+
+    // 给套餐表新增"是否支持在线支付"字段（v3.0：套餐级支付开关）
+    const hasOnlinePayCol = await client.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'agent_subscription_plan' AND column_name = 'support_online_pay'
+    `);
+    if (hasOnlinePayCol.rows.length === 0) {
+      await client.query(`ALTER TABLE agent_subscription_plan ADD COLUMN support_online_pay BOOLEAN NOT NULL DEFAULT FALSE`);
+      console.log('[Migrate] v3.0 agent_subscription_plan.support_online_pay 字段已添加');
+    }
+
+    // seed 3 个预置板块（is_system=true 不可删除，status=published 直接上架）
+    const moduleCount = await client.query("SELECT COUNT(*) as count FROM module");
+    if (parseInt(moduleCount.rows[0].count) === 0) {
+      const presetModules = [
+        { code: 'harness', name: '智能体公司', desc: '智能体开发与管理平台', icon: 'ExperimentOutlined', sort: 1 },
+        { code: 'sites',   name: '灵犀站点引擎', desc: '网站建设与优化引擎', icon: 'GlobalOutlined',   sort: 2 },
+        { code: 'geo',     name: '聚量GEO中枢',  desc: 'GEO 搜索引擎优化中枢', icon: 'ClusterOutlined',  sort: 3 },
+      ];
+      for (const m of presetModules) {
+        await client.query(
+          `INSERT INTO module (code, name, description, icon, status, is_system, sort_order)
+           VALUES ($1, $2, $3, $4, 'published', TRUE, $5)
+           ON CONFLICT (code) DO NOTHING`,
+          [m.code, m.name, m.desc, m.icon, m.sort]
+        );
+      }
+      console.log('[Migrate] v3.0 已初始化预置板块:', presetModules.length, '项');
+    } else {
+      // 确保存量环境也能补齐 3 个预置板块（已存在的跳过）
+      for (const m of [
+        { code: 'harness', name: '智能体公司', desc: '智能体开发与管理平台', icon: 'ExperimentOutlined', sort: 1 },
+        { code: 'sites',   name: '灵犀站点引擎', desc: '网站建设与优化引擎', icon: 'GlobalOutlined',   sort: 2 },
+        { code: 'geo',     name: '聚量GEO中枢',  desc: 'GEO 搜索引擎优化中枢', icon: 'ClusterOutlined',  sort: 3 },
+      ]) {
+        await client.query(
+          `INSERT INTO module (code, name, description, icon, status, is_system, sort_order)
+           VALUES ($1, $2, $3, $4, 'published', TRUE, $5)
+           ON CONFLICT (code) DO UPDATE SET
+             name = EXCLUDED.name,
+             description = EXCLUDED.description,
+             icon = EXCLUDED.icon,
+             is_system = TRUE,
+             sort_order = EXCLUDED.sort_order
+           WHERE module.is_system = TRUE`,
+          [m.code, m.name, m.desc, m.icon, m.sort]
+        );
+      }
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
