@@ -1496,9 +1496,17 @@ export async function migrate() {
       )
     `);
 
+    // v2.5.37：platform_content_rule 加 user_id，主键改为 (platform, user_id)
+    // 必须在种子数据 INSERT 之前执行，否则 ON CONFLICT (platform, user_id) 找不到约束
+    // user_id='' 表示全局规则（管理员配置），user_id=代理id 表示代理私有规则
+    await client.query(`ALTER TABLE platform_content_rule ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
+    await client.query(`UPDATE platform_content_rule SET user_id = '' WHERE user_id IS NULL`);
+    await client.query(`ALTER TABLE platform_content_rule DROP CONSTRAINT IF EXISTS platform_content_rule_pkey`);
+    await client.query(`ALTER TABLE platform_content_rule ADD PRIMARY KEY (platform, user_id)`);
+
     // 12 平台种子数据（仅首次插入，不覆盖用户自定义配置）
     // 字数限制参考各平台官方文档；style_prompt 注入 AI prompt 控制风格
-    // 注意：用 ON CONFLICT DO NOTHING，避免每次部署覆盖用户修改的规则
+    // 注意：用 ON CONFLICT (platform, user_id) DO NOTHING，与 v2.5.37 复合主键匹配
     const platformRules = [
       { platform: 'dy', name: '抖音', title_min: 1, title_max: 20, content_min: 100, content_max: 1000, style: '口语化、接地气、强情绪表达、适合短视频文案风格、多用短句、节奏感强', require_tags: true, tags_min: 1, tags_max: 5, cover: 'single', sort: 1 },
       { platform: 'xhs', name: '小红书', title_min: 1, title_max: 20, content_min: 100, content_max: 1000, style: 'emoji表情丰富、口语化种草风、多用感叹号、适合图文笔记、标题要吸睛、分段清晰', require_tags: true, tags_min: 1, tags_max: 10, cover: 'single', sort: 2 },
@@ -1517,9 +1525,9 @@ export async function migrate() {
       await client.query(
         `INSERT INTO platform_content_rule
           (platform, name, title_min_length, title_max_length, content_min_length, content_max_length,
-           style_prompt, require_tags, tags_min_count, tags_max_count, cover_image_required, cover_image_mode, is_active, sort_order)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13)
-         ON CONFLICT (platform) DO NOTHING`,
+           style_prompt, require_tags, tags_min_count, tags_max_count, cover_image_required, cover_image_mode, is_active, sort_order, user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, $13, '')
+         ON CONFLICT (platform, user_id) DO NOTHING`,
         [
           r.platform, r.name, r.title_min, r.title_max, r.content_min, r.content_max,
           r.style, r.require_tags, r.tags_min, r.tags_max,
@@ -1670,6 +1678,18 @@ export async function migrate() {
       )
     `);
 
+    // v2.5.37：ai_platform_weight + ai_platform_source_mapping 加 user_id，唯一约束改为含 user_id
+    // 必须在种子数据 INSERT 之前执行，否则 ON CONFLICT (platform, user_id) 找不到约束
+    await client.query(`ALTER TABLE ai_platform_weight ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
+    await client.query(`UPDATE ai_platform_weight SET user_id = '' WHERE user_id IS NULL`);
+    await client.query(`ALTER TABLE ai_platform_weight DROP CONSTRAINT IF EXISTS ai_platform_weight_platform_key`);
+    await client.query(`ALTER TABLE ai_platform_weight ADD UNIQUE (platform, user_id)`);
+
+    await client.query(`ALTER TABLE ai_platform_source_mapping ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
+    await client.query(`UPDATE ai_platform_source_mapping SET user_id = '' WHERE user_id IS NULL`);
+    await client.query(`ALTER TABLE ai_platform_source_mapping DROP CONSTRAINT IF EXISTS ai_platform_source_mapping_ai_platform_source_platform_key`);
+    await client.query(`ALTER TABLE ai_platform_source_mapping ADD UNIQUE (ai_platform, source_platform, user_id)`);
+
     // AI平台流量权重默认数据（用户可在后台调整）
     const aiPlatformWeights = [
       { platform: 'kimi',     display_name: 'Kimi',      user_volume_level: 5, traffic_weight: 2.0 },
@@ -1683,9 +1703,9 @@ export async function migrate() {
     ];
     for (const p of aiPlatformWeights) {
       await client.query(
-        `INSERT INTO ai_platform_weight (platform, display_name, user_volume_level, traffic_weight, is_enabled)
-         VALUES ($1, $2, $3, $4, true)
-         ON CONFLICT (platform) DO NOTHING`,
+        `INSERT INTO ai_platform_weight (platform, display_name, user_volume_level, traffic_weight, is_enabled, user_id)
+         VALUES ($1, $2, $3, $4, true, '')
+         ON CONFLICT (platform, user_id) DO NOTHING`,
         [p.platform, p.display_name, p.user_volume_level, p.traffic_weight]
       );
     }
@@ -1800,39 +1820,17 @@ export async function migrate() {
     ];
     for (const m of sourceMappings) {
       await client.query(
-        `INSERT INTO ai_platform_source_mapping (ai_platform, source_platform, source_weight)
-         VALUES ($1, $2, $3)
-         ON CONFLICT (ai_platform, source_platform) DO NOTHING`,
+        `INSERT INTO ai_platform_source_mapping (ai_platform, source_platform, source_weight, user_id)
+         VALUES ($1, $2, $3, '')
+         ON CONFLICT (ai_platform, source_platform, user_id) DO NOTHING`,
         [m.ai, m.source, m.weight]
       );
     }
 
     console.log('[Migrate] v2.0.0 AI平台流量权重层创建完成（ai_platform_weight + ai_platform_source_mapping）');
 
-    // ============ v2.5.37: 平台约束规则 + AI平台权重 按代理隔离（加 user_id 字段） ============
-    // user_id 为空字符串 '' 表示全局规则（管理员配置，所有代理可见）
-    // user_id = 代理id 表示代理私有规则（仅该代理可见，影响自己账号内的文章生成）
-    // 代理视角：WHERE user_id = '' OR user_id = $agentUserId（看到全局 + 自己的）
-    // 管理员视角：看所有
-
-    // platform_content_rule: 加 user_id，主键改为 (platform, user_id)
-    await client.query(`ALTER TABLE platform_content_rule ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
-    await client.query(`UPDATE platform_content_rule SET user_id = '' WHERE user_id IS NULL`);
-    await client.query(`ALTER TABLE platform_content_rule DROP CONSTRAINT IF EXISTS platform_content_rule_pkey`);
-    await client.query(`ALTER TABLE platform_content_rule ADD PRIMARY KEY (platform, user_id)`);
-
-    // ai_platform_weight: 加 user_id，唯一约束改为 (platform, user_id)
-    await client.query(`ALTER TABLE ai_platform_weight ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
-    await client.query(`UPDATE ai_platform_weight SET user_id = '' WHERE user_id IS NULL`);
-    await client.query(`ALTER TABLE ai_platform_weight DROP CONSTRAINT IF EXISTS ai_platform_weight_platform_key`);
-    await client.query(`ALTER TABLE ai_platform_weight ADD UNIQUE (platform, user_id)`);
-
-    // ai_platform_source_mapping: 加 user_id，唯一约束改为 (ai_platform, source_platform, user_id)
-    await client.query(`ALTER TABLE ai_platform_source_mapping ADD COLUMN IF NOT EXISTS user_id TEXT DEFAULT ''`);
-    await client.query(`UPDATE ai_platform_source_mapping SET user_id = '' WHERE user_id IS NULL`);
-    await client.query(`ALTER TABLE ai_platform_source_mapping DROP CONSTRAINT IF EXISTS ai_platform_source_mapping_ai_platform_source_platform_key`);
-    await client.query(`ALTER TABLE ai_platform_source_mapping ADD UNIQUE (ai_platform, source_platform, user_id)`);
-
+    // v2.5.37 平台规则 + AI权重按代理隔离的约束修改已提前到种子数据 INSERT 之前执行
+    // （见 platform_content_rule 和 ai_platform_weight 的 CREATE TABLE 之后）
     console.log('[Migrate] v2.5.37 平台规则 + AI权重按代理隔离字段添加完成（user_id）');
 
     // ============ v2.0.0: 分片级 AEO 报告（只存储，不触发写作） ============
