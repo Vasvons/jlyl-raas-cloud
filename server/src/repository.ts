@@ -4642,9 +4642,34 @@ export async function checkAeoReportExists(userId: string, reportDate: string): 
 
 // ============ 内容中枢：AI模型配置 ============
 
+/**
+ * v2.5.37：判断 userId 对应用户是否为代理账号
+ *
+ * 代理（role='agent' 且 level≠'1'）的 AI 模型配置严格隔离：
+ *   - 代理只看/用自己的配置（user_id = $1），不 fallback 到 user_id IS NULL 的平台共享配置
+ *   - 管理员（level='1'）可看/用自己 + 平台共享配置
+ *
+ * 这样代理无法看到/使用管理员在共享配置里填入的 api_key，实现真正的数据独立。
+ * 与 content.ts 的 isAgent 判断保持一致（level≠'1' 且 role='agent'）。
+ */
+export async function isUserAgent(userId: number): Promise<boolean> {
+  if (!userId || userId <= 0) return false;
+  try {
+    const result = await query(
+      `SELECT role, level FROM users WHERE id = $1`,
+      [userId]
+    );
+    const row = result.rows[0];
+    if (!row) return false;
+    return String(row.level ?? '') !== '1' && String(row.role ?? '') === 'agent';
+  } catch {
+    return false;
+  }
+}
+
 export async function getAiModelConfigs(userId: number): Promise<any[]> {
-  // v2.5.37：严格按 user_id 隔离，不再 fallback 到其他用户的有 KEY 配置
-  //   - 代理：只看自己的配置（user_id = $1），不看管理员的配置
+  // v2.5.37：严格按 user_id 隔离，代理不看平台共享配置
+  //   - 代理：只看自己的配置（user_id = $1），完全数据独立
   //   - 管理员：看自己的配置 + 平台共享配置（user_id IS NULL）
   //   - userId=0（异常）：只看共享配置，避免泄露其他用户的 KEY
   //
@@ -4652,6 +4677,8 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
   //   1. (user_id = $1) DESC — 当前用户的配置最优先
   //   2. (api_key_encrypted IS NOT NULL) DESC — 有 api_key 的优于无 KEY 的
   //   3. update_time DESC, id DESC — 最新的优先
+  const agent = await isUserAgent(userId);
+  const sharedCondition = agent ? '' : 'OR user_id IS NULL';
   const result = await query(
     `SELECT DISTINCT ON (platform)
             id, user_id, platform, model_name, base_url, max_tokens, temperature,
@@ -4662,7 +4689,7 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
             CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN '已配置' ELSE NULL END AS api_key_masked,
             create_time, update_time
      FROM ai_model_config
-     WHERE user_id = $1 OR user_id IS NULL
+     WHERE user_id = $1 ${sharedCondition}
      ORDER BY platform,
               (user_id = $1) DESC,
               (api_key_encrypted IS NOT NULL) DESC,
@@ -4688,7 +4715,7 @@ export async function getAiModelConfigById(id: number): Promise<any | null> {
  * 获取用户的默认 AI 模型配置（用于写作任务自动选模型）
  * 优先级：
  *   1. 用户私有配置中 is_active=true 的最新一条
- *   2. 平台共享配置（user_id IS NULL）中 is_active=true 的最新一条
+ *   2. 平台共享配置（user_id IS NULL）中 is_active=true 的最新一条（代理跳过此步）
  */
 export async function getDefaultModelConfig(userId: number): Promise<any | null> {
   // v1.8.2：按 use_for_writing=true 过滤（之前错误用 is_active，导致发布模型被写作任务取走）
@@ -4706,6 +4733,9 @@ export async function getDefaultModelConfig(userId: number): Promise<any | null>
     [userId]
   );
   if (result.rows[0]) return result.rows[0];
+  // v2.5.37：代理严格数据独立，不 fallback 到平台共享配置
+  const agent = await isUserAgent(userId);
+  if (agent) return null;
   // 降级：平台共享配置
   result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
@@ -4738,6 +4768,12 @@ export async function getPublishModelConfig(userId: number): Promise<any | null>
     [userId]
   );
   if (result.rows[0]) return result.rows[0];
+  // v2.5.37：代理严格数据独立，不 fallback 到平台共享配置
+  const agent = await isUserAgent(userId);
+  if (agent) {
+    // 代理无发布模型时，只用自己名下的写作模型兜底（getDefaultModelConfig 内部也会跳过共享配置）
+    return getDefaultModelConfig(userId);
+  }
   // 降级1：平台共享配置中 use_for_publish=true 的
   result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
@@ -4758,7 +4794,7 @@ export async function getPublishModelConfig(userId: number): Promise<any | null>
  * v2.0.5：获取用于 AEO 分析的模型配置
  * 优先级：
  *   1. 用户私有配置中 use_for_aeo=true 的（必须有 api_key）
- *   2. 平台共享配置中 use_for_aeo=true 的
+ *   2. 平台共享配置中 use_for_aeo=true 的（代理跳过此步）
  *   3. 降级取 getDefaultModelConfig（写作模型兜底）
  *   4. 都没有返回 null（调用方走 fallbackAnalysis 纯代码分析）
  */
@@ -4776,6 +4812,16 @@ export async function getAeoModelConfig(userId: string): Promise<any | null> {
     [userId]
   );
   if (result.rows[0]) return result.rows[0];
+  const userIdNum = parseInt(userId);
+  // v2.5.37：代理严格数据独立，不 fallback 到平台共享配置
+  const agent = await isUserAgent(userIdNum);
+  if (agent) {
+    // 代理无 AEO 模型时，只用自己名下的写作模型兜底（getDefaultModelConfig 内部也会跳过共享配置）
+    if (!isNaN(userIdNum)) {
+      return getDefaultModelConfig(userIdNum);
+    }
+    return null;
+  }
   // 2. 平台共享配置
   result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
@@ -4789,7 +4835,6 @@ export async function getAeoModelConfig(userId: string): Promise<any | null> {
   );
   if (result.rows[0]) return result.rows[0];
   // 3. 降级：写作模型兜底
-  const userIdNum = parseInt(userId);
   if (!isNaN(userIdNum)) {
     return getDefaultModelConfig(userIdNum);
   }
@@ -4797,13 +4842,15 @@ export async function getAeoModelConfig(userId: string): Promise<any | null> {
 }
 
 export async function getActiveModelConfig(userId: number, platform: string): Promise<any | null> {
-  // 优先返回用户自有配置，其次返回共享配置
+  // v2.5.37：代理严格数据独立，不 fallback 到共享配置
+  const agent = await isUserAgent(userId);
+  const sharedCondition = agent ? '' : 'OR user_id IS NULL';
   const result = await query(
     `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
             max_tokens, temperature, is_active, daily_quota, used_today, quota_reset_at, web_search
      FROM ai_model_config
      WHERE platform = $1 AND is_active = true
-       AND (user_id = $2 OR user_id IS NULL)
+       AND (user_id = $2 ${sharedCondition})
      ORDER BY user_id NULLS LAST
      LIMIT 1`,
     [platform, userId]
