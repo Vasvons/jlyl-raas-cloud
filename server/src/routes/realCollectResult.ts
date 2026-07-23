@@ -65,8 +65,18 @@ router.post('/worker/report', async (req, res) => {
   }
 });
 
-// 以下接口需要管理员权限
-router.use(authMiddleware, adminMiddleware);
+// v2.5.36：移除文件级 adminMiddleware，代理可访问但按 user_id 隔离
+router.use(authMiddleware);
+
+function getUserId(req: any): number {
+  return Number(req.user?.id ?? req.user?.userId ?? 0);
+}
+
+function isAgent(req: any): boolean {
+  const userLevel = String(req.user?.level ?? '');
+  const userRole = String(req.user?.role ?? '');
+  return userLevel !== '1' && userRole === 'agent';
+}
 
 // 手动触发清理无效记录
 // mode: 'conservative' - raw_content < 200 或包含营销关键词（默认）
@@ -203,7 +213,9 @@ router.post('/cleanup-invalid', async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const { userId, platform, keywordType, brandMatched, startTime, endTime, pageNum, pageSize } = req.query;
+    const { platform, keywordType, brandMatched, startTime, endTime, pageNum, pageSize } = req.query;
+    // v2.5.36：代理强制用自己 userId，管理员用 query 传入的 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId as string | undefined);
     const result = await getRealCollectRecords({
       userId: userId as string | undefined,
       platform: platform as string | undefined,

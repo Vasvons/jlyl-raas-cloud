@@ -43,9 +43,10 @@ function resolveGeoUserId(req: any): string | undefined {
 }
 
 // ============ 品牌关键词 ============
-router.get('/pp/list', authMiddleware, adminMiddleware, async (req, res) => {
+router.get('/pp/list', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId as string;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId as string);
     const data = await getPPByUserId(userId);
     res.json({ code: 200, data });
   } catch (e) {
@@ -53,9 +54,11 @@ router.get('/pp/list', authMiddleware, adminMiddleware, async (req, res) => {
   }
 });
 
-router.post('/pp/add', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/pp/add', authMiddleware, async (req, res) => {
   try {
-    const { userId, pp } = req.body;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
+    const { pp } = req.body;
     const id = await insertPP(String(userId), pp);
     // 无感生成品牌关键词到zlgjc表
     try {
@@ -70,7 +73,7 @@ router.post('/pp/add', authMiddleware, adminMiddleware, async (req, res) => {
   }
 });
 
-router.delete('/pp/:id', authMiddleware, adminMiddleware, async (req, res) => {
+router.delete('/pp/:id', authMiddleware, async (req, res) => {
   try {
     await deletePP(parseInt(req.params.id));
     res.json({ code: 200 });
@@ -80,9 +83,10 @@ router.delete('/pp/:id', authMiddleware, adminMiddleware, async (req, res) => {
 });
 
 // ============ 核心关键词（distillate_keyword）============
-router.get('/dstillateKeyword/getAllDstillateKeyword', authMiddleware, adminMiddleware, async (req, res) => {
+router.get('/dstillateKeyword/getAllDstillateKeyword', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId as string;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId as string);
     const pageNum = parseInt(req.query.pageNum as string) || 1;
     const pageSize = parseInt(req.query.pageSize as string) || 9999999;
     const result = await getDistillateKeywordsByPage(userId, pageNum, pageSize);
@@ -92,9 +96,11 @@ router.get('/dstillateKeyword/getAllDstillateKeyword', authMiddleware, adminMidd
   }
 });
 
-router.post('/dstillateKeyword/insertDstillateKeyword', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/dstillateKeyword/insertDstillateKeyword', authMiddleware, async (req, res) => {
   try {
-    const { userId, distillateKeyword } = req.body;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
+    const { distillateKeyword } = req.body;
     const id = await insertDistillateKeyword(String(userId), distillateKeyword);
     // 无感生成蒸馏关键词到zlgjc表
     try {
@@ -109,7 +115,7 @@ router.post('/dstillateKeyword/insertDstillateKeyword', authMiddleware, adminMid
   }
 });
 
-router.get('/dstillateKeyword/deleteDstillateKeyword', authMiddleware, adminMiddleware, async (req, res) => {
+router.get('/dstillateKeyword/deleteDstillateKeyword', authMiddleware, async (req, res) => {
   try {
     await deleteDistillateKeyword(parseInt(req.query.id as string));
     res.json({ code: 200 });
@@ -119,9 +125,11 @@ router.get('/dstillateKeyword/deleteDstillateKeyword', authMiddleware, adminMidd
 });
 
 // ============ 蒸馏关键词生成 ============
-router.post('/keywordsearchrank/generate', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/keywordsearchrank/generate', authMiddleware, async (req, res) => {
   try {
-    const { A, B, C, D, E, F, G, userId, keywordType } = req.body;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
+    const { A, B, C, D, E, F, G, keywordType } = req.body;
     const result = await generateZlgjcKeywords(String(userId), { A, B, C, D, E, F, G }, keywordType || 0);
     res.json({ code: 200, data: result });
   } catch (e) {
@@ -130,9 +138,11 @@ router.post('/keywordsearchrank/generate', authMiddleware, adminMiddleware, asyn
 });
 
 // ============ 关键词生成器配置 ============
-router.post('/keywordsearchrank/saveKwConfig', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/keywordsearchrank/saveKwConfig', authMiddleware, async (req, res) => {
   try {
-    const { userId, configType, configJson } = req.body;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
+    const { configType, configJson } = req.body;
     console.log('[saveKwConfig] 收到保存请求:', { userId, configType, configJsonKeys: configJson ? Object.keys(configJson) : null });
     await saveKwConfig(String(userId), configType, JSON.stringify(configJson));
     console.log('[saveKwConfig] 保存成功, userId:', userId, 'configType:', configType);
@@ -143,9 +153,10 @@ router.post('/keywordsearchrank/saveKwConfig', authMiddleware, adminMiddleware, 
   }
 });
 
-router.get('/keywordsearchrank/getKwConfig', authMiddleware, adminMiddleware, async (req, res) => {
+router.get('/keywordsearchrank/getKwConfig', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId as string;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId as string);
     const configType = req.query.configType as string;
     console.log('[getKwConfig] 收到查询请求:', { userId, configType });
     const configJson = await getKwConfig(userId, configType);
@@ -168,9 +179,10 @@ router.get('/keywordsearchrank/debugKwConfig', async (req, res) => {
 });
 
 // ============ 蒸馏关键词库（zlgjc）============
-router.get('/zlgjc/select', authMiddleware, adminMiddleware, async (req, res) => {
+router.get('/zlgjc/select', authMiddleware, async (req, res) => {
   try {
-    const userId = req.query.userId as string;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId as string);
     const pageNum = parseInt(req.query.pageNum as string) || 1;
     const pageSize = parseInt(req.query.pageSize as string) || 10;
     const keywordType = parseInt(req.query.keywordType as string) || 0;
@@ -181,7 +193,7 @@ router.get('/zlgjc/select', authMiddleware, adminMiddleware, async (req, res) =>
   }
 });
 
-router.delete('/zlgjc/delete/:id', authMiddleware, adminMiddleware, async (req, res) => {
+router.delete('/zlgjc/delete/:id', authMiddleware, async (req, res) => {
   try {
     await deleteZlgjc(parseInt(req.params.id));
     res.json({ code: 200 });
@@ -191,7 +203,7 @@ router.delete('/zlgjc/delete/:id', authMiddleware, adminMiddleware, async (req, 
 });
 
 // 批量删除关键词
-router.post('/zlgjc/batchDelete', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/zlgjc/batchDelete', authMiddleware, async (req, res) => {
   try {
     const { ids } = req.body;
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -210,9 +222,11 @@ router.post('/zlgjc/batchDelete', authMiddleware, adminMiddleware, async (req, r
 });
 
 // 手动去重：删除同一用户同一keyword_type下value重复的关键词
-router.post('/zlgjc/deduplicate', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/zlgjc/deduplicate', authMiddleware, async (req, res) => {
   try {
-    const { userId, keywordType } = req.body;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
+    const { keywordType } = req.body;
     if (!userId || keywordType === undefined) {
       return res.json({ code: 400, message: '缺少userId或keywordType参数' });
     }
@@ -224,9 +238,11 @@ router.post('/zlgjc/deduplicate', authMiddleware, adminMiddleware, async (req, r
 });
 
 // 手动添加关键词
-router.post('/zlgjc/add', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/zlgjc/add', authMiddleware, async (req, res) => {
   try {
-    const { userId, value, hxgjc, lxfs, keywordType } = req.body;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
+    const { value, hxgjc, lxfs, keywordType } = req.body;
     if (!userId || !value) return res.json({ code: 400, message: '缺少参数' });
     // ON CONFLICT 去重：如果 (userid, value, keyword_type) 已存在则不插入
     await query(
@@ -251,10 +267,12 @@ router.get('/zlgjc/platforms', async (req, res) => {
 });
 
 // ============ 关键词维护 ============
-router.get('/zlgjc/maintenanceList', authMiddleware, adminMiddleware, async (req, res) => {
+router.get('/zlgjc/maintenanceList', authMiddleware, async (req, res) => {
   try {
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId as string);
     const result = await getKeywordMaintenanceList({
-      userId: req.query.userId as string,
+      userId,
       platform: req.query.pt as string,
       pageNum: parseInt(req.query.pageNum as string) || 1,
       pageSize: parseInt(req.query.pageSize as string) || 20,
@@ -266,7 +284,7 @@ router.get('/zlgjc/maintenanceList', authMiddleware, adminMiddleware, async (req
   }
 });
 
-router.post('/zlgjc/updateUrl', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/zlgjc/updateUrl', authMiddleware, async (req, res) => {
   try {
     const { id, url, hasLxfs } = req.body;
     await updateZlgjcUrl(parseInt(id), url, hasLxfs);
@@ -276,7 +294,7 @@ router.post('/zlgjc/updateUrl', authMiddleware, adminMiddleware, async (req, res
   }
 });
 
-router.post('/zlgjc/insertUrl', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/zlgjc/insertUrl', authMiddleware, async (req, res) => {
   try {
     const { zlgjcid, pt, url, hasLxfs } = req.body;
     const id = await insertZlgjcUrl({ zlgjcid: parseInt(zlgjcid), pt, url, hasLxfs });
@@ -287,9 +305,11 @@ router.post('/zlgjc/insertUrl', authMiddleware, adminMiddleware, async (req, res
 });
 
 // ============ 数据清零 ============
-router.post('/data/clear', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/data/clear', authMiddleware, async (req, res) => {
   try {
-    const { type, userId } = req.body;
+    // v2.5.36：代理强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
+    const { type } = req.body;
     if (type === 'keyword') {
       const cleared = await clearKeywordData(userId);
       res.json({ code: 200, data: { cleared } });

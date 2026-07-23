@@ -147,13 +147,23 @@ router.post('/renew/complete', async (req, res) => {
   }
 });
 
-// 以下接口需要管理员鉴权
-router.use(authMiddleware, adminMiddleware);
+// v2.5.36：代理数据隔离 — 移除文件级 adminMiddleware，代理可访问但只看自己的账号
+router.use(authMiddleware);
 
-// 查询账号池列表
+function getUserId(req: any): number {
+  return Number(req.user?.id ?? req.user?.userId ?? 0);
+}
+
+function isAgent(req: any): boolean {
+  const userLevel = String(req.user?.level ?? '');
+  const userRole = String(req.user?.role ?? '');
+  return userLevel !== '1' && userRole === 'agent';
+}
+
+// 查询账号池列表（代理强制只看自己的账号）
 router.get('/list', async (req, res) => {
   try {
-    const userId = req.query.userId as string | undefined;
+    const userId = isAgent(req) ? String(getUserId(req)) : (req.query.userId as string | undefined);
     const list = await getPlatformAuthList(userId);
     res.json({ code: 200, data: list });
   } catch (e: any) {
@@ -177,13 +187,15 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// 保存/更新账号授权（桌面端登录成功后调用）
+// 保存/更新账号授权（代理强制绑定自己 userId）
 router.post('/save', async (req, res) => {
   try {
-    const { userId, platform, accountName, storageState, expiresAt, avatarUrl } = req.body;
+    const { platform, accountName, storageState, expiresAt, avatarUrl } = req.body;
     if (!platform || !storageState) {
       return res.status(400).json({ code: 400, message: '缺少 platform 或 storageState 参数' });
     }
+    // v2.5.36：代理强制用自己 userId，管理员用 body 传入的 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
     // 校验 storageState 是合法 JSON
     try {
       JSON.parse(storageState);

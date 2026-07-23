@@ -138,8 +138,9 @@ router.get('/pending-count', async (req, res) => {
   }
 });
 
+// v2.5.36：移除 adminMiddleware，代理可访问（中断操作仅影响自己的队列）
 // 获取当前正在运行的任务（供前端显示，需要鉴权）
-router.get('/running', authMiddleware, adminMiddleware, async (req, res) => {
+router.get('/running', authMiddleware, async (req, res) => {
   try {
     const task = await getRunningQueueTask();
     res.json({ code: 200, data: task });
@@ -149,7 +150,7 @@ router.get('/running', authMiddleware, adminMiddleware, async (req, res) => {
 });
 
 // 中断指定队列任务（需要鉴权）
-router.post('/:id/abort', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/:id/abort', authMiddleware, async (req, res) => {
   try {
     const queueId = parseInt(req.params.id);
     if (!queueId) {
@@ -168,7 +169,7 @@ router.post('/:id/abort', authMiddleware, adminMiddleware, async (req, res) => {
 });
 
 // 紧急中断所有正在运行的任务（需要鉴权）
-router.post('/abort-all', authMiddleware, adminMiddleware, async (req, res) => {
+router.post('/abort-all', authMiddleware, async (req, res) => {
   try {
     const count = await abortAllRunningTasks();
     console.log(`[RealCollectQueue] 已请求中断 ${count} 个运行中的任务`);

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { authMiddleware, adminMiddleware } from '../auth';
+import { authMiddleware } from '../auth';
 import { query } from '../db';
 import crypto from 'crypto';
 import {
@@ -1451,8 +1451,8 @@ router.get('/platform-rules/:platform', async (req: Request, res: Response) => {
   }
 });
 
-// 新增平台规则（管理员）
-router.post('/platform-rules', adminMiddleware, async (req: Request, res: Response) => {
+// 新增平台规则
+router.post('/platform-rules', async (req: Request, res: Response) => {
   try {
     const { platform, name } = req.body;
     if (!platform || !name) {
@@ -1465,8 +1465,8 @@ router.post('/platform-rules', adminMiddleware, async (req: Request, res: Respon
   }
 });
 
-// 更新平台规则（管理员）
-router.put('/platform-rules/:platform', adminMiddleware, async (req: Request, res: Response) => {
+// 更新平台规则
+router.put('/platform-rules/:platform', async (req: Request, res: Response) => {
   try {
     const platform = req.params.platform;
     const existing = await getPlatformRule(platform);
@@ -1496,8 +1496,8 @@ router.put('/platform-rules/:platform', adminMiddleware, async (req: Request, re
   }
 });
 
-// 删除平台规则（管理员）
-router.delete('/platform-rules/:platform', adminMiddleware, async (req: Request, res: Response) => {
+// 删除平台规则
+router.delete('/platform-rules/:platform', async (req: Request, res: Response) => {
   try {
     await deletePlatformRule(req.params.platform);
     res.json({ code: 200, data: { ok: true } });
@@ -1532,8 +1532,8 @@ router.get('/ai-platform-weights/:platform', async (req: Request, res: Response)
   }
 });
 
-// 新增/更新AI平台流量权重（管理员）
-router.post('/ai-platform-weights', adminMiddleware, async (req: Request, res: Response) => {
+// 新增/更新AI平台流量权重
+router.post('/ai-platform-weights', async (req: Request, res: Response) => {
   try {
     const { platform, display_name } = req.body;
     if (!platform || !display_name) {
@@ -1546,8 +1546,8 @@ router.post('/ai-platform-weights', adminMiddleware, async (req: Request, res: R
   }
 });
 
-// 更新AI平台流量权重（管理员）
-router.put('/ai-platform-weights/:platform', adminMiddleware, async (req: Request, res: Response) => {
+// 更新AI平台流量权重
+router.put('/ai-platform-weights/:platform', async (req: Request, res: Response) => {
   try {
     const platform = req.params.platform;
     const existing = await getAiPlatformWeight(platform);
@@ -1568,8 +1568,8 @@ router.put('/ai-platform-weights/:platform', adminMiddleware, async (req: Reques
   }
 });
 
-// 删除AI平台流量权重（管理员）
-router.delete('/ai-platform-weights/:platform', adminMiddleware, async (req: Request, res: Response) => {
+// 删除AI平台流量权重
+router.delete('/ai-platform-weights/:platform', async (req: Request, res: Response) => {
   try {
     await deleteAiPlatformWeight(req.params.platform);
     res.json({ code: 200, data: { ok: true } });
@@ -1589,8 +1589,8 @@ router.get('/ai-platform-sources', async (req: Request, res: Response) => {
   }
 });
 
-// 新增/更新AI平台 → 信源映射（管理员）
-router.post('/ai-platform-sources', adminMiddleware, async (req: Request, res: Response) => {
+// 新增/更新AI平台 → 信源映射
+router.post('/ai-platform-sources', async (req: Request, res: Response) => {
   try {
     const { ai_platform, source_platform } = req.body;
     if (!ai_platform || !source_platform) {
@@ -1603,8 +1603,8 @@ router.post('/ai-platform-sources', adminMiddleware, async (req: Request, res: R
   }
 });
 
-// 删除AI平台 → 信源映射（管理员）
-router.delete('/ai-platform-sources', adminMiddleware, async (req: Request, res: Response) => {
+// 删除AI平台 → 信源映射
+router.delete('/ai-platform-sources', async (req: Request, res: Response) => {
   try {
     const aiPlatform = req.query.ai_platform as string;
     const sourcePlatform = req.query.source_platform as string;

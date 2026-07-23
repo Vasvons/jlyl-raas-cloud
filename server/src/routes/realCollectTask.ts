@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authMiddleware, adminMiddleware } from '../auth';
+import { authMiddleware } from '../auth';
 import {
   createRealCollectTask,
   updateRealCollectTask,
@@ -19,12 +19,31 @@ import { wsBroadcast } from '../wsServer';
 
 const router = Router();
 
-router.use(authMiddleware, adminMiddleware);
+// v2.5.36：移除文件级 adminMiddleware，代理可访问但按 user_id 隔离
+router.use(authMiddleware);
+
+function getUserId(req: any): number {
+  return Number(req.user?.id ?? req.user?.userId ?? 0);
+}
+
+function isAgent(req: any): boolean {
+  const userLevel = String(req.user?.level ?? '');
+  const userRole = String(req.user?.role ?? '');
+  return userLevel !== '1' && userRole === 'agent';
+}
+
+/** v2.5.36：解析 userId 参数，代理强制用自己 ID */
+function resolveUserId(req: any, bodyField?: string): string | undefined {
+  if (isAgent(req)) return String(getUserId(req));
+  if (bodyField && req.body?.[bodyField]) return String(req.body[bodyField]);
+  if (req.query.userId) return String(req.query.userId);
+  return undefined;
+}
 
 // 获取蒸馏词库可用的前缀屏蔽词选项（来源：kw_config 的 A 组词）
 router.get('/exclude-prefix-options', async (req, res) => {
   try {
-    const userId = String(req.query.userId || '');
+    const userId = resolveUserId(req);
     if (!userId) {
       return res.json({ code: 400, message: '缺少 userId' });
     }
@@ -38,7 +57,7 @@ router.get('/exclude-prefix-options', async (req, res) => {
 // 获取蒸馏词库可用的组合规则屏蔽选项（来源：kw_config 的 combos 字段）
 router.get('/exclude-combo-options', async (req, res) => {
   try {
-    const userId = String(req.query.userId || '');
+    const userId = resolveUserId(req);
     if (!userId) {
       return res.json({ code: 400, message: '缺少 userId' });
     }
@@ -51,7 +70,7 @@ router.get('/exclude-combo-options', async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const userId = req.query.userId as string | undefined;
+    const userId = resolveUserId(req);
     const tasks = await getRealCollectTasks(userId);
     // v2.1.5：为每个任务附加 keyword_count，前端据此判断"无关键词"状态
     const tasksWithKwCount = await Promise.all(
@@ -86,7 +105,9 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode } = req.body;
+    // v2.5.36：代理创建任务强制用自己 userId
+    const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
+    const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode } = req.body;
     // cronExpr 可选：循环模式下不传 cronExpr，任务24小时持续执行
     if (!userId || !taskName || keywordType === undefined || !platforms) {
       return res.status(400).json({ code: 400, message: '缺少必要参数' });
