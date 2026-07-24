@@ -41,13 +41,14 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
 
   const { messages, systemPrompt } = req.body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
-    return res.json({ code: 400, message: '缺少 messages' });
+    return res.status(400).json({ code: 400, message: '缺少 messages' });
   }
 
   // 1. 获取精灵底座模型配置（含解密 API Key）
   const modelConfig = await getPetModelConfigWithKey(userId);
   if (!modelConfig) {
-    return res.json({
+    // v3.2.1：返回 4xx 状态码，让桌面端 cloudPetClient 能通过 response.ok 识别错误
+    return res.status(400).json({
       code: 4003,
       message: '尚未配置精灵底座模型，请联系管理端在「设置 → 精灵底座配置」中开启',
     });
