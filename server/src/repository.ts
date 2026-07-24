@@ -4716,7 +4716,7 @@ export async function getAiModelConfigs(userId: number): Promise<any[]> {
     `SELECT DISTINCT ON (platform)
             id, user_id, platform, model_name, base_url, max_tokens, temperature,
             is_active, use_for_writing, use_for_publish, use_for_aeo,
-            use_for_collect, use_for_embedding, web_search,
+            use_for_collect, use_for_embedding, use_for_pet, web_search,
             daily_quota, used_today, quota_reset_at,
             api_key_encrypted,
             CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN '已配置' ELSE NULL END AS api_key_masked,
@@ -4874,6 +4874,64 @@ export async function getAeoModelConfig(userId: string): Promise<any | null> {
   return null;
 }
 
+/**
+ * v3.2：获取精灵底座模型配置
+ * 精灵是软件附带的助手服务，成本由管理端承担：
+ *   - 管理端开启 use_for_pet=true 的模型作为精灵底座
+ *   - 代理端调用 /pet/chat 时云端用此模型转发（代理不感知 API Key）
+ *   - 多个平台开启时取第一个（按 id 排序）
+ *   - 找不到 use_for_pet 时降级取平台共享配置中的写作模型兜底
+ *
+ * @param userId 当前调用者 user_id（仅用于判断是否代理，不参与配置筛选）
+ */
+export async function getPetModelConfig(userId: number): Promise<any | null> {
+  // 1. 优先取 use_for_pet=true 的配置（管理端配置）
+  let result = await query(
+    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, use_for_writing, use_for_publish, use_for_pet,
+            web_search, daily_quota, used_today, quota_reset_at
+     FROM ai_model_config
+     WHERE use_for_pet = true
+       AND is_active = true
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+     ORDER BY id ASC LIMIT 1`
+  );
+  if (result.rows[0]) return result.rows[0];
+
+  // 2. 降级：取平台共享配置的写作模型（避免精灵完全无模型可用）
+  result = await query(
+    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active, use_for_writing, use_for_publish, use_for_pet,
+            web_search, daily_quota, used_today, quota_reset_at
+     FROM ai_model_config
+     WHERE user_id IS NULL AND is_active = true AND use_for_writing = true
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+     ORDER BY create_time DESC LIMIT 1`
+  );
+  return result.rows[0] || null;
+}
+
+/**
+ * v3.2：获取精灵底座模型配置（含解密 API Key）
+ * 精灵底座配置由管理端统一承担，不依赖 user_id 判断
+ */
+export async function getPetModelConfigWithKey(userId: number): Promise<any | null> {
+  const config = await getPetModelConfig(userId);
+  if (!config) return null;
+  // 无条件解密 API Key（v1.8 spec：AI模型配置的 API-KEY 需无条件解密返回明文）
+  let apiKey = '';
+  try {
+    apiKey = decrypt(config.api_key_encrypted);
+  } catch (e: any) {
+    console.error('[PetModel] API-KEY 解密失败:', e.message);
+    return null;
+  }
+  return {
+    ...config,
+    api_key: apiKey,
+  };
+}
+
 export async function getActiveModelConfig(userId: number, platform: string): Promise<any | null> {
   // v2.5.37：代理严格数据独立，不 fallback 到共享配置
   const agent = await isUserAgent(userId);
@@ -4895,13 +4953,14 @@ export async function createAiModelConfig(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_model_config (user_id, platform, model_name, api_key_encrypted, base_url,
             max_tokens, temperature, is_active, use_for_writing, use_for_publish, use_for_aeo,
-            daily_quota, use_for_collect, web_search)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            daily_quota, use_for_collect, use_for_embedding, use_for_pet, web_search)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
      RETURNING id`,
     [data.user_id, data.platform, data.model_name, data.api_key_encrypted, data.base_url,
      data.max_tokens || 4096, data.temperature ?? 0.7, data.is_active ?? true,
      data.use_for_writing ?? true, data.use_for_publish ?? false, data.use_for_aeo ?? false,
-     data.daily_quota, data.use_for_collect ?? false, data.web_search ?? false]
+     data.daily_quota, data.use_for_collect ?? false, data.use_for_embedding ?? false,
+     data.use_for_pet ?? false, data.web_search ?? false]
   );
   return result.rows[0].id;
 }
@@ -4919,6 +4978,7 @@ export async function updateAiModelConfig(id: number, data: any): Promise<void> 
   if (data.use_for_writing !== undefined) { fields.push(`use_for_writing = $${idx++}`); values.push(data.use_for_writing); }
   if (data.use_for_publish !== undefined) { fields.push(`use_for_publish = $${idx++}`); values.push(data.use_for_publish); }
   if (data.use_for_aeo !== undefined) { fields.push(`use_for_aeo = $${idx++}`); values.push(data.use_for_aeo); }
+  if (data.use_for_pet !== undefined) { fields.push(`use_for_pet = $${idx++}`); values.push(data.use_for_pet); }
   if (data.daily_quota !== undefined) { fields.push(`daily_quota = $${idx++}`); values.push(data.daily_quota); }
   if (data.use_for_collect !== undefined) { fields.push(`use_for_collect = $${idx++}`); values.push(data.use_for_collect); }
   if (data.web_search !== undefined) { fields.push(`web_search = $${idx++}`); values.push(data.web_search); }

@@ -23,6 +23,8 @@ import subscriptionRoutes, { wechatNotifyHandler } from './routes/subscription';
 import workerRoutes, { startWorkerExpiryScheduler } from './routes/worker';
 import moduleRoutes from './routes/module';
 import portalRoutes from './routes/portal';
+// v3.2：精灵底座路由
+import petRoutes from './routes/pet';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
 import { initWsServer } from './wsServer';
@@ -265,6 +267,8 @@ app.use('/subscription', subscriptionRoutes);
 app.use('/worker', workerRoutes);
 app.use('/module', moduleRoutes);
 app.use('/portal', portalRoutes);
+// v3.2：精灵底座（云端代理转发精灵对话流量）
+app.use('/pet', petRoutes);
 
 // 微信支付回调（无需鉴权，单独注册）
 app.post('/subscription/wechat/notify', wechatNotifyHandler);

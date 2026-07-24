@@ -1372,6 +1372,13 @@ export async function migrate() {
     // ai_model_config 新增 use_for_embedding 字段（标记模型是否用于生成 embedding）
     await client.query('ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_embedding BOOLEAN DEFAULT false');
 
+    // v3.2 ai_model_config 新增 use_for_pet 字段（精灵专用底座模型开关）
+    // 用户需求：精灵原属智能体公司模块，提升到门户层级后需要独立底座
+    // 精灵是软件附带的助手服务，成本由管理端承担，代理端零配置
+    // 管理端开启此开关的模型作为精灵底座，代理端调用 /pet/chat 时云端统一用此模型
+    // 代理端不感知 API Key，云端代理转发流量
+    await client.query('ALTER TABLE ai_model_config ADD COLUMN IF NOT EXISTS use_for_pet BOOLEAN DEFAULT false');
+
     // 文章 embedding 表（存储文章标题+摘要的向量表示，用于 RAG 检索）
     await client.query(`
       CREATE TABLE IF NOT EXISTS article_embedding (
