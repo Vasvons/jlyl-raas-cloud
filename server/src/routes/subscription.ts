@@ -510,7 +510,7 @@ router.get('/admin/plans', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
     const result = await query(
-      `SELECT id, plan_code, module_code, name, description, price_fen, period, features, status, sort_order, created_at
+      `SELECT id, plan_code, module_code, name, description, price_fen, period, features, plan_type, support_online_pay, status, sort_order, created_at
        FROM agent_subscription_plan
        ORDER BY sort_order ASC, id ASC`
     );
@@ -524,14 +524,14 @@ router.get('/admin/plans', async (req: Request, res: Response) => {
 router.post('/admin/plans', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
-    const { plan_code, module_code, name, description, price_fen, period, features, status, sort_order } = req.body;
+    const { plan_code, module_code, name, description, price_fen, period, features, plan_type, support_online_pay, status, sort_order } = req.body;
     if (!plan_code || !module_code || !name || price_fen == null) {
       return res.status(400).json({ code: 400, message: 'plan_code/module_code/name/price_fen 必填' });
     }
     const result = await query(
       `INSERT INTO agent_subscription_plan
-        (plan_code, module_code, name, description, price_fen, period, features, status, sort_order)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        (plan_code, module_code, name, description, price_fen, period, features, plan_type, support_online_pay, status, sort_order)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id`,
       [
         plan_code,
@@ -541,6 +541,8 @@ router.post('/admin/plans', async (req: Request, res: Response) => {
         Number(price_fen),
         period || 'monthly',
         features ? JSON.stringify(features) : null,
+        plan_type || 'module',
+        support_online_pay != null ? !!support_online_pay : true,
         status || 'active',
         sort_order || 0,
       ]
@@ -559,7 +561,7 @@ router.put('/admin/plans/:id', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
     const id = Number(req.params.id);
-    const { plan_code, module_code, name, description, price_fen, period, features, status, sort_order } = req.body;
+    const { plan_code, module_code, name, description, price_fen, period, features, support_online_pay, status, sort_order } = req.body;
     const result = await query(
       `UPDATE agent_subscription_plan SET
         plan_code = COALESCE($1, plan_code),
@@ -569,9 +571,10 @@ router.put('/admin/plans/:id', async (req: Request, res: Response) => {
         price_fen = COALESCE($5, price_fen),
         period = COALESCE($6, period),
         features = COALESCE($7, features),
-        status = COALESCE($8, status),
-        sort_order = COALESCE($9, sort_order)
-       WHERE id = $10 RETURNING id`,
+        support_online_pay = COALESCE($8, support_online_pay),
+        status = COALESCE($9, status),
+        sort_order = COALESCE($10, sort_order)
+       WHERE id = $11 RETURNING id`,
       [
         plan_code || null,
         module_code || null,
@@ -580,6 +583,7 @@ router.put('/admin/plans/:id', async (req: Request, res: Response) => {
         price_fen != null ? Number(price_fen) : null,
         period || null,
         features ? JSON.stringify(features) : null,
+        support_online_pay != null ? !!support_online_pay : null,
         status || null,
         sort_order != null ? Number(sort_order) : null,
         id,
