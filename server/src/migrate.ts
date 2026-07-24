@@ -35,6 +35,8 @@ export async function migrate() {
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS expire_at TIMESTAMP`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS license_key VARCHAR(64)`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_license_key ON users(license_key) WHERE license_key IS NOT NULL`);
+    // v2.5.38：代理账号最大设备数（管理端可配置，默认 2）
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS max_devices INT NOT NULL DEFAULT 2`);
     // 回填历史 admin 账号的 role='super_admin'
     await client.query(`UPDATE users SET role = 'super_admin' WHERE level = '1' AND role = 'customer'`);
     // v2.5.36：回填历史代理账号（level='2' 但 role 仍为默认 'customer'）为 'agent'

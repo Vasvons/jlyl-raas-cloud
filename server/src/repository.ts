@@ -163,7 +163,7 @@ export async function createAdminAccount(data: {
 export async function getAgentAccounts(): Promise<any[]> {
   const result = await query(
     `SELECT u.id, u.username, u.phone, u.email, u.role, u.status, u.expire_at, u.license_key,
-            u.parent_admin_id, u.create_time,
+            u.parent_admin_id, u.create_time, u.max_devices,
             p.username AS parent_admin_name,
             (SELECT MAX(heartbeat_at) FROM agent_heartbeat ah WHERE ah.agent_user_id = u.id) AS last_heartbeat,
             (SELECT COUNT(*) FROM agent_device_binding adb WHERE adb.agent_user_id = u.id) AS device_count,
@@ -185,14 +185,17 @@ export async function createAgentAccount(data: {
   email?: string;
   parent_admin_id?: number;
   expire_at?: Date | null;
+  max_devices?: number;
 }): Promise<{ id: number; license_key: string }> {
   // 生成 license_key：32 字节随机 + hex
   const licenseKey = crypto.randomBytes(32).toString('hex');
+  // v2.5.38：max_devices 默认 2，写入数据库由管理端配置
+  const maxDevices = Number(data.max_devices) > 0 ? Number(data.max_devices) : 2;
   const result = await query(
-    `INSERT INTO users (username, password, phone, email, level, role, status, parent_admin_id, expire_at, license_key)
-     VALUES ($1, $2, $3, $4, '2', 'agent', 'active', $5, $6, $7) RETURNING id, license_key`,
+    `INSERT INTO users (username, password, phone, email, level, role, status, parent_admin_id, expire_at, license_key, max_devices)
+     VALUES ($1, $2, $3, $4, '2', 'agent', 'active', $5, $6, $7, $8) RETURNING id, license_key`,
     [data.username, data.password, data.phone || '', data.email || '',
-     data.parent_admin_id || null, data.expire_at || null, licenseKey]
+     data.parent_admin_id || null, data.expire_at || null, licenseKey, maxDevices]
   );
   return { id: result.rows[0].id, license_key: result.rows[0].license_key };
 }
@@ -205,6 +208,7 @@ export async function updateUserV2(id: number, data: {
   status?: 'active' | 'disabled' | 'expired';
   parent_admin_id?: number | null;
   expire_at?: Date | null;
+  max_devices?: number;
 }): Promise<void> {
   const fields: string[] = [];
   const values: any[] = [];
@@ -215,6 +219,7 @@ export async function updateUserV2(id: number, data: {
   if (data.status !== undefined) { fields.push(`status = $${paramIndex++}`); values.push(data.status); }
   if (data.parent_admin_id !== undefined) { fields.push(`parent_admin_id = $${paramIndex++}`); values.push(data.parent_admin_id); }
   if (data.expire_at !== undefined) { fields.push(`expire_at = $${paramIndex++}`); values.push(data.expire_at); }
+  if (data.max_devices !== undefined) { fields.push(`max_devices = $${paramIndex++}`); values.push(Number(data.max_devices) > 0 ? Number(data.max_devices) : 2); }
   if (fields.length === 0) return;
   fields.push(`update_time = CURRENT_TIMESTAMP`);
   values.push(id);

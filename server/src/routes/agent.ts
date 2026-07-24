@@ -167,13 +167,14 @@ router.get('/agents', async (req: Request, res: Response) => {
 router.post('/agents', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
-    const { username, password, phone, email, parent_admin_id, expire_at } = req.body;
+    const { username, password, phone, email, parent_admin_id, expire_at, max_devices } = req.body;
     if (!username || !password) return res.status(400).json({ code: 400, message: '用户名和密码必填' });
     const hashed = await hashPassword(password);
     const result = await createAgentAccount({
       username, password: hashed, phone, email,
       parent_admin_id: parent_admin_id ? Number(parent_admin_id) : undefined,
       expire_at: expire_at ? new Date(expire_at) : null,
+      max_devices: max_devices != null ? Number(max_devices) : undefined,
     });
     res.json({ code: 200, data: result });
   } catch (e: any) {
@@ -181,7 +182,7 @@ router.post('/agents', async (req: Request, res: Response) => {
   }
 });
 
-// 更新代理（密码/手机/邮箱/状态/到期时间/归属管理员）
+// 更新代理（密码/手机/邮箱/状态/到期时间/归属管理员/最大设备数）
 router.put('/agents/:id', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
@@ -193,6 +194,7 @@ router.put('/agents/:id', async (req: Request, res: Response) => {
     if (req.body.status !== undefined) data.status = req.body.status;
     if (req.body.parent_admin_id !== undefined) data.parent_admin_id = req.body.parent_admin_id ? Number(req.body.parent_admin_id) : null;
     if (req.body.expire_at !== undefined) data.expire_at = req.body.expire_at ? new Date(req.body.expire_at) : null;
+    if (req.body.max_devices !== undefined) data.max_devices = Number(req.body.max_devices);
     await updateUserV2(id, data);
     res.json({ code: 200 });
   } catch (e: any) {
@@ -326,13 +328,14 @@ router.post('/verify-license', async (req: Request, res: Response) => {
       return res.json({ code: 403, valid: false, reason: '账号已过期，请联系管理员续费' });
     }
 
-    // 2. 设备绑定校验（每个 license 默认 2 台）
+    // 2. 设备绑定校验（v2.5.38：每个代理可单独配置最大设备数，默认 2）
+    const maxDevices = Number((user as any).max_devices) > 0 ? Number((user as any).max_devices) : MAX_DEVICES_PER_AGENT;
     if (machine_id) {
-      const ok = await bindAgentDevice(userId, machine_id, machine_info, MAX_DEVICES_PER_AGENT);
+      const ok = await bindAgentDevice(userId, machine_id, machine_info, maxDevices);
       if (!ok) {
         return res.json({
           code: 403, valid: false,
-          reason: `超出设备数量限制（最多 ${MAX_DEVICES_PER_AGENT} 台），请联系管理员解绑旧设备`,
+          reason: `超出设备数量限制（最多 ${maxDevices} 台），请联系管理员解绑旧设备`,
         });
       }
     }
@@ -414,6 +417,9 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
     if (userId === 0) return res.status(401).json({ code: 401, message: '未登录' });
     const { client_version, machine_id, machine_info } = req.body;
 
+    // 提前查询用户（v2.5.38：需要读取 max_devices 字段用于设备数校验）
+    const user = await findUserById(userId);
+
     // 记录心跳
     await recordAgentHeartbeat({
       agent_user_id: userId,
@@ -422,18 +428,18 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
       machine_id,
     });
 
-    // 设备绑定（每个 license 默认 2 台）
+    // 设备绑定（v2.5.38：每个代理可单独配置最大设备数，默认 2）
+    const maxDevices = Number((user as any)?.max_devices) > 0 ? Number((user as any)?.max_devices) : MAX_DEVICES_PER_AGENT;
     if (machine_id) {
-      const ok = await bindAgentDevice(userId, machine_id, machine_info, MAX_DEVICES_PER_AGENT);
+      const ok = await bindAgentDevice(userId, machine_id, machine_info, maxDevices);
       if (!ok) {
-        return res.json({ code: 403, message: `超出设备数量限制（最多 ${MAX_DEVICES_PER_AGENT} 台），请联系管理员解绑旧设备` });
+        return res.json({ code: 403, message: `超出设备数量限制（最多 ${maxDevices} 台），请联系管理员解绑旧设备` });
       }
     }
 
     // 返回最新授权状态
     const grants = await getAgentGrants(userId);
     const activeGrants = grants.filter((g: any) => g.status === 'active' && (!g.expire_at || new Date(g.expire_at) > new Date()));
-    const user = await findUserById(userId);
 
     res.json({
       code: 200,
