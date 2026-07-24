@@ -2329,6 +2329,39 @@ export async function migrate() {
       }
     }
 
+    // ===== v3.1 模块介绍页 + 试用功能 =====
+    // module 表新增介绍页内容和试用配置字段
+    await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS intro_html TEXT`);                    // 介绍页富文本内容
+    await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS trial_enabled BOOLEAN DEFAULT FALSE`); // 是否启用试用
+    await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS trial_duration_days INT DEFAULT 7`);   // 试用天数
+    await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS trial_agreement_html TEXT`);           // 试用责任书富文本
+    await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS trial_limits JSONB`);                  // 试用限制（JSON：max_customers, max_queries 等）
+    await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS trial_max_count INT DEFAULT 1`);       // 每个代理最大试用次数
+
+    // 模块试用记录表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS module_trial (
+        id BIGSERIAL PRIMARY KEY,
+        module_code VARCHAR(50) NOT NULL,
+        user_id BIGINT NOT NULL,
+        start_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        expire_at TIMESTAMP NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        limits JSONB,
+        agreement_accepted_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        trial_count INT NOT NULL DEFAULT 1,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_module_trial_user ON module_trial(user_id, module_code, status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_module_trial_expire ON module_trial(expire_at) WHERE status = 'active'`);
+
+    // v3.1 本地 Worker 并发配置：agent_worker_quota 表新增巡检/发文并发数字段
+    await client.query(`ALTER TABLE agent_worker_quota ADD COLUMN IF NOT EXISTS local_collect_concurrency INT DEFAULT 0`);  // 本地巡检并发数
+    await client.query(`ALTER TABLE agent_worker_quota ADD COLUMN IF NOT EXISTS local_publish_concurrency INT DEFAULT 0`); // 本地发文并发数
+    await client.query(`ALTER TABLE agent_worker_quota ADD COLUMN IF NOT EXISTS cloud_worker_enabled BOOLEAN DEFAULT TRUE`); // 是否启用云端Worker
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

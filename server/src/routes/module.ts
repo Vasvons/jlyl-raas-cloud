@@ -112,6 +112,7 @@ router.get('/:code', async (req: Request, res: Response) => {
     const result = await query(
       `SELECT id, code, name, description, icon, status, is_system, sort_order,
               preview_info, preview_assets, publish_config, offline_reason, offline_at,
+              intro_html, trial_enabled, trial_duration_days, trial_agreement_html, trial_limits, trial_max_count,
               created_at, updated_at
        FROM module WHERE code = $1`,
       [code]
@@ -691,6 +692,339 @@ router.get('/:code/access', async (req: Request, res: Response) => {
         subscription_status: 'expired',
         expire_at: grant.expire_at,
       },
+    });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// ============ v3.1 模块介绍页配置（管理端） ============
+
+/**
+ * 更新模块介绍页内容（富文本HTML）
+ */
+router.put('/:id/intro', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    const { intro_html } = req.body;
+    const result = await query(
+      `UPDATE module SET intro_html = $1, updated_at = NOW() WHERE id = $2 RETURNING id, intro_html`,
+      [intro_html || null, id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '模块不存在' });
+    }
+    res.json({ code: 200, data: result.rows[0], message: '介绍页内容已保存' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// ============ v3.1 试用功能配置（管理端） ============
+
+/**
+ * 更新模块试用配置
+ */
+router.put('/:id/trial-config', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    const {
+      trial_enabled,
+      trial_duration_days,
+      trial_agreement_html,
+      trial_limits,
+      trial_max_count,
+    } = req.body;
+
+    const result = await query(
+      `UPDATE module SET
+        trial_enabled = $1,
+        trial_duration_days = $2,
+        trial_agreement_html = $3,
+        trial_limits = $4,
+        trial_max_count = $5,
+        updated_at = NOW()
+       WHERE id = $6 RETURNING id, trial_enabled, trial_duration_days, trial_agreement_html, trial_limits, trial_max_count`,
+      [
+        trial_enabled ?? false,
+        trial_duration_days ?? 7,
+        trial_agreement_html || null,
+        trial_limits ? JSON.stringify(trial_limits) : null,
+        trial_max_count ?? 1,
+        id,
+      ]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '模块不存在' });
+    }
+    res.json({ code: 200, data: result.rows[0], message: '试用配置已保存' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// ============ v3.1 试用功能（代理端） ============
+
+/**
+ * 查询当前用户对某模块的试用状态
+ */
+router.get('/:code/trial-status', async (req: Request, res: Response) => {
+  try {
+    const { code } = req.params;
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.json({ code: 200, data: { status: 'none', remaining_trials: 0 } });
+    }
+
+    // 查询模块试用配置
+    const modResult = await query(
+      `SELECT trial_enabled, trial_duration_days, trial_max_count, trial_limits, trial_agreement_html
+       FROM module WHERE code = $1 AND status IN ('published', 'offline')`,
+      [code]
+    );
+    if (modResult.rows.length === 0) {
+      return res.json({ code: 200, data: { status: 'none', reason: 'module_not_available' } });
+    }
+    const mod = modResult.rows[0];
+
+    if (!mod.trial_enabled) {
+      return res.json({ code: 200, data: { status: 'none', reason: 'trial_not_enabled' } });
+    }
+
+    // 查询用户的所有试用记录（含已过期）
+    const trials = await query(
+      `SELECT id, start_at, expire_at, status, trial_count, limits
+       FROM module_trial
+       WHERE user_id = $1 AND module_code = $2
+       ORDER BY created_at DESC`,
+      [userId, code]
+    );
+
+    // 找到当前生效的试用
+    const activeTrial = trials.rows.find(
+      (t: any) => t.status === 'active' && new Date(t.expire_at) > new Date()
+    );
+
+    if (activeTrial) {
+      const remainingDays = Math.ceil(
+        (new Date(activeTrial.expire_at).getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+      );
+      return res.json({
+        code: 200,
+        data: {
+          status: 'active',
+          trial_id: activeTrial.id,
+          start_at: activeTrial.start_at,
+          expire_at: activeTrial.expire_at,
+          remaining_days: remainingDays,
+          limits: activeTrial.limits,
+          max_count: mod.trial_max_count,
+          used_count: trials.rows.length,
+        },
+      });
+    }
+
+    // 已过期试用
+    const expiredCount = trials.rows.length;
+    const remainingTrials = Math.max(0, mod.trial_max_count - expiredCount);
+
+    return res.json({
+      code: 200,
+      data: {
+        status: remainingTrials > 0 ? 'available' : 'exhausted',
+        max_count: mod.trial_max_count,
+        used_count: expiredCount,
+        remaining_trials: remainingTrials,
+        duration_days: mod.trial_duration_days,
+        limits: mod.trial_limits,
+        agreement_html: mod.trial_agreement_html,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+/**
+ * 申请试用（代理端）
+ * 需用户确认试用责任书后调用
+ */
+router.post('/:code/trial', async (req: Request, res: Response) => {
+  try {
+    const { code } = req.params;
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ code: 401, message: '请先登录' });
+    }
+    if (isAdmin(req)) {
+      return res.status(400).json({ code: 400, message: '管理员无需试用，请直接在管理端操作' });
+    }
+
+    const { agreement_accepted } = req.body;
+    if (!agreement_accepted) {
+      return res.status(400).json({ code: 400, message: '请先确认试用责任书' });
+    }
+
+    // 查询模块试用配置
+    const modResult = await query(
+      `SELECT id, trial_enabled, trial_duration_days, trial_max_count, trial_limits
+       FROM module WHERE code = $1 AND status IN ('published', 'offline')`,
+      [code]
+    );
+    if (modResult.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '模块不存在或未上架' });
+    }
+    const mod = modResult.rows[0];
+
+    if (!mod.trial_enabled) {
+      return res.status(400).json({ code: 400, message: '该模块未开放试用' });
+    }
+
+    // 检查是否已有生效中的试用
+    const activeTrial = await query(
+      `SELECT id FROM module_trial
+       WHERE user_id = $1 AND module_code = $2 AND status = 'active' AND expire_at > NOW()`,
+      [userId, code]
+    );
+    if (activeTrial.rows.length > 0) {
+      return res.status(400).json({ code: 400, message: '您已有生效中的试用，无需重复申请' });
+    }
+
+    // 检查试用次数
+    const usedCount = await query(
+      `SELECT COUNT(*) as count FROM module_trial WHERE user_id = $1 AND module_code = $2`,
+      [userId, code]
+    );
+    if (parseInt(usedCount.rows[0].count) >= mod.trial_max_count) {
+      return res.status(400).json({ code: 400, message: `已达最大试用次数（${mod.trial_max_count}次）` });
+    }
+
+    // 检查是否已有正式订阅
+    const existingGrant = await query(
+      `SELECT id FROM agent_module_grant
+       WHERE agent_user_id = $1 AND module_code = $2 AND status = 'active'
+         AND (expire_at IS NULL OR expire_at > NOW())`,
+      [userId, code]
+    );
+    if (existingGrant.rows.length > 0) {
+      return res.status(400).json({ code: 400, message: '您已订阅该模块，无需试用' });
+    }
+
+    // 创建试用记录
+    const expireAt = new Date();
+    expireAt.setDate(expireAt.getDate() + mod.trial_duration_days);
+
+    const trialResult = await query(
+      `INSERT INTO module_trial (module_code, user_id, expire_at, status, limits, agreement_accepted_at, trial_count)
+       VALUES ($1, $2, $3, 'active', $4, NOW(),
+         (SELECT COUNT(*) + 1 FROM module_trial WHERE user_id = $2 AND module_code = $1)
+       )
+       RETURNING id, start_at, expire_at, limits`,
+      [code, userId, expireAt, mod.trial_limits ? JSON.stringify(mod.trial_limits) : null]
+    );
+
+    // 创建临时订阅 grant（status='trial'，到期自动失效）
+    await query(
+      `INSERT INTO agent_module_grant (agent_user_id, module_code, source, status, expire_at, granted_at)
+       VALUES ($1, $2, 'trial', 'active', $3, NOW())
+       ON CONFLICT DO NOTHING`,
+      [userId, code, expireAt]
+    );
+
+    const trial = trialResult.rows[0];
+    res.json({
+      code: 200,
+      data: {
+        trial_id: trial.id,
+        start_at: trial.start_at,
+        expire_at: trial.expire_at,
+        limits: trial.limits,
+        remaining_days: mod.trial_duration_days,
+      },
+      message: `试用已激活，有效期 ${mod.trial_duration_days} 天`,
+    });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// ============ v3.1 Worker 并发配置 ============
+
+/**
+ * 获取当前用户的 Worker 并发配置
+ */
+router.get('/worker-config/get', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.json({ code: 200, data: null });
+    }
+    const result = await query(
+      `SELECT local_collect_concurrency, local_publish_concurrency, cloud_worker_enabled
+       FROM agent_worker_quota
+       WHERE agent_user_id = $1 AND status = 'active'
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (result.rows.length === 0) {
+      // 默认值
+      return res.json({
+        code: 200,
+        data: {
+          local_collect_concurrency: 0,
+          local_publish_concurrency: 0,
+          cloud_worker_enabled: true,
+        },
+      });
+    }
+    res.json({ code: 200, data: result.rows[0] });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+/**
+ * 更新 Worker 并发配置
+ */
+router.put('/worker-config/update', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) {
+      return res.status(401).json({ code: 401, message: '请先登录' });
+    }
+    const { local_collect_concurrency, local_publish_concurrency, cloud_worker_enabled } = req.body;
+
+    // 检查是否有配额记录
+    const existing = await query(
+      `SELECT id FROM agent_worker_quota WHERE agent_user_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 1`,
+      [userId]
+    );
+
+    if (existing.rows.length === 0) {
+      // 创建默认配额记录
+      await query(
+        `INSERT INTO agent_worker_quota (agent_user_id, quota_type, max_concurrency, local_collect_concurrency, local_publish_concurrency, cloud_worker_enabled, status)
+         VALUES ($1, 'local', 2, $2, $3, $4, 'active')`,
+        [userId, local_collect_concurrency ?? 0, local_publish_concurrency ?? 0, cloud_worker_enabled ?? true]
+      );
+    } else {
+      await query(
+        `UPDATE agent_worker_quota SET
+          local_collect_concurrency = $1,
+          local_publish_concurrency = $2,
+          cloud_worker_enabled = $3,
+          updated_at = NOW()
+         WHERE id = $4`,
+        [local_collect_concurrency ?? 0, local_publish_concurrency ?? 0, cloud_worker_enabled ?? true, existing.rows[0].id]
+      );
+    }
+
+    res.json({
+      code: 200,
+      data: { local_collect_concurrency, local_publish_concurrency, cloud_worker_enabled },
+      message: 'Worker 配置已保存',
     });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
