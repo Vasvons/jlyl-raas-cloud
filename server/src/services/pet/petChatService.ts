@@ -232,18 +232,25 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
 
 /** 解析 baseUrl（按平台补默认值） */
 function resolveBaseUrl(config: ModelConfig): string {
-  if (config.base_url) return config.base_url.replace(/\/$/, '');
-  const platform = (config.platform || '').toLowerCase();
-  const defaults: Record<string, string> = {
-    openai: 'https://api.openai.com/v1',
-    zhipu: 'https://open.bigmodel.cn/api/paas/v4',
-    glm: 'https://open.bigmodel.cn/api/paas/v4',
-    kimi: 'https://api.moonshot.cn/v1',
-    moonshot: 'https://api.moonshot.cn/v1',
-    deepseek: 'https://api.deepseek.com/v1',
-    qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    tongyi: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    ollama: 'http://127.0.0.1:11434/v1',
-  };
-  return defaults[platform] || 'https://api.openai.com/v1';
+  let url = '';
+  if (config.base_url) {
+    url = config.base_url.replace(/\/+$/, '');
+  } else {
+    const platform = (config.platform || '').toLowerCase();
+    const defaults: Record<string, string> = {
+      openai: 'https://api.openai.com/v1',
+      zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+      glm: 'https://open.bigmodel.cn/api/paas/v4',
+      kimi: 'https://api.moonshot.cn/v1',
+      moonshot: 'https://api.moonshot.cn/v1',
+      deepseek: 'https://api.deepseek.com/v1',
+      qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      tongyi: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      ollama: 'http://127.0.0.1:11434/v1',
+    };
+    url = defaults[platform] || 'https://api.openai.com/v1';
+  }
+  // v3.2.2：用户可能把完整 endpoint 填进 base_url（如 .../v1/chat/completions），自动剥离避免重复拼接
+  url = url.replace(/\/chat\/completions\/?$/i, '');
+  return url;
 }
