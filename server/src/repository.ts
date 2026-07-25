@@ -4885,30 +4885,131 @@ export async function getAeoModelConfig(userId: string): Promise<any | null> {
  * @param userId 当前调用者 user_id（仅用于判断是否代理，不参与配置筛选）
  */
 export async function getPetModelConfig(userId: number): Promise<any | null> {
-  // 1. 优先取 use_for_pet=true 的配置（管理端配置）
+  // v3.2.3：改读独立的 pet_model_config 表（全局单行，id=1）
+  // 不再复用 ai_model_config，避免改精灵配置影响写作/AEO/发布
   let result = await query(
-    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, use_for_writing, use_for_publish, use_for_pet,
-            web_search, daily_quota, used_today, quota_reset_at
+    `SELECT id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active
+     FROM pet_model_config
+     WHERE is_active = true
+       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+     ORDER BY id ASC LIMIT 1`
+  );
+  if (result.rows[0]) return result.rows[0];
+
+  // 降级：pet_model_config 未配置时，回退到 ai_model_config 中 use_for_pet=true 的旧配置
+  // 兼容老用户已开启 use_for_pet 开关的场景，平滑迁移
+  result = await query(
+    `SELECT id, platform, model_name, api_key_encrypted, base_url,
+            max_tokens, temperature, is_active
      FROM ai_model_config
      WHERE use_for_pet = true
        AND is_active = true
        AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
      ORDER BY id ASC LIMIT 1`
   );
-  if (result.rows[0]) return result.rows[0];
+  return result.rows[0] || null;
+}
 
-  // 2. 降级：取平台共享配置的写作模型（避免精灵完全无模型可用）
-  result = await query(
-    `SELECT id, user_id, platform, model_name, api_key_encrypted, base_url,
-            max_tokens, temperature, is_active, use_for_writing, use_for_publish, use_for_pet,
-            web_search, daily_quota, used_today, quota_reset_at
-     FROM ai_model_config
-     WHERE user_id IS NULL AND is_active = true AND use_for_writing = true
-       AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
-     ORDER BY create_time DESC LIMIT 1`
+/**
+ * v3.2.3：管理端读取精灵底座配置（不返回 api_key 明文，仅返回 masked）
+ * 用于 PetModelConfig 页面回显表单
+ */
+export async function getPetModelConfigForAdmin(): Promise<any | null> {
+  const result = await query(
+    `SELECT id, platform, model_name, base_url, max_tokens, temperature, is_active,
+            CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN true ELSE false END AS has_api_key,
+            create_time, update_time
+     FROM pet_model_config
+     ORDER BY id ASC LIMIT 1`
   );
   return result.rows[0] || null;
+}
+
+/**
+ * v3.2.3：管理端保存精灵底座配置（upsert）
+ * - api_key 为空字符串或 undefined 时不更新（保留原密文）
+ * - api_key 为非空字符串时加密后覆盖
+ */
+export async function upsertPetModelConfig(data: {
+  platform: string;
+  model_name: string;
+  api_key?: string;
+  base_url?: string;
+  max_tokens?: number;
+  temperature?: number;
+  is_active?: boolean;
+}): Promise<number> {
+  const existing = await query(`SELECT id FROM pet_model_config ORDER BY id ASC LIMIT 1`);
+  const existingId = existing.rows[0]?.id;
+
+  // api_key 处理：空值不更新，非空值加密
+  let apiKeyEncrypted: string | null = null;
+  let updateApiKey = false;
+  if (data.api_key !== undefined && data.api_key !== null && data.api_key.trim() !== '') {
+    apiKeyEncrypted = encrypt(data.api_key.trim());
+    updateApiKey = true;
+  }
+
+  if (existingId) {
+    // 更新
+    if (updateApiKey) {
+      await query(
+        `UPDATE pet_model_config
+         SET platform = $1, model_name = $2, api_key_encrypted = $3, base_url = $4,
+             max_tokens = $5, temperature = $6, is_active = $7, update_time = NOW()
+         WHERE id = $8`,
+        [
+          data.platform,
+          data.model_name,
+          apiKeyEncrypted,
+          data.base_url || null,
+          data.max_tokens ?? null,
+          data.temperature ?? null,
+          data.is_active ?? true,
+          existingId,
+        ]
+      );
+    } else {
+      // 不更新 api_key
+      await query(
+        `UPDATE pet_model_config
+         SET platform = $1, model_name = $2, base_url = $3,
+             max_tokens = $4, temperature = $5, is_active = $6, update_time = NOW()
+         WHERE id = $7`,
+        [
+          data.platform,
+          data.model_name,
+          data.base_url || null,
+          data.max_tokens ?? null,
+          data.temperature ?? null,
+          data.is_active ?? true,
+          existingId,
+        ]
+      );
+    }
+    return existingId;
+  }
+
+  // 新增
+  if (!updateApiKey) {
+    throw new Error('首次配置必须填写 API-KEY');
+  }
+  const insertResult = await query(
+    `INSERT INTO pet_model_config (platform, model_name, api_key_encrypted, base_url, max_tokens, temperature, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING id`,
+    [
+      data.platform,
+      data.model_name,
+      apiKeyEncrypted,
+      data.base_url || null,
+      data.max_tokens ?? null,
+      data.temperature ?? null,
+      data.is_active ?? true,
+    ]
+  );
+  return insertResult.rows[0].id;
 }
 
 /**

@@ -12,7 +12,7 @@
  */
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth';
-import { getPetModelConfigWithKey } from '../repository';
+import { getPetModelConfigWithKey, getPetModelConfigForAdmin, upsertPetModelConfig } from '../repository';
 import { callModelStream, getPetSystemPrompt, getDefaultPetKnowledge } from '../services/pet/petChatService';
 
 const router = Router();
@@ -92,6 +92,93 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
       res.write(`data: ${JSON.stringify({ type: 'error', message: e.message || '模型调用失败' })}\n\n`);
       res.end();
     }
+  }
+});
+
+/**
+ * GET /pet/model-config
+ * v3.2.3：管理端读取精灵底座独立配置（不返回 api_key 明文）
+ * 返回 pet_model_config 表中的单行配置
+ */
+router.get('/model-config', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const config = await getPetModelConfigForAdmin();
+    if (!config) {
+      return res.json({
+        code: 200,
+        data: {
+          configured: false,
+          message: '尚未配置精灵底座模型',
+        },
+      });
+    }
+    return res.json({
+      code: 200,
+      data: {
+        configured: true,
+        id: config.id,
+        platform: config.platform,
+        model_name: config.model_name,
+        base_url: config.base_url,
+        max_tokens: config.max_tokens,
+        temperature: config.temperature,
+        is_active: config.is_active,
+        has_api_key: config.has_api_key,
+        // 不返回 api_key 明文
+        api_key_masked: config.has_api_key ? '********' : null,
+        update_time: config.update_time,
+      },
+    });
+  } catch (err: any) {
+    console.error('[PetConfig] GET /pet/model-config 失败:', err.message);
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * PUT /pet/model-config
+ * v3.2.3：管理端保存精灵底座独立配置（upsert）
+ * Body: { platform, model_name, api_key?, base_url?, max_tokens?, temperature?, is_active? }
+ * - api_key 为空字符串或 undefined 时不更新（保留原密文）
+ * - api_key 为非空字符串时加密后覆盖
+ */
+router.put('/model-config', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { platform, model_name, api_key, base_url, max_tokens, temperature, is_active } = req.body || {};
+
+    if (!platform || !model_name) {
+      return res.status(400).json({ code: 400, message: 'platform 和 model_name 必填' });
+    }
+
+    // 数值字段类型转换（前端可能传字符串）
+    const maxTokensNum = max_tokens != null && max_tokens !== '' ? Number(max_tokens) : undefined;
+    const temperatureNum = temperature != null && temperature !== '' ? Number(temperature) : undefined;
+    if (maxTokensNum !== undefined && Number.isNaN(maxTokensNum)) {
+      return res.status(400).json({ code: 400, message: 'max_tokens 必须是数字' });
+    }
+    if (temperatureNum !== undefined && Number.isNaN(temperatureNum)) {
+      return res.status(400).json({ code: 400, message: 'temperature 必须是数字' });
+    }
+
+    const id = await upsertPetModelConfig({
+      platform: String(platform).trim(),
+      model_name: String(model_name).trim(),
+      api_key: api_key,
+      base_url: base_url,
+      max_tokens: maxTokensNum,
+      temperature: temperatureNum,
+      is_active: is_active ?? true,
+    });
+
+    console.log(`[PetConfig] PUT /pet/model-config 保存成功 id=${id} platform=${platform} model=${model_name}`);
+
+    return res.json({
+      code: 200,
+      data: { id, message: '保存成功' },
+    });
+  } catch (err: any) {
+    console.error('[PetConfig] PUT /pet/model-config 失败:', err.message);
+    return res.status(500).json({ code: 500, message: err.message });
   }
 });
 

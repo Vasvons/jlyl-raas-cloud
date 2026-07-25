@@ -1002,6 +1002,23 @@ export async function migrate() {
       )
     `);
 
+    // v3.2.3：精灵底座独立配置表（不复用 ai_model_config，避免改精灵配置影响写作/AEO/发布）
+    // 全局单行配置（id 固定为 1），管理端独占，所有代理共用
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pet_model_config (
+        id SERIAL PRIMARY KEY,
+        platform VARCHAR(32) NOT NULL,
+        model_name VARCHAR(64) NOT NULL,
+        api_key_encrypted TEXT,
+        base_url VARCHAR(255),
+        max_tokens INTEGER,
+        temperature NUMERIC(3,2),
+        is_active BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
     // 2. 写作指令库
     await client.query(`
       CREATE TABLE IF NOT EXISTS writing_instruction (
