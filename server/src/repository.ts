@@ -5012,6 +5012,189 @@ export async function upsertPetModelConfig(data: {
   return insertResult.rows[0].id;
 }
 
+// ============ v3.2.4：精灵知识库 CRUD ============
+
+export async function listPetKnowledge(includeInactive = false): Promise<any[]> {
+  const where = includeInactive ? '' : 'WHERE is_active = true';
+  const result = await query(
+    `SELECT id, title, content, category, sort_order, is_active, create_time, update_time
+     FROM pet_knowledge
+     ${where}
+     ORDER BY sort_order ASC, id ASC`
+  );
+  return result.rows;
+}
+
+export async function getPetKnowledgeById(id: number): Promise<any | null> {
+  const result = await query(
+    `SELECT id, title, content, category, sort_order, is_active, create_time, update_time
+     FROM pet_knowledge WHERE id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function createPetKnowledge(data: {
+  title: string;
+  content: string;
+  category?: string;
+  sort_order?: number;
+  is_active?: boolean;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO pet_knowledge (title, content, category, sort_order, is_active)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [data.title, data.content, data.category || 'general', data.sort_order ?? 0, data.is_active ?? true]
+  );
+  return result.rows[0].id;
+}
+
+export async function updatePetKnowledge(id: number, data: {
+  title?: string;
+  content?: string;
+  category?: string;
+  sort_order?: number;
+  is_active?: boolean;
+}): Promise<boolean> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  if (data.title !== undefined) { fields.push(`title = $${idx++}`); values.push(data.title); }
+  if (data.content !== undefined) { fields.push(`content = $${idx++}`); values.push(data.content); }
+  if (data.category !== undefined) { fields.push(`category = $${idx++}`); values.push(data.category); }
+  if (data.sort_order !== undefined) { fields.push(`sort_order = $${idx++}`); values.push(data.sort_order); }
+  if (data.is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(data.is_active); }
+  if (fields.length === 0) return false;
+  fields.push(`update_time = NOW()`);
+  values.push(id);
+  await query(`UPDATE pet_knowledge SET ${fields.join(', ')} WHERE id = $${idx}`, values);
+  return true;
+}
+
+export async function deletePetKnowledge(id: number): Promise<boolean> {
+  const result = await query(`DELETE FROM pet_knowledge WHERE id = $1`, [id]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+/** 获取所有活跃知识条目（用于 /pet/chat 注入 systemPrompt） */
+export async function getActivePetKnowledgeForPrompt(): Promise<string> {
+  const result = await query(
+    `SELECT title, content FROM pet_knowledge
+     WHERE is_active = true
+     ORDER BY sort_order ASC, id ASC`
+  );
+  if (result.rows.length === 0) return '';
+  return result.rows.map((r: any) => `## ${r.title}\n${r.content}`).join('\n\n');
+}
+
+// ============ v3.2.4：精灵对话记忆 CRUD ============
+
+export async function savePetMemory(data: {
+  user_id: number;
+  session_id: string;
+  role: string;
+  content: string;
+  metadata?: any;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO pet_memory (user_id, session_id, role, content, metadata)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+    [data.user_id, data.session_id, data.role, data.content, data.metadata ? JSON.stringify(data.metadata) : null]
+  );
+  return result.rows[0].id;
+}
+
+export async function getPetMemoryBySession(
+  userId: number,
+  sessionId: string,
+  limit = 50
+): Promise<any[]> {
+  const result = await query(
+    `SELECT id, role, content, metadata, create_time
+     FROM pet_memory
+     WHERE user_id = $1 AND session_id = $2
+     ORDER BY create_time ASC
+     LIMIT $3`,
+    [userId, sessionId, limit]
+  );
+  return result.rows;
+}
+
+export async function listPetMemorySessions(userId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT session_id,
+            MIN(content) AS first_content,
+            MAX(create_time) AS last_time,
+            COUNT(*)::int AS message_count
+     FROM pet_memory
+     WHERE user_id = $1
+     GROUP BY session_id
+     ORDER BY MAX(create_time) DESC
+     LIMIT 50`,
+    [userId]
+  );
+  return result.rows;
+}
+
+export async function deletePetMemorySession(userId: number, sessionId: string): Promise<number> {
+  const result = await query(
+    `DELETE FROM pet_memory WHERE user_id = $1 AND session_id = $2`,
+    [userId, sessionId]
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function deleteAllPetMemory(userId: number): Promise<number> {
+  const result = await query(`DELETE FROM pet_memory WHERE user_id = $1`, [userId]);
+  return result.rowCount ?? 0;
+}
+
+export async function countPetMemoryBySession(userId: number, sessionId: string): Promise<number> {
+  const result = await query(
+    `SELECT COUNT(*)::int AS cnt FROM pet_memory WHERE user_id = $1 AND session_id = $2`,
+    [userId, sessionId]
+  );
+  return result.rows[0]?.cnt ?? 0;
+}
+
+// ============ v3.2.4：长期记忆摘要 CRUD ============
+
+export async function getPetMemorySummary(userId: number, summaryType: string): Promise<any | null> {
+  const result = await query(
+    `SELECT id, summary_type, content, metadata, update_time
+     FROM pet_memory_summary
+     WHERE user_id = $1 AND summary_type = $2`,
+    [userId, summaryType]
+  );
+  return result.rows[0] || null;
+}
+
+export async function upsertPetMemorySummary(
+  userId: number,
+  summaryType: string,
+  content: string,
+  metadata?: any
+): Promise<void> {
+  await query(
+    `INSERT INTO pet_memory_summary (user_id, summary_type, content, metadata, update_time)
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (user_id, summary_type)
+     DO UPDATE SET content = EXCLUDED.content, metadata = EXCLUDED.metadata, update_time = NOW()`,
+    [userId, summaryType, content, metadata ? JSON.stringify(metadata) : null]
+  );
+}
+
+export async function getAllPetMemorySummaries(userId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT summary_type, content, metadata, update_time
+     FROM pet_memory_summary
+     WHERE user_id = $1
+     ORDER BY summary_type ASC`,
+    [userId]
+  );
+  return result.rows;
+}
+
 /**
  * v3.2：获取精灵底座模型配置（含解密 API Key）
  * 精灵底座配置由管理端统一承担，不依赖 user_id 判断

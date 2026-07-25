@@ -78,6 +78,26 @@ export function getPetSystemPrompt(): string {
   return `${DEFAULT_SYSTEM_PROMPT}\n\n# 软件功能知识库\n${PET_KNOWLEDGE}`;
 }
 
+/**
+ * v3.2.4：构造完整 systemPrompt
+ * - 基础提示词
+ * - 知识库段落（来自 pet_knowledge 表，管理端可编辑）
+ * - 用户画像/摘要段落（来自 pet_memory_summary 表）
+ */
+export function buildPetSystemPrompt(knowledge: string, userSummary: string): string {
+  let prompt = DEFAULT_SYSTEM_PROMPT;
+  if (knowledge) {
+    prompt += `\n\n# 软件功能知识库\n${knowledge}`;
+  } else {
+    // 降级：知识库为空时用硬编码
+    prompt += `\n\n# 软件功能知识库\n${PET_KNOWLEDGE}`;
+  }
+  if (userSummary) {
+    prompt += `\n\n${userSummary}`;
+  }
+  return prompt;
+}
+
 export function getDefaultPetKnowledge(): string {
   return PET_KNOWLEDGE;
 }

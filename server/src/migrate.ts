@@ -1019,6 +1019,98 @@ export async function migrate() {
       )
     `);
 
+    // v3.2.4：精灵知识库（管理端可编辑，替代硬编码 PET_KNOWLEDGE）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pet_knowledge (
+        id SERIAL PRIMARY KEY,
+        title VARCHAR(128) NOT NULL,
+        content TEXT NOT NULL,
+        category VARCHAR(32) DEFAULT 'general',
+        sort_order INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    // 初始化默认知识条目（从 petChatService.ts 硬编码迁移，仅当表为空时插入）
+    const petKnowledgeCount = await client.query('SELECT COUNT(*)::int AS cnt FROM pet_knowledge');
+    if (petKnowledgeCount.rows[0].cnt === 0) {
+      await client.query(`
+        INSERT INTO pet_knowledge (title, content, category, sort_order)
+        VALUES (
+          '聚量引力 RaaS 平台功能说明',
+          $1,
+          'product',
+          0
+        )
+      `, [`# 聚量引力 RaaS 平台功能说明
+
+## 1. 平台架构
+聚量引力 RaaS 是云端 + 桌面端分离架构的 GEO（Generative Engine Optimization）优化平台。
+- 云端：任务调度、数据存储、AI 分析、Worker 执行
+- 桌面端：Electron 应用，本地代理 18080 端口，三窗口（主窗口/桌面精灵/聊天面板）
+
+## 2. 核心模块
+
+### 聚量 GEO 中枢
+- 真实查询：24/7 循环调度，多账号轮询查询关键词排名
+- AEO 分析：每轮完成后自动生成 AEO 报告（AI 搜索引擎收录分析）
+- 内容创作：AI 写作任务，支持专家角色、写作指令、企业知识库
+- 内容发布：12 平台种子步骤，自动发布到自媒体账号
+
+### 智能体公司
+- 多专家协作：可创建多个 AI 专家角色
+- 任务委派：精灵可委派任务给专家
+
+## 3. 飞轮守护进程
+- 自动守护：循环调度巡检任务
+- AEO→创作：AEO 报告生成后自动触发写作
+- 写作→发布：文章生成后自动触发发布
+- 云端 Worker 开关：开启后任务由云端 Worker 执行，关闭后由本地 Worker 执行
+
+## 4. 账号池管理
+- normal（正常）/ banned（被封禁）/ offline（掉线）三态
+- 巡检账号：用于关键词查询
+- 发布账号：用于内容发布，可绑定代理
+
+## 5. 订阅体系
+- 模块订阅：按板块订阅（聚量GEO中枢/智能体公司/灵犀站点引擎）
+- 云端增强包：扩展 Worker 并发
+- 私有部署：本地部署 Worker`,]);
+      console.log('[Migrate] pet_knowledge 表已初始化默认知识条目');
+    }
+
+    // v3.2.4：精灵对话记忆（按 user_id + session_id 隔离）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pet_memory (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        session_id VARCHAR(64) NOT NULL,
+        role VARCHAR(16) NOT NULL,
+        content TEXT NOT NULL,
+        metadata JSONB,
+        create_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_pet_memory_user_session
+      ON pet_memory (user_id, session_id, create_time)
+    `);
+
+    // v3.2.4：长期记忆摘要（用户画像 / 会话摘要 / 关键事实）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS pet_memory_summary (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        summary_type VARCHAR(32) NOT NULL,
+        content TEXT NOT NULL,
+        metadata JSONB,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW(),
+        UNIQUE(user_id, summary_type)
+      )
+    `);
+
     // 2. 写作指令库
     await client.query(`
       CREATE TABLE IF NOT EXISTS writing_instruction (

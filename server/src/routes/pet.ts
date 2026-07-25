@@ -12,8 +12,22 @@
  */
 import { Router, Request, Response } from 'express';
 import { authMiddleware } from '../auth';
-import { getPetModelConfigWithKey, getPetModelConfigForAdmin, upsertPetModelConfig } from '../repository';
-import { callModelStream, getPetSystemPrompt, getDefaultPetKnowledge } from '../services/pet/petChatService';
+import {
+  getPetModelConfigWithKey, getPetModelConfigForAdmin, upsertPetModelConfig,
+  // v3.2.4：知识库 CRUD
+  listPetKnowledge, getPetKnowledgeById, createPetKnowledge, updatePetKnowledge,
+  deletePetKnowledge, getActivePetKnowledgeForPrompt,
+  // v3.2.4：记忆库 CRUD
+  savePetMemory, getPetMemoryBySession, listPetMemorySessions,
+  deletePetMemorySession, deleteAllPetMemory,
+  // v3.2.4：摘要 CRUD
+  getAllPetMemorySummaries, upsertPetMemorySummary,
+} from '../repository';
+import { callModelStream, getPetSystemPrompt, getDefaultPetKnowledge, buildPetSystemPrompt } from '../services/pet/petChatService';
+import {
+  loadSessionHistory, getLatestSessionId, saveMessage, saveChatTurn,
+  loadUserSummaryForPrompt, clearSession, clearAllMemory, generateSessionId,
+} from '../services/pet/memoryService';
 
 const router = Router();
 
@@ -26,7 +40,9 @@ function getUserId(req: any): number {
  * 流式对话接口（SSE）
  *
  * Body:
- *   { messages: [{role, content}], systemPrompt?: string }
+ *   { messages: [{role, content}], systemPrompt?: string, sessionId?: string }
+ *
+ * v3.2.4：自动加载知识库 + 用户摘要注入 systemPrompt；异步保存对话到 pet_memory
  *
  * Response: text/event-stream
  *   data: {"type":"text_delta","text":"..."}      // 增量文本
@@ -39,7 +55,7 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
     return res.status(401).json({ code: 401, message: '未授权' });
   }
 
-  const { messages, systemPrompt } = req.body || {};
+  const { messages, systemPrompt, sessionId } = req.body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ code: 400, message: '缺少 messages' });
   }
@@ -47,7 +63,6 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
   // 1. 获取精灵底座模型配置（含解密 API Key）
   const modelConfig = await getPetModelConfigWithKey(userId);
   if (!modelConfig) {
-    // v3.2.1：返回 4xx 状态码，让桌面端 cloudPetClient 能通过 response.ok 识别错误
     return res.status(400).json({
       code: 4003,
       message: '尚未配置精灵底座模型，请联系管理端在「设置 → 精灵底座配置」中开启',
@@ -58,7 +73,7 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Nginx 不缓冲
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
   // 3. 客户端断开时清理
@@ -67,8 +82,24 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
     aborted = true;
   });
 
-  // 4. 构造系统提示词（自定义优先，否则用默认 + 软件知识）
-  const finalSystemPrompt = systemPrompt || getPetSystemPrompt();
+  // 4. v3.2.4：构造 systemPrompt（自动加载知识库 + 用户摘要）
+  let finalSystemPrompt: string;
+  if (systemPrompt) {
+    // 客户端显式传入 systemPrompt 时优先用
+    finalSystemPrompt = systemPrompt;
+  } else {
+    try {
+      // 并行加载知识库和用户摘要
+      const [knowledge, userSummary] = await Promise.all([
+        getActivePetKnowledgeForPrompt(),
+        loadUserSummaryForPrompt(userId),
+      ]);
+      finalSystemPrompt = buildPetSystemPrompt(knowledge, userSummary);
+    } catch (err: any) {
+      console.warn('[PetChat] 加载知识库/摘要失败，降级用默认 systemPrompt:', err.message);
+      finalSystemPrompt = getPetSystemPrompt();
+    }
+  }
 
   // 5. 调模型流式接口
   try {
@@ -85,6 +116,17 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
     if (!aborted) {
       res.write(`data: ${JSON.stringify({ type: 'done', fullText: result.fullText })}\n\n`);
       res.end();
+
+      // v3.2.4：异步保存对话到 pet_memory（不阻塞响应）
+      if (sessionId && result.fullText) {
+        // 取最后一条 user message 内容
+        const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
+        if (lastUserMsg) {
+          saveChatTurn(userId, sessionId, lastUserMsg.content, result.fullText).catch(err => {
+            console.warn('[PetChat] 异步保存对话失败（不影响响应）:', err.message);
+          });
+        }
+      }
     }
   } catch (e: any) {
     console.error('[PetChat] 模型调用失败:', e.message);
@@ -245,6 +287,217 @@ router.get('/knowledge', authMiddleware, async (req: Request, res: Response) => 
       knowledge: getDefaultPetKnowledge(),
     },
   });
+});
+
+// ============ v3.2.4：知识库 CRUD ============
+
+/**
+ * GET /pet/knowledge/list
+ * 列表（includeInactive=true 显示停用项，仅管理端用）
+ */
+router.get('/knowledge/list', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const includeInactive = req.query.includeInactive === 'true';
+    const list = await listPetKnowledge(includeInactive);
+    return res.json({ code: 200, data: list });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * GET /pet/knowledge/:id
+ */
+router.get('/knowledge/:id', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const item = await getPetKnowledgeById(Number(req.params.id));
+    if (!item) return res.status(404).json({ code: 404, message: '不存在' });
+    return res.json({ code: 200, data: item });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * POST /pet/knowledge
+ */
+router.post('/knowledge', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { title, content, category, sort_order, is_active } = req.body || {};
+    if (!title || !content) {
+      return res.status(400).json({ code: 400, message: 'title 和 content 必填' });
+    }
+    const id = await createPetKnowledge({
+      title: String(title).trim(),
+      content: String(content),
+      category: category ? String(category) : 'general',
+      sort_order: sort_order != null ? Number(sort_order) : 0,
+      is_active: is_active ?? true,
+    });
+    return res.json({ code: 200, data: { id, message: '创建成功' } });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * PUT /pet/knowledge/:id
+ */
+router.put('/knowledge/:id', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { title, content, category, sort_order, is_active } = req.body || {};
+    const ok = await updatePetKnowledge(Number(req.params.id), {
+      title: title !== undefined ? String(title).trim() : undefined,
+      content: content !== undefined ? String(content) : undefined,
+      category: category !== undefined ? String(category) : undefined,
+      sort_order: sort_order != null ? Number(sort_order) : undefined,
+      is_active: is_active !== undefined ? !!is_active : undefined,
+    });
+    if (!ok) return res.status(404).json({ code: 404, message: '不存在或无更新字段' });
+    return res.json({ code: 200, data: { message: '更新成功' } });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * DELETE /pet/knowledge/:id
+ */
+router.delete('/knowledge/:id', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const ok = await deletePetKnowledge(Number(req.params.id));
+    if (!ok) return res.status(404).json({ code: 404, message: '不存在' });
+    return res.json({ code: 200, data: { message: '删除成功' } });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v3.2.4：记忆库 CRUD ============
+
+/**
+ * GET /pet/memory/sessions
+ * 获取用户所有会话列表（按最近时间倒序）
+ */
+router.get('/memory/sessions', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const sessions = await listPetMemorySessions(userId);
+    return res.json({ code: 200, data: sessions });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * GET /pet/memory?sessionId=xxx&limit=50
+ * 获取指定会话的对话历史
+ */
+router.get('/memory', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const sessionId = String(req.query.sessionId || '');
+    const limit = Number(req.query.limit) || 50;
+    if (!sessionId) {
+      return res.status(400).json({ code: 400, message: '缺少 sessionId' });
+    }
+    const messages = await getPetMemoryBySession(userId, sessionId, limit);
+    return res.json({ code: 200, data: messages });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * GET /pet/memory/latest-session
+ * 获取用户最近一个会话的 session_id（用于桌面端启动时恢复）
+ */
+router.get('/memory/latest-session', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const sessionId = await getLatestSessionId(userId);
+    return res.json({ code: 200, data: { sessionId } });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * POST /pet/memory
+ * 手动保存一条消息（一般由 /pet/chat 自动保存，此接口备用）
+ */
+router.post('/memory', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { sessionId, role, content, metadata } = req.body || {};
+    if (!sessionId || !role || !content) {
+      return res.status(400).json({ code: 400, message: 'sessionId/role/content 必填' });
+    }
+    const id = await savePetMemory({
+      user_id: userId,
+      session_id: String(sessionId),
+      role: String(role),
+      content: String(content),
+      metadata,
+    });
+    return res.json({ code: 200, data: { id, message: '保存成功' } });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * DELETE /pet/memory?sessionId=xxx
+ * 清空指定会话
+ */
+router.delete('/memory', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const sessionId = String(req.query.sessionId || '');
+    if (!sessionId) {
+      return res.status(400).json({ code: 400, message: '缺少 sessionId' });
+    }
+    const deleted = await clearSession(userId, sessionId);
+    return res.json({ code: 200, data: { deleted, message: '已清空会话' } });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * DELETE /pet/memory/all
+ * 清空用户所有记忆（含摘要）
+ */
+router.delete('/memory/all', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const result = await clearAllMemory(userId);
+    return res.json({ code: 200, data: { ...result, message: '已清空所有记忆' } });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * GET /pet/memory/summary
+ * 获取用户所有长期摘要
+ */
+router.get('/memory/summary', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const summaries = await getAllPetMemorySummaries(userId);
+    return res.json({ code: 200, data: summaries });
+  } catch (err: any) {
+    return res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * POST /pet/memory/generate-session-id
+ * 生成新 session_id（桌面端「新对话」按钮调用）
+ */
+router.post('/memory/generate-session-id', authMiddleware, async (req: Request, res: Response) => {
+  return res.json({ code: 200, data: { sessionId: generateSessionId() } });
 });
 
 export default router;
