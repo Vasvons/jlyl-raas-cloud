@@ -148,11 +148,40 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
   }
 
   // 流式请求
-  const response = await axios.post(url, body, {
-    headers,
-    responseType: 'stream',
-    timeout: 60000,
-  });
+  let response;
+  try {
+    response = await axios.post(url, body, {
+      headers,
+      responseType: 'stream',
+      timeout: 60000,
+      validateStatus: () => true, // 不抛异常，手动处理错误状态码
+    });
+  } catch (e: any) {
+    // 网络层错误（DNS 解析失败、连接被拒等）
+    throw new Error(`无法连接模型厂商 API: ${e.message}（URL: ${url}）`);
+  }
+
+  // 非 2xx 响应：读取 stream 内容并包装错误信息
+  if (response.status < 200 || response.status >= 300) {
+    let errBody = '';
+    try {
+      errBody = await new Promise<string>((resolve) => {
+        let data = '';
+        response.data.on('data', (c: Buffer) => { data += c.toString('utf-8'); });
+        response.data.on('end', () => resolve(data));
+        response.data.on('error', () => resolve(''));
+        setTimeout(() => resolve(data || ''), 3000);
+      });
+    } catch { /* ignore */ }
+
+    if (response.status === 404) {
+      throw new Error(`模型厂商 API 返回 404（URL: ${url}，model: ${modelConfig.model_name}）。请检查 base_url 是否正确（通常需以 /v1 结尾），以及 model_name 是否存在。响应: ${errBody.slice(0, 200)}`);
+    } else if (response.status === 401) {
+      throw new Error(`模型厂商 API 鉴权失败（401）。请检查 API Key 是否正确。响应: ${errBody.slice(0, 200)}`);
+    } else {
+      throw new Error(`模型厂商 API 返回 ${response.status}。响应: ${errBody.slice(0, 200)}`);
+    }
+  }
 
   let fullText = '';
   let usage: any = undefined;
