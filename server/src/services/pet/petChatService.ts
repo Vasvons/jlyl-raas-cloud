@@ -165,11 +165,12 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
   if (response.status < 200 || response.status >= 300) {
     let errBody = '';
     try {
+      const stream = response.data as NodeJS.ReadableStream;
       errBody = await new Promise<string>((resolve) => {
         let data = '';
-        response.data.on('data', (c: Buffer) => { data += c.toString('utf-8'); });
-        response.data.on('end', () => resolve(data));
-        response.data.on('error', () => resolve(''));
+        stream.on('data', (c: Buffer) => { data += c.toString('utf-8'); });
+        stream.on('end', () => resolve(data));
+        stream.on('error', () => resolve(''));
         setTimeout(() => resolve(data || ''), 3000);
       });
     } catch { /* ignore */ }
