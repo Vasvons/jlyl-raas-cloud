@@ -98,6 +98,7 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
 /**
  * GET /pet/model-status
  * 查询当前精灵底座模型配置状态（不返回 API Key）
+ * v3.2.2：新增 liveCheck=true 时发一个真实的最小请求验证模型厂商可用性
  */
 router.get('/model-status', authMiddleware, async (req: Request, res: Response) => {
   const userId = getUserId(req);
@@ -111,6 +112,26 @@ router.get('/model-status', authMiddleware, async (req: Request, res: Response) 
       },
     });
   }
+
+  const liveCheck = req.query.liveCheck === 'true';
+  let liveStatus: { ok: boolean; message?: string; url?: string; status?: number } | undefined;
+
+  if (liveCheck) {
+    // 发一个最小请求（max_tokens=1）验证模型厂商可达性
+    try {
+      const { callModelStream } = await import('../services/pet/petChatService');
+      const result = await callModelStream({
+        modelConfig: config,
+        messages: [{ role: 'user', content: 'hi' }],
+        systemPrompt: undefined,
+        onDelta: () => {},
+      });
+      liveStatus = { ok: true, message: `连通正常，收到 ${result.fullText.length} 字符响应` };
+    } catch (e: any) {
+      liveStatus = { ok: false, message: e.message || '调用失败' };
+    }
+  }
+
   return res.json({
     code: 200,
     data: {
@@ -119,6 +140,7 @@ router.get('/model-status', authMiddleware, async (req: Request, res: Response) 
       model_name: config.model_name,
       base_url: config.base_url || null,
       message: `当前精灵底座：${config.platform} / ${config.model_name}`,
+      liveStatus,
     },
   });
 });
