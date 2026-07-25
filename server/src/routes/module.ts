@@ -264,8 +264,8 @@ router.put('/:id/status', async (req: Request, res: Response) => {
         status = $1,
         preview_info = COALESCE($2, preview_info),
         preview_assets = COALESCE($3, preview_assets),
-        offline_reason = CASE WHEN $1 = 'offline' THEN $4 ELSE NULL END,
-        offline_at = CASE WHEN $1 = 'offline' THEN NOW() ELSE NULL END,
+        offline_reason = CASE WHEN $1::text = 'offline' THEN $4 ELSE NULL END,
+        offline_at = CASE WHEN $1::text = 'offline' THEN NOW() ELSE NULL END,
         updated_at = NOW()
        WHERE id = $5 RETURNING id, status`,
       [
