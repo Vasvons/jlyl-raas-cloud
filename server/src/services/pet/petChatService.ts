@@ -137,14 +137,19 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
   };
 
   // 请求体
+  // v3.2.3：pg 查询 numeric/decimal 字段默认是字符串，需显式 Number() 转换
+  // 否则 DeepSeek 等厂商会报 "invalid type: string \"0.70\", expected f32"
+  const maxTokens = modelConfig.max_tokens != null ? Number(modelConfig.max_tokens) : undefined;
+  const temperature = modelConfig.temperature != null ? Number(modelConfig.temperature) : undefined;
+
   const body: any = {
     model: modelConfig.model_name,
     messages: finalMessages,
     stream: true,
   };
-  if (modelConfig.max_tokens) body.max_tokens = modelConfig.max_tokens;
-  if (modelConfig.temperature !== undefined && modelConfig.temperature !== null) {
-    body.temperature = modelConfig.temperature;
+  if (maxTokens && !Number.isNaN(maxTokens)) body.max_tokens = maxTokens;
+  if (temperature !== undefined && !Number.isNaN(temperature)) {
+    body.temperature = temperature;
   }
 
   // 流式请求
