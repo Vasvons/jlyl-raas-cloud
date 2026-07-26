@@ -68,6 +68,13 @@ const PET_KNOWLEDGE = `# 聚量引力 RaaS 平台功能说明
 - AEO 工具集：query_aeo_report / check_seo_score
 - 写作工具集：generate_article / query_article_status / create_expert
 - 发布工具集：publish_article / query_publish_records
+- 版本发布工具集（v3.7+，仅管理员可用）：
+  - list_releases：查询已发布版本历史
+  - prepare_release_draft：准备发布草稿（自动扫描 dist49 打包产物、读取 git log 生成 changelog）
+  - publish_release：执行版本发布（上传 OSS + 创建发布记录，需先 prepare_release_draft）
+  - list_agents / update_rollout / delete_release：灰度管理与版本删除
+  - 工作流：list_releases → prepare_release_draft → 询问发布类型/策略 → publish_release
+  - 注意：调用 publish_release 前必须先调用 prepare_release_draft 获取草稿，发布类型和发布策略需向用户询问
 
 ## 6. 订阅体系
 - 模块订阅：按板块订阅（聚量GEO中枢/智能体公司/灵犀站点引擎）
@@ -114,20 +121,32 @@ export interface ModelConfig {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  /** v3.7：tool 消息必须带 tool_call_id；assistant 消息带 tool_calls 时也用 */
+  tool_call_id?: string;
+  /** v3.7：assistant 消息携带工具调用请求 */
+  tool_calls?: any[];
+  /** v3.7：assistant 消息中 tool_calls 的占位 content（通常为 null 或空字符串） */
+  name?: string;
 }
 
 export interface CallModelStreamParams {
   modelConfig: ModelConfig;
   messages: ChatMessage[];
   systemPrompt?: string;
+  /** v3.7：OpenAI function calling 工具列表（MCP 工具转换后） */
+  tools?: any[];
   onDelta: (text: string) => void;
+  /** v3.7：工具调用回调，模型返回 tool_calls 时触发（在 done 之前） */
+  onToolCall?: (toolCalls: any[]) => void;
 }
 
 export interface CallModelStreamResult {
   fullText: string;
   usage?: any;
+  /** v3.7：模型返回的工具调用列表（finish_reason='tool_calls' 时非空） */
+  toolCalls?: any[];
 }
 
 /**
@@ -135,9 +154,11 @@ export interface CallModelStreamResult {
  *
  * 支持：OpenAI / 智谱 / Kimi / DeepSeek / 通义 / Ollama 等
  * 不支持：文心一言（需单独适配，未来扩展）
+ *
+ * v3.7：支持 function calling（tools 参数 + tool_calls 流式解析）
  */
 export async function callModelStream(params: CallModelStreamParams): Promise<CallModelStreamResult> {
-  const { modelConfig, messages, systemPrompt, onDelta } = params;
+  const { modelConfig, messages, systemPrompt, onDelta, onToolCall } = params;
 
   // 构造请求体
   const finalMessages: ChatMessage[] = [];
@@ -170,6 +191,11 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
   if (maxTokens && !Number.isNaN(maxTokens)) body.max_tokens = maxTokens;
   if (temperature !== undefined && !Number.isNaN(temperature)) {
     body.temperature = temperature;
+  }
+  // v3.7：注入 tools（OpenAI function calling 格式）
+  if (Array.isArray(params.tools) && params.tools.length > 0) {
+    body.tools = params.tools;
+    body.tool_choice = 'auto';
   }
 
   // 流式请求
@@ -211,6 +237,10 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
 
   let fullText = '';
   let usage: any = undefined;
+  // v3.7：工具调用累积器（按 index 分片累积 arguments 字符串）
+  // 流式响应里 delta.tool_calls 是分片的：第一片带 id/name，后续片只带 arguments 增量
+  const toolCallAccumulator: Map<number, { id: string; name: string; arguments: string }> = new Map();
+  let finishReason: string | undefined;
 
   return new Promise<CallModelStreamResult>((resolve, reject) => {
     let buffer = '';
@@ -229,12 +259,35 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
 
         try {
           const parsed = JSON.parse(data);
-          // OpenAI 兼容格式
-          const delta = parsed.choices?.[0]?.delta?.content;
-          if (typeof delta === 'string' && delta.length > 0) {
-            fullText += delta;
-            onDelta(delta);
+          const choice = parsed.choices?.[0];
+          if (!choice) continue;
+          const delta = choice.delta || {};
+
+          // 文本增量
+          if (typeof delta.content === 'string' && delta.content.length > 0) {
+            fullText += delta.content;
+            onDelta(delta.content);
           }
+
+          // v3.7：工具调用增量（分片累积）
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx = typeof tc.index === 'number' ? tc.index : 0;
+              const existing = toolCallAccumulator.get(idx) || { id: '', name: '', arguments: '' };
+              if (tc.id) existing.id = tc.id;
+              if (tc.function?.name) existing.name = tc.function.name;
+              if (typeof tc.function?.arguments === 'string') {
+                existing.arguments += tc.function.arguments;
+              }
+              toolCallAccumulator.set(idx, existing);
+            }
+          }
+
+          // finish_reason 标识本轮结束（content 或 tool_calls 完成）
+          if (choice.finish_reason) {
+            finishReason = choice.finish_reason;
+          }
+
           // 部分平台把 usage 放在最后一个 chunk
           if (parsed.usage) {
             usage = parsed.usage;
@@ -246,7 +299,24 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
     });
 
     stream.on('end', () => {
-      resolve({ fullText, usage });
+      // v3.7：finish_reason='tool_calls' 表示模型请求工具调用
+      const toolCallsList = Array.from(toolCallAccumulator.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([_, v]) => ({
+          id: v.id,
+          type: 'function',
+          function: { name: v.name, arguments: v.arguments },
+        }));
+
+      if (toolCallsList.length > 0 && finishReason === 'tool_calls') {
+        // 通过回调通知调用方（用于 SSE 实时下发）
+        if (onToolCall) {
+          try { onToolCall(toolCallsList); } catch (e) { /* ignore */ }
+        }
+        resolve({ fullText, usage, toolCalls: toolCallsList });
+      } else {
+        resolve({ fullText, usage });
+      }
     });
 
     stream.on('error', (err: Error) => {

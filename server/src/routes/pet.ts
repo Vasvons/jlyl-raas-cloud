@@ -40,14 +40,17 @@ function getUserId(req: any): number {
  * 流式对话接口（SSE）
  *
  * Body:
- *   { messages: [{role, content}], systemPrompt?: string, sessionId?: string }
+ *   { messages: [{role, content}], systemPrompt?: string, sessionId?: string, tools?: any[] }
  *
  * v3.2.4：自动加载知识库 + 用户摘要注入 systemPrompt；异步保存对话到 pet_memory
+ * v3.7：支持 tools 参数（OpenAI function calling 格式），模型返回 tool_calls 时
+ *       通过 SSE tool_call 事件下发到桌面端，桌面端本地执行 MCP 工具后再次调用本接口继续生成
  *
  * Response: text/event-stream
- *   data: {"type":"text_delta","text":"..."}      // 增量文本
- *   data: {"type":"done","fullText":"..."}        // 完成
- *   data: {"type":"error","message":"..."}        // 错误
+ *   data: {"type":"text_delta","text":"..."}        // 增量文本
+ *   data: {"type":"tool_call","toolCalls":[...]}    // 工具调用请求（v3.7）
+ *   data: {"type":"done","fullText":"..."}          // 完成
+ *   data: {"type":"error","message":"..."}          // 错误
  */
 router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
   const userId = getUserId(req);
@@ -55,7 +58,7 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
     return res.status(401).json({ code: 401, message: '未授权' });
   }
 
-  const { messages, systemPrompt, sessionId } = req.body || {};
+  const { messages, systemPrompt, sessionId, tools } = req.body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     return res.status(400).json({ code: 400, message: '缺少 messages' });
   }
@@ -107,18 +110,30 @@ router.post('/chat', authMiddleware, async (req: Request, res: Response) => {
       modelConfig,
       messages,
       systemPrompt: finalSystemPrompt,
+      tools, // v3.7：透传工具定义
       onDelta: (text) => {
         if (aborted) return;
         res.write(`data: ${JSON.stringify({ type: 'text_delta', text })}\n\n`);
       },
+      onToolCall: (toolCalls) => {
+        if (aborted) return;
+        // v3.7：下发工具调用请求到桌面端
+        res.write(`data: ${JSON.stringify({ type: 'tool_call', toolCalls })}\n\n`);
+      },
     });
 
     if (!aborted) {
-      res.write(`data: ${JSON.stringify({ type: 'done', fullText: result.fullText })}\n\n`);
+      // v3.7：如果有工具调用，done 事件附带 toolCalls 让桌面端知道本轮要执行工具
+      const donePayload: any = { type: 'done', fullText: result.fullText };
+      if (result.toolCalls && result.toolCalls.length > 0) {
+        donePayload.toolCalls = result.toolCalls;
+        donePayload.hasToolCall = true;
+      }
+      res.write(`data: ${JSON.stringify(donePayload)}\n\n`);
       res.end();
 
-      // v3.2.4：异步保存对话到 pet_memory（不阻塞响应）
-      if (sessionId && result.fullText) {
+      // v3.2.4：异步保存对话到 pet_memory（仅在无工具调用时保存，工具调用流程由桌面端继续触发下一轮）
+      if (sessionId && result.fullText && !result.toolCalls?.length) {
         // 取最后一条 user message 内容
         const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
         if (lastUserMsg) {
