@@ -2249,8 +2249,9 @@ router.get('/publish-accounts', async (req: Request, res: Response) => {
     const userLevel = String((req as any).user?.level ?? '');
     const userRole = String((req as any).user?.role ?? '');
     // v2.5.36：数据隔离 - 代理账号（level != '1' 或 role='agent'）只能看自己的私有账号
+    // v3.6：客户角色同样按代理逻辑做数据隔离
     // 管理端创建的公共池账号（user_id IS NULL）对代理不可见
-    const isAgent = userLevel !== '1' && userRole === 'agent';
+    const isAgent = userLevel !== '1' && (userRole === 'agent' || userRole === 'customer');
     let poolType = (req.query.pool_type as string) || 'all';
     let customerId = req.query.customer_id ? Number(req.query.customer_id) : undefined;
     if (isAgent) {
@@ -2365,10 +2366,11 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
       return res.status(400).json({ code: 400, message: 'platform, account_name, storage_state 必填' });
     }
     // v2.5.36：数据隔离 - 代理账号（role='agent'）只能创建私有账号，强制 user_id = 自己
+    // v3.6：客户角色同样按代理逻辑做数据隔离
     const callerUserId = getUserId(req);
     const userLevel = String((req as any).user?.level ?? '');
     const userRole = String((req as any).user?.role ?? '');
-    const isAgent = userLevel !== '1' && userRole === 'agent';
+    const isAgent = userLevel !== '1' && (userRole === 'agent' || userRole === 'customer');
     let userId: number | null;
     if (isAgent) {
       // 代理创建的账号强制归属自己，不允许创建公共池账号
@@ -2444,10 +2446,11 @@ router.delete('/publish-accounts/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
     // v2.5.36：数据隔离 - 代理账号只能删除自己的账号
+    // v3.6：客户角色同样按代理逻辑做数据隔离
     const callerUserId = getUserId(req);
     const userLevel = String((req as any).user?.level ?? '');
     const userRole = String((req as any).user?.role ?? '');
-    const isAgent = userLevel !== '1' && userRole === 'agent';
+    const isAgent = userLevel !== '1' && (userRole === 'agent' || userRole === 'customer');
     if (isAgent) {
       // 校验该账号是否属于当前代理
       const acct = await query('SELECT user_id FROM platform_auth WHERE id = $1', [id]);

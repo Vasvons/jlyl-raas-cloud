@@ -56,10 +56,10 @@ function isCustomer(req: Request): boolean {
   return user?.role === 'customer';
 }
 
-/** v3.6 判断是否为代理角色 */
+/** v3.6 判断是否为代理角色（含客户角色，客户走相同的订阅方流程） */
 function isAgent(req: Request): boolean {
   const user = (req as any).user;
-  return user?.role === 'agent';
+  return user?.role === 'agent' || user?.role === 'customer';
 }
 
 /** v3.6 获取用户对应的门户层级：admin 看全部，agent='agent'，customer='customer' */

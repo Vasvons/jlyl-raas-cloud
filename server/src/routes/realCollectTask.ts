@@ -29,7 +29,8 @@ function getUserId(req: any): number {
 function isAgent(req: any): boolean {
   const userLevel = String(req.user?.level ?? '');
   const userRole = String(req.user?.role ?? '');
-  return userLevel !== '1' && userRole === 'agent';
+  // v3.6：客户角色同样按代理逻辑做数据隔离，只能看自己的数据
+  return userLevel !== '1' && (userRole === 'agent' || userRole === 'customer');
 }
 
 /** v2.5.36：解析 userId 参数，代理强制用自己 ID */

@@ -75,7 +75,8 @@ function getUserId(req: any): number {
 function isAgent(req: any): boolean {
   const userLevel = String(req.user?.level ?? '');
   const userRole = String(req.user?.role ?? '');
-  return userLevel !== '1' && userRole === 'agent';
+  // v3.6：客户角色同样按代理逻辑做数据隔离
+  return userLevel !== '1' && (userRole === 'agent' || userRole === 'customer');
 }
 
 // 手动触发清理无效记录

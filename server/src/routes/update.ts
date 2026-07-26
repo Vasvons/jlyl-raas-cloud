@@ -34,7 +34,8 @@ function isAdmin(req: Request): boolean {
 
 function isAgent(req: Request): boolean {
   const user = (req as any).user;
-  return user?.role === 'agent';
+  // v3.6：客户角色同样按代理逻辑做数据隔离
+  return user?.role === 'agent' || user?.role === 'customer';
 }
 
 /**

@@ -21,11 +21,12 @@ function getUserId(req: any): number {
   return Number(req.user?.id ?? req.user?.userId ?? 0);
 }
 
-// v2.5.37：判断是否为代理账号（level≠'1' 且 role='agent'）
+// v2.5.37：判断是否为代理账号（level≠'1' 且 role='agent' 或 'customer'）
+// v3.6：客户角色同样按代理逻辑做数据隔离
 function isAgent(req: any): boolean {
   const userLevel = String(req.user?.level ?? '');
   const userRole = String(req.user?.role ?? '');
-  return userLevel !== '1' && userRole === 'agent';
+  return userLevel !== '1' && (userRole === 'agent' || userRole === 'customer');
 }
 
 // Worker消费队列任务（不需要鉴权，由Worker内部调用）
