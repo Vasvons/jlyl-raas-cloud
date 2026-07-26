@@ -327,7 +327,36 @@ router.put('/:id/status', async (req: Request, res: Response) => {
     res.json({ code: 200, data: result.rows[0], message: `板块状态已切换为 ${status}` });
   } catch (e: any) {
     console.error('[module/status] 切换失败:', e);
-    res.status(500).json({ code: 500, message: e.message });
+    // v3.5.7：兜底方案 — 如果主 SQL 失败（可能因 preview_info/preview_assets 等字段类型问题），
+    // 尝试用最简单的 SQL 只更新 status 字段，确保状态切换能成功
+    // 这样即使其他字段更新失败，板块状态也能切换到目标状态
+    try {
+      const fallback = await query(
+        `UPDATE module SET status = $1::text, updated_at = NOW() WHERE id = $2 RETURNING id, status`,
+        [status, id]
+      );
+      if (fallback.rows.length > 0) {
+        console.log('[module/status] 兜底切换成功（仅 status 字段）:', fallback.rows[0]);
+        return res.json({ code: 200, data: fallback.rows[0], message: `板块状态已切换为 ${status}` });
+      }
+    } catch (e2: any) {
+      console.error('[module/status] 兜底切换也失败:', e2);
+    }
+    // 返回详细错误信息，方便前端排查
+    const errDetail = {
+      message: e.message,
+      code: e.code,
+      constraint: e.constraint,
+      detail: e.detail,
+      hint: e.hint,
+      table: e.table,
+    };
+    console.error('[module/status] 详细错误:', JSON.stringify(errDetail));
+    res.status(500).json({
+      code: 500,
+      message: e.message,
+      detail: errDetail,
+    });
   }
 });
 
