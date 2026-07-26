@@ -635,6 +635,86 @@ router.post('/customers/:id/upgrade', async (req: Request, res: Response) => {
   }
 });
 
+// ============ v3.6 客户模块授权（管理员对客户授权，复用 agent_module_grant 表） ============
+// 注：agent_module_grant.agent_user_id 字段不区分角色，可同时存代理和客户的授权记录
+
+// 查询某客户的板块授权
+router.get('/customers/:id/grants', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    // 校验目标用户必须是客户角色
+    const target = await findUserById(id);
+    if (!target || (target as any).role !== 'customer') {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const list = await getAgentGrants(id);
+    res.json({ code: 200, data: list });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 授权客户使用某板块
+router.post('/customers/:id/grants', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    const { module_code, expire_at, config } = req.body;
+    if (!module_code) return res.status(400).json({ code: 400, message: 'module_code 必填' });
+
+    // 校验目标用户必须是客户角色
+    const target = await findUserById(id);
+    if (!target || (target as any).role !== 'customer') {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+
+    // 校验模块必须上架到客户端（visible_to 包含 'customer'）
+    const modResult = await query(
+      `SELECT code, visible_to FROM module WHERE code = $1`,
+      [module_code]
+    );
+    if (modResult.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '板块不存在' });
+    }
+    const visibleTo = modResult.rows[0].visible_to || ['agent'];
+    if (!Array.isArray(visibleTo) || !visibleTo.includes('customer')) {
+      return res.status(400).json({
+        code: 400,
+        message: `板块 ${module_code} 未上架到客户端，无法对客户授权。请先在管理端板块详情中把上架层级设置为包含"客户端"。`,
+      });
+    }
+
+    await grantAgentModule({
+      agent_user_id: id,
+      module_code,
+      granted_by: getUserId(req),
+      expire_at: expire_at ? new Date(expire_at) : null,
+      config,
+    });
+    res.json({ code: 200, message: '授权成功' });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// 撤销客户某板块授权
+router.delete('/customers/:id/grants/:moduleCode', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    // 校验目标用户必须是客户角色
+    const target = await findUserById(id);
+    if (!target || (target as any).role !== 'customer') {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    await revokeAgentModule(id, req.params.moduleCode);
+    res.json({ code: 200 });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
 // v2.5.36：代理客户端自助修改密码
 router.post('/change-password', async (req: Request, res: Response) => {
   try {
