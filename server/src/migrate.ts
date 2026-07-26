@@ -154,6 +154,19 @@ export async function migrate() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_du_download_agent ON desktop_update_download(agent_user_id, created_at DESC)`);
 
+    // v3.7.6：桌面端版本发布按角色分离 changelog
+    // - changelog_admin：管理员版（最全，含 admin/agent/customer/internal/all 全部条目）
+    // - changelog_agent：代理版（隐藏 admin 条目，customer/internal 合并为「进行了一些优化」）
+    // - changelog_customer：客户版（隐藏 admin 条目，agent/internal 合并为「进行了一些优化」）
+    // 原 changelog 字段保留向后兼容，新发布会同时写入三版 + 同步原字段为管理员版
+    await client.query(`ALTER TABLE desktop_update_release ADD COLUMN IF NOT EXISTS changelog_admin TEXT`);
+    await client.query(`ALTER TABLE desktop_update_release ADD COLUMN IF NOT EXISTS changelog_agent TEXT`);
+    await client.query(`ALTER TABLE desktop_update_release ADD COLUMN IF NOT EXISTS changelog_customer TEXT`);
+    // 数据迁移：历史发布记录的 changelog 字段同步到 changelog_admin（向后兼容）
+    await client.query(`UPDATE desktop_update_release SET changelog_admin = changelog WHERE changelog_admin IS NULL AND changelog IS NOT NULL`);
+    await client.query(`UPDATE desktop_update_release SET changelog_agent = changelog WHERE changelog_agent IS NULL AND changelog IS NOT NULL`);
+    await client.query(`UPDATE desktop_update_release SET changelog_customer = changelog WHERE changelog_customer IS NULL AND changelog IS NOT NULL`);
+
     // v2.5.35 阶段五：SaaS 订阅相关表
     await client.query(`
       CREATE TABLE IF NOT EXISTS agent_subscription_plan (

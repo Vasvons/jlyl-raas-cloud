@@ -39,6 +39,35 @@ function isAgent(req: Request): boolean {
 }
 
 /**
+ * v3.7.6：根据当前用户角色选择对应的 changelog 字段
+ *
+ * 规则：
+ *   - 管理员（super_admin / admin / level=1）→ changelog_admin
+ *   - 代理（role='agent'）→ changelog_agent
+ *   - 客户（role='customer'）→ changelog_customer
+ *   - 其他/兜底 → changelog（向后兼容字段）
+ *
+ * 若对应角色字段为空，回退到 changelog 字段
+ */
+function pickChangelogByRole(req: Request, row: any): string {
+  const user = (req as any).user;
+  const role = user?.role;
+  const fallback = row.changelog || '';
+
+  if (isAdmin(req)) {
+    return row.changelog_admin || fallback;
+  }
+  if (role === 'customer') {
+    return row.changelog_customer || fallback;
+  }
+  if (role === 'agent') {
+    return row.changelog_agent || fallback;
+  }
+  // 其他角色（如未识别）回退到 changelog 字段
+  return fallback;
+}
+
+/**
  * 上传 exe/blockmap/latest.yml 到 OSS
  * 使用超级管理员的 cloud_api_config（user_id IS NULL 的平台共享配置）
  */
@@ -87,6 +116,8 @@ router.post('/publish-json', async (req: Request, res: Response) => {
     const {
       version, changelog, release_type, rollout_strategy, gray_agent_ids,
       oss_exe_url, oss_blockmap_url, latest_yml,
+      // v3.7.6：按角色分离的 changelog（任一未传则回退到 changelog 字段）
+      changelog_admin, changelog_agent, changelog_customer,
     } = req.body;
 
     if (!version) return res.status(400).json({ code: 400, message: 'version 必填' });
@@ -107,15 +138,27 @@ router.post('/publish-json', async (req: Request, res: Response) => {
       grayIds = gray_agent_ids.map(Number).filter(Boolean);
     }
 
+    // v3.7.6：按角色分离 changelog
+    // - 若传入 changelog_admin/agent/customer，分别写入对应字段
+    // - 未传则回退到 changelog 字段（向后兼容旧调用方）
+    // - changelog 字段同步为管理员版（保留向后兼容，list_releases 默认读此字段）
+    const finalChangelogAdmin = changelog_admin ?? changelog ?? '';
+    const finalChangelogAgent = changelog_agent ?? changelog ?? '';
+    const finalChangelogCustomer = changelog_customer ?? changelog ?? '';
+
     const result = await query(
       `INSERT INTO desktop_update_release
-        (version, changelog, release_type, rollout_strategy, gray_agent_ids,
+        (version, changelog, changelog_admin, changelog_agent, changelog_customer,
+         release_type, rollout_strategy, gray_agent_ids,
          oss_exe_url, oss_blockmap_url, latest_yml, published_by, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'published')
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'published')
        RETURNING id, published_at`,
       [
         version,
-        changelog || '',
+        finalChangelogAdmin,           // changelog（向后兼容，存管理员版）
+        finalChangelogAdmin,           // changelog_admin
+        finalChangelogAgent,           // changelog_agent
+        finalChangelogCustomer,        // changelog_customer
         release_type || 'optional',
         rollout_strategy || 'full',
         grayIds,
@@ -192,13 +235,17 @@ router.post('/publish', upload.fields([
 
     const result = await query(
       `INSERT INTO desktop_update_release
-        (version, changelog, release_type, rollout_strategy, gray_agent_ids,
+        (version, changelog, changelog_admin, changelog_agent, changelog_customer,
+         release_type, rollout_strategy, gray_agent_ids,
          oss_exe_url, oss_blockmap_url, latest_yml, published_by, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'published')
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'published')
        RETURNING id, published_at`,
       [
         version,
-        changelog || '',
+        changelog || '',   // changelog（向后兼容）
+        changelog || '',   // changelog_admin（multipart 模式不区分角色，三版相同）
+        changelog || '',   // changelog_agent
+        changelog || '',   // changelog_customer
         release_type || 'optional',
         rollout_strategy || 'full',
         grayIds,
@@ -231,8 +278,10 @@ router.post('/publish', upload.fields([
 router.get('/releases', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
+    // v3.7.6：返回三版 changelog 字段供管理员查看
     const result = await query(
-      `SELECT id, version, changelog, release_type, rollout_strategy, gray_agent_ids,
+      `SELECT id, version, changelog, changelog_admin, changelog_agent, changelog_customer,
+              release_type, rollout_strategy, gray_agent_ids,
               oss_exe_url, oss_blockmap_url, published_by, published_at, status,
               downloaded_count, installed_count
        FROM desktop_update_release
@@ -291,8 +340,10 @@ router.get('/latest', async (req: Request, res: Response) => {
     if (userId === 0) return res.status(401).json({ code: 401, message: '未登录' });
 
     // 查询所有 published 状态的发布，按时间倒序
+    // v3.7.6：查询三版 changelog 字段，按角色返回
     const result = await query(
-      `SELECT id, version, changelog, release_type, rollout_strategy, gray_agent_ids,
+      `SELECT id, version, changelog, changelog_admin, changelog_agent, changelog_customer,
+              release_type, rollout_strategy, gray_agent_ids,
               oss_exe_url, oss_blockmap_url, latest_yml, published_at
        FROM desktop_update_release
        WHERE status = 'published'
@@ -330,6 +381,9 @@ router.get('/latest', async (req: Request, res: Response) => {
       return res.json({ code: 200, data: { has_update: false } });
     }
 
+    // v3.7.6：根据用户角色选择对应版本的 changelog
+    const roleSpecificChangelog = pickChangelogByRole(req, visibleRelease);
+
     res.json({
       code: 200,
       data: {
@@ -337,7 +391,7 @@ router.get('/latest', async (req: Request, res: Response) => {
         release: {
           id: visibleRelease.id,
           version: visibleRelease.version,
-          changelog: visibleRelease.changelog,
+          changelog: roleSpecificChangelog,
           release_type: visibleRelease.release_type,
           url: visibleRelease.oss_exe_url,
           blockmap_url: visibleRelease.oss_blockmap_url,
