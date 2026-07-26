@@ -235,16 +235,28 @@ router.delete('/:id', async (req: Request, res: Response) => {
 /**
  * 切换板块状态
  * body: { status: 'developing'|'preview'|'published'|'offline', preview_info?, preview_assets?, offline_reason? }
+ *
+ * v3.5.3：重写为分状态独立 SQL，避免 CASE 语句的 PostgreSQL 参数类型推断问题
+ * v3.5.6：再次强化日志 + 显式类型转换，确保所有状态切换（尤其 developing）稳定成功
  */
 router.put('/:id/status', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
     const id = Number(req.params.id);
     const { status, preview_info, preview_assets, offline_reason } = req.body;
+    console.log('[module/status] 切换请求:', { id, status, hasPreviewInfo: !!preview_info, hasPreviewAssets: !!preview_assets, hasOfflineReason: !!offline_reason });
 
     if (!['developing', 'preview', 'published', 'offline'].includes(status)) {
       return res.status(400).json({ code: 400, message: 'status 必须为 developing/preview/published/offline' });
     }
+
+    // 先检查板块是否存在（避免 RETURNING 为空时的 404 误判）
+    const existCheck = await query(`SELECT id, status FROM module WHERE id = $1`, [id]);
+    if (existCheck.rows.length === 0) {
+      console.log('[module/status] 板块不存在, id=', id);
+      return res.status(404).json({ code: 404, message: '板块不存在' });
+    }
+    console.log('[module/status] 当前状态:', existCheck.rows[0].status, '→ 目标:', status);
 
     // 上架前校验：至少有 1 个板块套餐
     if (status === 'published') {
@@ -259,28 +271,62 @@ router.put('/:id/status', async (req: Request, res: Response) => {
       }
     }
 
-    const result = await query(
-      `UPDATE module SET
-        status = $1,
-        preview_info = COALESCE($2, preview_info),
-        preview_assets = COALESCE($3, preview_assets),
-        offline_reason = CASE WHEN $1::text = 'offline' THEN $4 ELSE NULL END,
-        offline_at = CASE WHEN $1::text = 'offline' THEN NOW() ELSE NULL END,
-        updated_at = NOW()
-       WHERE id = $5 RETURNING id, status`,
-      [
-        status,
-        preview_info ? JSON.stringify(preview_info) : null,
-        preview_assets ? JSON.stringify(preview_assets) : null,
-        offline_reason || null,
-        id,
-      ]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ code: 404, message: '板块不存在' });
+    // v3.5.6：按目标状态走独立的简单 SQL，彻底避免 CASE + COALESCE 的类型推断问题
+    let result: any;
+    if (status === 'developing') {
+      // 切换到开发中：清空 preview_info / preview_assets / offline_reason / offline_at
+      result = await query(
+        `UPDATE module
+           SET status = $1::text,
+               preview_info = NULL,
+               preview_assets = NULL,
+               offline_reason = NULL,
+               offline_at = NULL,
+               updated_at = NOW()
+         WHERE id = $2 RETURNING id, status`,
+        [status, id]
+      );
+    } else if (status === 'offline') {
+      result = await query(
+        `UPDATE module
+           SET status = $1::text,
+               offline_reason = $2,
+               offline_at = NOW(),
+               updated_at = NOW()
+         WHERE id = $3 RETURNING id, status`,
+        [status, offline_reason || null, id]
+      );
+    } else if (status === 'preview') {
+      const previewInfoJson = preview_info ? JSON.stringify(preview_info) : null;
+      const previewAssetsJson = preview_assets ? JSON.stringify(preview_assets) : null;
+      result = await query(
+        `UPDATE module
+           SET status = $1::text,
+               preview_info = $2::jsonb,
+               preview_assets = $3::jsonb,
+               offline_reason = NULL,
+               offline_at = NULL,
+               updated_at = NOW()
+         WHERE id = $4 RETURNING id, status`,
+        [status, previewInfoJson, previewAssetsJson, id]
+      );
+    } else {
+      // published
+      result = await query(
+        `UPDATE module
+           SET status = $1::text,
+               offline_reason = NULL,
+               offline_at = NULL,
+               updated_at = NOW()
+         WHERE id = $2 RETURNING id, status`,
+        [status, id]
+      );
     }
+
+    console.log('[module/status] 切换成功:', result.rows[0]);
     res.json({ code: 200, data: result.rows[0], message: `板块状态已切换为 ${status}` });
   } catch (e: any) {
+    console.error('[module/status] 切换失败:', e);
     res.status(500).json({ code: 500, message: e.message });
   }
 });
