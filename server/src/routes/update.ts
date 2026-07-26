@@ -118,11 +118,17 @@ router.post('/publish-json', async (req: Request, res: Response) => {
       oss_exe_url, oss_blockmap_url, latest_yml,
       // v3.7.6：按角色分离的 changelog（任一未传则回退到 changelog 字段）
       changelog_admin, changelog_agent, changelog_customer,
+      // v3.7.8：草稿模式。精灵默认创建 draft，管理员在 UI 确认后才转 published 推送给客户端
+      // 兼容：未传 status 或传 'published' 时，保持旧行为（直接发布）
+      status: statusParam,
     } = req.body;
 
     if (!version) return res.status(400).json({ code: 400, message: 'version 必填' });
     if (!oss_exe_url) return res.status(400).json({ code: 400, message: '缺少 oss_exe_url' });
     if (!latest_yml) return res.status(400).json({ code: 400, message: '缺少 latest_yml 内容' });
+
+    // v3.7.8：status 只允许 'draft' 或 'published'，默认 'published'（向后兼容）
+    const status = (statusParam === 'draft') ? 'draft' : 'published';
 
     const userId = getUserId(req);
 
@@ -139,19 +145,19 @@ router.post('/publish-json', async (req: Request, res: Response) => {
     }
 
     // v3.7.6：按角色分离 changelog
-    // - 若传入 changelog_admin/agent/customer，分别写入对应字段
-    // - 未传则回退到 changelog 字段（向后兼容旧调用方）
-    // - changelog 字段同步为管理员版（保留向后兼容，list_releases 默认读此字段）
     const finalChangelogAdmin = changelog_admin ?? changelog ?? '';
     const finalChangelogAgent = changelog_agent ?? changelog ?? '';
     const finalChangelogCustomer = changelog_customer ?? changelog ?? '';
+
+    // v3.7.8：draft 状态时 published_at 为 NULL，转 published 时才写入当前时间
+    const publishedAt = status === 'published' ? new Date() : null;
 
     const result = await query(
       `INSERT INTO desktop_update_release
         (version, changelog, changelog_admin, changelog_agent, changelog_customer,
          release_type, rollout_strategy, gray_agent_ids,
-         oss_exe_url, oss_blockmap_url, latest_yml, published_by, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'published')
+         oss_exe_url, oss_blockmap_url, latest_yml, published_by, status, published_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING id, published_at`,
       [
         version,
@@ -166,6 +172,8 @@ router.post('/publish-json', async (req: Request, res: Response) => {
         oss_blockmap_url || null,
         latest_yml,
         userId,
+        status,
+        publishedAt,
       ]
     );
 
@@ -174,8 +182,11 @@ router.post('/publish-json', async (req: Request, res: Response) => {
       data: {
         id: result.rows[0].id,
         published_at: result.rows[0].published_at,
+        status,
       },
-      message: `版本 ${version} 发布成功`,
+      message: status === 'draft'
+        ? `版本 ${version} 草稿已创建（待管理员确认发布）`
+        : `版本 ${version} 发布成功`,
     });
   } catch (e: any) {
     console.error('[Update] publish-json 失败:', e);
@@ -328,6 +339,59 @@ router.post('/:id/rollout', async (req: Request, res: Response) => {
     );
     res.json({ code: 200 });
   } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// ============ 管理员：发布草稿/重新发布（v3.7.8）============
+// 把 draft 转 published 推送给客户端；或对已 published 的版本重新触发推送（更新 published_at + 策略）
+// 同时支持更新 release_type / rollout_strategy / gray_agent_ids
+
+router.post('/:id/publish', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    const { release_type, rollout_strategy, gray_agent_ids } = req.body;
+
+    // 校验记录存在
+    const existing = await query(
+      'SELECT id, version, status FROM desktop_update_release WHERE id = $1',
+      [id]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '发布记录不存在' });
+    }
+
+    // 解析灰度代理
+    let grayIds: number[] = [];
+    if (rollout_strategy === 'gray' && Array.isArray(gray_agent_ids)) {
+      grayIds = gray_agent_ids.map(Number).filter(Boolean);
+    }
+
+    // 转为 published 状态，刷新 published_at 时间（客户端 /latest 按 published_at DESC 排序，会重新检测到）
+    // 同时更新发布策略（管理员在弹窗里配置的 release_type / rollout_strategy / gray_agent_ids）
+    await query(
+      `UPDATE desktop_update_release
+       SET status = 'published',
+           published_at = NOW(),
+           release_type = COALESCE($1, release_type),
+           rollout_strategy = COALESCE($2, rollout_strategy),
+           gray_agent_ids = CASE WHEN $2 = 'gray' THEN $3 ELSE '{}'::int[] END
+       WHERE id = $4`,
+      [
+        release_type || null,
+        rollout_strategy || null,
+        grayIds,
+        id,
+      ]
+    );
+
+    res.json({
+      code: 200,
+      message: `版本 ${existing.rows[0].version} 已发布，客户端将在下次心跳检测到更新`,
+    });
+  } catch (e: any) {
+    console.error('[Update] /:id/publish 失败:', e);
     res.status(500).json({ code: 500, message: e.message });
   }
 });
