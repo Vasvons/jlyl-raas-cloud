@@ -241,9 +241,16 @@ router.delete('/:id', async (req: Request, res: Response) => {
  */
 router.put('/:id/status', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  // v3.5.7：id 和 status 提到 try 块外，以便 catch 块中的兜底 SQL 能访问
+  const id = Number(req.params.id);
+  const { status, preview_info, preview_assets, offline_reason } = req.body as {
+    status: 'developing' | 'preview' | 'published' | 'offline';
+    preview_info?: any;
+    preview_assets?: any;
+    offline_reason?: string;
+  };
+
   try {
-    const id = Number(req.params.id);
-    const { status, preview_info, preview_assets, offline_reason } = req.body;
     console.log('[module/status] 切换请求:', { id, status, hasPreviewInfo: !!preview_info, hasPreviewAssets: !!preview_assets, hasOfflineReason: !!offline_reason });
 
     if (!['developing', 'preview', 'published', 'offline'].includes(status)) {
