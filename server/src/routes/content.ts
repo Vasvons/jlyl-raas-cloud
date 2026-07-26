@@ -157,11 +157,23 @@ function getUserId(req: Request): number {
  * 代理（role='agent' 且 level≠'1'）登录后只能看自己名下的数据，
  * 管理员（level='1'）可查看任意客户数据。
  * 与 GET /publish-accounts 的 isAgent 判断保持一致。
+ *
+ * v3.6：客户（role='customer'）也按代理逻辑做数据隔离，只能看自己的数据。
  */
 function isAgent(req: Request): boolean {
   const userLevel = String((req as any).user?.level ?? '');
   const userRole = String((req as any).user?.role ?? '');
-  return userLevel !== '1' && userRole === 'agent';
+  if (userLevel === '1') return false;
+  return userRole === 'agent' || userRole === 'customer';
+}
+
+/**
+ * v3.6：判断是否为客户角色（与 isAgent 互斥，用于客户专属逻辑）
+ */
+function isCustomer(req: Request): boolean {
+  const userLevel = String((req as any).user?.level ?? '');
+  const userRole = String((req as any).user?.role ?? '');
+  return userLevel !== '1' && userRole === 'customer';
 }
 
 /**
@@ -172,6 +184,8 @@ function isAgent(req: Request): boolean {
  * v2.5.36：代理账号强制返回自己的 userId，忽略任何 customer_id 参数，
  * 防止代理通过传 ?customer_id=N 越权查看其他客户数据。
  * 这是飞轮总览、数据监控等页面的统一数据隔离收口点。
+ *
+ * v3.6：客户角色同样强制返回自己的 userId，数据隔离逻辑与代理一致。
  */
 function getCustomerId(req: Request): number {
   if (isAgent(req)) {
@@ -2670,8 +2684,21 @@ router.delete('/flywheel/event-logs', async (req: Request, res: Response) => {
 
 // ============ 客户列表 ============
 // v2.5.36：代理账号只能看自己，管理员可看全部 level='0' 客户
+// v3.6：客户角色返回自己（作为单元素列表），前端据此隐藏客户切换 UI
 router.get('/customers', authMiddleware, async (req: Request, res: Response) => {
   try {
+    // v3.6 客户角色：仅返回自己（客户无客户管理功能，只能服务自己）
+    if (isCustomer(req)) {
+      const me = getUserId(req);
+      const result = await query(
+        `SELECT id, username, phone, email, level, create_time
+         FROM users
+         WHERE id = $1
+         ORDER BY id ASC`,
+        [me]
+      );
+      return res.json({ code: 200, data: result.rows });
+    }
     // v2.5.37：数据隔离 - 代理返回自己名下的客户（parent_admin_id = 代理 id）
     //   之前错误地返回代理自己（WHERE id = $1），导致飞轮页面 filter level='0' 后为空
     if (isAgent(req)) {

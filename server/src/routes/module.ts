@@ -50,22 +50,47 @@ function isAdmin(req: Request): boolean {
   return user?.role === 'super_admin' || user?.role === 'admin' || user?.level === '1';
 }
 
+/** v3.6 判断是否为客户角色 */
+function isCustomer(req: Request): boolean {
+  const user = (req as any).user;
+  return user?.role === 'customer';
+}
+
+/** v3.6 判断是否为代理角色 */
+function isAgent(req: Request): boolean {
+  const user = (req as any).user;
+  return user?.role === 'agent';
+}
+
+/** v3.6 获取用户对应的门户层级：admin 看全部，agent='agent'，customer='customer' */
+function getUserPortalLevel(req: Request): 'agent' | 'customer' | 'all' {
+  if (isAdmin(req)) return 'all';
+  if (isAgent(req)) return 'agent';
+  if (isCustomer(req)) return 'customer';
+  return 'all';
+}
+
 // ============ 板块查询 ============
 
 /**
  * 板块列表
  * - 管理端：返回所有板块
- * - 代理端：返回 published + preview + 已订阅的 offline（developing 不返回）
+ * - 代理端：返回 visible_to 含 'agent' 的 published + preview + 已订阅的 offline（developing 不返回）
+ * - 客户端：返回 visible_to 含 'customer' 的 published + preview + 已订阅的 offline（developing 不返回）
+ *
+ * v3.6：新增 visible_to 字段过滤，模块上架时选择上架到哪些层级的门户
  */
 router.get('/list', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const admin = isAdmin(req);
+    const portalLevel = getUserPortalLevel(req);
 
     if (admin) {
       const result = await query(
         `SELECT id, code, name, description, icon, status, is_system, sort_order,
                 preview_info, preview_assets, publish_config, offline_reason, offline_at,
+                visible_to, intro_html, trial_enabled, trial_duration_days, trial_agreement_html, trial_limits, trial_max_count,
                 created_at, updated_at
          FROM module
          ORDER BY sort_order ASC, id ASC`
@@ -73,10 +98,12 @@ router.get('/list', async (req: Request, res: Response) => {
       return res.json({ code: 200, data: result.rows });
     }
 
-    // 代理端：published + preview + 已订阅的 offline
+    // 代理端/客户端：按 visible_to 过滤 + published/preview + 已订阅 offline
+    // visible_to 是 JSONB 数组，用 ? 操作符判断是否包含 portalLevel
     const result = await query(
       `SELECT m.id, m.code, m.name, m.description, m.icon, m.status, m.is_system, m.sort_order,
               m.preview_info, m.preview_assets, m.publish_config, m.offline_reason, m.offline_at,
+              m.visible_to, m.intro_html, m.trial_enabled, m.trial_duration_days, m.trial_agreement_html, m.trial_limits, m.trial_max_count,
               g.expire_at AS subscription_expire_at,
               CASE
                 WHEN g.id IS NOT NULL AND (g.expire_at IS NULL OR g.expire_at > NOW()) THEN 'subscribed'
@@ -88,11 +115,14 @@ router.get('/list', async (req: Request, res: Response) => {
          ON g.module_code = m.code
          AND g.agent_user_id = $1
          AND g.status = 'active'
-       WHERE m.status IN ('published', 'preview')
-          OR (m.status = 'offline' AND g.id IS NOT NULL
-              AND (g.expire_at IS NULL OR g.expire_at > NOW()))
+       WHERE (m.visible_to ? $2)
+         AND (
+           m.status IN ('published', 'preview')
+           OR (m.status = 'offline' AND g.id IS NOT NULL
+               AND (g.expire_at IS NULL OR g.expire_at > NOW()))
+         )
        ORDER BY m.sort_order ASC, m.id ASC`,
-      [userId]
+      [userId, portalLevel]
     );
     res.json({ code: 200, data: result.rows });
   } catch (e: any) {
@@ -112,7 +142,7 @@ router.get('/:code', async (req: Request, res: Response) => {
     const result = await query(
       `SELECT id, code, name, description, icon, status, is_system, sort_order,
               preview_info, preview_assets, publish_config, offline_reason, offline_at,
-              intro_html, trial_enabled, trial_duration_days, trial_agreement_html, trial_limits, trial_max_count,
+              visible_to, intro_html, trial_enabled, trial_duration_days, trial_agreement_html, trial_limits, trial_max_count,
               created_at, updated_at
        FROM module WHERE code = $1`,
       [code]
@@ -185,17 +215,30 @@ router.put('/:id', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   try {
     const id = Number(req.params.id);
-    const { name, description, icon, sort_order } = req.body;
+    const { name, description, icon, sort_order, visible_to } = req.body;
+    // v3.6 校验 visible_to 参数
+    let visibleToJson: string | null = null;
+    if (visible_to !== undefined) {
+      if (!Array.isArray(visible_to) || visible_to.length === 0) {
+        return res.status(400).json({ code: 400, message: 'visible_to 必须为非空数组' });
+      }
+      const validLevels = visible_to.every((v: string) => v === 'agent' || v === 'customer');
+      if (!validLevels) {
+        return res.status(400).json({ code: 400, message: 'visible_to 取值仅支持 agent/customer' });
+      }
+      visibleToJson = JSON.stringify(visible_to);
+    }
     const result = await query(
       `UPDATE module SET
         name = COALESCE($1, name),
         description = COALESCE($2, description),
         icon = COALESCE($3, icon),
         sort_order = COALESCE($4, sort_order),
+        visible_to = COALESCE($5, visible_to),
         updated_at = NOW()
-       WHERE id = $5 RETURNING id`,
+       WHERE id = $6 RETURNING id`,
       [name || null, description !== undefined ? description : null, icon || null,
-       sort_order != null ? Number(sort_order) : null, id]
+       sort_order != null ? Number(sort_order) : null, visibleToJson, id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ code: 404, message: '板块不存在' });
@@ -243,18 +286,30 @@ router.put('/:id/status', async (req: Request, res: Response) => {
   if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
   // v3.5.7：id 和 status 提到 try 块外，以便 catch 块中的兜底 SQL 能访问
   const id = Number(req.params.id);
-  const { status, preview_info, preview_assets, offline_reason } = req.body as {
+  const { status, preview_info, preview_assets, offline_reason, visible_to } = req.body as {
     status: 'developing' | 'preview' | 'published' | 'offline';
     preview_info?: any;
     preview_assets?: any;
     offline_reason?: string;
+    visible_to?: string[];  // v3.6 上架层级：['agent'] / ['customer'] / ['agent','customer']
   };
 
   try {
-    console.log('[module/status] 切换请求:', { id, status, hasPreviewInfo: !!preview_info, hasPreviewAssets: !!preview_assets, hasOfflineReason: !!offline_reason });
+    console.log('[module/status] 切换请求:', { id, status, hasPreviewInfo: !!preview_info, hasPreviewAssets: !!preview_assets, hasOfflineReason: !!offline_reason, visible_to });
 
     if (!['developing', 'preview', 'published', 'offline'].includes(status)) {
       return res.status(400).json({ code: 400, message: 'status 必须为 developing/preview/published/offline' });
+    }
+
+    // v3.6 校验 visible_to 参数
+    if (visible_to !== undefined) {
+      if (!Array.isArray(visible_to) || visible_to.length === 0) {
+        return res.status(400).json({ code: 400, message: 'visible_to 必须为非空数组' });
+      }
+      const validLevels = visible_to.every((v: string) => v === 'agent' || v === 'customer');
+      if (!validLevels) {
+        return res.status(400).json({ code: 400, message: 'visible_to 取值仅支持 agent/customer' });
+      }
     }
 
     // 先检查板块是否存在（避免 RETURNING 为空时的 404 误判）
@@ -278,56 +333,116 @@ router.put('/:id/status', async (req: Request, res: Response) => {
       }
     }
 
+    // v3.6 构造 visible_to 的 JSON 字符串（仅在传入时更新）
+    const visibleToJson = visible_to ? JSON.stringify(visible_to) : null;
+
     // v3.5.6：按目标状态走独立的简单 SQL，彻底避免 CASE + COALESCE 的类型推断问题
     let result: any;
     if (status === 'developing') {
       // 切换到开发中：清空 preview_info / preview_assets / offline_reason / offline_at
-      result = await query(
-        `UPDATE module
-           SET status = $1::text,
-               preview_info = NULL,
-               preview_assets = NULL,
-               offline_reason = NULL,
-               offline_at = NULL,
-               updated_at = NOW()
-         WHERE id = $2 RETURNING id, status`,
-        [status, id]
-      );
+      // v3.6 同时更新 visible_to（如果传入）
+      if (visible_to) {
+        result = await query(
+          `UPDATE module
+             SET status = $1::text,
+                 preview_info = NULL,
+                 preview_assets = NULL,
+                 offline_reason = NULL,
+                 offline_at = NULL,
+                 visible_to = $3::jsonb,
+                 updated_at = NOW()
+           WHERE id = $2 RETURNING id, status, visible_to`,
+          [status, id, visibleToJson]
+        );
+      } else {
+        result = await query(
+          `UPDATE module
+             SET status = $1::text,
+                 preview_info = NULL,
+                 preview_assets = NULL,
+                 offline_reason = NULL,
+                 offline_at = NULL,
+                 updated_at = NOW()
+           WHERE id = $2 RETURNING id, status`,
+          [status, id]
+        );
+      }
     } else if (status === 'offline') {
-      result = await query(
-        `UPDATE module
-           SET status = $1::text,
-               offline_reason = $2,
-               offline_at = NOW(),
-               updated_at = NOW()
-         WHERE id = $3 RETURNING id, status`,
-        [status, offline_reason || null, id]
-      );
+      if (visible_to) {
+        result = await query(
+          `UPDATE module
+             SET status = $1::text,
+                 offline_reason = $2,
+                 offline_at = NOW(),
+                 visible_to = $4::jsonb,
+                 updated_at = NOW()
+           WHERE id = $3 RETURNING id, status, visible_to`,
+          [status, offline_reason || null, id, visibleToJson]
+        );
+      } else {
+        result = await query(
+          `UPDATE module
+             SET status = $1::text,
+                 offline_reason = $2,
+                 offline_at = NOW(),
+                 updated_at = NOW()
+           WHERE id = $3 RETURNING id, status`,
+          [status, offline_reason || null, id]
+        );
+      }
     } else if (status === 'preview') {
       const previewInfoJson = preview_info ? JSON.stringify(preview_info) : null;
       const previewAssetsJson = preview_assets ? JSON.stringify(preview_assets) : null;
-      result = await query(
-        `UPDATE module
-           SET status = $1::text,
-               preview_info = $2::jsonb,
-               preview_assets = $3::jsonb,
-               offline_reason = NULL,
-               offline_at = NULL,
-               updated_at = NOW()
-         WHERE id = $4 RETURNING id, status`,
-        [status, previewInfoJson, previewAssetsJson, id]
-      );
+      if (visible_to) {
+        result = await query(
+          `UPDATE module
+             SET status = $1::text,
+                 preview_info = $2::jsonb,
+                 preview_assets = $3::jsonb,
+                 offline_reason = NULL,
+                 offline_at = NULL,
+                 visible_to = $5::jsonb,
+                 updated_at = NOW()
+           WHERE id = $4 RETURNING id, status, visible_to`,
+          [status, previewInfoJson, previewAssetsJson, id, visibleToJson]
+        );
+      } else {
+        result = await query(
+          `UPDATE module
+             SET status = $1::text,
+                 preview_info = $2::jsonb,
+                 preview_assets = $3::jsonb,
+                 offline_reason = NULL,
+                 offline_at = NULL,
+                 updated_at = NOW()
+           WHERE id = $4 RETURNING id, status`,
+          [status, previewInfoJson, previewAssetsJson, id]
+        );
+      }
     } else {
       // published
-      result = await query(
-        `UPDATE module
-           SET status = $1::text,
-               offline_reason = NULL,
-               offline_at = NULL,
-               updated_at = NOW()
-         WHERE id = $2 RETURNING id, status`,
-        [status, id]
-      );
+      if (visible_to) {
+        result = await query(
+          `UPDATE module
+             SET status = $1::text,
+                 offline_reason = NULL,
+                 offline_at = NULL,
+                 visible_to = $3::jsonb,
+                 updated_at = NOW()
+           WHERE id = $2 RETURNING id, status, visible_to`,
+          [status, id, visibleToJson]
+        );
+      } else {
+        result = await query(
+          `UPDATE module
+             SET status = $1::text,
+                 offline_reason = NULL,
+                 offline_at = NULL,
+                 updated_at = NOW()
+           WHERE id = $2 RETURNING id, status`,
+          [status, id]
+        );
+      }
     }
 
     console.log('[module/status] 切换成功:', result.rows[0]);

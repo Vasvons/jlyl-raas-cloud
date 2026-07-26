@@ -73,6 +73,81 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// v3.6 公开注册接口（无需登录）
+// 注册的账号统一为客户层级（level='0', role='customer'），出现在代理端账号管理页面
+// 管理员可在账号管理-客户 Tab 中将其升级为代理
+router.post('/register', async (req, res) => {
+  try {
+    const { username, password, phone, email } = req.body;
+    console.log('[Register] 注册请求:', { username, hasPassword: !!password, phone, email });
+
+    if (!username || !password) {
+      return res.json({ code: 400, message: '用户名和密码不能为空' });
+    }
+    if (username.length < 3 || username.length > 50) {
+      return res.json({ code: 400, message: '用户名长度需 3-50 个字符' });
+    }
+    if (password.length < 6) {
+      return res.json({ code: 400, message: '密码长度至少 6 位' });
+    }
+    // 用户名格式校验：字母/数字/下划线
+    if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+      return res.json({ code: 400, message: '用户名仅支持字母、数字、下划线' });
+    }
+
+    // 检查用户名是否已存在
+    const existing = await findUserByUsername(username);
+    if (existing) {
+      return res.json({ code: 409, message: '用户名已存在' });
+    }
+
+    // 加密密码
+    const hashedPassword = await hashPassword(password);
+
+    // 创建客户账号（level='0', role='customer'）
+    // parent_admin_id=NULL，未绑定代理；管理员可在账号管理中将其升级为代理
+    const result = await query(
+      `INSERT INTO users (username, password, phone, email, level, role, status, create_time, update_time)
+       VALUES ($1, $2, $3, $4, '0', 'customer', 'active', NOW(), NOW())
+       RETURNING id, username, phone, email, level, role, status, create_time`,
+      [username, hashedPassword, phone || null, email || null]
+    );
+
+    const newUser = result.rows[0];
+    console.log('[Register] 注册成功:', { id: newUser.id, username: newUser.username });
+
+    // 自动登录：签发 token
+    const token = generateToken({ id: newUser.id, username: newUser.username, level: newUser.level, role: newUser.role });
+
+    res.json({
+      code: 200,
+      message: '注册成功',
+      data: {
+        token,
+        userInfo: {
+          id: newUser.id,
+          username: newUser.username,
+          phone: newUser.phone,
+          email: newUser.email,
+          level: newUser.level,
+          role: newUser.role,
+          status: newUser.status,
+          parent_admin_id: null,
+          expire_at: null,
+          cid: '',
+          dateTime: null,
+        }
+      }
+    });
+  } catch (e: any) {
+    console.error('[Auth] 注册失败:', e);
+    if (e.code === '23505') {
+      return res.json({ code: 409, message: '用户名已存在' });
+    }
+    res.json({ code: 500, message: e.message || '服务器错误' });
+  }
+});
+
 // 获取当前登录用户信息
 // 支持两种方式：
 // 1. 不带 userId：通过 token 获取当前登录用户

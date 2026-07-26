@@ -2454,6 +2454,32 @@ export async function migrate() {
     await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS trial_limits JSONB`);                  // 试用限制（JSON：max_customers, max_queries 等）
     await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS trial_max_count INT DEFAULT 1`);       // 每个代理最大试用次数
 
+    // ===== v3.6 多层级门户：模块上架层级 =====
+    // visible_to: JSONB 数组，可选值 'agent'（代理门户）/ 'customer'（客户门户），默认 ['agent']
+    // 上架时选择上架到哪些层级的门户，对应层级的用户才能在门户看到并订阅
+    await client.query(`ALTER TABLE module ADD COLUMN IF NOT EXISTS visible_to JSONB DEFAULT '["agent"]'::jsonb`);
+    console.log('[Migrate] v3.6 module.visible_to 字段已添加');
+
+    // v3.6 修复 agent_module_grant 表 source 列缺失（之前试用流程 INSERT 引用了 source 列但未建表）
+    await client.query(`ALTER TABLE agent_module_grant ADD COLUMN IF NOT EXISTS source VARCHAR(20)`);
+    console.log('[Migrate] v3.6 agent_module_grant.source 字段已添加');
+
+    // v3.6 新增客户版聚量GEO中枢预置模块（is_system=true，与 geo 模块隔离，独立迭代）
+    // 默认 visible_to=["customer"]，仅供客户门户订阅
+    await client.query(
+      `INSERT INTO module (code, name, description, icon, status, is_system, sort_order, visible_to)
+       VALUES ('geo_customer', '聚量GEO中枢', 'GEO 搜索引擎优化中枢（客户版）', 'ClusterOutlined', 'published', TRUE, 4, '["customer"]'::jsonb)
+       ON CONFLICT (code) DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         icon = EXCLUDED.icon,
+         is_system = TRUE,
+         sort_order = EXCLUDED.sort_order,
+         visible_to = EXCLUDED.visible_to
+       WHERE module.is_system = TRUE`
+    );
+    console.log('[Migrate] v3.6 已初始化 geo_customer 客户版板块');
+
     // 模块试用记录表
     await client.query(`
       CREATE TABLE IF NOT EXISTS module_trial (

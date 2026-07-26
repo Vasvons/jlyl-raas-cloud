@@ -455,6 +455,186 @@ router.post('/heartbeat', async (req: Request, res: Response) => {
   }
 });
 
+// ============ v3.6 客户管理（管理端） ============
+
+/**
+ * 客户列表（管理端）
+ * 返回所有 role='customer' 的客户账号
+ * 支持关键词搜索（username/phone/email）
+ */
+router.get('/customers', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const keyword = (req.query.keyword as string) || '';
+    let sql = `
+      SELECT u.id, u.username, u.phone, u.email, u.role, u.status, u.parent_admin_id,
+             u.create_time, u.update_time,
+             p.username AS parent_admin_name,
+             (SELECT COUNT(*) FROM agent_module_grant amg
+              WHERE amg.agent_user_id = u.id AND amg.status = 'active') AS subscription_count
+      FROM users u
+      LEFT JOIN users p ON p.id = u.parent_admin_id
+      WHERE u.role = 'customer'
+    `;
+    const params: any[] = [];
+    if (keyword) {
+      sql += ` AND (u.username LIKE $1 OR u.phone LIKE $1 OR u.email LIKE $1)`;
+      params.push(`%${keyword}%`);
+    }
+    sql += ` ORDER BY u.id DESC`;
+    const result = await query(sql, params);
+    res.json({ code: 200, data: result.rows });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+/**
+ * 客户详情（管理端）
+ */
+router.get('/customers/:id', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    const result = await query(
+      `SELECT u.id, u.username, u.phone, u.email, u.role, u.status, u.parent_admin_id,
+              u.create_time, u.update_time,
+              p.username AS parent_admin_name
+       FROM users u
+       LEFT JOIN users p ON p.id = u.parent_admin_id
+       WHERE u.id = $1 AND u.role = 'customer'`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    res.json({ code: 200, data: result.rows[0] });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+/**
+ * 创建客户（管理端）
+ */
+router.post('/customers', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const { username, password, phone, email } = req.body;
+    if (!username || !password) return res.status(400).json({ code: 400, message: '用户名和密码必填' });
+    if (password.length < 6) return res.status(400).json({ code: 400, message: '密码至少 6 位' });
+
+    const hashed = await hashPassword(password);
+    const result = await query(
+      `INSERT INTO users (username, password, phone, email, level, role, status, create_time, update_time)
+       VALUES ($1, $2, $3, $4, '0', 'customer', 'active', NOW(), NOW())
+       RETURNING id, username, phone, email, role, status, create_time`,
+      [username, hashed, phone || null, email || null]
+    );
+    res.json({ code: 200, data: result.rows[0] });
+  } catch (e: any) {
+    if (e.code === '23505') {
+      return res.status(409).json({ code: 409, message: '用户名已存在' });
+    }
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+/**
+ * 更新客户（管理端）
+ */
+router.put('/customers/:id', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    const data: any = {};
+    if (req.body.password) data.password = await hashPassword(req.body.password);
+    if (req.body.phone !== undefined) data.phone = req.body.phone;
+    if (req.body.email !== undefined) data.email = req.body.email;
+    if (req.body.status !== undefined) data.status = req.body.status;
+    await updateUserV2(id, data);
+    res.json({ code: 200 });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+/**
+ * 删除客户（管理端）
+ */
+router.delete('/customers/:id', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    await deleteUser(Number(req.params.id));
+    res.json({ code: 200 });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+/**
+ * 客户升级为代理（管理端）
+ * 将 role='customer' 升级为 role='agent'，同时：
+ * - level 从 '0' 改为 '2'
+ * - 生成 license_key（唯一）
+ * - 设置 max_devices 默认值 2
+ * - 保留 parent_admin_id（如有归属管理员则保留，否则由管理员手动指定）
+ */
+router.post('/customers/:id/upgrade', async (req: Request, res: Response) => {
+  if (!isAdmin(req)) return res.status(403).json({ code: 403, message: '无权限' });
+  try {
+    const id = Number(req.params.id);
+    const { parent_admin_id, expire_at, max_devices } = req.body;
+
+    // 检查客户是否存在
+    const checkResult = await query(
+      `SELECT id, username, role FROM users WHERE id = $1`,
+      [id]
+    );
+    if (checkResult.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const user = checkResult.rows[0];
+    if (user.role !== 'customer') {
+      return res.status(400).json({ code: 400, message: '该账号不是客户，无法升级' });
+    }
+
+    // 生成 license_key（唯一）
+    const licenseKey = crypto.randomBytes(16).toString('hex');
+
+    // 升级为代理
+    await query(
+      `UPDATE users
+         SET role = 'agent',
+             level = '2',
+             license_key = $2,
+             max_devices = $3,
+             parent_admin_id = $4,
+             expire_at = $5,
+             status = 'active',
+             update_time = NOW()
+       WHERE id = $1`,
+      [
+        id,
+        licenseKey,
+        max_devices != null ? Number(max_devices) : 2,
+        parent_admin_id ? Number(parent_admin_id) : null,
+        expire_at ? new Date(expire_at) : null,
+      ]
+    );
+
+    console.log('[Customer/Upgrade] 客户升级为代理成功:', { id, username: user.username, licenseKey });
+    res.json({
+      code: 200,
+      message: '客户已升级为代理',
+      data: { id, license_key: licenseKey },
+    });
+  } catch (e: any) {
+    console.error('[Customer/Upgrade] 升级失败:', e);
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
 // v2.5.36：代理客户端自助修改密码
 router.post('/change-password', async (req: Request, res: Response) => {
   try {
