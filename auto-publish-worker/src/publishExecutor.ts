@@ -295,16 +295,79 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
           logger.info(`登录态失效，尝试适配器 recoverLogin...`);
           recovered = await adapter.recoverLogin(page, context, { recordId, pushLog }).catch(() => false);
         }
+
+        // v3.7.10：云端主动刷新登录态——用当前 context 重新访问页面，让 cookie 自动刷新
+        // 策略：关闭旧 page，新建 page 重新访问 loginCheckUrl，等待 networkidle 让 cookie 刷新，再次检查
+        // 适用场景：cookie 仍有效但被误判为 offline（如临时网络波动、Page crashed 导致 health_status 被标记）
         if (!recovered) {
-          logger.error(`登录态失效: ${loginCheck.reason}（云端不支持交互式登录恢复，请重新登录账号）`);
-          void reportFlywheelEvent('login_expired', `[${platform}] 账号登录态失效：${loginCheck.reason}（请在桌面端重新登录）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
+          logger.info(`v3.7.10 云端主动刷新登录态：用当前 context 重新访问页面...`);
+          try {
+            await page.close().catch(() => {});
+            page = await context.newPage();
+            await page.goto(loginCheckConfig.login_check_url!, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e: any) => {
+              logger.warn(`刷新登录态导航失败: ${e.message}`);
+            });
+            // 等待 networkidle 让 cookie 自动刷新
+            await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+            await page.waitForTimeout(3000);
+
+            // 适配器 onAfterNavigateForLoginCheck（如 wxgzh 点 #jumpUrl）
+            if (adapter) {
+              const pushLog = (msg: string, level?: 'info' | 'warn' | 'error') => {
+                if (level === 'error') logger.error(msg);
+                else if (level === 'warn') logger.warn(msg);
+                else logger.info(msg);
+              };
+              await adapter.onAfterNavigateForLoginCheck?.(page, context, { recordId, pushLog });
+            }
+
+            const refreshCheck = await checkLoginState(page, platform, loginCheckConfig);
+            if (refreshCheck.valid) {
+              logger.info(`v3.7.10 云端主动刷新登录态成功：cookie 仍有效，继续发布`);
+              recovered = true;
+
+              // 捕获刷新后的最新 storageState，回写云端（避免下次再被误判）
+              try {
+                const newStorageState = await context.storageState();
+                const newStorageStateStr = JSON.stringify(newStorageState);
+                // 计算新的过期时间
+                let expiresAt: string | undefined;
+                const validCookies = (newStorageState.cookies || []).filter((c: any) =>
+                  c.expires > 0 && c.expires > Date.now() / 1000
+                );
+                if (validCookies.length > 0) {
+                  const maxExpires = Math.max(...validCookies.map((c: any) => c.expires));
+                  expiresAt = new Date(maxExpires * 1000).toISOString();
+                }
+                await axios.post(
+                  `${SERVER_URL}/content/publish-accounts/${record.platform_auth_id}/refresh-storage-state`,
+                  { storage_state: newStorageStateStr, expires_at: expiresAt },
+                  { headers: { 'X-Worker-Secret': WORKER_SECRET }, timeout: 10000 }
+                ).catch((e: any) => {
+                  logger.warn(`回写刷新后的 storageState 失败: ${e.message}`);
+                });
+                logger.info(`已回写刷新后的 storageState 到云端`);
+              } catch (e: any) {
+                logger.warn(`捕获/回写 storageState 失败: ${e.message}`);
+              }
+            } else {
+              logger.warn(`v3.7.10 云端主动刷新登录态仍失败: ${refreshCheck.reason}`);
+            }
+          } catch (refreshErr: any) {
+            logger.warn(`v3.7.10 云端主动刷新登录态异常: ${refreshErr.message}`);
+          }
+        }
+
+        if (!recovered) {
+          logger.error(`登录态失效: ${loginCheck.reason}（云端主动刷新仍失败，请重新登录账号）`);
+          void reportFlywheelEvent('login_expired', `[${platform}] 账号登录态失效：${loginCheck.reason}（云端主动刷新失败，请在桌面端重新登录）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
           await reportPublishResult(recordId, {
             status: 'login_expired',
-            error_msg: `登录态失效: ${loginCheck.reason}（云端发布 Worker 不支持自动登录恢复，请在桌面端重新登录该账号）`,
+            error_msg: `登录态失效: ${loginCheck.reason}（云端已尝试主动刷新登录态但仍失败，请在桌面端重新登录该账号）`,
           });
           return;
         }
-        logger.info(`适配器 recoverLogin 成功，继续发布`);
+        logger.info(`登录态恢复成功，继续发布`);
       } else {
         logger.info(`登录态有效`);
       }

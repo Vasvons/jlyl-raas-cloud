@@ -2528,6 +2528,36 @@ router.post('/publish-accounts/:id/check-login', async (req: Request, res: Respo
   }
 });
 
+/**
+ * v3.7.10：云端 Worker 主动刷新登录态后回写 storageState
+ *
+ * 由 auto-publish-worker 在发布前预检发现登录态失效、但用当前 context 重新访问后
+ * cookie 仍有效时调用。回写最新的 storageState + expires_at，并重置 health_status=normal。
+ *
+ * 认证：X-Worker-Secret（云端 worker 专用，非 JWT）
+ */
+router.post('/publish-accounts/:id/refresh-storage-state', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const { storage_state, expires_at } = req.body;
+    if (!storage_state) {
+      return res.status(400).json({ code: 400, message: 'storage_state 必填' });
+    }
+    // 校验 storage_state 是合法 JSON
+    try {
+      JSON.parse(typeof storage_state === 'string' ? storage_state : JSON.stringify(storage_state));
+    } catch {
+      return res.status(400).json({ code: 400, message: 'storage_state 不是合法 JSON' });
+    }
+    // 更新 storageState + expires_at（updatePublishAccountStorageState 已内置重置 health_status=normal）
+    const storageStateStr = typeof storage_state === 'string' ? storage_state : JSON.stringify(storage_state);
+    await updatePublishAccountStorageState(id, storageStateStr, expires_at);
+    res.json({ code: 200, message: 'storageState 已刷新，账号健康状态已重置为 normal' });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 // ============ v2.0.9：飞轮事件日志（flywheel_event_log） ============
 //
 // 由桌面端 flywheelDaemon 上报关键事件（tick/AEO完成/自动创建写作任务/
