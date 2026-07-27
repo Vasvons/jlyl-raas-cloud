@@ -58,6 +58,8 @@ import {
   // v3.7.11：立即执行发布任务（调试用）
   runPublishTaskNow,
   runPublishTaskNowByBatch,
+  // v3.7.11：诊断发布任务卡住原因
+  diagnosePublishTask,
   getPublishAccounts,
   createPublishAccount,
   updatePublishAccountStorageState,
@@ -1699,7 +1701,9 @@ router.get('/publish/tasks/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ code: 404, message: '任务不存在' });
     }
     const records = await getPublishRecordsByTask(id);
-    res.json({ code: 200, data: { ...task, records } });
+    // v3.7.11：诊断卡住原因（仅 pending/processing 状态时有数据）
+    const diagnose = await diagnosePublishTask(id).catch(() => null);
+    res.json({ code: 200, data: { ...task, records, diagnose } });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

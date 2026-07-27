@@ -7873,6 +7873,193 @@ export async function runPublishTaskNow(id: number): Promise<{ reset_count: numb
 }
 
 /**
+ * v3.7.11：诊断发布任务卡住原因
+ *
+ * 分析该 task 下所有 pending/processing record，按 platform 分组，
+ * 找出每个平台卡住的具体原因（无账号/账号封禁/掉线/配额满/Worker 卡死）。
+ *
+ * 返回结构化诊断信息，前端在详情页顶部显示 Alert 提示用户。
+ */
+export async function diagnosePublishTask(
+  taskId: number
+): Promise<{
+  has_pending: boolean;
+  has_processing: boolean;
+  pending_count: number;
+  processing_count: number;
+  stuck_platforms: Array<{
+    platform: string;
+    pending_count: number;
+    reason: string;
+    detail: string;
+  }>;
+  processing_stuck_count: number;
+  summary: string;
+} | null> {
+  // 1. 统计 pending/processing 数量
+  const statsResult = await query(
+    `SELECT
+       status,
+       COUNT(*)::int AS cnt
+     FROM publish_record
+     WHERE task_id = $1 AND status IN ('pending', 'processing')
+     GROUP BY status`,
+    [taskId]
+  );
+
+  let pendingCount = 0;
+  let processingCount = 0;
+  for (const row of statsResult.rows) {
+    if (row.status === 'pending') pendingCount = row.cnt;
+    if (row.status === 'processing') processingCount = row.cnt;
+  }
+
+  // 没有 pending/processing，无需诊断
+  if (pendingCount === 0 && processingCount === 0) {
+    return null;
+  }
+
+  // 2. 按 platform 分组统计 pending record
+  const pendingByPlatform = await query(
+    `SELECT platform, COUNT(*)::int AS cnt
+     FROM publish_record
+     WHERE task_id = $1 AND status = 'pending'
+     GROUP BY platform
+     ORDER BY cnt DESC`,
+    [taskId]
+  );
+
+  const stuckPlatforms: Array<{
+    platform: string;
+    pending_count: number;
+    reason: string;
+    detail: string;
+  }> = [];
+
+  // 3. 对每个 pending platform 查可用账号
+  for (const row of pendingByPlatform.rows) {
+    const platform = row.platform;
+    const cnt = row.cnt;
+
+    // 查该平台所有发布账号的状态分布
+    const accountsResult = await query(
+      `SELECT
+         id,
+         account_name,
+         health_status,
+         publish_fail_count,
+         publish_used_today,
+         publish_daily_limit,
+         publish_last_used_date,
+         status
+       FROM platform_auth
+       WHERE platform = $1
+         AND platform_type IN ('publish', 'both')`,
+      [platform]
+    );
+
+    if (accountsResult.rows.length === 0) {
+      stuckPlatforms.push({
+        platform,
+        pending_count: cnt,
+        reason: 'no_account',
+        detail: '该平台未配置任何发布账号',
+      });
+      continue;
+    }
+
+    // 统计可用账号（与 dequeue 的 selectBestAccountForPublish 条件一致）
+    const available = accountsResult.rows.filter((a: any) =>
+      a.status === 'active' &&
+      a.health_status === 'normal' &&
+      a.publish_fail_count < 3 &&
+      (a.publish_last_used_date === null ||
+       a.publish_last_used_date < new Date().toISOString().slice(0, 10) ||
+       a.publish_used_today < a.publish_daily_limit)
+    );
+
+    if (available.length > 0) {
+      // 有可用账号但仍在 pending——可能是 Worker 未运行或同平台锁卡住
+      stuckPlatforms.push({
+        platform,
+        pending_count: cnt,
+        reason: 'worker_stuck',
+        detail: `有 ${available.length} 个可用账号，但 Worker 未拉取（可能未运行/同平台锁卡住 5 分钟/轮询间隔 30 秒）`,
+      });
+    } else {
+      // 无可用账号——分析具体原因
+      const banned = accountsResult.rows.filter((a: any) => a.health_status === 'banned');
+      const offline = accountsResult.rows.filter((a: any) => a.health_status === 'offline');
+      const quotaFull = accountsResult.rows.filter((a: any) =>
+        a.health_status === 'normal' &&
+        a.publish_fail_count < 3 &&
+        a.publish_last_used_date !== null &&
+        a.publish_last_used_date >= new Date().toISOString().slice(0, 10) &&
+        a.publish_used_today >= a.publish_daily_limit
+      );
+      const inactive = accountsResult.rows.filter((a: any) => a.status !== 'active');
+      const failLimited = accountsResult.rows.filter((a: any) => a.publish_fail_count >= 3);
+
+      const reasons: string[] = [];
+      if (banned.length > 0) reasons.push(`${banned.length} 个账号被封禁`);
+      if (offline.length > 0) reasons.push(`${offline.length} 个账号掉线`);
+      if (quotaFull.length > 0) reasons.push(`${quotaFull.length} 个账号今日配额已满`);
+      if (failLimited.length > 0) reasons.push(`${failLimited.length} 个账号失败次数超限`);
+      if (inactive.length > 0) reasons.push(`${inactive.length} 个账号已停用`);
+
+      stuckPlatforms.push({
+        platform,
+        pending_count: cnt,
+        reason: banned.length > 0 ? 'account_banned'
+          : offline.length > 0 ? 'account_offline'
+          : quotaFull.length > 0 ? 'quota_exhausted'
+          : 'no_available_account',
+        detail: reasons.length > 0 ? reasons.join('，') : '无可用账号（原因未知）',
+      });
+    }
+  }
+
+  // 4. 检查 processing 是否超时未回收（>10 分钟）
+  const processingStuckResult = await query(
+    `SELECT COUNT(*)::int AS cnt
+     FROM publish_record
+     WHERE task_id = $1
+       AND status = 'processing'
+       AND started_at < NOW() - INTERVAL '10 minutes'`,
+    [taskId]
+  );
+  const processingStuckCount = processingStuckResult.rows[0]?.cnt || 0;
+
+  // 5. 生成总结
+  let summary = '';
+  if (processingStuckCount > 0) {
+    summary = `${processingStuckCount} 条记录处理中超时（>10 分钟未完成），Worker 可能已崩溃，等待自动回收后重新拉取`;
+  } else if (stuckPlatforms.length > 0) {
+    const noAccountPlatforms = stuckPlatforms.filter(p => p.reason !== 'worker_stuck');
+    const workerStuckPlatforms = stuckPlatforms.filter(p => p.reason === 'worker_stuck');
+
+    if (noAccountPlatforms.length > 0) {
+      const names = noAccountPlatforms.map(p => `${p.platform}(${p.pending_count}条)`).join('、');
+      summary = `${pendingCount} 条记录等待中：${names} 无可用账号，请恢复账号后点击「重试失败记录」或「立即执行」`;
+    } else if (workerStuckPlatforms.length > 0) {
+      summary = `${pendingCount} 条记录等待中：账号可用，Worker 可能未运行或同平台锁卡住（5 分钟超时后自动继续）`;
+    }
+  } else if (processingCount > 0) {
+    summary = `${processingCount} 条记录处理中，等待 Worker 完成执行`;
+  }
+
+  return {
+    has_pending: pendingCount > 0,
+    has_processing: processingCount > 0,
+    pending_count: pendingCount,
+    processing_count: processingCount,
+    stuck_platforms: stuckPlatforms,
+    processing_stuck_count: processingStuckCount,
+    summary,
+  };
+}
+
+/**
  * v3.7.11：按 batch_id 立即执行发布任务（调试用）
  *
  * 与 runPublishTaskNow 类似，但作用于整个批次：
