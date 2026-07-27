@@ -14,15 +14,15 @@
     },
     {
       "type": "wait_for_selector",
-      "selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
-      "descript": "等待标题输入框",
+      "selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）'] | //div[@contenteditable='true' and contains(@data-placeholder,'标题')] | //h1[@contenteditable='true'] | //div[contains(@class,'TitleEditor')]//textarea | //input[contains(@placeholder,'标题')]",
+      "descript": "v3.7.10 等待标题输入框（兼容知乎页面改版）",
       "timeout": 15000
     },
     {
       "type": "fill",
-      "selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
+      "selector": "//textarea | //input[@placeholder='请输入标题（最多 100 个字）'] | //div[@contenteditable='true' and contains(@data-placeholder,'标题')] | //h1[@contenteditable='true'] | //div[contains(@class,'TitleEditor')]//textarea | //input[contains(@placeholder,'标题')]",
       "value": "{title}",
-      "descript": "填写标题",
+      "descript": "v3.7.10 填写标题（兼容知乎页面改版）",
       "timeout": 5000
     },
     {

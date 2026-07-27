@@ -92,6 +92,12 @@
       "timeout": 5000
     },
     {
+      "type": "evaluate_edit",
+      "value": "var bodyText = document.body.innerText || ''; var url = window.location.href; if (url.indexOf('/web-login/captcha') >= 0 || url.indexOf('/web-login/verify') >= 0) { throw new Error('小红书触发安全验证页，需APP扫码验证身份: url=' + url); } var hasCaptchaDialog = bodyText.indexOf('扫码验证') >= 0 || bodyText.indexOf('安全验证') >= 0 || bodyText.indexOf('请求太频繁') >= 0; if (hasCaptchaDialog) { throw new Error('小红书触发风控扫码验证弹窗，需APP扫码验证身份'); } return 'no captcha detected';",
+      "descript": "v3.7.10 检测风控扫码验证弹窗（触发时立即失败，避免无意义重试）",
+      "timeout": 3000
+    },
+    {
       "type": "get_by_xy",
       "selector": "xhs-publish-btn",
       "use_window_coords": false,

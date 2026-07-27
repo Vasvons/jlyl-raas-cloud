@@ -124,6 +124,13 @@
       "descript": "等待选项生效"
     },
     {
+      "type": "evaluate_edit",
+      "value": "var closed = []; var closeBtns = document.querySelectorAll('.cheetah-popconfirm .close, .modal-close, [class*=dialog] [class*=close], [class*=close-btn]'); for (var i = 0; i < closeBtns.length; i++) { try { var p = closeBtns[i].offsetParent; if (p !== null) { var ancestor = closeBtns[i]; var hasHot = false; for (var j = 0; j < 10 && ancestor; j++) { if ((ancestor.innerText||'').indexOf('换一换') >= 0 || (ancestor.innerText||'').indexOf('热点推荐') >= 0 || (ancestor.innerText||'').indexOf('创作热点') >= 0) { hasHot = true; break; } ancestor = ancestor.parentElement; } if (hasHot) { closeBtns[i].click(); closed.push('hot-recommend'); } } } catch(e) {} } var hotItem = Array.from(document.querySelectorAll('div, section, aside')).find(function(el) { var t = el.innerText || ''; return t.indexOf('换一换') >= 0 && t.indexOf('马克龙') < 0 && el.offsetParent !== null && el.children.length < 30; }); if (hotItem) { var closeIcon = hotItem.querySelector('[class*=close], .icon-close, button[title*=关闭], [aria-label*=关闭]'); if (closeIcon) { closeIcon.click(); closed.push('hot-panel'); } } if (closed.length === 0) { document.body.style.overflow = ''; } return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no hot popup';",
+      "descript": "v3.7.10 关闭热点推荐弹窗（含'换一换'特征的弹窗，避免遮挡发布按钮）",
+      "is_try": true,
+      "timeout": 3000
+    },
+    {
       "type": "click",
       "selector": "//button//span[text()=\"发布\"] | //div[text()=\"发布\"]/parent::div",
       "descript": "点击发布按钮",

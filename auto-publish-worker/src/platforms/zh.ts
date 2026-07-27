@@ -11,7 +11,8 @@ export class ZhAdapter extends BasePlatformAdapter {
 
   loginCheck = {
     url: 'https://zhuanlan.zhihu.com/write',
-    selector: "//textarea | //input[@placeholder='请输入标题（最多 100 个字）']",
+    // v3.7.10 兼容知乎页面改版：textarea / contenteditable div / TitleEditor 多兜底
+    selector: "//textarea | //input[@placeholder='请输入标题（最多 100 个字）'] | //div[@contenteditable='true' and contains(@data-placeholder,'标题')] | //h1[@contenteditable='true'] | //div[contains(@class,'TitleEditor')]//textarea | //input[contains(@placeholder,'标题')]",
     urlPattern: '^https://www\\.zhihu\\.com/signin',
     logoutKeywords: ['注册', '加入知乎', '请登录', 'sign in'],
   };

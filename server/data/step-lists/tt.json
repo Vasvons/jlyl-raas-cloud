@@ -112,8 +112,15 @@
       "descript": "等待手机预览弹窗和确认发布按钮出现"
     },
     {
+      "type": "evaluate_edit",
+      "value": "var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent !== null) { var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText||'').trim(); if (t === '确认发布' || t === '发布') { btns[j].click(); return 'clicked: ' + t; } } } } return 'no confirm in modal';",
+      "descript": "v3.7.10 在弹窗内查找确认发布按钮并点击（覆盖预览弹窗场景）",
+      "is_try": true,
+      "timeout": 3000
+    },
+    {
       "type": "click",
-      "selector": "//span[text()=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\")]//span[text()=\"确认发布\"] | //button[normalize-space(.)=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\") and contains(normalize-space(.),\"确认\")]",
+      "selector": "//span[text()=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\")]//span[text()=\"确认发布\"] | //button[normalize-space(.)=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\") and contains(normalize-space(.),\"确认\")] | //div[contains(@class,\"modal\")]//button[contains(text(),\"发布\")] | //div[contains(@class,\"byte-modal\")]//button[contains(text(),\"发布\")]",
       "descript": "确认发布",
       "ai_fallback": true,
       "ai_intent": "找到确认发布按钮并点击",

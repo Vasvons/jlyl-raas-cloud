@@ -89,6 +89,35 @@
       "force": true
     },
     {
+      "type": "timing",
+      "ms": 1500,
+      "descript": "v3.7.10 等待可能的AI生成声明弹窗自动弹出"
+    },
+    {
+      "type": "branch",
+      "condition": "!!document.querySelector('[class*=aidialog]') || !!Array.from(document.querySelectorAll('[role=dialog], .omui-dialog, .omui-modal')).find(d => (d.innerText||'').indexOf('AI生成') >= 0 || (d.innerText||'').indexOf('人工智能生成') >= 0)",
+      "descript": "v3.7.10 检测点击发布后是否自动弹出AI生成声明弹窗",
+      "branch_steps": [
+        {
+          "type": "timing",
+          "ms": 500,
+          "descript": "等待弹窗稳定"
+        },
+        {
+          "type": "evaluate_edit",
+          "value": "var dialog = document.querySelector('[class*=aidialog]') || Array.from(document.querySelectorAll('[role=dialog], .omui-dialog, .omui-modal')).find(d => (d.innerText||'').indexOf('AI生成') >= 0 || (d.innerText||'').indexOf('人工智能生成') >= 0); if (!dialog) return 'dialog not found'; var btn = Array.from(dialog.querySelectorAll('button.omui-button--primary, button')).find(b => (b.innerText||'').trim() === '提交'); if (btn) { btn.click(); return 'submitted'; } return 'submit button not found';",
+          "descript": "v3.7.10 点击AI声明弹窗的提交按钮（覆盖发布后自动弹出场景）",
+          "timeout": 5000
+        },
+        {
+          "type": "timing",
+          "ms": 1500,
+          "descript": "等待AI声明提交完成、弹窗关闭"
+        }
+      ],
+      "else_list": []
+    },
+    {
       "type": "wait_for_url",
       "value": "articleManage",
       "descript": "等待发布成功跳转到文章管理页",
