@@ -7178,6 +7178,9 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
     //    有账号的平台（如 zh/xhs）永远轮不到。
     //    修复：LEFT JOIN platform_auth 统计可用账号数，按可用账号数降序优先排序，
     //    无账号的平台排到最后（但仍保留在候选中，避免饿死）。
+    //    v3.7.11：修复"单平台账号被封后整个批次卡死"bug——原 SQL LIMIT $1 只取 N 个平台，
+    //    若前 N 个平台都无账号，assignedIds 为空直接返回，其他有账号平台永远轮不到。
+    //    修复：候选改为取所有有 pending 的平台（每平台 1 条），循环里跳过无账号的继续尝试。
     //    v2.5.36：支持按 agent_user_id 路由（混合模式 worker 分布式架构）
     const candidateResult = await client.query(
       `WITH candidate AS (
@@ -7213,9 +7216,8 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
        FROM ranked r
        LEFT JOIN platform_avail pa ON pa.platform = r.platform
        WHERE r.rn = 1
-       ORDER BY COALESCE(pa.avail_count, 0) DESC, r.platform ASC
-       LIMIT $1`,
-      agentUserId ? [limit, agentUserId] : [limit]
+       ORDER BY COALESCE(pa.avail_count, 0) DESC, r.platform ASC`,
+      agentUserId ? [agentUserId] : []
     );
 
     if (candidateResult.rows.length === 0) {
@@ -7234,11 +7236,15 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
     );
 
     // 4. 为每个成功加锁的记录选择账号并预扣配额
+    //    v3.7.11：修复"无账号平台占用候选名额"bug——原代码无账号时 continue 但不补充新候选，
+    //    且 assignedIds 为空时直接返回空数组。现改为：循环遍历所有候选，跳过无账号的继续尝试，
+    //    直到 assignedIds 达到 limit 或候选耗尽。
     const assignedIds: number[] = [];
     for (const row of lockedResult.rows) {
+      if (assignedIds.length >= limit) break;  // v3.7.11：达到 limit 后停止
       const authId = await selectBestAccountForPublish(client, row.platform);
       if (!authId) {
-        // 无可用账号：保持 pending，本次不拉取
+        // 无可用账号：保持 pending，本次不拉取，继续尝试下一个候选
         continue;
       }
       // 预扣配额
