@@ -99,15 +99,9 @@
       "descript": "等待抽屉消失"
     },
     {
-      "type": "evaluate_edit",
-      "value": "var body = document.body.innerText || ''; if (body.indexOf('头条认证未认证') >= 0 || body.indexOf('请先完成实名认证') >= 0 || body.indexOf('未实名认证') >= 0) { throw new Error('账号未实名认证，请在头条号后台完成实名认证后重试'); } return 'auth_ok';",
-      "descript": "v3.7.12 发布前检测账号实名认证状态（未认证直接抛错，避免傻等30秒超时）",
-      "timeout": 3000
-    },
-    {
       "type": "click",
-      "selector": "//span[text()=\"预览并发布\"] | //span[text()=\"预览并定时发布\"] | //button[contains(@class,\"byte-btn-primary\")]//span[text()=\"发布\"]",
-      "descript": "预览并发布",
+      "selector": "//button[contains(., \"预览并发布\")] | //button[contains(., \"预览并定时发布\")] | //button[contains(@class,\"byte-btn-primary\") and contains(.,\"发布\")] | //span[text()=\"预览并发布\"]/ancestor::button",
+      "descript": "v3.7.13 预览并发布（直接点击 button 元素而非 span，确保 click 事件触发）",
       "ai_fallback": true,
       "ai_intent": "找到头条发布按钮并点击",
       "timeout": 5000
@@ -133,10 +127,16 @@
       "timeout": 8000
     },
     {
+      "type": "evaluate_edit",
+      "value": "for (var i = 0; i < 30; i++) { var btns = document.querySelectorAll('button'); var hasPublish = false; for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t === '预览并发布' || t === '预览并定时发布') { hasPublish = true; break; } } if (!hasPublish) { return 'publish_btn_disappeared'; } if (window.location.href.indexOf('profile_v4/graphic/articles') >= 0) { return 'url_changed'; } var toasts = document.querySelectorAll('[class*=\"toast\"], [class*=\"message\"], [class*=\"notification\"]'); for (var k = 0; k < toasts.length; k++) { var tt = (toasts[k].innerText || '').trim(); if (tt.indexOf('发布成功') >= 0 || tt.indexOf('已发布') >= 0) { return 'toast_success: ' + tt.slice(0, 50); } } var now = function() { return new Promise(function(r) { setTimeout(r, 1000); }); }; await now(); } return 'timeout_30s_btn_still_visible';",
+      "descript": "v3.7.13 发布成功检测（按钮消失/URL跳转/成功提示，三重检测，不依赖单一URL跳转）",
+      "timeout": 35000
+    },
+    {
       "type": "wait_for_url",
       "value": "profile_v4/graphic/articles",
-      "descript": "等待发布成功",
-      "timeout": 30000
+      "descript": "v3.7.13 兜底等待 URL 跳转（如已跳转则立即返回）",
+      "timeout": 10000
     },
     {
       "type": "evaluate_edit",
