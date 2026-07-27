@@ -7873,6 +7873,56 @@ export async function runPublishTaskNow(id: number): Promise<{ reset_count: numb
 }
 
 /**
+ * v3.7.11：按 batch_id 立即执行发布任务（调试用）
+ *
+ * 与 runPublishTaskNow 类似，但作用于整个批次：
+ * 1. 清空该批次下所有 publish_task 的 scheduled_at
+ * 2. 把 publish_task 状态从非 completed 改为 pending
+ * 3. 重置 failed/login_expired 的 publish_record 为 pending
+ */
+export async function runPublishTaskNowByBatch(
+  userId: number,
+  batchId: string
+): Promise<{ reset_count: number; affected_tasks: number }> {
+  // v2.5.33：userId <= 0（管理员未指定客户）时不按 user_id 过滤
+  const userClause = userId > 0 ? `AND user_id = $1` : '';
+  const params = userId > 0 ? [userId, batchId] : [batchId];
+  const batchParamIdx = userId > 0 ? 2 : 1;
+
+  // 1. 清空 scheduled_at + 把 publish_task 改为 pending
+  const taskResult = await query(
+    `UPDATE publish_task
+     SET scheduled_at = NULL,
+         status = 'pending',
+         finished_at = NULL
+     WHERE batch_id = $${batchParamIdx}
+       ${userClause}
+       AND status NOT IN ('completed')`,
+    params
+  );
+
+  // 2. 重置 failed/login_expired 的 publish_record 为 pending
+  const recordResult = await query(
+    `UPDATE publish_record pr
+     SET status = 'pending',
+         error_msg = NULL,
+         started_at = NULL,
+         published_at = NULL
+     FROM publish_task pt
+     WHERE pr.task_id = pt.id
+       AND pt.batch_id = $${batchParamIdx}
+       ${userClause}
+       AND pr.status IN ('failed', 'login_expired')`,
+    params
+  );
+
+  return {
+    reset_count: recordResult.rowCount || 0,
+    affected_tasks: taskResult.rowCount || 0,
+  };
+}
+
+/**
  * v1.8.4：批量删除（按 batch_id）
  *
  * 删除该批次下所有 publish_task 及其 publish_record。

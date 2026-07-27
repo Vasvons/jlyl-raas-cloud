@@ -57,6 +57,7 @@ import {
   retryPublishRecordsByBatch,
   // v3.7.11：立即执行发布任务（调试用）
   runPublishTaskNow,
+  runPublishTaskNowByBatch,
   getPublishAccounts,
   createPublishAccount,
   updatePublishAccountStorageState,
@@ -1916,6 +1917,30 @@ router.post('/publish/batch/:batchId/retry', async (req: Request, res: Response)
     }
     const result = await retryPublishRecordsByBatch(userId, batchId);
     res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * v3.7.11：按 batch_id 立即执行发布任务（调试用）
+ *
+ * 把该批次下所有 publish_task 的 scheduled_at 清空、状态改为 pending，
+ * 并重置 failed/login_expired 的 publish_record。Worker 下次轮询会拉取并执行。
+ */
+router.post('/publish/batch/:batchId/run-now', async (req: Request, res: Response) => {
+  try {
+    const userId = resolveBatchUserId(req);
+    const batchId = req.params.batchId;
+    if (!batchId) {
+      return res.status(400).json({ code: 400, message: 'batchId 必填' });
+    }
+    const result = await runPublishTaskNowByBatch(userId, batchId);
+    res.json({
+      code: 200,
+      data: result,
+      message: `批次已设为立即执行（影响 ${result.affected_tasks} 个任务，重置 ${result.reset_count} 条记录，Worker 将在下次轮询时拉取）`,
+    });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
