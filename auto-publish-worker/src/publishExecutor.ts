@@ -678,7 +678,10 @@ async function reportPublishResult(recordId: number, result: PublishResult): Pro
  *   原 bug：worker 鉴权后 req.user.id=0（硬编码），不传 user_id 时后端写入 user_id=0，
  *          前端按客户 ID 过滤查不到日志，窗口空空如也
  */
-async function reportFlywheelEvent(
+/**
+ * v3.7.11：导出 reportFlywheelEvent，供 index.ts 在 dequeue 返回空时推送诊断事件
+ */
+export async function reportFlywheelEvent(
   eventType: string,
   message: string,
   data?: any,

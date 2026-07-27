@@ -15,7 +15,7 @@
 import dotenv from 'dotenv';
 import axios from 'axios';
 import http from 'http';
-import { processRecord, PublishRecord } from './publishExecutor';
+import { processRecord, PublishRecord, reportFlywheelEvent } from './publishExecutor';
 import * as logger from './logger';
 import { isPrivateDeployMode, activatePrivateDeploy, startHeartbeat, stopHeartbeat, getAgentUserId } from './privateDeploy';
 
@@ -101,6 +101,13 @@ async function pollAndExecute(): Promise<void> {
         lastEmptyLogTime = now;
         const reason = resp.data?.reason || '暂无待发布记录';
         logger.info(`暂无待发布记录：${reason}`);
+        // v3.7.11：推送 dequeue 空结果诊断事件到 flywheel_event_log，
+        // 让桌面端软件内日志窗口能看到"为什么没拉取新记录"
+        void reportFlywheelEvent(
+          'dequeue_empty',
+          `暂无待发布记录被拉取：${reason}`,
+          { reason, available_slots: availableSlots, active_count: activeCount }
+        ).catch(() => {});
       }
       return;
     }
