@@ -55,6 +55,8 @@ import {
   batchDeleteByBatch,
   // v1.7.4：批量重试（按 batch_id）
   retryPublishRecordsByBatch,
+  // v3.7.11：立即执行发布任务（调试用）
+  runPublishTaskNow,
   getPublishAccounts,
   createPublishAccount,
   updatePublishAccountStorageState,
@@ -1870,6 +1872,31 @@ router.post('/publish/tasks/:id/retry', async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     const result = await retryPublishRecords(id);
     res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * v3.7.11：立即执行发布任务（调试用）
+ *
+ * 跳过 scheduled_at 定时延后，把 publish_task 和其下 publish_record 重置为
+ * 可被 Worker 立即拉取的状态。Worker 下次轮询（默认 30 秒内）会拉取并执行。
+ *
+ * 适用场景：
+ * - 调试发布流程：创建任务后不想等定时时间到，立即触发发布
+ * - 任务因 scheduled_at 在未来而未执行，想立即触发
+ * - 任务因部分 record 失败而进入 partial/failed，想立即重试失败部分
+ *
+ * 与 retry 的区别：
+ * - retry 仅重置 failed/login_expired 的 record，不动 scheduled_at 和 task 状态
+ * - run-now 同时清空 scheduled_at 并把 task 状态改为 pending，确保立即被 dequeue
+ */
+router.post('/publish/tasks/:id/run-now', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await runPublishTaskNow(id);
+    res.json({ code: 200, data: result, message: `任务已设为立即执行（重置 ${result.reset_count} 条记录，Worker 将在下次轮询时拉取）` });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

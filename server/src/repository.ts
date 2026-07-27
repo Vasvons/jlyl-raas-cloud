@@ -7826,6 +7826,53 @@ export async function deletePublishTask(id: number): Promise<void> {
 }
 
 /**
+ * v3.7.11：立即执行发布任务（调试用）
+ *
+ * 用于调试发布流程：跳过 scheduled_at 定时延后，把 publish_task 和其下
+ * publish_record 重置为可被 Worker 立即拉取的状态。
+ *
+ * 处理逻辑：
+ * 1. 清空 scheduled_at（设为 NULL，让 dequeue 的 scheduled_at <= NOW() 条件立即满足）
+ * 2. 把 publish_task 状态从任意非 completed 状态改为 pending（包括 paused/failed/partial）
+ * 3. 重置所有 failed/login_expired 的 publish_record 为 pending
+ * 4. 不重置已 completed 的 record（避免重复发布）
+ *
+ * 返回 reset_count = 重置的 record 条数，便于前端提示。
+ */
+export async function runPublishTaskNow(id: number): Promise<{ reset_count: number; task_status: string }> {
+  // 1. 清空 scheduled_at + 把 publish_task 改为 pending（含 paused/failed/partial）
+  await query(
+    `UPDATE publish_task
+     SET scheduled_at = NULL,
+         status = 'pending',
+         finished_at = NULL
+     WHERE id = $1
+       AND status NOT IN ('completed')`,
+    [id]
+  );
+
+  // 2. 重置 failed/login_expired 的 publish_record 为 pending（已 completed 的不动）
+  const result = await query(
+    `UPDATE publish_record
+     SET status = 'pending',
+         error_msg = NULL,
+         started_at = NULL,
+         published_at = NULL
+     WHERE task_id = $1 AND status IN ('failed', 'login_expired')`,
+    [id]
+  );
+
+  // 3. 查询最终状态（用于返回）
+  const taskRow = await query(
+    `SELECT status FROM publish_task WHERE id = $1`,
+    [id]
+  );
+  const taskStatus = taskRow.rows.length > 0 ? taskRow.rows[0].status : 'unknown';
+
+  return { reset_count: result.rowCount || 0, task_status: taskStatus };
+}
+
+/**
  * v1.8.4：批量删除（按 batch_id）
  *
  * 删除该批次下所有 publish_task 及其 publish_record。
