@@ -591,6 +591,16 @@ function classifyError(errorMsg: string): { status: PublishResult['status']; err
     return { status: 'banned', error_type: 'account_banned' };
   }
 
+  // v3.7.12：未实名认证/未认证——归类为 account_limited，让 publish_fail_count 累加
+  //   3 次失败后自动从可用账号池剔除，避免反复用同一个"能登录但不能发布"的账号
+  if (
+    errorMsg.includes('未实名认证') || errorMsg.includes('未认证') ||
+    errorMsg.includes('实名认证') || errorMsg.includes('请先完成实名') ||
+    lower.includes('not verified') || lower.includes('not authenticated')
+  ) {
+    return { status: 'failed', error_type: 'account_limited' };
+  }
+
   if (
     errorMsg.includes('上限') || errorMsg.includes('限额') ||
     errorMsg.includes('限流') || errorMsg.includes('配额') ||
