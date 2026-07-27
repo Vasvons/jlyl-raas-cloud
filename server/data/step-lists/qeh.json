@@ -82,6 +82,18 @@
       "else_list": []
     },
     {
+      "type": "evaluate_edit",
+      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') < 0) return 'no_self_declaration_needed'; var allElements = document.querySelectorAll('div, span, label, li, button, a'); var candidates = []; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t === '取材网络' || t === '个人观点，仅供参考' || t === '个人观点仅供参考' || t === '引用站内' || t === '引用AI' || t === '虚构演绎，故事经历' || t === '投资观点，仅供参考' || t === '健康医疗分享，仅供参考') { var r = el.getBoundingClientRect(); if (r.width > 0 && r.height > 0) { candidates.push({ tag: el.tagName, text: t, cls: String(el.className || '').slice(0, 80), parent: el.parentElement ? String(el.parentElement.className || '').slice(0, 80) : '' }); } } } if (candidates.length === 0) return 'no_declaration_option_found'; var target = null; for (var i = 0; i < candidates.length; i++) { if (candidates[i].text === '取材网络') { target = candidates[i]; break; } } if (!target) target = candidates[0]; var targetEl = Array.from(allElements).find(function(el) { return (el.innerText || '').trim() === target.text && el.getBoundingClientRect().width > 0; }); if (targetEl) { targetEl.scrollIntoView({ block: 'center' }); targetEl.click(); return 'selected: ' + target.text; } return 'click_failed: ' + target.text;",
+      "descript": "v3.7.13 选择自主声明（企鹅号发布前必填，默认选'取材网络'，避免点击发布无效）",
+      "is_try": true,
+      "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 800,
+      "descript": "等待自主声明选择生效"
+    },
+    {
       "type": "click",
       "selector": "//button[contains(@class,'omui-button--primary') and text()='发布'] | //button[contains(@class,'omui-button--primary') and not(contains(text(),'定时')) and not(contains(text(),'草稿'))]",
       "descript": "点击发布按钮（排除定时发布按钮）",
@@ -118,10 +130,16 @@
       "else_list": []
     },
     {
+      "type": "evaluate_edit",
+      "value": "for (var i = 0; i < 30; i++) { var btns = document.querySelectorAll('button'); var hasPublish = false; for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t === '发布' || t === '定时发布') { hasPublish = true; break; } } if (!hasPublish) { return 'publish_btn_disappeared'; } if (window.location.href.indexOf('articleManage') >= 0) { return 'url_changed'; } var toasts = document.querySelectorAll('[class*=\"toast\"], [class*=\"message\"], [class*=\"notification\"], [class*=\"tip\"]'); for (var k = 0; k < toasts.length; k++) { var tt = (toasts[k].innerText || '').trim(); if (tt.indexOf('发布成功') >= 0 || tt.indexOf('已发布') >= 0 || tt.indexOf('提交成功') >= 0) { return 'toast_success: ' + tt.slice(0, 50); } } await new Promise(function(r) { setTimeout(r, 1000); }); } return 'timeout_30s_btn_still_visible';",
+      "descript": "v3.7.13 发布成功检测（按钮消失/URL跳转/成功提示，三重检测）",
+      "timeout": 35000
+    },
+    {
       "type": "wait_for_url",
       "value": "articleManage",
-      "descript": "等待发布成功跳转到文章管理页",
-      "timeout": 30000
+      "descript": "v3.7.13 兜底等待 URL 跳转",
+      "timeout": 10000
     },
     {
       "type": "evaluate_edit",

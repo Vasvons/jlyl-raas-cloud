@@ -125,10 +125,15 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var closed = []; var closeBtns = document.querySelectorAll('.cheetah-popconfirm .close, .modal-close, [class*=dialog] [class*=close], [class*=close-btn]'); for (var i = 0; i < closeBtns.length; i++) { try { var p = closeBtns[i].offsetParent; if (p !== null) { var ancestor = closeBtns[i]; var hasHot = false; for (var j = 0; j < 10 && ancestor; j++) { if ((ancestor.innerText||'').indexOf('换一换') >= 0 || (ancestor.innerText||'').indexOf('热点推荐') >= 0 || (ancestor.innerText||'').indexOf('创作热点') >= 0) { hasHot = true; break; } ancestor = ancestor.parentElement; } if (hasHot) { closeBtns[i].click(); closed.push('hot-recommend'); } } } catch(e) {} } var hotItem = Array.from(document.querySelectorAll('div, section, aside')).find(function(el) { var t = el.innerText || ''; return t.indexOf('换一换') >= 0 && t.indexOf('马克龙') < 0 && el.offsetParent !== null && el.children.length < 30; }); if (hotItem) { var closeIcon = hotItem.querySelector('[class*=close], .icon-close, button[title*=关闭], [aria-label*=关闭]'); if (closeIcon) { closeIcon.click(); closed.push('hot-panel'); } } if (closed.length === 0) { document.body.style.overflow = ''; } return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no hot popup';",
-      "descript": "v3.7.10 关闭热点推荐弹窗（含'换一换'特征的弹窗，避免遮挡发布按钮）",
+      "value": "var closed = []; var allCloseBtns = document.querySelectorAll('[class*=close], [class*=Close], [aria-label*=关闭], [title*=关闭], .modal-close, .icon-close, button[title*=关闭], .cheetah-modal-close, .cheetah-popconfirm-close'); for (var i = 0; i < allCloseBtns.length; i++) { try { var btn = allCloseBtns[i]; if (btn.offsetParent === null) continue; var ancestor = btn; var shouldClose = false; for (var j = 0; j < 10 && ancestor; j++) { var t = (ancestor.innerText || ''); if (t.indexOf('换一换') >= 0 || t.indexOf('热点推荐') >= 0 || t.indexOf('创作热点') >= 0 || t.indexOf('一键填写') >= 0 || t.indexOf('图文新增') >= 0) { shouldClose = true; break; } ancestor = ancestor.parentElement; } if (shouldClose) { btn.click(); closed.push(String(btn.className || '').slice(0, 40)); } } catch(e) {} } var hotItem = Array.from(document.querySelectorAll('div, section, aside')).find(function(el) { var t = el.innerText || ''; return (t.indexOf('换一换') >= 0 || t.indexOf('创作热点') >= 0) && el.offsetParent !== null && el.children.length < 50; }); if (hotItem) { var closeIcon = hotItem.querySelector('[class*=close], .icon-close, button[title*=关闭], [aria-label*=关闭], svg, [class*=Close]'); if (closeIcon) { closeIcon.click(); closed.push('hot-panel-icon'); } } var fillBtn = Array.from(document.querySelectorAll('div, button, span')).find(function(el) { return (el.innerText || '').trim() === '×' && el.offsetParent !== null && el.getBoundingClientRect().width < 50; }); if (fillBtn) { fillBtn.click(); closed.push('x-button'); } if (closed.length === 0) { document.body.style.overflow = ''; } return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no popup';",
+      "descript": "v3.7.13 激进关闭所有弹窗（热点推荐/一键填写/创作热点等，避免遮挡发布按钮）",
       "is_try": true,
       "timeout": 3000
+    },
+    {
+      "type": "timing",
+      "ms": 500,
+      "descript": "v3.7.13 等待弹窗关闭动画完成"
     },
     {
       "type": "click",
