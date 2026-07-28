@@ -520,8 +520,12 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       errorMsg = `[模板需调整] ${errorMsg}。该平台 step_list 为模板，请基于失败截图调整选择器后重试。`;
     }
 
+    // v3.7.13：错误分类只看原始 errorMsg，不拼接 pageDiagnostic
+    //   之前 bug：pageDiagnostic 包含页面上的普通提示文本（如"头条认证未认证"），
+    //   导致 URL 超时类错误被误判为 account_limited，3 次后账号被错误剔除。
+    //   pageDiagnostic 仅用于日志和上报，帮助人工排查，不参与自动分类。
+    const result = classifyError(errorMsg);
     const fullErrorMsg = errorMsg + (pageDiagnostic || '');
-    const result = classifyError(fullErrorMsg);
     void reportFlywheelEvent('publish_failed', `[${platform}] 发布失败 "${articleTitle}": ${fullErrorMsg}（类型: ${result.error_type}）`, { record_id: recordId, platform, error_type: result.error_type, error_msg: fullErrorMsg, screenshot_path: failScreenshotPath }, record.user_id).catch(() => {});
     await reportPublishResult(recordId, {
       status: result.status,

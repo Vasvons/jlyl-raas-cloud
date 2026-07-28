@@ -99,11 +99,24 @@
       "descript": "等待抽屉消失"
     },
     {
+      "type": "evaluate_edit",
+      "value": "var closed = []; var allElements = document.querySelectorAll('div, section, aside, [class*=close], [class*=Close], [aria-label*=关闭], [title*=关闭]'); for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t.indexOf('创作热点推荐') >= 0 || t.indexOf('换一换') >= 0 || t.indexOf('热点图库') >= 0) { var closeIcon = el.querySelector('[class*=close], .icon-close, button[title*=关闭], [aria-label*=关闭], svg, [class*=Close], .byte-icon-close'); if (closeIcon && closeIcon.offsetParent !== null) { closeIcon.click(); closed.push('hot-panel'); break; } } } document.body.style.overflow = ''; return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no_hot_panel';",
+      "descript": "v3.7.13 关闭创作热点推荐弹窗（避免遮挡发布按钮）",
+      "is_try": true,
+      "timeout": 2000
+    },
+    {
+      "type": "timing",
+      "ms": 500,
+      "descript": "等待热点推荐弹窗关闭"
+    },
+    {
       "type": "click",
       "selector": "//button[contains(., \"预览并发布\")] | //button[contains(., \"预览并定时发布\")] | //button[contains(@class,\"byte-btn-primary\") and contains(.,\"发布\")] | //span[text()=\"预览并发布\"]/ancestor::button",
       "descript": "v3.7.13 预览并发布（直接点击 button 元素而非 span，确保 click 事件触发）",
       "ai_fallback": true,
       "ai_intent": "找到头条发布按钮并点击",
+      "force": true,
       "timeout": 5000
     },
     {
@@ -113,17 +126,18 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent !== null) { var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText||'').trim(); if (t === '确认发布' || t === '发布' || t === '确认' || t === '确定') { btns[j].click(); return 'clicked: ' + t; } } } } return 'no_confirm_in_modal';",
-      "descript": "v3.7.12 在弹窗内查找确认发布按钮并点击（扩大弹窗和按钮匹配范围）",
+      "value": "var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog]'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent !== null) { var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText||'').trim(); if (t === '确认发布' || t === '发布' || t === '确认' || t === '确定' || t === '提交' || t.indexOf('发布') >= 0 || t.indexOf('确认') >= 0) { btns[j].click(); return 'clicked: ' + t; } } } } return 'no_confirm_in_modal';",
+      "descript": "v3.7.13 在弹窗内查找确认发布按钮并点击（扩大弹窗和按钮匹配范围，含'提交'/'包含发布'）",
       "is_try": true,
       "timeout": 3000
     },
     {
       "type": "click",
-      "selector": "//span[text()=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\")]//span[text()=\"确认发布\"] | //button[normalize-space(.)=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\") and contains(normalize-space(.),\"确认\")] | //div[contains(@class,\"modal\")]//button[contains(text(),\"发布\")] | //div[contains(@class,\"byte-modal\")]//button[contains(text(),\"发布\")] | //button[contains(@class,\"byte-btn-primary\")]//span[text()=\"发布\"] | //button[normalize-space(.)=\"发布\"]",
-      "descript": "v3.7.12 确认发布（增加纯文本\"发布\"按钮兜底匹配）",
+      "selector": "//span[text()=\"确认发布\"]/ancestor::button | //button[normalize-space(.)=\"确认发布\"] | //button[contains(@class,\"byte-btn-primary\") and contains(normalize-space(.),\"确认\")] | //div[contains(@class,\"modal\")]//button[normalize-space(.)=\"确认发布\"] | //div[contains(@class,\"byte-modal\")]//button[normalize-space(.)=\"确认发布\"] | //div[contains(@class,\"byte-modal\")]//button[contains(@class,\"byte-btn-primary\") and contains(normalize-space(.),\"发布\")]",
+      "descript": "v3.7.13 确认发布（只点 button 元素，避免点击 span 不触发事件；限定在 modal 内匹配发布按钮，避免误匹配预览并发布按钮）",
       "ai_fallback": true,
       "ai_intent": "找到确认发布按钮并点击",
+      "is_try": true,
       "timeout": 8000
     },
     {
