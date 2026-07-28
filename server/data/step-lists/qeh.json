@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.7.6",
-  "description": "企鹅号图文发布流程（v1.7.5：新增 AI 生成声明弹窗处理——有图片时点击'进行补充'→'提交'完成声明，再点发布）",
+  "version": "1.7.7",
+  "description": "企鹅号图文发布流程（v1.7.7：修复自主声明选择失败导致发布无效——移除 is_try 改为抛错避免无效点击；轮询等待下拉菜单弹出；选择后验证提示消失；wait_for_url 改用 domcontentloaded）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -83,10 +83,9 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') < 0) return 'no_self_declaration_needed'; var allElements = document.querySelectorAll('div, span, label, li, button, a, select, option'); var declarationLabel = null; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t === '自主声明' || t === '请选择自主声明' || t.indexOf('自主声明') >= 0) { declarationLabel = el; break; } } if (!declarationLabel) return 'label_not_found'; var container = declarationLabel; for (var level = 0; level < 5 && container; level++) { var trigger = container.querySelector('[class*=select], [class*=dropdown], [class*=picker], [role=combobox], [role=listbox], select, .omui-select, .omui-select-selection, [class*=omui-select]'); if (trigger) { trigger.click(); break; } container = container.parentElement; } await new Promise(function(r) { setTimeout(r, 500); }); var options = document.querySelectorAll('.omui-select-dropdown-menu-item, li[class*=select-option], div[class*=option], [role=option], .omui-select-item, [class*=dropdown-item]'); var target = null; for (var i = 0; i < options.length; i++) { var t = (options[i].innerText || '').trim(); if (t === '取材网络' || t.indexOf('取材网络') >= 0) { target = options[i]; break; } } if (!target) { for (var i = 0; i < options.length; i++) { var t = (options[i].innerText || '').trim(); if (t && t.length < 20) { target = options[i]; break; } } } if (target) { target.click(); return 'selected: ' + (target.innerText || '').trim(); } var allCandidates = document.querySelectorAll('div, span, label, li, button, a'); for (var i = 0; i < allCandidates.length; i++) { var el = allCandidates[i]; var t = (el.innerText || '').trim(); if (t === '取材网络') { el.scrollIntoView({ block: 'center' }); el.click(); return 'fallback_selected: ' + t; } } return 'option_not_found';",
-      "descript": "v3.7.13 选择自主声明（先打开下拉菜单，再选择'取材网络'，兼容多种UI结构）",
-      "is_try": true,
-      "timeout": 8000
+      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') < 0 && bodyText.indexOf('自主声明') < 0) return 'no_self_declaration_needed'; var allElements = document.querySelectorAll('div, span, label, li, button, a, select, option'); var declarationLabel = null; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t === '自主声明' || t === '请选择自主声明') { declarationLabel = el; break; } } if (!declarationLabel) { for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t.indexOf('自主声明') >= 0 && t.length < 30) { declarationLabel = el; break; } } } if (!declarationLabel) throw new Error('未找到自主声明标签'); var container = declarationLabel; var trigger = null; for (var level = 0; level < 6 && container; level++) { trigger = container.querySelector('[class*=select], [class*=dropdown], [class*=picker], [role=combobox], [role=listbox], select, .omui-select, .omui-select-selection, [class*=omui-select], .omui-input, [class*=omui-input]'); if (trigger) break; container = container.parentElement; } if (!trigger) throw new Error('未找到自主声明下拉触发器（从标签向上遍历6层无 [class*=select]/[class*=dropdown]/.omui-select 等）'); trigger.scrollIntoView({ block: 'center' }); trigger.click(); var options = null; for (var wait = 0; wait < 10; wait++) { await new Promise(function(r) { setTimeout(r, 300); }); options = document.querySelectorAll('.omui-select-dropdown-menu-item, li[class*=select-option], div[class*=option], [role=option], .omui-select-item, [class*=dropdown-item], li.omui-select-dropdown-menu-item'); if (options.length > 0) break; } if (!options || options.length === 0) throw new Error('自主声明下拉菜单未弹出（等待3秒后仍无选项）'); var target = null; for (var i = 0; i < options.length; i++) { var t = (options[i].innerText || '').trim(); if (t === '取材网络' || t.indexOf('取材网络') >= 0) { target = options[i]; break; } } if (!target) { var optionTexts = []; for (var i = 0; i < options.length; i++) { var t = (options[i].innerText || '').trim(); optionTexts.push(t); if (t && t.length < 20) { if (!target) target = options[i]; } } if (!target) throw new Error('自主声明下拉菜单中未找到取材网络选项，可用选项: ' + JSON.stringify(optionTexts)); } target.click(); await new Promise(function(r) { setTimeout(r, 800); }); var bodyText2 = document.body.innerText || ''; if (bodyText2.indexOf('请选择自主声明') >= 0) throw new Error('自主声明选择后仍提示\"请选择自主声明\"，可能选择未生效'); return 'selected: ' + (target.innerText || '').trim();",
+      "descript": "v1.7.7 选择自主声明（移除 is_try，失败时抛错避免无效点击发布；轮询等待下拉菜单弹出；选择后验证提示消失）",
+      "timeout": 12000
     },
     {
       "type": "timing",
@@ -138,8 +137,9 @@
     {
       "type": "wait_for_url",
       "value": "articleManage",
-      "descript": "v3.7.13 兜底等待 URL 跳转",
-      "timeout": 10000
+      "wait_until": "domcontentloaded",
+      "descript": "v1.7.7 兜底等待 URL 跳转（改用 domcontentloaded 避免 load 事件不触发）",
+      "timeout": 15000
     },
     {
       "type": "evaluate_edit",
