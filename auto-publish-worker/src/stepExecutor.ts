@@ -1033,13 +1033,16 @@ async function execWaitForSelector(step: Step, ctx: StepExecutionContext): Promi
 async function execWaitForUrl(step: Step, ctx: StepExecutionContext): Promise<boolean> {
   const urlPattern = resolveValue(step.value, ctx)!;
   const timeout = step.timeout || 30000;
+  // v3.7.14：支持 step.wait_until 字段，默认 'load'
+  // 某些平台（如 wxgzh）页面资源加载失败会导致 load 事件迟迟不触发，可改用 'domcontentloaded'
+  const waitUntil = (step as any).wait_until || 'load';
   try {
     // 支持字符串子串匹配或正则
     const regex = tryParseRegex(urlPattern);
     if (regex) {
-      await ctx.page.waitForURL(regex, { timeout });
+      await ctx.page.waitForURL(regex, { timeout, waitUntil });
     } else {
-      await ctx.page.waitForURL((url: any) => String(url).includes(urlPattern), { timeout });
+      await ctx.page.waitForURL((url: any) => String(url).includes(urlPattern), { timeout, waitUntil });
     }
     return true;
   } catch (err: any) {
