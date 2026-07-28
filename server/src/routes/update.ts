@@ -420,10 +420,11 @@ router.get('/latest', async (req: Request, res: Response) => {
     }
 
     // 根据灰度策略筛选该代理可见的最新版本
+    // v3.7.13：兼容 rollout_strategy = 'all'（早期发布填的值），与 'full' 等价
     const isAgentUser = isAgent(req);
     let visibleRelease: any = null;
     for (const row of result.rows) {
-      if (row.rollout_strategy === 'full') {
+      if (row.rollout_strategy === 'full' || row.rollout_strategy === 'all') {
         visibleRelease = row;
         break;
       }
