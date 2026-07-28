@@ -2517,6 +2517,59 @@ export async function migrate() {
     await client.query(`ALTER TABLE agent_worker_quota ADD COLUMN IF NOT EXISTS local_publish_concurrency INT DEFAULT 0`); // 本地发文并发数
     await client.query(`ALTER TABLE agent_worker_quota ADD COLUMN IF NOT EXISTS cloud_worker_enabled BOOLEAN DEFAULT TRUE`); // 是否启用云端Worker
 
+    // ============ v3.8 发布守护进程（Publish Guardian）============
+    // 1. 守护配置表（每个 user_id 一行，按用户隔离）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS publish_guardian_config (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL UNIQUE,
+        enabled BOOLEAN DEFAULT FALSE,
+        platforms JSONB DEFAULT '[]'::jsonb,
+        auto_fix BOOLEAN DEFAULT TRUE,
+        auto_retry BOOLEAN DEFAULT TRUE,
+        max_retry_per_record INT DEFAULT 2,
+        report_strategy VARCHAR(20) DEFAULT 'always',
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_guardian_config_user ON publish_guardian_config(user_id)`);
+
+    // 2. 守护处理日志表（每次失败触发处理写一条记录）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS publish_guardian_log (
+        id BIGSERIAL PRIMARY KEY,
+        user_id BIGINT,
+        record_id BIGINT,
+        platform VARCHAR(20),
+        article_title TEXT,
+        failure_msg TEXT,
+        page_diagnostic TEXT,
+        error_type VARCHAR(40),
+        ai_analysis TEXT,
+        ai_action VARCHAR(20) DEFAULT 'analyzing',
+        old_version VARCHAR(30),
+        new_version VARCHAR(30),
+        step_list_backup JSONB,
+        step_list_new JSONB,
+        retry_result VARCHAR(20),
+        retry_count INT DEFAULT 0,
+        report_status VARCHAR(20) DEFAULT 'pending',
+        report_msg TEXT,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_guardian_log_user ON publish_guardian_log(user_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_guardian_log_platform ON publish_guardian_log(platform, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_guardian_log_record ON publish_guardian_log(record_id)`);
+
+    // 3. step-list 版本控制字段（保留历史版本用于回滚）
+    await client.query(`ALTER TABLE publish_step_list ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE`);
+    await client.query(`ALTER TABLE publish_step_list ADD COLUMN IF NOT EXISTS modified_by VARCHAR(20) DEFAULT 'manual'`);
+    await client.query(`ALTER TABLE publish_step_list ADD COLUMN IF NOT EXISTS modified_reason TEXT`);
+    await client.query(`ALTER TABLE publish_step_list ADD COLUMN IF NOT EXISTS guardian_log_id BIGINT`);
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

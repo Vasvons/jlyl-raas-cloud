@@ -138,6 +138,12 @@ import { extractTriplesFromKnowledge } from '../services/content/tripleExtractor
 import { autoCreateWritingFromLatestPeriod } from '../services/aeo/analyzer';
 import { wsBroadcast } from '../wsServer';
 import multer from 'multer';
+// v3.8 发布守护进程
+import { handlePublishFailedEvent, handleRetryResult } from '../services/publishGuardian';
+import {
+  getGuardianConfig, updateGuardianConfig, getGuardianLogs, getGuardianLogById,
+  getStepListHistory,
+} from '../repository';
 
 const router = Router();
 
@@ -2195,6 +2201,17 @@ router.post('/publish/records/:id/result', async (req: Request, res: Response) =
     }
 
     res.json({ code: 200, data: { ok: true, retry_queued } });
+
+    // v3.8 发布守护：重试结果回调（如果是守护触发的重试，通知守护进程）
+    if (status === 'success' || status === 'failed') {
+      void handleRetryResult({
+        recordId: id,
+        status: status === 'success' ? 'success' : 'failed',
+        errorMsg: error_msg,
+      }).catch((e) => {
+        console.error('[Guardian] handleRetryResult 异常:', e.message);
+      });
+    }
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
@@ -2748,6 +2765,18 @@ router.post('/flywheel/event-logs', async (req: Request, res: Response) => {
       data,
     });
     res.json({ code: 200, data: { id } });
+
+    // v3.8 发布守护：publish_failed 事件触发后异步分析（不阻塞响应）
+    if (event_type === 'publish_failed' && targetUserId && targetUserId > 0) {
+      void handlePublishFailedEvent({
+        event_type,
+        message,
+        data,
+        user_id: targetUserId,
+      }).catch((e) => {
+        console.error('[Guardian] handlePublishFailedEvent 异常:', e.message);
+      });
+    }
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
@@ -2766,6 +2795,75 @@ router.delete('/flywheel/event-logs', async (req: Request, res: Response) => {
     const days = Math.max(1, Number(req.query.days) || 30);
     const deleted = await cleanOldFlywheelEventLogs(days);
     res.json({ code: 200, data: { deleted } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v3.8 发布守护进程 API ============
+
+/** 获取守护配置 */
+router.get('/guardian/config', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const config = await getGuardianConfig(userId);
+    res.json({ code: 200, data: config });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 更新守护配置 */
+router.put('/guardian/config', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { enabled, platforms, auto_fix, auto_retry, max_retry_per_record, report_strategy } = req.body;
+    await updateGuardianConfig(userId, {
+      enabled, platforms, auto_fix, auto_retry, max_retry_per_record, report_strategy,
+    });
+    const config = await getGuardianConfig(userId);
+    res.json({ code: 200, data: config });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 查询守护日志列表 */
+router.get('/guardian/logs', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { platform, limit, offset } = req.query;
+    const result = await getGuardianLogs({
+      userId,
+      platform: platform as string | undefined,
+      limit: limit ? Number(limit) : 50,
+      offset: offset ? Number(offset) : 0,
+    });
+    res.json({ code: 200, data: result });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 查询单条守护日志详情 */
+router.get('/guardian/logs/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const log = await getGuardianLogById(id);
+    if (!log) {
+      return res.status(404).json({ code: 404, message: '日志不存在' });
+    }
+    res.json({ code: 200, data: log });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 查询某平台 step-list 历史版本（用于回滚） */
+router.get('/publish/step-lists/:platform/history', async (req: Request, res: Response) => {
+  try {
+    const history = await getStepListHistory(req.params.platform, 10);
+    res.json({ code: 200, data: history });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

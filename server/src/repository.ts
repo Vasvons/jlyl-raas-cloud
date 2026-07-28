@@ -8692,3 +8692,218 @@ export async function cleanOldFlywheelEventLogs(daysToKeep: number = 30): Promis
   return result.rowCount || 0;
 }
 
+// ============ v3.8 发布守护进程（Publish Guardian）============
+
+/** 获取用户守护配置（不存在则创建默认配置） */
+export async function getGuardianConfig(userId: number): Promise<any> {
+  let result = await query(
+    `SELECT * FROM publish_guardian_config WHERE user_id = $1`,
+    [userId]
+  );
+  if (!result.rows[0]) {
+    await query(
+      `INSERT INTO publish_guardian_config (user_id, enabled, platforms, auto_fix, auto_retry, max_retry_per_record, report_strategy)
+       VALUES ($1, FALSE, '[]'::jsonb, TRUE, TRUE, 2, 'always')
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId]
+    );
+    result = await query(`SELECT * FROM publish_guardian_config WHERE user_id = $1`, [userId]);
+  }
+  return result.rows[0];
+}
+
+/** 更新守护配置 */
+export async function updateGuardianConfig(
+  userId: number,
+  patch: {
+    enabled?: boolean;
+    platforms?: string[];
+    auto_fix?: boolean;
+    auto_retry?: boolean;
+    max_retry_per_record?: number;
+    report_strategy?: string;
+  }
+): Promise<void> {
+  const sets: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+  if (patch.enabled !== undefined) { params.push(patch.enabled); sets.push(`enabled = $${idx++}`); }
+  if (patch.platforms !== undefined) { params.push(JSON.stringify(patch.platforms)); sets.push(`platforms = $${idx++}::jsonb`); }
+  if (patch.auto_fix !== undefined) { params.push(patch.auto_fix); sets.push(`auto_fix = $${idx++}`); }
+  if (patch.auto_retry !== undefined) { params.push(patch.auto_retry); sets.push(`auto_retry = $${idx++}`); }
+  if (patch.max_retry_per_record !== undefined) { params.push(patch.max_retry_per_record); sets.push(`max_retry_per_record = $${idx++}`); }
+  if (patch.report_strategy !== undefined) { params.push(patch.report_strategy); sets.push(`report_strategy = $${idx++}`); }
+  if (sets.length === 0) return;
+  sets.push(`updated_at = NOW()`);
+  params.push(userId);
+  await query(
+    `UPDATE publish_guardian_config SET ${sets.join(', ')} WHERE user_id = $${idx}`,
+    params
+  );
+}
+
+/** 创建守护日志（失败触发时） */
+export async function createGuardianLog(params: {
+  user_id?: number | null;
+  record_id?: number | null;
+  platform: string;
+  article_title?: string;
+  failure_msg: string;
+  page_diagnostic?: string;
+  error_type?: string;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO publish_guardian_log
+      (user_id, record_id, platform, article_title, failure_msg, page_diagnostic, error_type, ai_action, report_status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, 'analyzing', 'pending')
+     RETURNING id`,
+    [
+      params.user_id ?? null,
+      params.record_id ?? null,
+      params.platform,
+      params.article_title ?? null,
+      params.failure_msg,
+      params.page_diagnostic ?? null,
+      params.error_type ?? null,
+    ]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新守护日志 */
+export async function updateGuardianLog(
+  logId: number,
+  patch: {
+    ai_analysis?: string;
+    ai_action?: string;
+    old_version?: string;
+    new_version?: string;
+    step_list_backup?: any;
+    step_list_new?: any;
+    retry_result?: string;
+    retry_count?: number;
+    report_status?: string;
+    report_msg?: string;
+  }
+): Promise<void> {
+  const sets: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+  if (patch.ai_analysis !== undefined) { params.push(patch.ai_analysis); sets.push(`ai_analysis = $${idx++}`); }
+  if (patch.ai_action !== undefined) { params.push(patch.ai_action); sets.push(`ai_action = $${idx++}`); }
+  if (patch.old_version !== undefined) { params.push(patch.old_version); sets.push(`old_version = $${idx++}`); }
+  if (patch.new_version !== undefined) { params.push(patch.new_version); sets.push(`new_version = $${idx++}`); }
+  if (patch.step_list_backup !== undefined) { params.push(JSON.stringify(patch.step_list_backup)); sets.push(`step_list_backup = $${idx++}::jsonb`); }
+  if (patch.step_list_new !== undefined) { params.push(JSON.stringify(patch.step_list_new)); sets.push(`step_list_new = $${idx++}::jsonb`); }
+  if (patch.retry_result !== undefined) { params.push(patch.retry_result); sets.push(`retry_result = $${idx++}`); }
+  if (patch.retry_count !== undefined) { params.push(patch.retry_count); sets.push(`retry_count = $${idx++}`); }
+  if (patch.report_status !== undefined) { params.push(patch.report_status); sets.push(`report_status = $${idx++}`); }
+  if (patch.report_msg !== undefined) { params.push(patch.report_msg); sets.push(`report_msg = $${idx++}`); }
+  if (sets.length === 0) return;
+  sets.push(`updated_at = NOW()`);
+  params.push(logId);
+  await query(
+    `UPDATE publish_guardian_log SET ${sets.join(', ')} WHERE id = $${idx}`,
+    params
+  );
+}
+
+/** 查询守护日志列表 */
+export async function getGuardianLogs(params: {
+  userId?: number | null;
+  platform?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ list: any[]; total: number }> {
+  const limit = Math.min(Math.max(params.limit ?? 50, 1), 200);
+  const offset = Math.max(params.offset ?? 0, 0);
+  const whereParts: string[] = [];
+  const queryParams: any[] = [];
+  if (params.userId != null) {
+    queryParams.push(params.userId);
+    whereParts.push(`user_id = $${queryParams.length}`);
+  }
+  if (params.platform) {
+    queryParams.push(params.platform);
+    whereParts.push(`platform = $${queryParams.length}`);
+  }
+  const whereClause = whereParts.length > 0 ? `WHERE ${whereParts.join(' AND ')}` : '';
+  const countResult = await query(`SELECT COUNT(*) as total FROM publish_guardian_log ${whereClause}`, queryParams);
+  const total = parseInt(countResult.rows[0].total, 10);
+  queryParams.push(limit, offset);
+  const listResult = await query(
+    `SELECT * FROM publish_guardian_log ${whereClause} ORDER BY created_at DESC LIMIT $${queryParams.length - 1} OFFSET $${queryParams.length}`,
+    queryParams
+  );
+  return { list: listResult.rows, total };
+}
+
+/** 查询单条守护日志 */
+export async function getGuardianLogById(id: number): Promise<any | null> {
+  const result = await query(`SELECT * FROM publish_guardian_log WHERE id = $1`, [id]);
+  return result.rows[0] || null;
+}
+
+/** 查询某 record 的最近 N 条守护日志（用于判断重试次数） */
+export async function getRecentGuardianLogsByRecord(
+  recordId: number,
+  limit: number = 5
+): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM publish_guardian_log
+     WHERE record_id = $1
+     ORDER BY created_at DESC
+     LIMIT $2`,
+    [recordId, limit]
+  );
+  return result.rows;
+}
+
+/** 软删除旧 step_list（用于版本切换：把旧版本标记为 is_active=false） */
+export async function deactivateStepListVersion(platform: string, version: string): Promise<void> {
+  await query(
+    `UPDATE publish_step_list SET is_active = FALSE WHERE platform = $1 AND version = $2`,
+    [platform, version]
+  );
+}
+
+/** 带 Guardian 元信息写入新版本 step_list */
+export async function upsertStepListWithGuardian(
+  platform: string,
+  version: string,
+  stepList: any,
+  description: string,
+  modifiedBy: string,
+  guardianLogId?: number,
+  modifiedReason?: string
+): Promise<number> {
+  const result = await query(
+    `INSERT INTO publish_step_list (platform, version, step_list, description, is_active, modified_by, modified_reason, guardian_log_id)
+     VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7)
+     ON CONFLICT (platform, version) DO UPDATE
+       SET step_list = EXCLUDED.step_list,
+           description = EXCLUDED.description,
+           is_active = TRUE,
+           modified_by = EXCLUDED.modified_by,
+           modified_reason = EXCLUDED.modified_reason,
+           guardian_log_id = EXCLUDED.guardian_log_id
+     RETURNING id`,
+    [platform, version, JSON.stringify(stepList), description, modifiedBy, modifiedReason ?? null, guardianLogId ?? null]
+  );
+  return result.rows[0].id;
+}
+
+/** 查询某平台历史版本（用于回滚） */
+export async function getStepListHistory(platform: string, limit: number = 5): Promise<any[]> {
+  const result = await query(
+    `SELECT id, platform, version, description, is_active, modified_by, modified_reason,
+            guardian_log_id, create_time
+     FROM publish_step_list
+     WHERE platform = $1
+     ORDER BY create_time DESC
+     LIMIT $2`,
+    [platform, limit]
+  );
+  return result.rows;
+}
+
