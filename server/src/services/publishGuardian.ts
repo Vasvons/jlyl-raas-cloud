@@ -696,3 +696,97 @@ export async function handleRetryResult(params: {
     }, userId);
   }
 }
+
+// ==================== v3.8.7 兜底扫描定时任务 ====================
+
+import { query } from '../db';
+
+let sweeperTimer: NodeJS.Timeout | null = null;
+const SWEEPER_INTERVAL_MS = 5 * 60 * 1000; // 每 5 分钟扫描一次
+const SWEEPER_BATCH_LIMIT = 20; // 每次最多处理 20 条，避免突发流量
+
+/**
+ * v3.8.7 守护进程兜底扫描器
+ *
+ * 背景：v3.8.7 修复前，桌面端 publishWorker 失败时不上报 publish_failed 事件，
+ * 导致已存在的失败记录没被守护进程处理。此扫描器作为兜底：
+ *   - 每 5 分钟扫描最近 1 小时内失败但未被守护处理的 publish_record
+ *   - 主动调用 handlePublishFailedEvent 触发分析
+ *
+ * 与触发链路的关系：
+ *   - 主链路：Worker 上报 publish_failed 事件 → handlePublishFailedEvent（实时）
+ *   - 主链路：/publish/records/:id/result 收到 failed 状态 → handlePublishFailedEvent（v3.8.7 新增，近实时）
+ *   - 兜底链路：本扫描器 → handlePublishFailedEvent（5 分钟内补漏）
+ *
+ * 幂等保证：handlePublishFailedEvent 内部已有 processingRecords 并发锁 + 重试次数检查
+ */
+async function sweepFailedRecords(): Promise<void> {
+  try {
+    // 查找最近 1 小时内失败、且无对应守护日志的记录
+    // LEFT JOIN publish_guardian_log 排除已处理的，避免重复触发
+    const res = await query(
+      `SELECT pr.id, pr.platform, pr.task_id, pt.user_id, pr.error_msg
+       FROM publish_record pr
+       JOIN publish_task pt ON pt.id = pr.task_id
+       LEFT JOIN publish_guardian_log gl ON gl.record_id = pr.id
+       WHERE pr.status = 'failed'
+         AND pt.user_id IS NOT NULL AND pt.user_id > 0
+         AND pr.create_time > NOW() - INTERVAL '1 hour'
+         AND gl.id IS NULL
+       ORDER BY pr.create_time DESC
+       LIMIT $1`,
+      [SWEEPER_BATCH_LIMIT]
+    );
+
+    if (res.rows.length === 0) return;
+
+    console.log(`[Guardian Sweeper] 发现 ${res.rows.length} 条未处理的失败记录，开始触发守护进程`);
+
+    for (const row of res.rows) {
+      const userId = Number(row.user_id);
+      const recordId = Number(row.id);
+      const platform = row.platform;
+      const errorMsg = row.error_msg || '';
+
+      if (!userId || !recordId || !platform) continue;
+
+      // 串行触发，避免并发冲击（每条间隔 500ms）
+      void handlePublishFailedEvent({
+        event_type: 'publish_failed',
+        message: `[${platform}] record #${recordId} 发布失败（兜底扫描触发）: ${errorMsg}`.slice(0, 500),
+        data: {
+          record_id: recordId,
+          platform,
+          error_msg: errorMsg,
+          error_type: 'sweeper_retry',
+        },
+        user_id: userId,
+      }).catch((e) => {
+        console.error(`[Guardian Sweeper] 触发 record=${recordId} 失败:`, e.message);
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  } catch (e: any) {
+    console.error('[Guardian Sweeper] 扫描异常:', e.message);
+  }
+}
+
+/**
+ * 启动守护进程兜底扫描器
+ * 在服务器启动时调用（index.ts start()）
+ */
+export function startGuardianSweeper(): void {
+  if (sweeperTimer) {
+    console.log('[Guardian Sweeper] 已在运行，跳过');
+    return;
+  }
+  console.log(`[Guardian Sweeper] 启动兜底扫描器，间隔 ${SWEEPER_INTERVAL_MS / 1000}s`);
+  // 首次延迟 60s 启动（避免与服务器启动 migrate 等任务冲突）
+  setTimeout(() => {
+    void sweepFailedRecords();
+    sweeperTimer = setInterval(() => {
+      void sweepFailedRecords();
+    }, SWEEPER_INTERVAL_MS);
+  }, 60 * 1000);
+}

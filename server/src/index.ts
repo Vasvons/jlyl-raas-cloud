@@ -28,6 +28,8 @@ import petRoutes from './routes/pet';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
 import { initWsServer } from './wsServer';
+// v3.8.7：发布守护进程兜底扫描器
+import { startGuardianSweeper } from './services/publishGuardian';
 
 dotenv.config();
 
@@ -327,6 +329,11 @@ async function start() {
     // v2.5.36：启动 worker 到期回收调度器（在 WS 服务端初始化之后，确保 wsBroadcast 可用）
     // 每 5 分钟扫描：过期配额/授权码回收 + 心跳超时检测 + WS 通知代理客户端
     startWorkerExpiryScheduler();
+
+    // v3.8.7：启动发布守护进程兜底扫描器
+    // 每 5 分钟扫描最近 1 小时内失败但未被守护处理的 publish_record，主动触发 handlePublishFailedEvent
+    // 解决桌面端 publishWorker 未上报 publish_failed 事件导致守护进程不工作的问题
+    startGuardianSweeper();
   } catch (e) {
     console.error('[Server] 启动失败:', e);
     process.exit(1);

@@ -2212,6 +2212,41 @@ router.post('/publish/records/:id/result', async (req: Request, res: Response) =
         console.error('[Guardian] handleRetryResult 异常:', e.message);
       });
     }
+
+    // v3.8.7 守护进程触发修复：失败时主动触发 handlePublishFailedEvent
+    // 原设计仅依赖 Worker 上报 publish_failed 事件到 /flywheel/event-logs，
+    // 但桌面端 publishWorker 走 /publish/records/:id/result 路径不上报事件，
+    // 导致守护进程"运行中但不工作"。此处补齐触发链路。
+    // 注意：retry_queued=true 表示账号失败已自动换号重试，不触发守护（避免重复介入）
+    if (!retry_queued && (status === 'failed' || status === 'login_expired' || status === 'banned')) {
+      try {
+        const recRes = await query(
+          'SELECT pr.task_id, pr.platform, pt.user_id FROM publish_record pr JOIN publish_task pt ON pt.id = pr.task_id WHERE pr.id = $1',
+          [id]
+        );
+        if (recRes.rows.length > 0) {
+          const { task_id: _tid, platform: recPlatform, user_id: userId } = recRes.rows[0];
+          if (userId && userId > 0 && recPlatform) {
+            void handlePublishFailedEvent({
+              event_type: 'publish_failed',
+              message: `[${recPlatform}] record #${id} 发布失败: ${error_msg || ''}`.slice(0, 500),
+              data: {
+                record_id: id,
+                platform: recPlatform,
+                error_msg: error_msg || '',
+                error_type: finalErrorType || '',
+              },
+              user_id: userId,
+            }).catch((e) => {
+              console.error('[Guardian] handlePublishFailedEvent 触发异常:', e.message);
+            });
+            console.log(`[Guardian] 已从 /publish/records/:id/result 触发守护进程：record=${id} platform=${recPlatform} user=${userId}`);
+          }
+        }
+      } catch (e: any) {
+        console.error('[Guardian] 从 result 路由触发守护进程失败:', e.message);
+      }
+    }
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
