@@ -20,7 +20,13 @@ import { getCloudApiConfig } from '../repository';
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } }); // 200MB
 
-router.use(authMiddleware);
+// v3.8.1：/latest-version 为公开接口（打包脚本同步版本号用），不需要认证
+router.use((req, res, next) => {
+  if (req.path === '/latest-version') {
+    return next();
+  }
+  return authMiddleware(req, res, next);
+});
 
 function getUserId(req: Request): number {
   const user = (req as any).user;
@@ -398,10 +404,28 @@ router.post('/:id/publish', async (req: Request, res: Response) => {
 
 // ============ 代理客户端：检查最新版本 ============
 
+/** 比较语义化版本号：返回 >0 表示 a>b，=0 相等，<0 表示 a<b */
+function compareSemver(a: string, b: string): number {
+  const partsA = a.split('.').map((n) => parseInt(n, 10) || 0);
+  const partsB = b.split('.').map((n) => parseInt(n, 10) || 0);
+  const maxLen = Math.max(partsA.length, partsB.length);
+  for (let i = 0; i < maxLen; i++) {
+    const va = partsA[i] || 0;
+    const vb = partsB[i] || 0;
+    if (va > vb) return 1;
+    if (va < vb) return -1;
+  }
+  return 0;
+}
+
 router.get('/latest', async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     if (userId === 0) return res.status(401).json({ code: 401, message: '未登录' });
+
+    // v3.8.1：接收客户端上报的当前版本号，用于版本比较
+    // 客户端版本 >= 最新发布版本时返回 has_update=false，避免每次打开都提示更新
+    const clientVersion = (req.query.current_version as string) || '';
 
     // 查询所有 published 状态的发布，按时间倒序
     // v3.7.6：查询三版 changelog 字段，按角色返回
@@ -446,6 +470,14 @@ router.get('/latest', async (req: Request, res: Response) => {
       return res.json({ code: 200, data: { has_update: false } });
     }
 
+    // v3.8.1：版本号比较
+    // 客户端上报的版本号 >= 最新发布版本号时，判定为"已是最新版本"
+    // 避免 package.json version 固定为 1.0.0 导致每次都提示更新的问题
+    // （打包脚本已自动同步云端最新版本号到 package.json）
+    if (clientVersion && compareSemver(clientVersion, visibleRelease.version) >= 0) {
+      return res.json({ code: 200, data: { has_update: false } });
+    }
+
     // v3.7.6：根据用户角色选择对应版本的 changelog
     const roleSpecificChangelog = pickChangelogByRole(req, visibleRelease);
 
@@ -465,6 +497,25 @@ router.get('/latest', async (req: Request, res: Response) => {
         },
       },
     });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
+// ============ v3.8.1：公开接口，返回最新已发布版本号（打包脚本用，不需要认证） ============
+
+router.get('/latest-version', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT version FROM desktop_update_release
+       WHERE status = 'published'
+       ORDER BY published_at DESC
+       LIMIT 1`
+    );
+    if (result.rows.length === 0) {
+      return res.json({ code: 200, data: { version: null } });
+    }
+    res.json({ code: 200, data: { version: result.rows[0].version } });
   } catch (e: any) {
     res.status(500).json({ code: 500, message: e.message });
   }
