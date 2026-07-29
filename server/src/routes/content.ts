@@ -2767,7 +2767,8 @@ router.post('/flywheel/event-logs', async (req: Request, res: Response) => {
     res.json({ code: 200, data: { id } });
 
     // v3.8 发布守护：publish_failed 事件触发后异步分析（不阻塞响应）
-    if (event_type === 'publish_failed' && targetUserId && targetUserId > 0) {
+    // v3.8.2：仅管理员触发守护（publish_step_list 为全局共享表，代理/客户无权修改）
+    if (event_type === 'publish_failed' && targetUserId && targetUserId > 0 && !isAgent(req)) {
       void handlePublishFailedEvent({
         event_type,
         message,
@@ -2802,8 +2803,19 @@ router.delete('/flywheel/event-logs', async (req: Request, res: Response) => {
 
 // ============ v3.8 发布守护进程 API ============
 
+// v3.8.2：守护进程 API 仅限管理员访问
+// 原因：publish_step_list 为全局共享表（无 user_id 字段），修改会影响所有用户
+// 代理/客户不可启用守护，避免越权修改全局发布配置
+const requireAdminForGuardian = (req: Request, res: Response, next: any): void => {
+  if (isAgent(req)) {
+    res.status(403).json({ code: 403, message: '此功能仅限管理员使用' });
+    return;
+  }
+  next();
+};
+
 /** 获取守护配置 */
-router.get('/guardian/config', async (req: Request, res: Response) => {
+router.get('/guardian/config', requireAdminForGuardian, async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const config = await getGuardianConfig(userId);
@@ -2814,7 +2826,7 @@ router.get('/guardian/config', async (req: Request, res: Response) => {
 });
 
 /** 更新守护配置 */
-router.put('/guardian/config', async (req: Request, res: Response) => {
+router.put('/guardian/config', requireAdminForGuardian, async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const { enabled, platforms, auto_fix, auto_retry, max_retry_per_record, report_strategy } = req.body;
@@ -2829,7 +2841,7 @@ router.put('/guardian/config', async (req: Request, res: Response) => {
 });
 
 /** 查询守护日志列表 */
-router.get('/guardian/logs', async (req: Request, res: Response) => {
+router.get('/guardian/logs', requireAdminForGuardian, async (req: Request, res: Response) => {
   try {
     const userId = getUserId(req);
     const { platform, limit, offset } = req.query;
@@ -2846,7 +2858,7 @@ router.get('/guardian/logs', async (req: Request, res: Response) => {
 });
 
 /** 查询单条守护日志详情 */
-router.get('/guardian/logs/:id', async (req: Request, res: Response) => {
+router.get('/guardian/logs/:id', requireAdminForGuardian, async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
     const log = await getGuardianLogById(id);
