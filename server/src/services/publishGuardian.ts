@@ -29,12 +29,43 @@ import {
   getPetModelConfigWithKey,
 } from '../repository';
 import { wsBroadcast } from '../wsServer';
+import { query } from '../db';
 
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
 const WORKER_SECRET = process.env.WORKER_SECRET || 'dev-secret';
 
 /** 处理中的 record_id 集合，防止并发重复处理 */
 const processingRecords = new Set<number>();
+
+/**
+ * v3.8.7：查询管理员（level='1'）的守护配置
+ *
+ * 场景：管理员帮客户创建发布任务时，publish_task.user_id 是客户的 id
+ *       失败事件携带客户的 userId，但守护配置保存在管理员 userId 下
+ *       此函数用于回退查找管理员的守护配置
+ *
+ * 如果有多个管理员，返回第一个 enabled=true 的；都没有则返回第一个管理员的配置
+ */
+async function getAdminGuardianConfig(): Promise<any> {
+  try {
+    // 优先查找 enabled=true 的管理员配置
+    let result = await query(
+      `SELECT pgc.*
+       FROM publish_guardian_config pgc
+       JOIN users u ON u.id = pgc.user_id
+       WHERE u.level = '1' AND pgc.enabled = true
+       ORDER BY pgc.user_id ASC
+       LIMIT 1`
+    );
+    if (result.rows[0]) return result.rows[0];
+
+    // 没有启用的，返回 null（让调用方走"未启用"逻辑）
+    return null;
+  } catch (e: any) {
+    console.error('[Guardian] 查询管理员守护配置失败:', e.message);
+    return null;
+  }
+}
 
 /** 工具定义（OpenAI function calling 格式） */
 const GUARDIAN_TOOLS = [
@@ -177,11 +208,27 @@ export async function handlePublishFailedEvent(event: {
   }
 
   // 2. 检查用户是否启用守护
-  const config = await getGuardianConfig(userId);
+  // v3.8.7：修复"管理员开启了守护但系统提示未启用"的问题
+  // 根因：管理员帮客户创建发布任务时，publish_task.user_id 是客户的 id
+  //       失败事件携带的是客户的 userId，查守护配置查的是客户的（enabled=false）
+  //       但管理员开启守护保存到的是管理员自己的 userId
+  // 修复：如果当前 userId 没开启守护，回退查找管理员（level='1'）的守护配置
+  //       管理员的守护配置对所有用户的发布任务生效（符合 RaaS 平台管理员代管场景）
+  let config = await getGuardianConfig(userId);
+  let configOwnerUserId = userId;
+  if (!config?.enabled) {
+    // 查找管理员（level='1'）的守护配置
+    const adminConfig = await getAdminGuardianConfig();
+    if (adminConfig?.enabled) {
+      console.log(`[Guardian] user=${userId} 未启用守护，回退使用管理员配置（admin userId=${adminConfig.user_id}）`);
+      config = adminConfig;
+      configOwnerUserId = Number(adminConfig.user_id);
+    }
+  }
   if (!config?.enabled) {
     // v3.8.7：守护未启用时不再静默 return，而是推一条 guardian_report 提醒用户
     // 避免用户困惑"守护运行中但什么也不汇报"——实际是开关没开
-    console.log(`[Guardian] user=${userId} 未启用守护，跳过 record #${recordId}（推送提醒）`);
+    console.log(`[Guardian] user=${userId} 及管理员均未启用守护，跳过 record #${recordId}（推送提醒）`);
     wsBroadcast('guardian_report', {
       log_id: 0,
       record_id: recordId,
@@ -216,7 +263,10 @@ export async function handlePublishFailedEvent(event: {
 
   try {
     await processFailure({
-      userId,
+      // v3.8.7：使用 configOwnerUserId（管理员）而非任务 userId（客户）
+      // 这样守护日志记录到管理员名下，面板查询才能正确显示
+      // 同时 wsBroadcast 推送也发给管理员（管理员能看到自己代管的所有失败处理）
+      userId: configOwnerUserId,
       recordId,
       platform,
       failureMsg: event.message,
@@ -716,8 +766,6 @@ export async function handleRetryResult(params: {
 }
 
 // ==================== v3.8.7 兜底扫描定时任务 ====================
-
-import { query } from '../db';
 
 let sweeperTimer: NodeJS.Timeout | null = null;
 const SWEEPER_INTERVAL_MS = 5 * 60 * 1000; // 每 5 分钟扫描一次
