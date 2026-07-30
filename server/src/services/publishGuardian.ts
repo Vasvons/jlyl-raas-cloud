@@ -722,6 +722,9 @@ import { query } from '../db';
 let sweeperTimer: NodeJS.Timeout | null = null;
 const SWEEPER_INTERVAL_MS = 5 * 60 * 1000; // 每 5 分钟扫描一次
 const SWEEPER_BATCH_LIMIT = 20; // 每次最多处理 20 条，避免突发流量
+// v3.8.7：心跳汇报间隔（每小时一次），让用户感知守护进程在线
+const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000;
+let lastHeartbeatTs = 0;
 
 /**
  * v3.8.7 守护进程兜底扫描器
@@ -756,37 +759,100 @@ async function sweepFailedRecords(): Promise<void> {
       [SWEEPER_BATCH_LIMIT]
     );
 
-    if (res.rows.length === 0) return;
+    if (res.rows.length > 0) {
+      console.log(`[Guardian Sweeper] 发现 ${res.rows.length} 条未处理的失败记录，开始触发守护进程`);
 
-    console.log(`[Guardian Sweeper] 发现 ${res.rows.length} 条未处理的失败记录，开始触发守护进程`);
+      for (const row of res.rows) {
+        const userId = Number(row.user_id);
+        const recordId = Number(row.id);
+        const platform = row.platform;
+        const errorMsg = row.error_msg || '';
 
-    for (const row of res.rows) {
-      const userId = Number(row.user_id);
-      const recordId = Number(row.id);
-      const platform = row.platform;
-      const errorMsg = row.error_msg || '';
+        if (!userId || !recordId || !platform) continue;
 
-      if (!userId || !recordId || !platform) continue;
+        // 串行触发，避免并发冲击（每条间隔 500ms）
+        void handlePublishFailedEvent({
+          event_type: 'publish_failed',
+          message: `[${platform}] record #${recordId} 发布失败（兜底扫描触发）: ${errorMsg}`.slice(0, 500),
+          data: {
+            record_id: recordId,
+            platform,
+            error_msg: errorMsg,
+            error_type: 'sweeper_retry',
+          },
+          user_id: userId,
+        }).catch((e) => {
+          console.error(`[Guardian Sweeper] 触发 record=${recordId} 失败:`, e.message);
+        });
 
-      // 串行触发，避免并发冲击（每条间隔 500ms）
-      void handlePublishFailedEvent({
-        event_type: 'publish_failed',
-        message: `[${platform}] record #${recordId} 发布失败（兜底扫描触发）: ${errorMsg}`.slice(0, 500),
-        data: {
-          record_id: recordId,
-          platform,
-          error_msg: errorMsg,
-          error_type: 'sweeper_retry',
-        },
-        user_id: userId,
-      }).catch((e) => {
-        console.error(`[Guardian Sweeper] 触发 record=${recordId} 失败:`, e.message);
-      });
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
 
-      await new Promise(resolve => setTimeout(resolve, 500));
+    // v3.8.7：心跳汇报 —— 每小时向所有已启用守护的用户推送"守护在线"状态
+    // 解决用户"感知不到守护进程在运行"的问题：即使没有失败事件，也让用户知道守护在后台工作
+    const now = Date.now();
+    if (now - lastHeartbeatTs >= HEARTBEAT_INTERVAL_MS) {
+      lastHeartbeatTs = now;
+      await sendGuardianHeartbeat(res.rows.length);
     }
   } catch (e: any) {
     console.error('[Guardian Sweeper] 扫描异常:', e.message);
+  }
+}
+
+/**
+ * v3.8.7 守护进程心跳汇报
+ * 向所有已启用守护的用户推送"守护在线"状态，让用户感知守护进程在运行
+ *
+ * 心跳内容包括：
+ * - 守护进程状态（在线）
+ * - 本次扫描发现的失败记录数
+ * - 最近 1 小时处理的守护日志数
+ */
+async function sendGuardianHeartbeat(sweptFailedCount: number): Promise<void> {
+  try {
+    // 查询所有已启用守护的用户
+    const configRes = await query(
+      `SELECT user_id, platforms FROM publish_guardian_config WHERE enabled = true`
+    );
+    if (configRes.rows.length === 0) {
+      console.log('[Guardian Heartbeat] 无已启用守护的用户，跳过心跳');
+      return;
+    }
+
+    // 统计最近 1 小时的守护日志数（全局，用于心跳汇报）
+    const statsRes = await query(
+      `SELECT
+         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') AS last_hour,
+         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') AS last_day,
+         COUNT(*) FILTER (WHERE ai_action = 'auto_fixed' AND created_at > NOW() - INTERVAL '24 hours') AS auto_fixed_24h
+       FROM publish_guardian_log`
+    );
+    const stats = statsRes.rows[0] || {};
+    const lastHour = Number(stats.last_hour || 0);
+    const lastDay = Number(stats.last_day || 0);
+    const autoFixed24h = Number(stats.auto_fixed_24h || 0);
+
+    console.log(`[Guardian Heartbeat] 向 ${configRes.rows.length} 个用户推送心跳（最近1小时处理${lastHour}条，24小时${lastDay}条，自动修复${autoFixed24h}条）`);
+
+    for (const row of configRes.rows) {
+      const userId = Number(row.user_id);
+      const platforms = row.platforms;
+      const platformList = Array.isArray(platforms) && platforms.length > 0
+        ? platforms.join('、')
+        : '全部平台';
+
+      wsBroadcast('guardian_report', {
+        log_id: 0,
+        record_id: null,
+        platform: 'system',
+        severity: 'info',
+        message: `🛡️ 守护进程心跳 · 在线运行中\n\n守护状态：✅ 正常运行\n作用范围：${platformList}\n本次扫描：发现 ${sweptFailedCount} 条未处理失败记录\n最近 1 小时：处理 ${lastHour} 条守护日志\n最近 24 小时：处理 ${lastDay} 条（其中自动修复 ${autoFixed24h} 条）\n\n守护进程正在后台持续监控发布失败事件，请放心。`,
+      }, userId);
+    }
+  } catch (e: any) {
+    console.error('[Guardian Heartbeat] 心跳推送失败:', e.message);
   }
 }
 
@@ -802,6 +868,8 @@ export function startGuardianSweeper(): void {
   console.log(`[Guardian Sweeper] 启动兜底扫描器，间隔 ${SWEEPER_INTERVAL_MS / 1000}s`);
   // 首次延迟 60s 启动（避免与服务器启动 migrate 等任务冲突）
   setTimeout(() => {
+    // v3.8.7：首次启动时立即推送一次心跳（lastHeartbeatTs=0，会触发心跳逻辑）
+    // 让用户在服务重启后 60s 内就能看到"守护在线"消息，不用等 1 小时
     void sweepFailedRecords();
     sweeperTimer = setInterval(() => {
       void sweepFailedRecords();
