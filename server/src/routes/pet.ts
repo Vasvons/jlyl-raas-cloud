@@ -11,7 +11,7 @@
  * 管理端在「设置 → 精灵底座配置」开启 use_for_pet 开关的模型作为精灵底座
  */
 import { Router, Request, Response } from 'express';
-import { authMiddleware } from '../auth';
+import { authMiddleware, adminMiddleware } from '../auth';
 import {
   getPetModelConfigWithKey, getPetModelConfigForAdmin, upsertPetModelConfig,
   // v3.2.4：知识库 CRUD
@@ -199,7 +199,7 @@ router.get('/model-config', authMiddleware, async (req: Request, res: Response) 
  * - api_key 为空字符串或 undefined 时不更新（保留原密文）
  * - api_key 为非空字符串时加密后覆盖
  */
-router.put('/model-config', authMiddleware, async (req: Request, res: Response) => {
+router.put('/model-config', authMiddleware, adminMiddleware, async (req: Request, res: Response) => {
   try {
     const { platform, model_name, api_key, base_url, max_tokens, temperature, is_active } = req.body || {};
 

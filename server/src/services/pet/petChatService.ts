@@ -300,6 +300,11 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
 
     stream.on('end', () => {
       // v3.7：finish_reason='tool_calls' 表示模型请求工具调用
+      // v3.8.7：放宽 finishReason 限制 —— 只要 toolCallAccumulator 累积到工具调用就处理
+      // 原因：部分模型平台（如智谱 GLM、通义、部分 OpenAI 兼容端点）在流式响应中
+      //   可能返回 finish_reason='stop' 或不返回 finish_reason，但 delta.tool_calls 已下发
+      //   若严格判断 ==='tool_calls' 会丢失工具调用，导致守护进程的 report_to_user 等工具被静默丢弃
+      //   用户表现为"守护进程在运行但什么也不汇报"
       const toolCallsList = Array.from(toolCallAccumulator.entries())
         .sort((a, b) => a[0] - b[0])
         .map(([_, v]) => ({
@@ -308,7 +313,7 @@ export async function callModelStream(params: CallModelStreamParams): Promise<Ca
           function: { name: v.name, arguments: v.arguments },
         }));
 
-      if (toolCallsList.length > 0 && finishReason === 'tool_calls') {
+      if (toolCallsList.length > 0) {
         // 通过回调通知调用方（用于 SSE 实时下发）
         if (onToolCall) {
           try { onToolCall(toolCallsList); } catch (e) { /* ignore */ }
