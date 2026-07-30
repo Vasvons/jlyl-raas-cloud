@@ -175,8 +175,14 @@ export function wsBroadcast(event: string, payload: any, userId?: string | numbe
 
   // 日志：仅记录非高频事件，避免日志刷屏
   const highFreqEvents = ['shard_progress_updated'];
-  if (!highFreqEvents.includes(event) && sent > 0) {
-    console.log(`[WS] 广播事件 ${event} → ${sent} 个客户端（userId=${targetUserId || 'all'}）`);
+  if (!highFreqEvents.includes(event)) {
+    if (sent > 0) {
+      console.log(`[WS] 广播事件 ${event} → ${sent} 个客户端（userId=${targetUserId || 'all'}）`);
+    } else {
+      // v3.8.7：sent=0 时也记录 warn，便于排查"守护汇报没收到"问题
+      // 常见原因：① 桌面端未建立 WS 连接 ② WS 未鉴权（userId=null, isAdmin=false）③ userId 不匹配
+      console.warn(`[WS] 广播事件 ${event} 无目标客户端（userId=${targetUserId || 'all'}, 总连接=${clients.size}）`);
+    }
   }
 }
 

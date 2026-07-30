@@ -178,7 +178,19 @@ export async function handlePublishFailedEvent(event: {
 
   // 2. 检查用户是否启用守护
   const config = await getGuardianConfig(userId);
-  if (!config?.enabled) return;
+  if (!config?.enabled) {
+    // v3.8.7：守护未启用时不再静默 return，而是推一条 guardian_report 提醒用户
+    // 避免用户困惑"守护运行中但什么也不汇报"——实际是开关没开
+    console.log(`[Guardian] user=${userId} 未启用守护，跳过 record #${recordId}（推送提醒）`);
+    wsBroadcast('guardian_report', {
+      log_id: 0,
+      record_id: recordId,
+      platform,
+      severity: 'info',
+      message: `⚠️ 发布守护进程未启用：${platform} 平台 record #${recordId} 发布失败，但守护开关未开启，未自动处理。请到「精灵设置 → 自动化守护」开启守护开关。`,
+    }, userId);
+    return;
+  }
 
   // 3. 检查平台作用域
   const platforms: string[] = Array.isArray(config.platforms) ? config.platforms : [];
@@ -267,10 +279,13 @@ async function processFailure(params: {
       report_status: 'reported',
       report_msg: '精灵模型未配置，发布守护无法工作。请在管理端配置精灵底座模型。',
     });
-    wsBroadcast('guardian_update', {
-      log_id: logId, record_id: recordId, platform,
-      action: 'error',
-      message: '精灵模型未配置，无法进行 AI 分析',
+    // v3.8.7：改推 guardian_report（而非 guardian_update），让桌面端能收到可见提示
+    wsBroadcast('guardian_report', {
+      log_id: logId,
+      record_id: recordId,
+      platform,
+      severity: 'error',
+      message: `❌ ${platform} 平台发布失败，但精灵模型未配置，守护进程无法自动分析。请在「设置 → 精灵设置 → 精灵底座」配置 AI 模型后，守护才能自动修复。`,
     }, userId);
     return;
   }
@@ -350,10 +365,13 @@ async function processFailure(params: {
         ai_analysis: `AI 分析失败: ${err.message}`,
         ai_action: 'error',
       });
-      wsBroadcast('guardian_update', {
-        log_id: logId, record_id: recordId, platform,
-        action: 'error',
-        message: `AI 分析失败: ${err.message}`,
+      // v3.8.7：改推 guardian_report 让用户可见
+      wsBroadcast('guardian_report', {
+        log_id: logId,
+        record_id: recordId,
+        platform,
+        severity: 'error',
+        message: `❌ ${platform} 平台发布失败，AI 分析过程出错：${err.message}。请检查模型配置或网络后稍后重试。`,
       }, userId);
       return;
     }
