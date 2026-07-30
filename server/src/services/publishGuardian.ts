@@ -743,16 +743,19 @@ let lastHeartbeatTs = 0;
  */
 async function sweepFailedRecords(): Promise<void> {
   try {
-    // 查找最近 1 小时内失败、且无对应守护日志的记录
-    // LEFT JOIN publish_guardian_log 排除已处理的，避免重复触发
+    // v3.8.7：修复扫描条件过严导致"有失败记录但守护不处理"的问题
+    // 原问题 1：只扫最近 1 小时，超过 1 小时的失败记录全部漏掉 → 改为 24 小时
+    // 原问题 2：只匹配 status='failed'，漏掉 'login_expired' 和 'banned' → 三种失败状态都匹配
+    // 原问题 3：publish_task.user_id 可能为 null（旧数据），导致守护无法确定汇报给谁
+    //          → 保留 user_id > 0 过滤，但放宽 user_id IS NOT NULL（null 会被 > 0 过滤）
     const res = await query(
-      `SELECT pr.id, pr.platform, pr.task_id, pt.user_id, pr.error_msg
+      `SELECT pr.id, pr.platform, pr.task_id, pt.user_id, pr.error_msg, pr.status
        FROM publish_record pr
        JOIN publish_task pt ON pt.id = pr.task_id
        LEFT JOIN publish_guardian_log gl ON gl.record_id = pr.id
-       WHERE pr.status = 'failed'
+       WHERE pr.status IN ('failed', 'login_expired', 'banned')
          AND pt.user_id IS NOT NULL AND pt.user_id > 0
-         AND pr.create_time > NOW() - INTERVAL '1 hour'
+         AND pr.create_time > NOW() - INTERVAL '24 hours'
          AND gl.id IS NULL
        ORDER BY pr.create_time DESC
        LIMIT $1`,
