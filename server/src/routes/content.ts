@@ -2666,6 +2666,41 @@ router.post('/publish-accounts/:id/refresh-storage-state', async (req: Request, 
   }
 });
 
+/**
+ * v3.8.8：云端 Worker 登录态失效时拉取账号最新 storageState
+ *
+ * 由 auto-publish-worker 在发布前预检发现登录态失效、且 adapter.recoverLogin +
+ * 主动刷新均失败后调用。拉取数据库中最新的 storageState（用户可能已通过桌面端 UI
+ * 重新登录），让 Worker 重新注入尝试恢复，避免直接报 login_expired 换号。
+ *
+ * 认证：X-Worker-Secret（云端 worker 专用，非 JWT）
+ *
+ * 返回：{ code: 200, data: { storage_state, expires_at, health_status } }
+ *       账号不存在或无 storage_state 时返回 404/409
+ */
+router.get('/publish-accounts/:id/storage-state', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const account = await getPublishAccountById(id);
+    if (!account) {
+      return res.status(404).json({ code: 404, message: '账号不存在' });
+    }
+    if (!account.storage_state) {
+      return res.status(409).json({ code: 409, message: '账号无 storage_state，请先登录' });
+    }
+    res.json({
+      code: 200,
+      data: {
+        storage_state: account.storage_state,
+        expires_at: account.expires_at,
+        health_status: account.health_status,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
 // ============ v2.0.9：飞轮事件日志（flywheel_event_log） ============
 //
 // 由桌面端 flywheelDaemon 上报关键事件（tick/AEO完成/自动创建写作任务/

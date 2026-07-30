@@ -358,12 +358,24 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
           }
         }
 
+        // v3.8.8 第 3 级：重新从云端拉取最新 storageState 注入（对齐桌面端 publishWorker 三级降级链路）
+        //   场景：用户在桌面端 UI 点了"恢复登录态"重新登录，云端 DB 的 storageState 已更新，
+        //         但 Worker dequeue 时拿的是旧 storageState。重新拉取注入有机会恢复登录态，
+        //         避免直接报 login_expired 换号（换号会消耗另一个账号的配额）。
+        if (!recovered && record.platform_auth_id) {
+          logger.info(`v3.8.8 尝试从云端拉取最新 storageState 重新注入恢复登录态...`);
+          recovered = await recoverLoginByRefetchingStorageState(
+            page, context, record.platform_auth_id,
+            loginCheckConfig, platform, recordId,
+          );
+        }
+
         if (!recovered) {
-          logger.error(`登录态失效: ${loginCheck.reason}（云端主动刷新仍失败，请重新登录账号）`);
-          void reportFlywheelEvent('login_expired', `[${platform}] 账号登录态失效：${loginCheck.reason}（云端主动刷新失败，请在桌面端重新登录）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
+          logger.error(`登录态失效: ${loginCheck.reason}（三级恢复链路均失败，请重新登录账号）`);
+          void reportFlywheelEvent('login_expired', `[${platform}] 账号登录态失效：${loginCheck.reason}（云端已尝试适配器恢复、主动刷新、重新拉取 storageState 三级恢复均失败，请在桌面端重新登录）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});
           await reportPublishResult(recordId, {
             status: 'login_expired',
-            error_msg: `登录态失效: ${loginCheck.reason}（云端已尝试主动刷新登录态但仍失败，请在桌面端重新登录该账号）`,
+            error_msg: `登录态失效: ${loginCheck.reason}（云端已尝试适配器恢复、主动刷新、重新拉取 storageState 三级恢复均失败，请在桌面端重新登录该账号）`,
           });
           return;
         }
@@ -733,5 +745,142 @@ async function reportAccountStorageStateUpdate(accountId: number, storageState: 
     logger.info(`账号 ${accountId} storage_state 已更新`);
   } catch (e: any) {
     logger.warn(`账号 ${accountId} storage_state 更新失败: ${e.message}`);
+  }
+}
+
+/**
+ * v3.8.8：从云端拉取账号最新 storageState（对齐桌面端 publishWorker.refetchAccountStorageState）
+ *
+ * 场景：Worker 登录预检发现登录态失效，但用户可能在桌面端 UI 上点了"恢复登录态"按钮，
+ *       云端 DB 的 storageState 已更新。此时 Worker 拉取最新 storageState 重新注入，
+ *       有可能恢复登录态，避免直接报 login_expired 换号（换号会消耗另一个账号的配额）。
+ *
+ * @param accountId platform_auth.id
+ * @returns 最新的 storageState 原始数据（未 normalize），或 null 表示拉取失败
+ */
+async function refetchAccountStorageState(accountId: number): Promise<any | null> {
+  try {
+    const resp = await axios.get(
+      `${SERVER_URL}/content/publish-accounts/${accountId}/storage-state`,
+      {
+        headers: { 'X-Worker-Secret': WORKER_SECRET },
+        timeout: 10000,
+      }
+    );
+    if (resp.data?.code === 200 && resp.data?.data?.storage_state) {
+      return resp.data.data.storage_state;
+    }
+    logger.warn(`拉取账号 ${accountId} storageState 失败: ${resp.data?.message || '响应异常'}`);
+    return null;
+  } catch (e: any) {
+    logger.warn(`拉取账号 ${accountId} storageState 异常: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * v3.8.8：登录态恢复——重新注入最新 storageState 并再次检测（对齐桌面端 publishWorker 三级降级链路第 2 级）
+ *
+ * 恢复流程：
+ *  1. 从云端拉取账号最新 storageState（用户可能已通过桌面端 UI 恢复）
+ *  2. 清除 context 现有 cookie，重新注入最新 cookie
+ *  3. 重新导航到 login_check_url 并检测登录态
+ *
+ * @returns true 表示恢复成功；false 表示仍失效
+ */
+async function recoverLoginByRefetchingStorageState(
+  page: any,
+  context: BrowserContext,
+  accountId: number,
+  loginCheckConfig: PlatformLoginCheck,
+  platform: string,
+  recordId: number,
+): Promise<boolean> {
+  logger.info(`[record ${recordId}] 尝试从云端拉取最新 storageState 恢复登录态...`);
+
+  const latestStorageStateRaw = await refetchAccountStorageState(accountId);
+  if (!latestStorageStateRaw) {
+    logger.warn(`[record ${recordId}] 拉取最新 storageState 失败或为空`);
+    return false;
+  }
+
+  const normalized = normalizeToPlaywrightStorageState(latestStorageStateRaw);
+  if (!normalized || !normalized.cookies || normalized.cookies.length === 0) {
+    logger.warn(`[record ${recordId}] 拉取的 storageState 无有效 cookie`);
+    return false;
+  }
+
+  logger.info(`[record ${recordId}] 拉取到最新 storageState: ${normalized.cookies.length} 条 cookie`);
+
+  // 清除 context 现有 cookie，重新注入
+  try {
+    await context.clearCookies();
+    logger.info(`[record ${recordId}] 已清除旧 cookie`);
+  } catch (e: any) {
+    logger.warn(`[record ${recordId}] 清除 cookie 失败: ${e.message}`);
+  }
+
+  try {
+    await context.addCookies(normalized.cookies);
+    logger.info(`[record ${recordId}] 已注入最新 ${normalized.cookies.length} 条 cookie`);
+  } catch (e: any) {
+    logger.error(`[record ${recordId}] 注入新 cookie 失败: ${e.message}`);
+    return false;
+  }
+
+  // 重新导航到 login_check_url
+  if (loginCheckConfig.login_check_url) {
+    logger.info(`[record ${recordId}] 重新导航到 ${loginCheckConfig.login_check_url}`);
+    await page.goto(loginCheckConfig.login_check_url, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e: any) => {
+      logger.warn(`[record ${recordId}] 重新导航失败: ${e.message}`);
+    });
+    // 等待页面稳定
+    await page.waitForTimeout(3000);
+
+    // 适配器 onAfterNavigateForLoginCheck（如 wxgzh 点 #jumpUrl）
+    const adapter = isPlatformSupported(platform) ? getPlatformAdapter(platform) : null;
+    if (adapter) {
+      const pushLog = (msg: string, level?: 'info' | 'warn' | 'error') => {
+        if (level === 'error') logger.error(msg);
+        else if (level === 'warn') logger.warn(msg);
+        else logger.info(msg);
+      };
+      await adapter.onAfterNavigateForLoginCheck?.(page, context, { recordId, pushLog });
+    }
+  }
+
+  // 再次检测登录态
+  const recheck = await checkLoginState(page, platform, loginCheckConfig);
+  if (recheck.valid) {
+    logger.info(`[record ${recordId}] ✅ 登录态恢复成功（重新注入 storageState 后检测通过）`);
+
+    // 捕获恢复后的最新 storageState 回写云端（避免下次再被误判）
+    try {
+      const newStorageState = await context.storageState();
+      const newStorageStateStr = JSON.stringify(newStorageState);
+      let expiresAt: string | undefined;
+      const validCookies = (newStorageState.cookies || []).filter((c: any) =>
+        c.expires > 0 && c.expires > Date.now() / 1000
+      );
+      if (validCookies.length > 0) {
+        const maxExpires = Math.max(...validCookies.map((c: any) => c.expires));
+        expiresAt = new Date(maxExpires * 1000).toISOString();
+      }
+      await axios.post(
+        `${SERVER_URL}/content/publish-accounts/${accountId}/refresh-storage-state`,
+        { storage_state: newStorageStateStr, expires_at: expiresAt },
+        { headers: { 'X-Worker-Secret': WORKER_SECRET }, timeout: 10000 }
+      ).catch((e: any) => {
+        logger.warn(`[record ${recordId}] 回写恢复后的 storageState 失败: ${e.message}`);
+      });
+      logger.info(`[record ${recordId}] 已回写恢复后的 storageState 到云端`);
+    } catch (e: any) {
+      logger.warn(`[record ${recordId}] 捕获/回写 storageState 失败: ${e.message}`);
+    }
+
+    return true;
+  } else {
+    logger.warn(`[record ${recordId}] ❌ 重新注入后登录态仍失效: ${recheck.reason}`);
+    return false;
   }
 }
