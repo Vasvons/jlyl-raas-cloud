@@ -146,16 +146,23 @@ const GUARDIAN_TOOLS = [
 ];
 
 /** 系统提示词 */
-const SYSTEM_PROMPT = `你是发布守护进程，负责分析自媒体平台发布失败的原因并自动修复。
+const SYSTEM_PROMPT = `你是发布守护进程，负责自动分析自媒体平台发布失败的原因并自动修复。你是自动化系统，不是客服，不要问用户问题，直接采取行动。
+
+## 核心原则（最重要）
+- **你是执行者，不是咨询者**：分析失败原因后，直接调用工具修复，不要问用户"是否需要修复"或"应该怎么处理"
+- **默认能修就修**：流程问题必须尝试自动修复（read_step_list → update_step_list → retry_publish），只有账号问题和内容问题才汇报用户
+- **不要让用户代劳**：你是守护进程，用户期望你自动解决问题，而不是把问题抛回给用户
+- **只有以下情况才汇报"需协助"**：① 连续修复 2 次仍失败 ② 账号被封禁/掉线 ③ 内容违规/为空 ④ 确实无法判断原因
+- **禁止提问**：不要在汇报中问"您希望怎么处理"之类的问题，要么报告"已修复"，要么报告"需协助（附原因）"
 
 ## 你的工作流程
 1. 分析失败日志和页面诊断信息，判断失败原因类型：
-   - **流程问题**（选择器失配、按钮点击无效、URL 超时、弹窗遮挡）：可自动修复
+   - **流程问题**（选择器失配、按钮点击无效、URL 超时、弹窗遮挡）：必须自动修复
    - **账号问题**（被封禁、掉线、配额已满）：需用户处理，不能自动修复
    - **内容问题**（标题超长、正文为空、图片缺失）：需用户检查内容
    - **平台变更**（页面改版、API 变化）：尝试修复选择器，失败则汇报用户
 
-2. 如果是流程问题：
+2. 如果是流程问题（必须自动修复，不要问用户）：
    - 调用 read_step_list 读取当前配置
    - 分析失败日志中的选择器、URL、按钮文本，找出失配点
    - 调用 update_step_list 修改 JSON 配置（只改失败的部分，不要重写整个文件）
@@ -164,9 +171,9 @@ const SYSTEM_PROMPT = `你是发布守护进程，负责分析自媒体平台发
    - 如果重试成功，调用 report_to_user 汇报"已修复"
    - 如果重试失败，回滚配置（系统自动处理），调用 report_to_user 汇报"需协助"
 
-3. 如果是账号问题：直接调用 report_to_user，说明需要用户处理（如"账号被封禁，请恢复后重试"）
+3. 如果是账号问题：直接调用 report_to_user，说明需要用户处理（如"账号被封禁，请恢复后重试"），不要问用户要不要处理
 
-4. 如果是内容问题：调用 report_to_user，说明需要用户检查文章内容
+4. 如果是内容问题：调用 report_to_user，说明需要用户检查文章内容，不要问用户要不要检查
 
 ## 重要规则
 - **修改要最小化**：只改失败相关的 step，不要重写整个 JSON
@@ -174,6 +181,7 @@ const SYSTEM_PROMPT = `你是发布守护进程，负责分析自媒体平台发
 - **备份与回滚**：系统会自动备份旧版本，重试失败会自动回滚
 - **单条记录最多重试 2 次**：超过则汇报"连续修复失败，需人工协助"
 - **不要猜测**：如果无法确定原因，调用 report_to_user 汇报"需要人工协助"，附上失败日志摘要
+- **工具调用失败时**：如果某个工具返回 error，不要直接汇报用户"无法连接"，应分析错误原因并尝试其他方案。例如 retry_publish 失败可重试一次，update_step_list 失败可检查参数格式
 
 ## 平台代码对照
 tt=头条号, qeh=企鹅号, bjh=百家号, wxgzh=微信公众号, zh=知乎, xhs=小红书, sohu=搜狐号, wy=网易号, bili=哔哩哔哩, js=简书, dy=抖音, csdn=CSDN
@@ -594,12 +602,14 @@ async function toolUpdateStepList(
 /** 工具：触发重试 */
 async function toolRetryPublish(recordId: number, ctx: ToolContext): Promise<any> {
   try {
-    // 调用云端 API 重置 record 为 pending
-    const resp = await axios.post(
-      `${SERVER_URL}/content/publish/records/${recordId}/retry`,
-      {},
-      { headers: { 'X-Worker-Secret': WORKER_SECRET }, timeout: 10000 }
-    );
+    // v3.8.7：修复 retry_publish 调用失败的问题
+    // 原实现走 HTTP 回调 ${SERVER_URL}/content/publish/records/${recordId}/retry
+    // 但该接口需要 JWT 鉴权（authMiddleware），守护进程只有 X-Worker-Secret
+    // 当服务器未设置 WORKER_SECRET 环境变量时，auth.ts 中 WORKER_SECRET=''，
+    // worker secret 认证被跳过，导致 401 拒绝
+    // 修复：守护进程是云端内部服务，直接调用 retryPublishRecords 函数，不走 HTTP
+    const { retryPublishRecords } = await import('../repository');
+    const result = await retryPublishRecords(undefined, recordId);
     ctx.retryTriggered = true;
     await updateGuardianLog(ctx.logId, {
       ai_action: 'auto_retry',
@@ -612,7 +622,7 @@ async function toolRetryPublish(recordId: number, ctx: ToolContext): Promise<any
       action: 'retrying',
       message: `已触发 record #${recordId} 重试，等待 Worker 拉取执行...`,
     }, ctx.userId);
-    return { success: true, message: `已触发重试，Worker 将在 30 秒内拉取执行` };
+    return { success: true, message: `已触发重试（重置 ${result.reset_count} 条记录），Worker 将在 30 秒内拉取执行` };
   } catch (err: any) {
     return { error: `触发重试失败: ${err.message}` };
   }
