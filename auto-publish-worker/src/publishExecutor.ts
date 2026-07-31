@@ -405,6 +405,7 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     // ---- 3. 执行 step_list ----
     const ctx: StepExecutionContext = {
       page,
+      context,  // v3.8.9：供 execNavigate 在 Page crashed 后重建 page
       platform,
       article: {
         title: record.article.title || '',
@@ -420,7 +421,8 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     await executeSteps(record.step_list.steps as Step[], ctx);
 
     // ---- 4. 截图存证（v2.5.0：上传 OSS） ----
-    const screenshotBuffer = await takeScreenshot(page, recordId);
+    // v3.8.9：用 ctx.page 而非 page（execNavigate 可能在 Page crashed 后重建 page）
+    const screenshotBuffer = await takeScreenshot(ctx.page, recordId);
     let screenshotPath: string | undefined;
     if (screenshotBuffer) {
       try {
@@ -445,7 +447,8 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     const platformUrl = extractPlatformUrl(ctx.lastEvalResult);
 
     // ---- 6. 再次检测封禁信号（发布后） ----
-    const postBanCheck = await detectBanSignal(page, platform).catch(() => ({ banned: false, reason: undefined } as { banned: boolean; reason?: string }));
+    // v3.8.9：用 ctx.page 而非 page（execNavigate 可能在 Page crashed 后重建 page）
+    const postBanCheck = await detectBanSignal(ctx.page, platform).catch(() => ({ banned: false, reason: undefined } as { banned: boolean; reason?: string }));
     if (postBanCheck.banned) {
       logger.error(`发布后检测到封禁: ${postBanCheck.reason}`);
       void reportFlywheelEvent('banned', `[${platform}] 发布后检测到封禁：${postBanCheck.reason}（账号 ${record.account_name}）`, { record_id: recordId, platform, account_name: record.account_name }).catch(() => {});

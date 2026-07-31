@@ -15,7 +15,8 @@ export class DyAdapter extends BasePlatformAdapter {
   displayName = '抖音';
 
   loginCheck = {
-    url: 'https://creator.douyin.com/creator-micro/content/upload?default-tab=3',
+    // v3.8.9：登录预检改用创作者中心首页（轻量），避免加载 upload 重页面导致 Page crashed
+    url: 'https://creator.douyin.com/creator-micro/home',
     selector:
       "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')] | //div[contains(@class,'avatar')]",
     urlPattern: '^https://creator\\.douyin\\.com/.*login.*',

@@ -1,4 +1,4 @@
-import { Page, Frame, ElementHandle } from 'playwright';
+import { Page, Frame, ElementHandle, BrowserContext } from 'playwright';
 import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
@@ -90,6 +90,8 @@ export interface Step {
 
 export interface StepExecutionContext {
   page: Page;
+  /** v3.8.9：浏览器上下文，供 execNavigate 在 Page crashed 后重建 page */
+  context?: BrowserContext;
   platform: string;
   article: {
     title: string;
@@ -280,14 +282,43 @@ async function findElement(page: Page, selector: string, nth?: number): Promise<
 async function execNavigate(step: Step, ctx: StepExecutionContext): Promise<boolean> {
   const url = resolveValue(step.value, ctx)!;
   const timeout = step.timeout || 30000;
-  await ctx.page.goto(url, { waitUntil: 'domcontentloaded', timeout });
-  // 额外等待网络空闲（可选，提升 SPA 稳定性）
-  try {
-    await ctx.page.waitForLoadState('networkidle', { timeout: Math.min(timeout, 8000) });
-  } catch {
-    // 网络空闲等待失败不阻断
+
+  // v3.8.9：Page crashed 恢复（应对抖音 upload 页等重页面崩溃）
+  //   之前 bug：page.goto 报 Page crashed 直接抛错，record 标记 failed，
+  //             守护进程重试也崩溃（如抖音 #808 连续 12 次）
+  //   现在：检测到 crashed/closed 时，用 ctx.context 重建 page 后重试，最多 2 次
+  const MAX_GOTO_RETRIES = 2;
+  let lastError: any;
+
+  for (let attempt = 1; attempt <= MAX_GOTO_RETRIES; attempt++) {
+    try {
+      await ctx.page.goto(url, { waitUntil: 'domcontentloaded', timeout });
+      // 额外等待网络空闲（可选，提升 SPA 稳定性）
+      try {
+        await ctx.page.waitForLoadState('networkidle', { timeout: Math.min(timeout, 8000) });
+      } catch {
+        // 网络空闲等待失败不阻断
+      }
+      return true;
+    } catch (err: any) {
+      lastError = err;
+      const msg = err.message || '';
+      const isCrashed = msg.includes('crashed') || msg.includes('Target closed') || msg.includes('has been closed');
+
+      if (isCrashed && attempt < MAX_GOTO_RETRIES && ctx.context) {
+        ctx.onLog?.(`[navigate] Page crashed（第 ${attempt} 次），重建 page 后重试: ${msg.slice(0, 100)}`, 'warn');
+        try {
+          await ctx.page.close().catch(() => {});
+        } catch {}
+        // 新建 page（addInitScript 在 context 级别注入，stealth 脚本会自动生效）
+        ctx.page = await ctx.context.newPage();
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 等 2s 让浏览器稳定
+        continue;
+      }
+      throw err;
+    }
   }
-  return true;
+  throw lastError;
 }
 
 async function execClick(step: Step, ctx: StepExecutionContext): Promise<boolean> {
