@@ -10,8 +10,9 @@
  *  - 不支持平台适配器（使用基础登录检查）
  *  - 同平台串行锁（避免 Chrome 崩溃）
  */
-import { chromium, BrowserContext } from 'playwright';
+import { chromium, Browser, BrowserContext } from 'playwright';
 import axios from 'axios';
+import { exec } from 'child_process';
 import { getStealthScript, getAntiDetectionArgs, shouldUseHeadless } from './stealthLoader';
 import { getStableFingerprint, fingerprintToContextOptions, getFingerprintInjectionScript } from './fingerprintManager';
 import { normalizeToPlaywrightStorageState, injectStorageState, captureStorageState } from './storageStateManager';
@@ -205,11 +206,15 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       contextOptions.proxy = proxyConfig;
     }
 
-    const browser = await chromium.launch({
+    // v3.8.9：浏览器启动带重试（应对 OOM/资源不足导致的启动超时）
+    //   之前 bug：chromium.launch 失败直接抛错，record 被标记 failed，
+    //             僵尸 Chromium 进程残留加剧后续任务 OOM（如抖音 #808 连续 12 次失败）
+    //   现在：失败时清理僵尸 Chromium 进程，间隔 3s 后重试，最多 3 次
+    const browser = await launchBrowserWithRetry({
       headless: useHeadless,
       args: launchArgs,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
-    });
+    }, recordId);
 
     context = await browser.newContext(contextOptions);
 
@@ -883,4 +888,71 @@ async function recoverLoginByRefetchingStorageState(
     logger.warn(`[record ${recordId}] ❌ 重新注入后登录态仍失效: ${recheck.reason}`);
     return false;
   }
+}
+
+/**
+ * v3.8.9：清理僵尸 Chromium 进程
+ *
+ * 场景：Chromium 因 OOM/崩溃被杀后，进程可能残留为僵尸，占用内存加剧后续任务 OOM。
+ *       在 Docker 容器内执行 pkill chromium 是安全的（只影响当前容器）。
+ */
+function cleanupZombieChromium(recordId: number): void {
+  try {
+    exec('pkill -9 -f chromium 2>/dev/null; pkill -9 -f chrome 2>/dev/null', (err) => {
+      if (err) {
+        // pkill 无匹配进程时返回非 0 退出码，不是真错误
+        logger.info(`[record ${recordId}] 僵尸 Chromium 清理完成（可能无残留进程）`);
+      } else {
+        logger.info(`[record ${recordId}] 僵尸 Chromium 清理完成`);
+      }
+    });
+  } catch (e: any) {
+    logger.warn(`[record ${recordId}] 清理僵尸 Chromium 失败: ${e.message}`);
+  }
+}
+
+/**
+ * v3.8.9：浏览器启动带重试
+ *
+ * 之前 bug：chromium.launch 失败（OOM/资源不足/启动超时）直接抛错，record 被标记 failed，
+ *          僵尸 Chromium 进程残留加剧后续任务 OOM（如抖音 #808 连续 12 次失败）。
+ *
+ * 现在：失败时清理僵尸 Chromium 进程，间隔 3s 后重试，最多 3 次。
+ *       重试前清理能释放被僵尸进程占用的内存，提高下次启动成功率。
+ */
+async function launchBrowserWithRetry(
+  options: { headless: boolean; args: string[]; executablePath?: string },
+  recordId: number,
+): Promise<Browser> {
+  const MAX_RETRIES = 3;
+  const RETRY_DELAY_MS = 3000;
+  let lastError: any;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const browser = await chromium.launch({
+        headless: options.headless,
+        args: options.args,
+        executablePath: options.executablePath,
+      });
+      if (attempt > 1) {
+        logger.info(`[record ${recordId}] ✅ 浏览器启动成功（第 ${attempt} 次尝试）`);
+      }
+      return browser;
+    } catch (err: any) {
+      lastError = err;
+      const isTimeout = err.message?.includes('Timeout') || err.message?.includes('timeout');
+      const isCrash = err.message?.includes('crashed') || err.message?.includes('closed');
+      logger.warn(`[record ${recordId}] 浏览器启动失败（第 ${attempt}/${MAX_RETRIES} 次）: ${err.message}${isTimeout ? ' [超时]' : ''}${isCrash ? ' [崩溃]' : ''}`);
+
+      if (attempt < MAX_RETRIES) {
+        logger.info(`[record ${recordId}] 清理僵尸 Chromium 进程并等待 ${RETRY_DELAY_MS / 1000}s 后重试...`);
+        cleanupZombieChromium(recordId);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
+      }
+    }
+  }
+
+  // 3 次都失败，抛出最后一次的错误
+  throw new Error(`浏览器启动失败（已重试 ${MAX_RETRIES} 次）: ${lastError?.message || String(lastError)}`);
 }
