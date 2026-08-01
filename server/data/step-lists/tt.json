@@ -1,6 +1,6 @@
 {
   "platform": "tt",
-  "version": "1.7.14",
+  "version": "1.7.15",
   "description": "今日头条图文发布流程（基于 toutiao.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
@@ -143,13 +143,14 @@
     {
       "type": "evaluate_edit",
       "value": "for (var i = 0; i < 30; i++) { var btns = document.querySelectorAll('button'); var hasPublish = false; for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t === '预览并发布' || t === '预览并定时发布') { hasPublish = true; break; } } if (!hasPublish) { return 'publish_btn_disappeared'; } if (window.location.href.indexOf('profile_v4/graphic/articles') >= 0) { return 'url_changed'; } var toasts = document.querySelectorAll('[class*=\"toast\"], [class*=\"message\"], [class*=\"notification\"]'); for (var k = 0; k < toasts.length; k++) { var tt = (toasts[k].innerText || '').trim(); if (tt.indexOf('发布成功') >= 0 || tt.indexOf('已发布') >= 0) { return 'toast_success: ' + tt.slice(0, 50); } } var now = function() { return new Promise(function(r) { setTimeout(r, 1000); }); }; await now(); } return 'timeout_30s_btn_still_visible';",
-      "descript": "v3.7.13 发布成功检测（按钮消失/URL跳转/成功提示，三重检测，不依赖单一URL跳转）",
-      "timeout": 35000
+      "descript": "v3.7.15 发布成功检测（按钮消失/URL跳转/成功提示，三重检测；失败时抛错避免假成功）",
+      "timeout": 35000,
+      "throw_on_value": "timeout_30s_btn_still_visible"
     },
     {
       "type": "wait_for_url",
       "value": "profile_v4/graphic/articles",
-      "descript": "v3.7.14 兜底等待 URL 跳转（如已跳转则立即返回，不阻断流程）",
+      "descript": "v3.7.15 兜底等待 URL 跳转（仅在 evaluate_edit 通过时执行，超时不阻断）",
       "timeout": 10000,
       "is_try": true
     },

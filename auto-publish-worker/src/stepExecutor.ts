@@ -86,6 +86,10 @@ export interface Step {
   upload_complete_selector?: string;
   /** v1.7.11 input_files 类型：自定义上传完成等待超时（ms，默认 15000） */
   upload_complete_timeout?: number;
+  /** v3.8.11 evaluate_edit 类型：当返回值（字符串）匹配此值时抛错中断流程
+   *  用途：发布成功检测步骤——返回 'timeout_btn_still_visible' 时说明发布未生效，
+   *        应抛错报告失败，而不是继续走 wait_for_url 导致假成功 */
+  throw_on_value?: string;
 }
 
 export interface StepExecutionContext {
@@ -1268,6 +1272,14 @@ async function execEvaluateEdit(step: Step, ctx: StepExecutionContext): Promise<
     if (result && typeof result === 'object' && result.__error) {
       if (step.is_try) return true;
       throw new Error(`evaluate_edit 执行错误: ${result.__error}`);
+    }
+    // v3.8.11：支持 throw_on_value 字段——返回值匹配时抛错中断流程
+    //   用途：发布成功检测步骤返回 'timeout_btn_still_visible' 说明发布未生效，
+    //         应抛错报告失败，避免后续 wait_for_url 超时或假成功
+    //   注意：is_try=true 时仍容错跳过（保持原 is_try 语义）
+    if (step.throw_on_value && typeof result === 'string' && result === step.throw_on_value) {
+      if (step.is_try) return true;
+      throw new Error(`发布未生效：检测到失败信号 "${result}"（发布按钮30秒后仍可见，可能内容违规或平台拦截）`);
     }
     return true;
   } catch (err: any) {

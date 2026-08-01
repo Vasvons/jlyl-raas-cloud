@@ -8,6 +8,26 @@ const SUPPORTED_PLATFORMS = [
 ];
 
 /**
+ * v3.8.11：SemVer 版本号比较（fileVersion vs dbVersion）
+ *
+ * 返回值：1 表示 a > b，-1 表示 a < b，0 表示相等
+ *
+ * 用途：判断种子文件版本是否高于数据库版本，决定是否强制覆盖守护进程修改
+ */
+function compareVersions(a: string, b: string): number {
+  const pa = (a || '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = (b || '').split('.').map(n => parseInt(n, 10) || 0);
+  const maxLen = Math.max(pa.length, pb.length);
+  for (let i = 0; i < maxLen; i++) {
+    const va = pa[i] || 0;
+    const vb = pb[i] || 0;
+    if (va > vb) return 1;
+    if (va < vb) return -1;
+  }
+  return 0;
+}
+
+/**
  * 启动时检查 publish_step_list 表，为缺失的平台导入种子 step_list。
  *
  * 种子文件位于 server/data/step-lists/<platform>.json，包含完整 step 数组。
@@ -53,15 +73,26 @@ export async function seedStepLists(): Promise<void> {
         const dbVersion = existing.version || '';
         const versionMismatch = !isExistingPlaceholder && dbVersion !== seedVersion;
 
-        // v3.8.10：守护进程修改过的配置绝不覆盖（守护基于实际失败调试，比种子更可靠）
+        // v3.8.10：守护进程修改过的配置默认不覆盖（守护基于实际失败调试，比种子更可靠）
         //   之前 Bug：守护升级 qeh 到 v1.7.9，但种子文件仍是 v1.7.7，seeder 检测到
         //   versionMismatch 就用旧种子覆盖刷新，重新激活 v1.7.7 与 v1.7.9 并存，
         //   导致 dequeue 可能取到格式异常的旧版本 → "step_list 无有效步骤"
+        //
+        // v3.8.11：文件版本更高时强制覆盖守护修改
+        //   场景：守护把 tt 改成 v1.7.13（方向错误），开发者修文件到 v1.7.15（含正确修复）
+        //   之前 Bug：seeder 跳过守护修改的配置，开发者文件修复无法生效
+        //   修复：比较文件版本与数据库版本，文件版本更高时强制覆盖（开发者主动修复优先于守护自动修复）
         const isGuardianModified = existing.modified_by === 'guardian';
         if (isGuardianModified && !isExistingPlaceholder) {
-          console.log(`[StepListSeeder] 跳过 ${platform}：守护进程已修改（v${dbVersion}, modified_by=guardian），不覆盖`);
-          skipped++;
-          continue;
+          const fileVersionHigher = compareVersions(seedVersion, dbVersion) > 0;
+          if (fileVersionHigher) {
+            console.log(`[StepListSeeder] 强制覆盖 ${platform}：文件 v${seedVersion} > 数据库 v${dbVersion}（守护修改版），开发者修复优先`);
+            isRefresh = true;
+          } else {
+            console.log(`[StepListSeeder] 跳过 ${platform}：守护进程已修改（v${dbVersion}, modified_by=guardian），文件 v${seedVersion} 未更高，不覆盖`);
+            skipped++;
+            continue;
+          }
         }
 
         if (!isExistingPlaceholder && !versionMismatch) {
