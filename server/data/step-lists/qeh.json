@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.7.7",
-  "description": "企鹅号图文发布流程（v1.7.7：修复自主声明选择失败导致发布无效——移除 is_try 改为抛错避免无效点击；轮询等待下拉菜单弹出；选择后验证提示消失；wait_for_url 改用 domcontentloaded）",
+  "version": "1.8.0",
+  "description": "企鹅号图文发布流程（v1.8.0：重写自主声明步骤适配企鹅号改版——旧版下拉选择已移除，改为按钮+弹窗+单选；增强发布失败检测避免假成功）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -83,14 +83,25 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') < 0 && bodyText.indexOf('自主声明') < 0) return 'no_self_declaration_needed'; var allElements = document.querySelectorAll('div, span, label, li, button, a, select, option'); var declarationLabel = null; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t === '自主声明' || t === '请选择自主声明') { declarationLabel = el; break; } } if (!declarationLabel) { for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t.indexOf('自主声明') >= 0 && t.length < 30) { declarationLabel = el; break; } } } if (!declarationLabel) throw new Error('未找到自主声明标签'); var container = declarationLabel; var trigger = null; for (var level = 0; level < 6 && container; level++) { trigger = container.querySelector('[class*=select], [class*=dropdown], [class*=picker], [role=combobox], [role=listbox], select, .omui-select, .omui-select-selection, [class*=omui-select], .omui-input, [class*=omui-input]'); if (trigger) break; container = container.parentElement; } if (!trigger) throw new Error('未找到自主声明下拉触发器（从标签向上遍历6层无 [class*=select]/[class*=dropdown]/.omui-select 等）'); trigger.scrollIntoView({ block: 'center' }); trigger.click(); var options = null; for (var wait = 0; wait < 10; wait++) { await new Promise(function(r) { setTimeout(r, 300); }); options = document.querySelectorAll('.omui-select-dropdown-menu-item, li[class*=select-option], div[class*=option], [role=option], .omui-select-item, [class*=dropdown-item], li.omui-select-dropdown-menu-item'); if (options.length > 0) break; } if (!options || options.length === 0) throw new Error('自主声明下拉菜单未弹出（等待3秒后仍无选项）'); var target = null; for (var i = 0; i < options.length; i++) { var t = (options[i].innerText || '').trim(); if (t === '取材网络' || t.indexOf('取材网络') >= 0) { target = options[i]; break; } } if (!target) { var optionTexts = []; for (var i = 0; i < options.length; i++) { var t = (options[i].innerText || '').trim(); optionTexts.push(t); if (t && t.length < 20) { if (!target) target = options[i]; } } if (!target) throw new Error('自主声明下拉菜单中未找到取材网络选项，可用选项: ' + JSON.stringify(optionTexts)); } target.click(); await new Promise(function(r) { setTimeout(r, 800); }); var bodyText2 = document.body.innerText || ''; if (bodyText2.indexOf('请选择自主声明') >= 0) throw new Error('自主声明选择后仍提示\"请选择自主声明\"，可能选择未生效'); return 'selected: ' + (target.innerText || '').trim();",
-      "descript": "v1.7.7 选择自主声明（移除 is_try，失败时抛错避免无效点击发布；轮询等待下拉菜单弹出；选择后验证提示消失）",
-      "timeout": 12000
+      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('自主声明') < 0) return 'no_self_declaration_needed'; var addBtn = Array.from(document.querySelectorAll('button.omui-button--dashed, button')).find(function(b) { var t = (b.innerText || '').trim(); return t.indexOf('添加内容自主声明') >= 0 || t === '修改声明'; }); if (!addBtn) return 'no_add_button_maybe_already_added'; addBtn.scrollIntoView({ block: 'center' }); addBtn.click(); for (var wait = 0; wait < 15; wait++) { await new Promise(function(r) { setTimeout(r, 200); }); var dialog = document.querySelector('.omui-dialog.omui-dialog--lg'); if (dialog && dialog.offsetParent !== null && dialog.innerText.indexOf('声明内容') >= 0) return 'dialog_opened'; } throw new Error('自主声明弹窗未弹出（等待3秒后仍无 .omui-dialog--lg 含\"声明内容\"）');",
+      "descript": "v1.8.0 点击\"添加内容自主声明\"按钮并等待弹窗（适配企鹅号改版：按钮+弹窗替代旧版下拉选择）",
+      "timeout": 8000
+    },
+    {
+      "type": "timing",
+      "ms": 500,
+      "descript": "等待弹窗稳定"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var dialog = document.querySelector('.omui-dialog.omui-dialog--lg'); if (!dialog || dialog.offsetParent === null) throw new Error('自主声明弹窗已关闭或不存在'); var confirmBtn = Array.from(dialog.querySelectorAll('button.omui-button--primary')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (!confirmBtn) throw new Error('弹窗内未找到确认按钮'); confirmBtn.click(); return 'confirmed';",
+      "descript": "v1.8.0 点击弹窗确认按钮（默认\"无需标注\"已选中，直接确认最稳妥）",
+      "timeout": 5000
     },
     {
       "type": "timing",
       "ms": 800,
-      "descript": "等待自主声明选择生效"
+      "descript": "等待自主声明弹窗关闭"
     },
     {
       "type": "click",
@@ -131,15 +142,17 @@
     {
       "type": "evaluate_edit",
       "value": "for (var i = 0; i < 30; i++) { var btns = document.querySelectorAll('button'); var hasPublish = false; for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t === '发布' || t === '定时发布') { hasPublish = true; break; } } if (!hasPublish) { return 'publish_btn_disappeared'; } if (window.location.href.indexOf('articleManage') >= 0) { return 'url_changed'; } var toasts = document.querySelectorAll('[class*=\"toast\"], [class*=\"message\"], [class*=\"notification\"], [class*=\"tip\"]'); for (var k = 0; k < toasts.length; k++) { var tt = (toasts[k].innerText || '').trim(); if (tt.indexOf('发布成功') >= 0 || tt.indexOf('已发布') >= 0 || tt.indexOf('提交成功') >= 0) { return 'toast_success: ' + tt.slice(0, 50); } } await new Promise(function(r) { setTimeout(r, 1000); }); } return 'timeout_30s_btn_still_visible';",
-      "descript": "v3.7.13 发布成功检测（按钮消失/URL跳转/成功提示，三重检测）",
-      "timeout": 35000
+      "descript": "v1.8.0 发布成功检测（按钮消失/URL跳转/成功提示，三重检测；失败时抛错避免假成功）",
+      "timeout": 35000,
+      "throw_on_value": "timeout_30s_btn_still_visible"
     },
     {
       "type": "wait_for_url",
       "value": "articleManage",
       "wait_until": "domcontentloaded",
-      "descript": "v1.7.7 兜底等待 URL 跳转（改用 domcontentloaded 避免 load 事件不触发）",
-      "timeout": 15000
+      "descript": "v1.8.0 兜底等待 URL 跳转（仅在 evaluate_edit 通过时执行，超时不阻断）",
+      "timeout": 10000,
+      "is_try": true
     },
     {
       "type": "evaluate_edit",
