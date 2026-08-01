@@ -8867,6 +8867,14 @@ export async function deactivateStepListVersion(platform: string, version: strin
   );
 }
 
+/** v3.8.10：停用某平台所有 active 版本（守护更新时彻底清理旧版本，避免多版本并存） */
+export async function deactivateAllActiveStepLists(platform: string): Promise<void> {
+  await query(
+    `UPDATE publish_step_list SET is_active = FALSE WHERE platform = $1 AND is_active = TRUE`,
+    [platform]
+  );
+}
+
 /** 带 Guardian 元信息写入新版本 step_list */
 export async function upsertStepListWithGuardian(
   platform: string,

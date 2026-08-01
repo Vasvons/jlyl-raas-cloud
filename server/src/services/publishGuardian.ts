@@ -25,7 +25,7 @@ import { callModelStream } from './pet/petChatService';
 import {
   getGuardianConfig, createGuardianLog, updateGuardianLog,
   getRecentGuardianLogsByRecord, getStepListByPlatform,
-  upsertStepListWithGuardian, deactivateStepListVersion,
+  upsertStepListWithGuardian, deactivateStepListVersion, deactivateAllActiveStepLists,
   getPetModelConfigWithKey,
 } from '../repository';
 import { wsBroadcast } from '../wsServer';
@@ -558,8 +558,10 @@ async function toolUpdateStepList(
     version: newVersion,
   };
 
-  // 6. 软删除旧版本
-  await deactivateStepListVersion(platform, current.version);
+  // 6. 停用该平台所有 active 版本（v3.8.10：彻底清理，避免旧版本与新版本并存）
+  //   之前 Bug：只 deactivate 当前版本，更早的遗留版本仍 is_active=true，
+  //   getStepListByPlatform ORDER BY create_time DESC 可能取到格式异常的旧版本
+  await deactivateAllActiveStepLists(platform);
 
   // 7. 写入新版本
   const id = await upsertStepListWithGuardian(

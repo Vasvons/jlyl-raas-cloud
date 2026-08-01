@@ -52,6 +52,18 @@ export async function seedStepLists(): Promise<void> {
         // v1.7.1：若版本号不一致（种子有更新），用最新种子文件刷新
         const dbVersion = existing.version || '';
         const versionMismatch = !isExistingPlaceholder && dbVersion !== seedVersion;
+
+        // v3.8.10：守护进程修改过的配置绝不覆盖（守护基于实际失败调试，比种子更可靠）
+        //   之前 Bug：守护升级 qeh 到 v1.7.9，但种子文件仍是 v1.7.7，seeder 检测到
+        //   versionMismatch 就用旧种子覆盖刷新，重新激活 v1.7.7 与 v1.7.9 并存，
+        //   导致 dequeue 可能取到格式异常的旧版本 → "step_list 无有效步骤"
+        const isGuardianModified = existing.modified_by === 'guardian';
+        if (isGuardianModified && !isExistingPlaceholder) {
+          console.log(`[StepListSeeder] 跳过 ${platform}：守护进程已修改（v${dbVersion}, modified_by=guardian），不覆盖`);
+          skipped++;
+          continue;
+        }
+
         if (!isExistingPlaceholder && !versionMismatch) {
           skipped++;
           continue;

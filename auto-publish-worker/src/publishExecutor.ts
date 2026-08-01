@@ -937,6 +937,9 @@ async function launchBrowserWithRetry(
         headless: options.headless,
         args: options.args,
         executablePath: options.executablePath,
+        // v3.8.10：显式设置 60s 启动超时（默认 30s 在内存受限容器中不够）
+        //   3 次重试 × 60s + 2 × 3s 延迟 = ~186s，远低于 record 级 480s 超时
+        timeout: 60000,
       });
       if (attempt > 1) {
         logger.info(`[record ${recordId}] ✅ 浏览器启动成功（第 ${attempt} 次尝试）`);

@@ -1,7 +1,7 @@
 {
   "platform": "bjh",
-  "version": "1.7.7",
-  "description": "百家号图文发布流程（基于实地探查的真实确定性步骤）",
+  "version": "1.7.10",
+  "description": "百家号图文发布流程（v1.7.10：修复封面选择器动态哈希类名失效——用 contains 匹配 FeEditorApp 前缀替代固定哈希）",
   "is_placeholder": false,
   "login_check_url": "https://baijiahao.baidu.com/builder/rc/home",
   "login_check_selector": "//div[contains(@class,'avatar')] | //img[contains(@class,'portrait')]",
@@ -24,7 +24,7 @@
     },
     {
       "type": "fill",
-      "selector": "div.FeEditorApp-_9ddb7e475b559749-editor | //textarea[@placeholder=\"请输入标题\"]",
+      "selector": "div[class*=\"FeEditorApp-\"][class*=\"-editor\"] | //textarea[@placeholder=\"请输入标题\"]",
       "value": "{title}",
       "descript": "填写文章标题",
       "ai_fallback": true,
@@ -56,8 +56,8 @@
     },
     {
       "type": "click",
-      "selector": "div.FeEditorApp-_73a3a52aab7e3a36-default",
-      "descript": "点击'选择封面'打开封面弹窗",
+      "selector": "div[class*=\"FeEditorApp-\"][class*=\"-default\"] | //div[contains(@class,'FeEditorApp-') and contains(@class,'-default')]",
+      "descript": "点击'选择封面'打开封面弹窗（v1.7.10：用 contains 匹配 FeEditorApp 前缀，不依赖动态哈希）",
       "timeout": 5000
     },
     {

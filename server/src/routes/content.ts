@@ -2082,7 +2082,10 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
             login_check_url_pattern: stepList.step_list?.login_check_url_pattern,
             login_check_selector: stepList.step_list?.login_check_selector,
             logout_keywords: stepList.step_list?.logout_keywords,
-            steps: stepList.step_list?.steps || [],
+            // v3.8.10：防御 step_list 存储为扁平数组而非 {steps:[...]} 对象的情况
+            //   之前 Bug：守护进程 AI 偶尔将 step_list 存为裸数组 [{...}, {...}]，
+            //   stepList.step_list?.steps 返回 undefined → [] → Worker 报"无有效步骤"
+            steps: Array.isArray(stepList.step_list) ? stepList.step_list : (stepList.step_list?.steps || []),
             is_placeholder: stepList.step_list?.is_placeholder || false,
           } : null,
         };
