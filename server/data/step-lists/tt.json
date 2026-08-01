@@ -1,6 +1,6 @@
 {
   "platform": "tt",
-  "version": "1.7.6",
+  "version": "1.7.14",
   "description": "今日头条图文发布流程（基于 toutiao.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
@@ -149,8 +149,9 @@
     {
       "type": "wait_for_url",
       "value": "profile_v4/graphic/articles",
-      "descript": "v3.7.13 兜底等待 URL 跳转（如已跳转则立即返回）",
-      "timeout": 10000
+      "descript": "v3.7.14 兜底等待 URL 跳转（如已跳转则立即返回，不阻断流程）",
+      "timeout": 10000,
+      "is_try": true
     },
     {
       "type": "evaluate_edit",
