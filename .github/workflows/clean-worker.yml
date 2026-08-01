@@ -1,0 +1,111 @@
+name: Clean Worker Environment
+
+# 手动触发：清理发布 Worker 的 Chromium 僵尸进程 + 检查内存/磁盘
+# 用途：解决抖音发布连续失败（Page crashed / 浏览器启动超时）
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_restart_worker:
+        description: '清理后强制重启 publish-worker 容器'
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH Clean Worker
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 30m
+          script: |
+            set -e
+            echo "===== 1. 服务器内存/磁盘状态 ====="
+            echo "--- free -h ---"
+            free -h
+            echo ""
+            echo "--- df -h / ---"
+            df -h /
+            echo ""
+            echo "--- df -h /tmp ---"
+            df -h /tmp 2>/dev/null || echo "/tmp 无独立分区"
+            echo ""
+
+            echo "===== 2. Docker 容器状态 ====="
+            cd /opt/jlyl-cloud
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "publish-worker|jlyl" || docker ps
+            echo ""
+
+            echo "===== 3. publish-worker 容器资源占用 ====="
+            docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}" jlyl-cloud-publish-worker 2>/dev/null || echo "容器未运行"
+            echo ""
+
+            echo "===== 4. 检查僵尸 Chromium 进程（宿主机） ====="
+            ZOMBIE_COUNT=$(ps aux | grep -i chromium | grep -v grep | wc -l)
+            echo "宿主机 Chromium 进程数: $ZOMBIE_COUNT"
+            if [ "$ZOMBIE_COUNT" -gt 0 ]; then
+              echo "--- 僵尸 Chromium 进程列表（前10条）---"
+              ps aux | grep -i chromium | grep -v grep | head -10
+              echo ""
+              echo "--- 清理宿主机僵尸 Chromium（defunct 进程的父进程）---"
+              # 找到 defunct chromium 的父进程并清理
+              ps aux | grep -i chromium | grep -v grep | awk '{print $2}' | head -20 | while read pid; do
+                if kill -0 "$pid" 2>/dev/null; then
+                  PPID=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+                  echo "  kill chromium pid=$pid (parent=$PPID)"
+                  kill -9 "$pid" 2>/dev/null || true
+                fi
+              done
+              echo "宿主机清理完成"
+            else
+              echo "无僵尸 Chromium 进程"
+            fi
+            echo ""
+
+            echo "===== 5. 检查 publish-worker 容器内 Chromium 进程 ====="
+            CONTAINER_CHROME=$(docker exec jlyl-cloud-publish-worker ps aux 2>/dev/null | grep -i chromium | grep -v grep | wc -l || echo "0")
+            echo "容器内 Chromium 进程数: $CONTAINER_CHROME"
+            if [ "$CONTAINER_CHROME" -gt 5 ]; then
+              echo "--- 容器内 Chromium 进程过多（>$CONTAINER_CHROME），疑似泄漏 ---"
+              docker exec jlyl-cloud-publish-worker ps aux 2>/dev/null | grep -i chromium | grep -v grep | head -10
+            fi
+            echo ""
+
+            echo "===== 6. 检查 Docker 日志大小 ====="
+            echo "--- publish-worker 日志大小 ---"
+            docker inspect --format='{{.LogPath}}' jlyl-cloud-publish-worker 2>/dev/null | xargs ls -lh 2>/dev/null || echo "无法获取"
+            echo ""
+
+            echo "===== 7. 清理 Docker 无用镜像/构建缓存 ====="
+            docker system df
+            echo "--- 清理 dangling 镜像和停止的容器 ---"
+            docker system prune -f --volumes 2>/dev/null | tail -3 || true
+            echo ""
+
+            if [ "${{ github.event.inputs.force_restart_worker }}" = "true" ]; then
+              echo "===== 8. 强制重启 publish-worker 容器 ====="
+              echo "--- 重启前 worker 状态 ---"
+              docker ps -a --filter "name=jlyl-cloud-publish-worker" --format "{{.Names}}: {{.Status}}"
+              echo ""
+              echo "--- 执行重启 ---"
+              docker restart jlyl-cloud-publish-worker
+              echo "--- 等待 15s 让容器健康检查 ---"
+              sleep 15
+              echo "--- 重启后 worker 状态 ---"
+              docker ps --filter "name=jlyl-cloud-publish-worker" --format "{{.Names}}: {{.Status}}"
+              echo ""
+              echo "--- 重启后内存状态 ---"
+              free -h
+            else
+              echo "===== 8. 跳过重启（force_restart_worker=false）====="
+            fi
+
+            echo ""
+            echo "===== 清理完成 ====="
+            echo "提示：如内存仍不足，可考虑增大 swap 或升级服务器配置"
+            echo "提示：如 Worker 仍 OOM，检查 docker-compose.yml 的 mem_limit 设置"
