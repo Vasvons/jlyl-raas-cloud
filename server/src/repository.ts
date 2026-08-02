@@ -6807,13 +6807,40 @@ export async function getLatestPeriodSuggestions(
   const params: any[] = [userId, periodReportId];
   let sql = `SELECT * FROM aeo_writing_suggestion
              WHERE user_id = $1 AND period_report_id = $2
-             ORDER BY priority = 'high' DESC, priority = 'medium' DESC, created_at ASC`;
+             ORDER BY priority = 'high' DESC, priority = 'medium' DESC, created_at DESC`;
   if (limit && limit > 0) {
     params.push(limit);
     sql += ` LIMIT $${params.length}`;
   }
   const result = await query(sql, params);
   return result.rows as WritingSuggestionRow[];
+}
+
+/**
+ * v2.6.0：统计某用户在某周期报告下已生成的文章总数
+ * 用于 AEO 写作建议 articleIdx 跨任务持久化偏移
+ * 查询所有 aeo_context 中包含该 period_report_id 的写作任务下的文章数
+ */
+export async function getArticleCountByPeriodReport(userId: number, periodReportId: number): Promise<number> {
+  const result = await query(
+    `SELECT COUNT(*)::int as cnt FROM article a
+     JOIN ai_writing_task t ON a.task_id = t.id
+     WHERE t.user_id = $1
+     AND t.aeo_context IS NOT NULL
+     AND t.aeo_context->>'period_report_id' = $2`,
+    [userId, String(periodReportId)]
+  );
+  return result.rows[0]?.cnt || 0;
+}
+
+/**
+ * v2.6.0：更新写作任务的 aeo_context（用于执行时刷新为最新建议）
+ */
+export async function updateWritingTaskAeoContext(taskId: number, aeoContext: string): Promise<void> {
+  await query(
+    `UPDATE ai_writing_task SET aeo_context = $1 WHERE id = $2`,
+    [aeoContext, taskId]
+  );
 }
 
 export async function markSuggestionsPublishedByTask(

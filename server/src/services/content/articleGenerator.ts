@@ -21,6 +21,9 @@ import {
   getPlatformRulesByPlatforms,
   getPlatformArticlesByTask,
   createPublishTask,
+  getLatestPeriodReportSuggestions,
+  getArticleCountByPeriodReport,
+  updateWritingTaskAeoContext,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 import crypto from 'crypto';
@@ -414,6 +417,42 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
     throw new Error(`Writing task ${taskId} not found`);
   }
 
+  // v2.6.0：刷新 aeo_context 为最新周期报告建议 + 计算 articleIdx 跨任务偏移
+  //   修复"最新建议未被使用、最初建议被重复使用"问题：
+  //   1) 旧任务执行时检测是否有更新的周期报告，有则刷新 aeo_context
+  //   2) 统计该周期报告下已生成的文章总数作为偏移，避免每个任务都从 suggestions[0] 开始
+  let aeoSuggestionOffset = 0;
+  if (task.aeo_context) {
+    try {
+      const currentCtx = JSON.parse(task.aeo_context);
+      const currentPeriodReportId = currentCtx.period_report_id;
+      const latestReport = await getLatestPeriodReportSuggestions(userId);
+      if (latestReport && latestReport.suggestions.length > 0) {
+        if (latestReport.period_report_id !== currentPeriodReportId) {
+          // 有更新的周期报告，刷新 aeo_context
+          const newAeoContext = JSON.stringify({
+            period_report_id: latestReport.period_report_id,
+            period_type: latestReport.period_type,
+            period_end: latestReport.period_end,
+            suggestions: latestReport.suggestions,
+            source: currentCtx.source || 'auto_refresh',
+            refreshed_at: new Date().toISOString(),
+          });
+          await updateWritingTaskAeoContext(taskId, newAeoContext);
+          task.aeo_context = newAeoContext;
+          console.log(`[ArticleGen] 任务 ${taskId} 刷新 aeo_context: ${currentPeriodReportId} → ${latestReport.period_report_id}（${latestReport.suggestions.length} 条最新建议）`);
+        }
+        // 计算跨任务偏移：该周期报告下已生成的文章总数 % 建议数
+        const suggestionsCount = latestReport.suggestions.length;
+        const completedCount = await getArticleCountByPeriodReport(userId, latestReport.period_report_id);
+        aeoSuggestionOffset = suggestionsCount > 0 ? completedCount % suggestionsCount : 0;
+        console.log(`[ArticleGen] 任务 ${taskId} AEO 建议偏移: completedCount=${completedCount}, suggestionsCount=${suggestionsCount}, offset=${aeoSuggestionOffset}`);
+      }
+    } catch (e: any) {
+      console.warn(`[ArticleGen] 任务 ${taskId} 刷新 aeo_context 失败（不影响写作）:`, e.message);
+    }
+  }
+
   // 获取关键词详情（v1.4+：关键词库作为主题参考，可为空）
   const keywordIds: number[] = task.keyword_ids || [];
   const keywords = await getKeywordsByIds(keywordIds);
@@ -610,7 +649,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           strategyMemory,
           ragSnippets,
           aeoContext: task.aeo_context,
-          articleIdx: i, // v2.2.21: 传文章索引，L7 按索引轮询选主推建议
+          articleIdx: i + aeoSuggestionOffset, // v2.6.0: 加跨任务偏移，避免每个任务都从 suggestions[0] 开始
         });
 
         // 1. 先做占位符替换（向后兼容用户在模板里写的 {enterprise} {keyword} 等）
