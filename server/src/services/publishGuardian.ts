@@ -237,13 +237,16 @@ export async function handlePublishFailedEvent(event: {
     // v3.8.7：守护未启用时不再静默 return，而是推一条 guardian_report 提醒用户
     // 避免用户困惑"守护运行中但什么也不汇报"——实际是开关没开
     console.log(`[Guardian] user=${userId} 及管理员均未启用守护，跳过 record #${recordId}（推送提醒）`);
-    wsBroadcast('guardian_report', {
-      log_id: 0,
-      record_id: recordId,
-      platform,
-      severity: 'info',
-      message: `⚠️ 发布守护进程未启用：${platform} 平台 record #${recordId} 发布失败，但守护开关未开启，未自动处理。请到「精灵设置 → 自动化守护」开启守护开关。`,
-    }, userId);
+    // v3.9.0：冷却控制，同一用户+平台 30 分钟内不重复推送"未启用提醒"
+    if (shouldReport(userId, platform, 'guardian_disabled')) {
+      wsBroadcast('guardian_report', {
+        log_id: 0,
+        record_id: recordId,
+        platform,
+        severity: 'info',
+        message: `⚠️ 发布守护进程未启用：${platform} 平台 record #${recordId} 发布失败，但守护开关未开启，未自动处理。请到「精灵设置 → 自动化守护」开启守护开关。`,
+      }, userId);
+    }
     return;
   }
 
@@ -338,13 +341,16 @@ async function processFailure(params: {
       report_msg: '精灵模型未配置，发布守护无法工作。请在管理端配置精灵底座模型。',
     });
     // v3.8.7：改推 guardian_report（而非 guardian_update），让桌面端能收到可见提示
-    wsBroadcast('guardian_report', {
-      log_id: logId,
-      record_id: recordId,
-      platform,
-      severity: 'error',
-      message: `❌ ${platform} 平台发布失败，但精灵模型未配置，守护进程无法自动分析。请在「设置 → 精灵设置 → 精灵底座」配置 AI 模型后，守护才能自动修复。`,
-    }, userId);
+    // v3.9.0：冷却控制，同一用户+平台 30 分钟内不重复推送"模型未配置"
+    if (shouldReport(userId, platform, 'model_not_configured')) {
+      wsBroadcast('guardian_report', {
+        log_id: logId,
+        record_id: recordId,
+        platform,
+        severity: 'error',
+        message: `❌ ${platform} 平台发布失败，但精灵模型未配置，守护进程无法自动分析。请在「设置 → 精灵设置 → 精灵底座」配置 AI 模型后，守护才能自动修复。`,
+      }, userId);
+    }
     return;
   }
 
@@ -424,13 +430,16 @@ async function processFailure(params: {
         ai_action: 'error',
       });
       // v3.8.7：改推 guardian_report 让用户可见
-      wsBroadcast('guardian_report', {
-        log_id: logId,
-        record_id: recordId,
-        platform,
-        severity: 'error',
-        message: `❌ ${platform} 平台发布失败，AI 分析过程出错：${err.message}。请检查模型配置或网络后稍后重试。`,
-      }, userId);
+      // v3.9.0：冷却控制，同一用户+平台 30 分钟内不重复推送"分析异常"
+      if (shouldReport(userId, platform, 'analysis_error')) {
+        wsBroadcast('guardian_report', {
+          log_id: logId,
+          record_id: recordId,
+          platform,
+          severity: 'error',
+          message: `❌ ${platform} 平台发布失败，AI 分析过程出错：${err.message}。请检查模型配置或网络后稍后重试。`,
+        }, userId);
+      }
       return;
     }
   }
@@ -782,9 +791,31 @@ export async function handleRetryResult(params: {
 let sweeperTimer: NodeJS.Timeout | null = null;
 const SWEEPER_INTERVAL_MS = 5 * 60 * 1000; // 每 5 分钟扫描一次
 const SWEEPER_BATCH_LIMIT = 20; // 每次最多处理 20 条，避免突发流量
-// v3.8.7：心跳汇报间隔（每小时一次），让用户感知守护进程在线
-const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000;
+// v3.9.0：心跳汇报间隔从 1 小时延长到 24 小时（用户反馈汇报太频繁）
+const HEARTBEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 let lastHeartbeatTs = 0;
+
+// v3.9.0：汇报频率冷却控制 —— 同一用户+平台+汇报类型在冷却期内不重复推送
+//   适用于过程性汇报（未启用提醒、模型未配置、分析异常），处理结果汇报（成功/失败/需协助）不受限
+const REPORT_COOLDOWN_MS = 30 * 60 * 1000; // 30 分钟冷却期
+const reportCooldownMap = new Map<string, number>(); // key: `${userId}:${platform}:${reportType}` → lastTs
+
+/**
+ * v3.9.0 检查汇报是否在冷却期内
+ * @returns true=允许推送，false=冷却期内跳过
+ */
+function shouldReport(userId: number | null, platform: string, reportType: string): boolean {
+  if (!userId) return true;
+  const key = `${userId}:${platform}:${reportType}`;
+  const now = Date.now();
+  const lastTs = reportCooldownMap.get(key) || 0;
+  if (now - lastTs < REPORT_COOLDOWN_MS) {
+    console.log(`[Guardian] 汇报冷却中，跳过: ${key}（距上次 ${Math.round((now - lastTs) / 1000)}s）`);
+    return false;
+  }
+  reportCooldownMap.set(key, now);
+  return true;
+}
 
 /**
  * v3.8.7 守护进程兜底扫描器
