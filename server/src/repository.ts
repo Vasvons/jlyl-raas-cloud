@@ -7185,6 +7185,19 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
   try {
     await client.query('BEGIN');
     // 1. 先回收超时的 processing 记录（Worker 崩溃后卡死的记录）
+    //    v2.6.1：同时回滚预扣的 publish_used_today（避免 Worker 崩溃导致配额泄漏）
+    //    原 bug：Worker 崩溃/OOM 时来不及调用 reportPublishResult，record 卡在 processing，
+    //    10 分钟后被回收为 pending，但预扣的配额未回滚 → 配额被无效占用
+    await client.query(
+      `UPDATE platform_auth
+       SET publish_used_today = GREATEST(COALESCE(publish_used_today, 0) - 1, 0)
+       WHERE id IN (
+         SELECT pr.platform_auth_id
+         FROM publish_record pr
+         WHERE pr.status = 'processing' AND pr.started_at < NOW() - INTERVAL '10 minutes'
+           AND pr.platform_auth_id IS NOT NULL
+       ) AND publish_last_used_date = CURRENT_DATE`
+    );
     await client.query(
       `UPDATE publish_record
        SET status = 'pending', started_at = NULL, error_msg = COALESCE(error_msg, '处理超时自动回收')
@@ -7465,6 +7478,15 @@ export async function updatePublishRecordResult(
       [id, result.error_msg || null]
     );
     if (authId) {
+      // v2.6.1：发布失败时回滚预扣的 publish_used_today（用户要求"只有成功才消耗日配额"）
+      //   原 bug：dequeue 时立即预扣配额，但非账号类错误最终失败时不回滚，
+      //   导致内容审核拦截/超时/平台错误等场景白白消耗配额，账号当日能发的文章数被无效占用
+      await client.query(
+        `UPDATE platform_auth
+         SET publish_used_today = GREATEST(COALESCE(publish_used_today, 0) - 1, 0)
+         WHERE id = $1 AND publish_last_used_date = CURRENT_DATE`,
+        [authId]
+      );
       await client.query(
         `INSERT INTO publish_account_stats (platform_auth_id, platform, publish_date, fail_count)
          VALUES ($1, $2, $3, 1)
