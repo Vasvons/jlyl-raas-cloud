@@ -234,8 +234,16 @@ export async function handlePublishFailedEvent(event: {
     }
   }
   if (!config?.enabled) {
-    // v3.9.0：守护未启用时静默 return，不再推送提醒（避免发布失败时频繁打扰）
-    console.log(`[Guardian] user=${userId} 及管理员均未启用守护，跳过 record #${recordId}`);
+    // v3.8.7：守护未启用时不再静默 return，而是推一条 guardian_report 提醒用户
+    // 避免用户困惑"守护运行中但什么也不汇报"——实际是开关没开
+    console.log(`[Guardian] user=${userId} 及管理员均未启用守护，跳过 record #${recordId}（推送提醒）`);
+    wsBroadcast('guardian_report', {
+      log_id: 0,
+      record_id: recordId,
+      platform,
+      severity: 'info',
+      message: `⚠️ 发布守护进程未启用：${platform} 平台 record #${recordId} 发布失败，但守护开关未开启，未自动处理。请到「精灵设置 → 自动化守护」开启守护开关。`,
+    }, userId);
     return;
   }
 
@@ -310,17 +318,33 @@ async function processFailure(params: {
 
   console.log(`[Guardian] 开始处理 record #${recordId} platform=${platform} logId=${logId}`);
 
-  // v3.9.0：不再推送"开始分析"事件，避免频繁打扰用户（只在处理结果出来后才汇报）
+  // 2. 推送"开始分析"事件
+  wsBroadcast('guardian_update', {
+    log_id: logId,
+    record_id: recordId,
+    platform,
+    action: 'analyzing',
+    message: `正在分析 ${platform} 平台发布失败原因...`,
+  }, userId);
 
   // 3. 获取精灵模型配置
   const modelConfig = await getPetModelConfigWithKey(userId);
   if (!modelConfig || !modelConfig.api_key) {
-    console.error('[Guardian] 精灵模型未配置，无法进行 AI 分析，跳过（不推送汇报）');
+    console.error('[Guardian] 精灵模型未配置，无法进行 AI 分析');
     await updateGuardianLog(logId, {
       ai_action: 'skipped',
       ai_analysis: '精灵模型未配置，无法进行 AI 分析',
+      report_status: 'reported',
+      report_msg: '精灵模型未配置，发布守护无法工作。请在管理端配置精灵底座模型。',
     });
-    // v3.9.0：不再推送 guardian_report，避免频繁打扰（模型未配置是配置问题，不是单次失败需要汇报的）
+    // v3.8.7：改推 guardian_report（而非 guardian_update），让桌面端能收到可见提示
+    wsBroadcast('guardian_report', {
+      log_id: logId,
+      record_id: recordId,
+      platform,
+      severity: 'error',
+      message: `❌ ${platform} 平台发布失败，但精灵模型未配置，守护进程无法自动分析。请在「设置 → 精灵设置 → 精灵底座」配置 AI 模型后，守护才能自动修复。`,
+    }, userId);
     return;
   }
 
@@ -399,7 +423,14 @@ async function processFailure(params: {
         ai_analysis: `AI 分析失败: ${err.message}`,
         ai_action: 'error',
       });
-      // v3.9.0：不再推送 guardian_report，避免 AI 临时故障频繁打扰（兜底扫描器会在下轮重试）
+      // v3.8.7：改推 guardian_report 让用户可见
+      wsBroadcast('guardian_report', {
+        log_id: logId,
+        record_id: recordId,
+        platform,
+        severity: 'error',
+        message: `❌ ${platform} 平台发布失败，AI 分析过程出错：${err.message}。请检查模型配置或网络后稍后重试。`,
+      }, userId);
       return;
     }
   }
@@ -751,7 +782,9 @@ export async function handleRetryResult(params: {
 let sweeperTimer: NodeJS.Timeout | null = null;
 const SWEEPER_INTERVAL_MS = 5 * 60 * 1000; // 每 5 分钟扫描一次
 const SWEEPER_BATCH_LIMIT = 20; // 每次最多处理 20 条，避免突发流量
-// v3.9.0：移除心跳汇报（用户反馈汇报太频繁，守护进程不需要每小时汇报"在线"）
+// v3.8.7：心跳汇报间隔（每小时一次），让用户感知守护进程在线
+const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000;
+let lastHeartbeatTs = 0;
 
 /**
  * v3.8.7 守护进程兜底扫描器
@@ -819,9 +852,70 @@ async function sweepFailedRecords(): Promise<void> {
       }
     }
 
-    // v3.9.0：移除心跳汇报逻辑（用户反馈汇报太频繁）
+    // v3.8.7：心跳汇报 —— 每小时向所有已启用守护的用户推送"守护在线"状态
+    // 解决用户"感知不到守护进程在运行"的问题：即使没有失败事件，也让用户知道守护在后台工作
+    const now = Date.now();
+    if (now - lastHeartbeatTs >= HEARTBEAT_INTERVAL_MS) {
+      lastHeartbeatTs = now;
+      await sendGuardianHeartbeat(res.rows.length);
+    }
   } catch (e: any) {
     console.error('[Guardian Sweeper] 扫描异常:', e.message);
+  }
+}
+
+/**
+ * v3.8.7 守护进程心跳汇报
+ * 向所有已启用守护的用户推送"守护在线"状态，让用户感知守护进程在运行
+ *
+ * 心跳内容包括：
+ * - 守护进程状态（在线）
+ * - 本次扫描发现的失败记录数
+ * - 最近 1 小时处理的守护日志数
+ */
+async function sendGuardianHeartbeat(sweptFailedCount: number): Promise<void> {
+  try {
+    // 查询所有已启用守护的用户
+    const configRes = await query(
+      `SELECT user_id, platforms FROM publish_guardian_config WHERE enabled = true`
+    );
+    if (configRes.rows.length === 0) {
+      console.log('[Guardian Heartbeat] 无已启用守护的用户，跳过心跳');
+      return;
+    }
+
+    // 统计最近 1 小时的守护日志数（全局，用于心跳汇报）
+    const statsRes = await query(
+      `SELECT
+         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '1 hour') AS last_hour,
+         COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') AS last_day,
+         COUNT(*) FILTER (WHERE ai_action = 'auto_fixed' AND created_at > NOW() - INTERVAL '24 hours') AS auto_fixed_24h
+       FROM publish_guardian_log`
+    );
+    const stats = statsRes.rows[0] || {};
+    const lastHour = Number(stats.last_hour || 0);
+    const lastDay = Number(stats.last_day || 0);
+    const autoFixed24h = Number(stats.auto_fixed_24h || 0);
+
+    console.log(`[Guardian Heartbeat] 向 ${configRes.rows.length} 个用户推送心跳（最近1小时处理${lastHour}条，24小时${lastDay}条，自动修复${autoFixed24h}条）`);
+
+    for (const row of configRes.rows) {
+      const userId = Number(row.user_id);
+      const platforms = row.platforms;
+      const platformList = Array.isArray(platforms) && platforms.length > 0
+        ? platforms.join('、')
+        : '全部平台';
+
+      wsBroadcast('guardian_report', {
+        log_id: 0,
+        record_id: null,
+        platform: 'system',
+        severity: 'info',
+        message: `🛡️ 守护进程心跳 · 在线运行中\n\n守护状态：✅ 正常运行\n作用范围：${platformList}\n本次扫描：发现 ${sweptFailedCount} 条未处理失败记录\n最近 1 小时：处理 ${lastHour} 条守护日志\n最近 24 小时：处理 ${lastDay} 条（其中自动修复 ${autoFixed24h} 条）\n\n守护进程正在后台持续监控发布失败事件，请放心。`,
+      }, userId);
+    }
+  } catch (e: any) {
+    console.error('[Guardian Heartbeat] 心跳推送失败:', e.message);
   }
 }
 
@@ -837,6 +931,8 @@ export function startGuardianSweeper(): void {
   console.log(`[Guardian Sweeper] 启动兜底扫描器，间隔 ${SWEEPER_INTERVAL_MS / 1000}s`);
   // 首次延迟 60s 启动（避免与服务器启动 migrate 等任务冲突）
   setTimeout(() => {
+    // v3.8.7：首次启动时立即推送一次心跳（lastHeartbeatTs=0，会触发心跳逻辑）
+    // 让用户在服务重启后 60s 内就能看到"守护在线"消息，不用等 1 小时
     void sweepFailedRecords();
     sweeperTimer = setInterval(() => {
       void sweepFailedRecords();
