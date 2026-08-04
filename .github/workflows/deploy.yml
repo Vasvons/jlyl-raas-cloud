@@ -202,7 +202,27 @@ jobs:
             fi
 
             echo ">>> 先启动 server 容器（单独启动，便于捕获启动日志）..."
-            $DC up -d --no-deps server
+            # v1.8.2：启动前强制删除可能残留的 server 容器并带重试
+            #   根因：Docker daemon 重启后 restart:always 策略会异步重建容器，或上次失败部署残留容器，
+            #   导致 $DC up -d --no-deps server 时容器名 jlyl-cloud-server 已被占用 → "Conflict" 报错
+            #   修复：up 前立即 docker rm -f jlyl-cloud-server，失败则清理重试
+            server_started=false
+            for up_attempt in 1 2 3; do
+              docker rm -f jlyl-cloud-server 2>/dev/null || true
+              sleep 2
+              if $DC up -d --no-deps server; then
+                server_started=true
+                break
+              fi
+              echo ">>> server 启动失败（尝试 $up_attempt/3），清理残留容器后重试..."
+              $DC down --remove-orphans 2>/dev/null || true
+              docker rm -f jlyl-cloud-server 2>/dev/null || true
+              sleep 3
+            done
+            if [ "$server_started" = false ]; then
+              echo ">>> 错误：server 容器启动失败（3 次尝试均失败）"
+              exit 1
+            fi
 
             # 等待 server 启动并执行迁移（migrate 在启动时自动执行）
             echo ">>> 等待 server 启动（最多 120 秒）..."
