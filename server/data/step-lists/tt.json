@@ -1,7 +1,7 @@
 {
   "platform": "tt",
-  "version": "1.8.0",
-  "description": "今日头条图文发布流程（v1.8.0：发布前关闭常驻右侧的创作助手AI抽屉，避免遮挡\"预览并发布\"按钮导致点击失效）",
+  "version": "1.8.1",
+  "description": "今日头条图文发布流程（v1.8.1：发布前关闭常驻右侧创作助手AI抽屉 + 确认发布按钮改用带坐标 MouseEvent 触发 React 事件，修复点击失效导致发布后不跳转）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
   "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
@@ -133,8 +133,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog]'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent !== null) { var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText||'').trim(); if (t === '确认发布' || t === '发布' || t === '确认' || t === '确定' || t === '提交' || t.indexOf('发布') >= 0 || t.indexOf('确认') >= 0) { btns[j].click(); return 'clicked: ' + t; } } } } return 'no_confirm_in_modal';",
-      "descript": "v3.7.13 在弹窗内查找确认发布按钮并点击（扩大弹窗和按钮匹配范围，含'提交'/'包含发布'）",
+      "value": "var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog]'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent !== null) { var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText||'').trim(); if (t === '确认发布' || t === '发布' || t === '确认' || t === '确定' || t === '提交' || t.indexOf('发布') >= 0 || t.indexOf('确认') >= 0) { btns[j].scrollIntoView({block:'center'}); var r = btns[j].getBoundingClientRect(); btns[j].dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX:r.x + r.width/2, clientY:r.y + r.height/2})); return 'clicked: ' + t; } } } } return 'no_confirm_in_modal';",
+      "descript": "v1.8.1 在弹窗内查找确认发布按钮并用带坐标 MouseEvent 触发 React 事件点击（修复 .click() 不触发导致发布后不跳转），扩大弹窗和按钮匹配范围",
       "is_try": true,
       "timeout": 3000
     },
