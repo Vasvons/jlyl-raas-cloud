@@ -162,17 +162,18 @@ services:
       SERVER_URL: http://server:3002
       WORKER_SECRET: ${WORKER_SECRET:-jlyl-cloud-worker-secret-2024}
       POLL_INTERVAL: "30000"
-      MAX_CONCURRENT: "2"
+      MAX_CONCURRENT: "1"
       STEALTH_HEADLESS: "true"
     ports:
       - "127.0.0.1:3004:3004"
-    # v3.8.9：发布 Worker 内存从 1g 提到 2g
-    #   原因：2 个并发 Chromium 发布任务在 1g 内存下极易 OOM，
-    #         导致"浏览器启动超时 180s"和"Page crashed"（如抖音 #808/#809 连续 12 次失败）
-    #   Chromium 单实例约 300-500MB，2 并发 + Node.js + stealth 脚本 + 页面渲染需 1.5g+，
-    #   2g 内存 + 1g swap 兜底，避免 OOM killer 杀进程
-    mem_limit: 2g
-    memswap_limit: 3g
+    # v3.8.11：发布 Worker 并发降为 1 + 内存提至 3g
+    #   背景：wxgzh 发布连续 8 次 "Page crashed"（内存耗尽，渲染进程被杀）。
+    #         根因是 2 个并发 Chromium 在重任务下（wxgzh 编辑器页 + 封面图上传）挤压内存，
+    #         且守护自动重试又启动新浏览器，内存雪花越滚越大。
+    #   修复：并发降为 1（单队列串行，彻底消除同容器内存竞争），内存提至 3g+
+    #         3g swap 兜底，避免 OOM killer 杀进程。代价是发布吞吐减半，但稳定性优先。
+    mem_limit: 3g
+    memswap_limit: 4g
     shm_size: 512m
     logging:
       driver: json-file
