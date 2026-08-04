@@ -1,7 +1,7 @@
 {
   "platform": "tt",
-  "version": "1.7.15",
-  "description": "今日头条图文发布流程（基于 toutiao.pyc 反编译的真实确定性步骤 + AI 兜底）",
+  "version": "1.8.0",
+  "description": "今日头条图文发布流程（v1.8.0：发布前关闭常驻右侧的创作助手AI抽屉，避免遮挡\"预览并发布\"按钮导致点击失效）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
   "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
@@ -109,6 +109,13 @@
       "type": "timing",
       "ms": 500,
       "descript": "等待热点推荐弹窗关闭"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var closed = false; var drawers = document.querySelectorAll('.ai-assistant-panel'); for (var k = 0; k < drawers.length; k++) { var d = drawers[k]; if (d.offsetParent === null) continue; var closeBtn = d.querySelector('svg.close-btn, [class*=close], [class*=Close], [class*=icon-close]'); if (closeBtn) { var r = closeBtn.getBoundingClientRect(); closeBtn.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX: r.x + r.width/2, clientY: r.y + r.height/2})); closed = true; } } if (!closed) { var allClose = document.querySelectorAll('svg.close-btn'); for (var m = 0; m < allClose.length; m++) { if (allClose[m].offsetParent !== null) { var r2 = allClose[m].getBoundingClientRect(); allClose[m].dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX: r2.x + r2.width/2, clientY: r2.y + r2.height/2})); closed = true; break; } } } return closed ? 'closed_ai_drawer' : 'no_ai_drawer';",
+      "descript": "v1.8.0 关闭头条创作助手AI抽屉（该抽屉常驻右侧会遮挡底部发布按钮，导致点击\"预览并发布\"失效）",
+      "is_try": true,
+      "timeout": 3000
     },
     {
       "type": "click",

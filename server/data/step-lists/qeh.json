@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.8.0",
-  "description": "企鹅号图文发布流程（v1.8.0：重写自主声明步骤适配企鹅号改版——旧版下拉选择已移除，改为按钮+弹窗+单选；增强发布失败检测避免假成功）",
+  "version": "1.8.1",
+  "description": "企鹅号图文发布流程（v1.8.1：修复自主声明弹窗——用带坐标 MouseEvent 触发 React 事件 + 拓宽弹窗检测 + 已设置状态兜底）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -83,8 +83,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('自主声明') < 0) return 'no_self_declaration_needed'; var addBtn = Array.from(document.querySelectorAll('button.omui-button--dashed, button')).find(function(b) { var t = (b.innerText || '').trim(); return t.indexOf('添加内容自主声明') >= 0 || t === '修改声明'; }); if (!addBtn) return 'no_add_button_maybe_already_added'; addBtn.scrollIntoView({ block: 'center' }); addBtn.click(); for (var wait = 0; wait < 15; wait++) { await new Promise(function(r) { setTimeout(r, 200); }); var dialog = document.querySelector('.omui-dialog.omui-dialog--lg'); if (dialog && dialog.offsetParent !== null && dialog.innerText.indexOf('声明内容') >= 0) return 'dialog_opened'; } throw new Error('自主声明弹窗未弹出（等待3秒后仍无 .omui-dialog--lg 含\"声明内容\"）');",
-      "descript": "v1.8.0 点击\"添加内容自主声明\"按钮并等待弹窗（适配企鹅号改版：按钮+弹窗替代旧版下拉选择）",
+      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('自主声明') < 0) return 'no_self_declaration_needed'; var candidates = Array.from(document.querySelectorAll('button.omui-button--dashed, button')); var addBtn = candidates.find(function(b) { var t = (b.innerText || '').trim(); return t.indexOf('添加内容自主声明') >= 0 || t === '修改声明' || t.indexOf('自主声明') >= 0; }); if (!addBtn) return 'no_add_button_maybe_already_added'; addBtn.scrollIntoView({ block: 'center' }); var r = addBtn.getBoundingClientRect(); addBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); for (var wait = 0; wait < 25; wait++) { await new Promise(function(res) { setTimeout(res, 200); }); var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [class*=Dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); for (var i = 0; i < dialogs.length; i++) { var dt = dialogs[i].innerText || ''; if (dt.indexOf('声明内容') >= 0 || dt.indexOf('取材网络') >= 0 || dt.indexOf('无需标注') >= 0) { return 'dialog_opened'; } } var checked = Array.from(document.querySelectorAll('input[type=radio]:checked, input[type=checkbox]:checked, .omui-radio-checked, .omui-checkbox-checked, [class*=checked]')).filter(function(e) { return e.offsetParent !== null; }); if (checked.length > 0) { return 'declaration_already_set'; } } throw new Error('自主声明弹窗未打开且未检测到已设置状态');",
+      "descript": "v1.8.1 点击\"添加内容自主声明\"按钮（用带坐标的 MouseEvent 触发 React 事件，修复 .click() 不触发导致弹窗不弹出）+ 拓宽弹窗检测（任意可见 dialog 含\"声明内容/取材网络/无需标注\"）+ 增加已设置状态兜底（5秒内未弹窗但检测到已勾选则视为已设置）",
       "timeout": 8000
     },
     {
@@ -94,8 +94,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var dialog = document.querySelector('.omui-dialog.omui-dialog--lg'); if (!dialog || dialog.offsetParent === null) throw new Error('自主声明弹窗已关闭或不存在'); var confirmBtn = Array.from(dialog.querySelectorAll('button.omui-button--primary')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (!confirmBtn) throw new Error('弹窗内未找到确认按钮'); confirmBtn.click(); return 'confirmed';",
-      "descript": "v1.8.0 点击弹窗确认按钮（默认\"无需标注\"已选中，直接确认最稳妥）",
+      "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [class*=Dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs[0]; if (!dialog) throw new Error('自主声明弹窗已关闭或不存在'); var confirmBtn = Array.from(dialog.querySelectorAll('button.omui-button--primary, button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (!confirmBtn) throw new Error('弹窗内未找到确认按钮'); confirmBtn.click(); return 'confirmed';",
+      "descript": "v1.8.1 点击弹窗确认按钮（默认\"无需标注\"已选中，直接确认最稳妥；弹窗检测已拓宽，兼容任意可见 dialog）",
       "timeout": 5000
     },
     {
