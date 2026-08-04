@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.8.1",
-  "description": "企鹅号图文发布流程（v1.8.1：修复自主声明弹窗——用带坐标 MouseEvent 触发 React 事件 + 拓宽弹窗检测 + 已设置状态兜底）",
+  "version": "1.8.2",
+  "description": "企鹅号图文发布流程（v1.8.2：发布成功跳转后获取URL步骤加 is_try，避免导航竞态 Execution context destroyed 误判失败）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -144,7 +144,8 @@
       "value": "for (var i = 0; i < 30; i++) { var btns = document.querySelectorAll('button'); var hasPublish = false; for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t === '发布' || t === '定时发布') { hasPublish = true; break; } } if (!hasPublish) { return 'publish_btn_disappeared'; } if (window.location.href.indexOf('articleManage') >= 0) { return 'url_changed'; } var toasts = document.querySelectorAll('[class*=\"toast\"], [class*=\"message\"], [class*=\"notification\"], [class*=\"tip\"]'); for (var k = 0; k < toasts.length; k++) { var tt = (toasts[k].innerText || '').trim(); if (tt.indexOf('发布成功') >= 0 || tt.indexOf('已发布') >= 0 || tt.indexOf('提交成功') >= 0) { return 'toast_success: ' + tt.slice(0, 50); } } await new Promise(function(r) { setTimeout(r, 1000); }); } return 'timeout_30s_btn_still_visible';",
       "descript": "v1.8.0 发布成功检测（按钮消失/URL跳转/成功提示，三重检测；失败时抛错避免假成功）",
       "timeout": 35000,
-      "throw_on_value": "timeout_30s_btn_still_visible"
+      "throw_on_value": "timeout_30s_btn_still_visible",
+      "nav_ok_as_success": true
     },
     {
       "type": "wait_for_url",
@@ -157,8 +158,9 @@
     {
       "type": "evaluate_edit",
       "value": "return window.location.href;",
-      "descript": "获取发布后 URL",
-      "timeout": 3000
+      "descript": "v1.8.2 获取发布后 URL（is_try：页面跳转时 evaluate 可能抛 Execution context was destroyed，属导航竞态，不阻断）",
+      "timeout": 3000,
+      "is_try": true
     }
   ]
 }

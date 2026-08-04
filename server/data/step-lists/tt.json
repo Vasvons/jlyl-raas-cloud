@@ -1,7 +1,7 @@
 {
   "platform": "tt",
-  "version": "1.8.1",
-  "description": "今日头条图文发布流程（v1.8.1：发布前关闭常驻右侧创作助手AI抽屉 + 确认发布按钮改用带坐标 MouseEvent 触发 React 事件，修复点击失效导致发布后不跳转）",
+  "version": "1.8.2",
+  "description": "今日头条图文发布流程（v1.8.2：确认发布按钮改为弹窗内优先+全页兜底精确匹配，带坐标 MouseEvent 触发 React 事件，修复预览弹窗漏点导致发布后不跳转）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
   "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
@@ -133,8 +133,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog]'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent !== null) { var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText||'').trim(); if (t === '确认发布' || t === '发布' || t === '确认' || t === '确定' || t === '提交' || t.indexOf('发布') >= 0 || t.indexOf('确认') >= 0) { btns[j].scrollIntoView({block:'center'}); var r = btns[j].getBoundingClientRect(); btns[j].dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX:r.x + r.width/2, clientY:r.y + r.height/2})); return 'clicked: ' + t; } } } } return 'no_confirm_in_modal';",
-      "descript": "v1.8.1 在弹窗内查找确认发布按钮并用带坐标 MouseEvent 触发 React 事件点击（修复 .click() 不触发导致发布后不跳转），扩大弹窗和按钮匹配范围",
+      "value": "var target = null; var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog], [class*=Modal], [class*=Dialog], .byte-modal, .byte-dialog'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent === null) continue; var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t === '确认发布' || t === '确认' || t === '发布' || t === '确定' || t === '提交') { target = btns[j]; break; } } if (target) break; } if (!target) { var allBtns = document.querySelectorAll('button'); for (var k = 0; k < allBtns.length; k++) { var b = allBtns[k]; if (b.offsetParent === null) continue; var bt = (b.innerText || '').trim(); if (bt === '确认发布' || bt === '确认' || bt === '确定' || bt === '提交') { target = b; break; } } } if (target) { target.scrollIntoView({ block: 'center' }); var r = target.getBoundingClientRect(); target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); return 'clicked: ' + (target.innerText || '').trim(); } return 'no_confirm_button';",
+      "descript": "v1.8.2 在弹窗内优先查找并点击确认发布按钮，找不到则全页兜底匹配精确文本\"确认发布/确认/确定/提交\"（避免预览弹窗类名不在选择器范围导致漏点；用带坐标 MouseEvent 触发 React 事件，修复 .click() 不触发导致发布后不跳转）",
       "is_try": true,
       "timeout": 3000
     },

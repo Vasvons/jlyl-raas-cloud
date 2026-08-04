@@ -90,6 +90,10 @@ export interface Step {
    *  用途：发布成功检测步骤——返回 'timeout_btn_still_visible' 时说明发布未生效，
    *        应抛错报告失败，而不是继续走 wait_for_url 导致假成功 */
   throw_on_value?: string;
+  /** v1.8.2 evaluate_edit 类型：当 page.evaluate 抛 "Execution context was destroyed"（导航竞态）时视为成功。
+   *  用途：发布成功检测/获取 URL 步骤——发布成功后页面跳转导致 evaluate 抛此错，属正常导航信号，不应误判失败。
+   *  注意：仅当错误消息确实包含导航竞态特征时才放行，不影响 throw_on_value 的真实失败检测 */
+  nav_ok_as_success?: boolean;
 }
 
 export interface StepExecutionContext {
@@ -1284,6 +1288,12 @@ async function execEvaluateEdit(step: Step, ctx: StepExecutionContext): Promise<
     return true;
   } catch (err: any) {
     if (step.is_try) return true;
+    // v1.8.2：导航竞态容错——发布成功后页面跳转会抛 "Execution context was destroyed"，
+    // 属正常导航信号，nav_ok_as_success 步骤应视为成功而非重复报失败（避免误判发布失败）
+    if (step.nav_ok_as_success && err?.message && /Execution context was destroyed/.test(err.message)) {
+      ctx.onLog?.(`[step] ⚠ evaluate_edit 导航竞态（发布成功跳转，Execution context was destroyed），视为成功`, 'warn');
+      return true;
+    }
     throw new Error(`evaluate_edit 失败: ${err.message}`);
   }
 }
