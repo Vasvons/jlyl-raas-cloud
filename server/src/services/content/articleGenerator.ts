@@ -1,5 +1,5 @@
 import { chatCompletion, extractApiErrorMessage } from './aiClient';
-import { buildPrompt, buildDirectionContext, pickRandomContentType, pickRandomDirection, formatEnterprise } from './promptBuilder';
+import { buildPrompt, buildDirectionContext, pickRandomContentType, formatEnterprise, migrateCategoryToStyle, migrateOldTypesToStyle } from './promptBuilder';
 import { buildWritingContext, stripHtml, type RecentArticleItem, type PerformanceMemoryItem, type StrategyMemoryItem, type RagSnippet } from './contextBuilder';
 import { retrieveRelevantArticles } from './ragRetrieval';
 import { generateAndSaveEmbedding } from './embeddingService';
@@ -53,28 +53,29 @@ function parseContentTypes(raw: any): string[] {
 }
 
 /**
- * 构建创作方向×文案类型上下文（注入 prompt 开头）
- * - random_mode=true：每次随机选1种方向×1种类型
- * - random_mode=false：用所有配置的方向 + 第1种类型
+ * v3.8.12：构建内容风格上下文（注入 prompt 开头）
+ * 合并后只读 content_types 字段（已含原 category 映射后的数据）
+ * - random_mode=true：每次随机选1种风格
+ * - random_mode=false：用所有配置的风格
  */
 function buildDirectionContextForTask(task: any): string {
-  const directions = parseDirections(task.instruction_category);
-  const contentTypes = parseContentTypes(task.content_types);
-  const isRandom = !!task.random_mode;
-
-  let selectedDirection: string[] = [];
-  let selectedType = '';
-
-  if (isRandom) {
-    const dir = pickRandomDirection(directions);
-    selectedDirection = dir ? [dir] : [];
-    selectedType = pickRandomContentType(contentTypes);
-  } else {
-    selectedDirection = directions;
-    selectedType = contentTypes[0] || '';
+  // 兼容旧数据：优先用 content_types，若为空则从 category 迁移
+  let styles = parseContentTypes(task.content_types);
+  if (styles.length === 0 && task.instruction_category) {
+    styles = migrateCategoryToStyle(parseDirections(task.instruction_category));
+  }
+  // 双重兼容：如果 content_types 里存的是旧值（science/review/qa 等），自动映射
+  if (styles.length > 0 && !styles.every(s => ['brand_exposure','product_seeding','pain_point_qa','industry_science','case_story','comparison_review','trust_endorsement','tutorial','news'].includes(s))) {
+    styles = migrateOldTypesToStyle(styles);
   }
 
-  return buildDirectionContext(selectedDirection, selectedType);
+  const isRandom = !!task.random_mode;
+
+  if (isRandom) {
+    const picked = pickRandomContentType(styles);
+    return buildDirectionContext(picked ? [picked] : []);
+  }
+  return buildDirectionContext(styles);
 }
 
 /**

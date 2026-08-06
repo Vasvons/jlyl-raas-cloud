@@ -1320,6 +1320,67 @@ export async function migrate() {
       END $$;
     `);
 
+    // 8.2.4 v3.8.12：合并「创作方向」和「文案类型」为统一的「内容风格」
+    //   将旧 category 值映射到新 content_style 值，合并到 content_types 字段
+    //   映射关系：
+    //     category: pain_point_solution → content_types: pain_point_qa
+    //     category: case_showcase → content_types: case_story
+    //     category: brand_exposure/product_seeding/industry_science/comparison_review/trust_endorsement → 同名
+    //     content_types 旧值: science→industry_science, review→comparison_review, qa→pain_point_qa, comparison→comparison_review
+    //   迁移后 content_types 包含合并后的风格数组，category 保留但不再使用
+    await client.query(`
+      DO $$
+      BEGIN
+        -- 仅在 content_types 为空/旧值且 category 有数据时迁移
+        IF EXISTS (
+          SELECT 1 FROM writing_instruction
+          WHERE category IS NOT NULL AND category != '[]' AND category != 'null'
+            AND (content_types IS NULL OR content_types = '[]'::jsonb
+                 OR content_types::text LIKE '%science%' OR content_types::text LIKE '%review%'
+                 OR content_types::text LIKE '%qa%' OR content_types::text LIKE '%comparison%')
+        ) THEN
+          -- 逐行迁移：将 category 旧值映射为新风格，与 content_types 合并去重
+          UPDATE writing_instruction wi
+          SET content_types = (
+            SELECT jsonb_agg(DISTINCT style) FROM (
+              -- 从 category 映射
+              SELECT CASE
+                WHEN elem = 'pain_point_solution' THEN 'pain_point_qa'
+                WHEN elem = 'case_showcase' THEN 'case_story'
+                WHEN elem IN ('brand_exposure','product_seeding','industry_science','comparison_review','trust_endorsement') THEN elem
+                ELSE NULL
+              END AS style
+              FROM jsonb_array_elements_text(
+                CASE WHEN jsonb_typeof(wi.category) = 'array' THEN wi.category
+                     ELSE to_jsonb(string_to_array(wi.category::text, ','))
+                END
+              ) AS elem
+              WHERE elem IS NOT NULL AND elem != ''
+              UNION
+              -- 从 content_types 旧值映射
+              SELECT CASE
+                WHEN elem = 'science' THEN 'industry_science'
+                WHEN elem = 'review' THEN 'comparison_review'
+                WHEN elem = 'qa' THEN 'pain_point_qa'
+                WHEN elem = 'comparison' THEN 'comparison_review'
+                WHEN elem IN ('brand_exposure','product_seeding','industry_science','case_story','comparison_review','trust_endorsement','tutorial','news','pain_point_qa') THEN elem
+                ELSE NULL
+              END AS style
+              FROM jsonb_array_elements_text(
+                CASE WHEN jsonb_typeof(wi.content_types) = 'array' THEN wi.content_types
+                     ELSE '[]'::jsonb
+                END
+              ) AS elem
+              WHERE elem IS NOT NULL AND elem != ''
+            ) merged
+            WHERE style IS NOT NULL
+          )
+          WHERE category IS NOT NULL AND category != '[]' AND category != 'null';
+          RAISE NOTICE 'writing_instruction: 已将旧 category 迁移合并到 content_types';
+        END IF;
+      END $$;
+    `);
+
     // 8.2.2 写作任务表新增 generation_mode 字段（专家系统/扣子工作流双模式）
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS generation_mode VARCHAR(16) DEFAULT 'expert'`);
 

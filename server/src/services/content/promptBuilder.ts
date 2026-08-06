@@ -18,99 +18,128 @@ export interface EnterpriseInfo {
 }
 
 /**
- * 创作方向候选（多选，对应 writing_instruction.category 字段）
- * 注：category 原为单选分层(认知层等)，现已升级为多选创作方向
+ * v3.8.12：合并「创作方向」和「文案类型」为统一的「内容风格」
+ *
+ * 原设计有 7 方向 × 7 类型 = 49 种组合，但存在大量语义重叠：
+ *   - comparison_review 方向 ≈ review + comparison 类型
+ *   - case_showcase 方向 ≈ case_story 类型
+ *   - industry_science 方向 ≈ science 类型
+ * 且某些组合存在矛盾（如 资讯文章+产品种草），用户选择负担大。
+ *
+ * 合并后每个选项同时包含"营销意图"和"体裁风格"，用户只需选一次。
+ * 数据存储在 content_types 字段（JSONB 数组），category 字段废弃但保留兼容。
  */
-export const DIRECTION_OPTIONS = [
+
+/** 内容风格选项（合并方向×类型） */
+export const CONTENT_STYLE_OPTIONS = [
   'brand_exposure',     // 品牌曝光
   'product_seeding',    // 产品种草
-  'pain_point_solution',// 痛点解决
+  'pain_point_qa',      // 痛点问答
   'industry_science',   // 行业科普
-  'case_showcase',      // 案例展示
+  'case_story',         // 案例故事
   'comparison_review',  // 对比评测
   'trust_endorsement',  // 信任背书
+  'tutorial',           // 教程指南
+  'news',               // 资讯动态
 ];
 
-/** 创作方向中文映射 */
-const DIRECTION_LABELS: Record<string, string> = {
-  brand_exposure: '品牌曝光',
-  product_seeding: '产品种草',
-  pain_point_solution: '痛点解决',
-  industry_science: '行业科普',
-  case_showcase: '案例展示',
-  comparison_review: '对比评测',
-  trust_endorsement: '信任背书',
+/** 内容风格中文映射（含写作风格描述，注入 prompt） */
+const CONTENT_STYLE_META: Record<string, { label: string; style: string }> = {
+  brand_exposure:    { label: '品牌曝光', style: '突出品牌形象和核心优势，自然融入品牌关键词，增强品牌记忆点' },
+  product_seeding:   { label: '产品种草', style: '软性植入产品亮点和使用场景，激发用户兴趣和购买欲望' },
+  pain_point_qa:     { label: '痛点问答', style: '围绕用户常见疑问逐条解答，直击痛点，结构化强' },
+  industry_science:  { label: '行业科普', style: '通俗易懂解释行业概念，用类比和例子降低理解门槛' },
+  case_story:        { label: '案例故事', style: '以真实案例叙事，突出用户痛点和解决方案效果，情感共鸣' },
+  comparison_review: { label: '对比评测', style: '横向对比多方案，客观列出优缺点，给出选择建议' },
+  trust_endorsement: { label: '信任背书', style: '突出资质、口碑、数据等信任信号，增强可信度' },
+  tutorial:          { label: '教程指南', style: '步骤化操作指南，可操作性强，含注意事项和常见问题' },
+  news:              { label: '资讯动态', style: '时效性强，简洁报道行业动态或产品更新' },
 };
 
 /**
- * 文案类型候选（多选，对应 writing_instruction.content_types 字段）
+ * 旧 category 值 → 新 content_style 值的映射（用于数据迁移和兼容）
  */
-export const CONTENT_TYPE_OPTIONS = [
-  'science',     // 科普文章
-  'review',      // 测评文章
-  'case_story',  // 案例故事
-  'qa',          // 问答文章
-  'comparison',  // 对比文章
-  'news',        // 资讯文章
-  'tutorial',    // 教程文章
-];
-
-/** 文案类型中文映射（含写作风格描述，注入 prompt） */
-const CONTENT_TYPE_META: Record<string, { label: string; style: string }> = {
-  science:    { label: '科普文章', style: '通俗易懂地解释概念，用类比和例子降低理解门槛，结构清晰' },
-  review:     { label: '测评文章', style: '客观评价产品/服务，列出优缺点，给出购买建议，数据支撑' },
-  case_story: { label: '案例故事', style: '以真实案例叙事，突出用户痛点和解决方案效果，情感共鸣' },
-  qa:         { label: '问答文章', style: '围绕用户常见疑问组织内容，逐条解答，结构化强' },
-  comparison: { label: '对比文章', style: '横向对比多款产品/方案，表格化展示差异，给出选择建议' },
-  news:       { label: '资讯文章', style: '时效性强，简洁报道行业动态或产品更新，倒金字塔结构' },
-  tutorial:   { label: '教程文章', style: '步骤化操作指南，可操作性强，含注意事项和常见问题' },
+const CATEGORY_TO_STYLE: Record<string, string> = {
+  brand_exposure: 'brand_exposure',
+  product_seeding: 'product_seeding',
+  pain_point_solution: 'pain_point_qa',
+  industry_science: 'industry_science',
+  case_showcase: 'case_story',
+  comparison_review: 'comparison_review',
+  trust_endorsement: 'trust_endorsement',
 };
 
 /**
- * 构建方向×类型上下文（注入 system_prompt 开头）
- * @param directions 创作方向数组（可为空）
- * @param contentType 文案类型 key（单次生成只选1种）
- * @returns 注入到 system_prompt 开头的上下文文本（空字符串表示不注入）
+ * 旧 content_types 值 → 新 content_style 值的映射（用于数据迁移和兼容）
  */
-export function buildDirectionContext(directions: string[], contentType: string): string {
-  const lines: string[] = [];
+const OLD_TYPE_TO_STYLE: Record<string, string> = {
+  science: 'industry_science',
+  review: 'comparison_review',
+  case_story: 'case_story',
+  qa: 'pain_point_qa',
+  comparison: 'comparison_review',
+  news: 'news',
+  tutorial: 'tutorial',
+};
 
-  // 创作方向（可多个，组合表达意图）
-  if (directions && directions.length > 0) {
-    const labels = directions.map(d => DIRECTION_LABELS[d]).filter(Boolean);
-    if (labels.length > 0) {
-      lines.push(`【创作方向】${labels.join('、')}`);
+/**
+ * 将旧 category 数组映射为新 content_style 数组（去重）
+ */
+export function migrateCategoryToStyle(categories: string[]): string[] {
+  const styles = categories.map(c => CATEGORY_TO_STYLE[c] || c).filter(s => CONTENT_STYLE_META[s]);
+  return [...new Set(styles)];
+}
+
+/**
+ * 将旧 content_types 数组映射为新 content_style 数组（去重）
+ */
+export function migrateOldTypesToStyle(types: string[]): string[] {
+  const styles = types.map(t => OLD_TYPE_TO_STYLE[t] || t).filter(s => CONTENT_STYLE_META[s]);
+  return [...new Set(styles)];
+}
+
+/**
+ * 构建内容风格上下文（注入 system_prompt 开头）
+ * @param styles 内容风格数组（多选；随机模式下已由调用方选好1个）
+ * @returns 注入到 system_prompt 开头的上下文文本
+ */
+export function buildDirectionContext(styles: string[]): string {
+  if (!styles || styles.length === 0) return '';
+
+  const labels: string[] = [];
+  const styleDescs: string[] = [];
+
+  for (const s of styles) {
+    const meta = CONTENT_STYLE_META[s];
+    if (meta) {
+      labels.push(meta.label);
+      styleDescs.push(`${meta.label}：${meta.style}`);
     }
   }
 
-  // 文案类型（单次只选1种，含风格描述）
-  if (contentType && CONTENT_TYPE_META[contentType]) {
-    const meta = CONTENT_TYPE_META[contentType];
-    lines.push(`【文案类型】${meta.label}`);
-    lines.push(`【写作风格】${meta.style}`);
-  }
+  if (labels.length === 0) return '';
 
-  return lines.length > 0 ? lines.join('\n') + '\n\n' : '';
+  const lines: string[] = [];
+  lines.push(`【内容风格】${labels.join('、')}`);
+  lines.push(`【写作要求】`);
+  styleDescs.forEach(d => lines.push(`- ${d}`));
+
+  return lines.join('\n') + '\n\n';
 }
 
 /**
- * 从指令的 content_types 中随机选1种文案类型
- * @param contentTypes 指令配置的文案类型数组
- * @returns 随机选中的 contentType key，空数组返回空字符串
+ * 从内容风格数组中随机选1种（随机模式用）
  */
-export function pickRandomContentType(contentTypes: string[]): string {
-  if (!contentTypes || contentTypes.length === 0) return '';
-  return contentTypes[Math.floor(Math.random() * contentTypes.length)];
+export function pickRandomContentType(styles: string[]): string {
+  if (!styles || styles.length === 0) return '';
+  return styles[Math.floor(Math.random() * styles.length)];
 }
 
 /**
- * 从指令的 category 中随机选1种创作方向
- * @param categories 指令配置的创作方向数组
- * @returns 随机选中的方向 key，空数组返回空字符串
+ * @deprecated v3.8.12 已合并到 pickRandomContentType
  */
 export function pickRandomDirection(categories: string[]): string {
-  if (!categories || categories.length === 0) return '';
-  return categories[Math.floor(Math.random() * categories.length)];
+  return pickRandomContentType(categories);
 }
 
 /**
