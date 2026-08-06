@@ -297,6 +297,14 @@ function parseTargetPlatforms(raw: any): string[] {
  *   导致前端编辑文章弹窗展示所有三元组，与文章内容无关。
  *   修复：检查三元组的 subject 或 object 是否出现在文章纯文本中，只保留命中的。
  *
+ * v3.8.14：加强命中阈值，避免短词误匹配
+ *   原 bug：subject/object 长度 >= 2 即可命中，导致"公司""财税"等通用短词误匹配
+ *   修复：
+ *     1. 长度 >= 4 的词：用 includes 命中（允许变形匹配）
+ *     2. 长度 3 的词：用词边界命中（避免子串误匹配，如"代理"不能匹配"代理商"中的"代"）
+ *     3. 长度 < 3 的词：不参与命中（太短，误匹配率极高）
+ *     4. subject 和 object 必须都命中（AND 而非 OR），提高过滤严格度
+ *
  * @param contentHtml 文章正文 HTML
  * @param triples 企业所有三元组数组
  * @returns 被文章使用的三元组子集（可能为空数组）
@@ -307,15 +315,41 @@ function filterUsedTriples(contentHtml: string, triples: any): any[] {
   const plainText = (contentHtml || '').replace(/<[^>]+>/g, '').toLowerCase();
   if (!plainText) return [];
 
+  /**
+   * 检查关键词是否在文本中命中（按长度分级匹配策略）
+   * - 长度 >= 4：用 includes（允许变形匹配，如"川务财税"匹配"川务财税有限公司"）
+   * - 长度 = 3：用 includes 但要求前后非汉字（避免"代理记"匹配"代理人记录"）
+   * - 长度 < 3：不参与命中（误匹配率太高）
+   */
+  const isHit = (word: string): boolean => {
+    const w = word.toLowerCase();
+    if (w.length < 3) return false;
+    if (w.length >= 4) return plainText.includes(w);
+    // 长度 = 3：要求前后非汉字字符（词边界匹配）
+    // 用正则：前导非汉字或开头 + 关键词 + 后续非汉字或结尾
+    const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(^|[^\\u4e00-\\u9fa5])${escaped}([^\\u4e00-\\u9fa5]|$)`, 'i');
+    return re.test(plainText);
+  };
+
   const used: any[] = [];
   for (const t of triples) {
     if (!t || typeof t !== 'object') continue;
     const subj = String(t.subject || '').trim();
     const obj = String(t.object || '').trim();
-    // subject 或 object 至少一个在正文中出现（长度>=2 避免单字误匹配）
-    const subjHit = subj.length >= 2 && plainText.includes(subj.toLowerCase());
-    const objHit = obj.length >= 2 && plainText.includes(obj.toLowerCase());
-    if (subjHit || objHit) {
+    // v3.8.14：subject 和 object 必须都命中（AND），提高过滤严格度
+    //   原 OR 逻辑：只要 subject 或 object 命中就保留 → 误匹配率高
+    //   新 AND 逻辑：两者都命中才保留 → 只保留真正被文章引用的三元组
+    //   例外：如果 subject 或 object 为空，则只看非空的那个
+    const subjHit = subj ? isHit(subj) : false;
+    const objHit = obj ? isHit(obj) : false;
+    if (subjHit && objHit) {
+      used.push(t);
+    } else if (subjHit && !obj) {
+      // object 为空时，只看 subject
+      used.push(t);
+    } else if (objHit && !subj) {
+      // subject 为空时，只看 object
       used.push(t);
     }
   }
@@ -397,9 +431,12 @@ async function resolveModelConfig(task: any, userId: number, taskId: number): Pr
  * v3.8.13：专家选题 — 每篇文章生成前，让专家围绕核心关键词规划本篇主题
  *
  * 原流程：轮询选关键词 → 硬注入"本篇核心主题关键词" → AI 围绕固定词写
- * 新流程：传核心关键词给专家 → 专家独立选题（主题+方向+标题方向） → 注入 prompt
+ * 新流程：传核心关键词给专家 → 专家独立选题（主题+方向+标题方向+本篇核心词） → 注入 prompt
  *
- * @returns { topic, direction, titleHint } 选题结果
+ * v3.8.14：扩展返回 coreKeywords 字段，让 AI 明确指出本篇主要围绕的 1-3 个核心关键词
+ *   用于 article.core_keyword 字段存储，前端展示"真正的核心关键词"（而非专家主题）
+ *
+ * @returns { topic, direction, titleHint, coreKeywords } 选题结果
  */
 async function planArticleTopic(
   task: any,
@@ -411,7 +448,7 @@ async function planArticleTopic(
   apiKey: string,
   taskId: number,
   currentPlatform: string | null,
-): Promise<{ topic: string; direction: string; titleHint: string }> {
+): Promise<{ topic: string; direction: string; titleHint: string; coreKeywords: string[] }> {
   // 构建选题 prompt
   const lines: string[] = [];
 
@@ -462,7 +499,8 @@ async function planArticleTopic(
   lines.push(`{`);
   lines.push(`  "topic": "本篇核心主题（如：2026年绵阳公司注册的地址选择难题）",`);
   lines.push(`  "direction": "写作方向（如：从创业者实际痛点切入，分析地址选择的三种方案及优劣）",`);
-  lines.push(`  "titleHint": "标题方向建议（如：疑问句式，突出'地址选择'和'避坑'，15-25字）"`);
+  lines.push(`  "titleHint": "标题方向建议（如：疑问句式，突出'地址选择'和'避坑'，15-25字）",`);
+  lines.push(`  "coreKeywords": ["本篇主要围绕的1-3个核心关键词（必须从上面的核心关键词列表中选取，不要编造新的）"]`);
   lines.push(`}`);
 
   const topicPrompt = lines.join('\n');
@@ -495,9 +533,19 @@ async function planArticleTopic(
       const topic = (parsed.topic || '').trim();
       const direction = (parsed.direction || '').trim();
       const titleHint = (parsed.titleHint || '').trim();
+      // v3.8.14：解析 AI 选定的核心关键词（从列表中选 1-3 个）
+      let pickedCoreKeywords: string[] = [];
+      if (Array.isArray(parsed.coreKeywords)) {
+        // 只保留在传入列表中真实存在的关键词（防止 AI 编造）
+        const coreSet = new Set(coreKeywords);
+        pickedCoreKeywords = parsed.coreKeywords
+          .map((k: any) => String(k || '').trim())
+          .filter((k: string) => k && coreSet.has(k))
+          .slice(0, 3);
+      }
       if (topic) {
-        console.log(`[ArticleGen][专家选题] 任务${taskId} 第${articleIdx + 1}篇: topic="${topic.slice(0, 60)}", direction="${direction.slice(0, 60)}"`);
-        return { topic, direction, titleHint };
+        console.log(`[ArticleGen][专家选题] 任务${taskId} 第${articleIdx + 1}篇: topic="${topic.slice(0, 60)}", direction="${direction.slice(0, 60)}", coreKeywords=[${pickedCoreKeywords.join(', ')}]`);
+        return { topic, direction, titleHint, coreKeywords: pickedCoreKeywords };
       }
     }
     console.warn(`[ArticleGen][专家选题] 任务${taskId} 第${articleIdx + 1}篇: AI 返回无法解析，降级使用关键词轮询`);
@@ -507,7 +555,7 @@ async function planArticleTopic(
 
   // 降级：用第一个核心关键词作为主题（向后兼容）
   const fallbackKw = coreKeywords[articleIdx % coreKeywords.length] || coreKeywords[0] || '';
-  return { topic: fallbackKw, direction: '', titleHint: '' };
+  return { topic: fallbackKw, direction: '', titleHint: '', coreKeywords: fallbackKw ? [fallbackKw] : [] };
 }
 
 /**
@@ -726,7 +774,8 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
       let modelUsed = '';
       let coverUrlForArticle = '';
       // v3.8.13：专家选题结果（coze 模式为空对象，expert 模式由 planArticleTopic 填充）
-      let topicPlan = { topic: '', direction: '', titleHint: '' };
+      // v3.8.14：新增 coreKeywords 字段，存储 AI 选定的本篇核心关键词（用于 article.core_keyword）
+      let topicPlan: { topic: string; direction: string; titleHint: string; coreKeywords: string[] } = { topic: '', direction: '', titleHint: '', coreKeywords: [] };
 
       // v1.8.0：计算本次迭代的目标平台
       // 平台专属模式（platformCount > 0）：
@@ -1123,14 +1172,21 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
             : safeTitle.slice(0, maxLen);
         }
       }
-      // v3.8.13：core_keyword 记录专家选定的主题（替代原轮询关键词）
-      const safeCoreKeyword = (topicPlan.topic || kw?.value || '').slice(0, 120);
+      // v3.8.14：core_keyword 改回存储"真正的核心关键词"（专家从核心关键词列表中选定的 1-3 个）
+      //   原 v3.8.13 设计：core_keyword 存专家选题的 topic（如"2026年绵阳公司注册的地址选择难题"）
+      //   问题：前端"核心关键词"字段显示的是专家主题，而非关键词管理里的核心关键词
+      //   修复：core_keyword 存专家选定的核心关键词（顿号分隔），如"绵阳公司注册、地址选择、工商登记"
+      //   专家选题的 topic/direction 仍注入到 prompt 中影响写作，但不存入 core_keyword 字段
+      const pickedCoreKeywords = topicPlan.coreKeywords.length > 0
+        ? topicPlan.coreKeywords
+        : (kw?.value ? [kw.value] : []);
+      const safeCoreKeyword = pickedCoreKeywords.slice(0, 3).join('、').slice(0, 120);
       const safeModelUsed = (modelUsed || '').slice(0, 60);
 
       // v1.8.4：从 core_keyword + entity_triples 派生 tags 数组
-      // v3.8.13：core_keyword 改为专家选题结果，拆词逻辑不变
+      // v3.8.14：core_keyword 改回核心关键词列表，拆词逻辑不变
       const derivedTags: string[] = [];
-      const coreKw = (topicPlan.topic || kw?.value || '').trim();
+      const coreKw = pickedCoreKeywords.slice(0, 3).join('、');
       if (coreKw) {
         // 按常见分隔符拆分 core_keyword
         const parts = coreKw.split(/[，,、|/;\s]+/).map((s: string) => s.trim()).filter(Boolean);

@@ -6511,7 +6511,7 @@ export async function updateArticle(id: number, data: any): Promise<void> {
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;
-  for (const key of ['title', 'content_html', 'entity_triples', 'target_platform', 'word_count', 'status', 'cover_image_url', 'tags']) {
+  for (const key of ['title', 'content_html', 'entity_triples', 'target_platform', 'word_count', 'status', 'cover_image_url', 'tags', 'core_keyword']) {
     if (data[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
       values.push(key === 'entity_triples' || key === 'tags' ? JSON.stringify(data[key]) : data[key]);

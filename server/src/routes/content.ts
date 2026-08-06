@@ -130,6 +130,9 @@ import {
   getWritingSuggestions,
   getSuggestionPoolSourceType,
   setSuggestionPoolSourceType,
+  // v3.8.14：文章覆盖关键词查询（用于前端高亮和统计）
+  getKeywordsByIds,
+  getBrandQueryKeywords,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
@@ -1231,6 +1234,40 @@ router.get('/articles/:id', async (req: Request, res: Response) => {
   try {
     const article = await getArticleById(Number(req.params.id));
     if (!article) return res.status(404).json({ code: 404, message: '文章不存在' });
+
+    // v3.8.14：查询覆盖关键词（蒸馏词+品牌词），用于前端高亮和统计
+    //   蒸馏词：从任务 keyword_ids 关联查询（keyword_type=0 或 NULL）
+    //   品牌词：从全量库按 user_id 查询（keyword_type=1）
+    try {
+      if (article.task_id) {
+        const task = await getWritingTaskById(article.task_id);
+        if (task && task.keyword_ids) {
+          let keywordIds: number[] = [];
+          if (Array.isArray(task.keyword_ids)) {
+            keywordIds = task.keyword_ids;
+          } else if (typeof task.keyword_ids === 'string') {
+            try { keywordIds = JSON.parse(task.keyword_ids); } catch {}
+          }
+          if (keywordIds.length > 0) {
+            const keywords = await getKeywordsByIds(keywordIds);
+            article.distilled_keywords = keywords
+              .filter((k: any) => k.keyword_type === 0 || k.keyword_type == null)
+              .map((k: any) => k.value)
+              .filter((v: string, i: number, arr: string[]) => arr.indexOf(v) === i); // 去重
+          }
+        }
+      }
+      // 品牌词从全量库查询（不限任务关联，因为品牌词是全量覆盖目标）
+      if (article.user_id) {
+        article.brand_keywords = await getBrandQueryKeywords(String(article.user_id));
+      }
+    } catch (err: any) {
+      console.warn(`[Content] 查询文章 ${article.id} 覆盖关键词失败:`, err?.message);
+      // 查询失败不阻塞文章详情返回
+      article.distilled_keywords = article.distilled_keywords || [];
+      article.brand_keywords = article.brand_keywords || [];
+    }
+
     res.json({ code: 200, data: article });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
