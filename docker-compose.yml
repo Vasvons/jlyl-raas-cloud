@@ -172,9 +172,14 @@ services:
     #         且守护自动重试又启动新浏览器，内存雪花越滚越大。
     #   修复：并发降为 1（单队列串行，彻底消除同容器内存竞争），内存提至 3g+
     #         3g swap 兜底，避免 OOM killer 杀进程。代价是发布吞吐减半，但稳定性优先。
+    # v3.8.17：shm_size 从 512m 提至 1g
+    #   背景：v3.8.11 后 wxgzh 仍偶发 Page crashed（渲染进程 OOM）。
+    #         根因是 Chromium 渲染进程共享内存 (/dev/shm) 不足 512m，
+    #         微信编辑器页（ProseMirror + 图片上传 + 封面裁切）渲染内存消耗大。
+    #   修复：shm_size 提至 1g，给 Chromium 渲染进程足够的共享内存。
     mem_limit: 3g
     memswap_limit: 4g
-    shm_size: 512m
+    shm_size: 1g
     logging:
       driver: json-file
       options:

@@ -1,7 +1,7 @@
 {
   "platform": "bjh",
-  "version": "1.7.10",
-  "description": "百家号图文发布流程（v1.7.10：修复封面选择器动态哈希类名失效——用 contains 匹配 FeEditorApp 前缀替代固定哈希）",
+  "version": "1.7.11",
+  "description": "百家号图文发布流程（v1.7.11：增加处理'确定 (N)'弹窗步骤，修复发布后弹窗未处理导致URL不跳转）",
   "is_placeholder": false,
   "login_check_url": "https://baijiahao.baidu.com/builder/rc/home",
   "login_check_selector": "//div[contains(@class,'avatar')] | //img[contains(@class,'portrait')]",
@@ -158,6 +158,13 @@
       "type": "timing",
       "ms": 3000,
       "descript": "等待发布请求完成"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var closed = []; for (var round = 0; round < 5; round++) { var btns = Array.from(document.querySelectorAll('button')).filter(function(b) { return b.offsetParent !== null; }); var target = null; for (var i = 0; i < btns.length; i++) { var t = (btns[i].innerText || '').trim(); if (/^确定\\s*\\(\\d+\\)$/.test(t) || t === '确定' || t === '确认' || t === '我知道了' || t === '好的') { target = btns[i]; break; } } if (target) { target.scrollIntoView({ block: 'center' }); var r = target.getBoundingClientRect(); target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); closed.push((target.innerText || '').trim()); await new Promise(function(res) { setTimeout(res, 1500); }); } else { break; } } return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no_popup';",
+      "descript": "v1.7.11 处理'确定 (N)'弹窗（如'图文转动态'提示），用带坐标 MouseEvent 触发点击，循环处理最多5个弹窗",
+      "is_try": true,
+      "timeout": 15000
     },
     {
       "type": "evaluate_edit",

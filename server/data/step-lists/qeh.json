@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.8.2",
-  "description": "企鹅号图文发布流程（v1.8.2：发布成功跳转后获取URL步骤加 is_try，避免导航竞态 Execution context destroyed 误判失败）",
+  "version": "1.8.3",
+  "description": "企鹅号图文发布流程（v1.8.3：自主声明确认按钮改用带坐标 MouseEvent 触发 React 事件 + 设置后验证页面不再提示'请选择自主声明'）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -94,14 +94,20 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [class*=Dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs[0]; if (!dialog) throw new Error('自主声明弹窗已关闭或不存在'); var confirmBtn = Array.from(dialog.querySelectorAll('button.omui-button--primary, button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (!confirmBtn) throw new Error('弹窗内未找到确认按钮'); confirmBtn.click(); return 'confirmed';",
-      "descript": "v1.8.1 点击弹窗确认按钮（默认\"无需标注\"已选中，直接确认最稳妥；弹窗检测已拓宽，兼容任意可见 dialog）",
+      "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [class*=Dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs[0]; if (!dialog) throw new Error('自主声明弹窗已关闭或不存在'); var confirmBtn = Array.from(dialog.querySelectorAll('button.omui-button--primary, button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (!confirmBtn) throw new Error('弹窗内未找到确认按钮'); confirmBtn.scrollIntoView({ block: 'center' }); var r = confirmBtn.getBoundingClientRect(); confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); return 'confirmed';",
+      "descript": "v1.8.3 点击弹窗确认按钮（改用带坐标 MouseEvent 触发 React 事件，修复 .click() 不触发导致自主声明未提交；默认\"无需标注\"已选中，直接确认最稳妥）",
       "timeout": 5000
     },
     {
       "type": "timing",
-      "ms": 800,
-      "descript": "等待自主声明弹窗关闭"
+      "ms": 1500,
+      "descript": "v1.8.3 等待自主声明弹窗关闭和状态更新"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') >= 0) { throw new Error('自主声明设置后页面仍提示\"请选择自主声明\"，设置未生效'); } return 'declaration_set_ok';",
+      "descript": "v1.8.3 验证自主声明设置成功（页面不再提示'请选择自主声明'，若仍提示则抛错避免发布按钮空点击）",
+      "timeout": 3000
     },
     {
       "type": "click",
