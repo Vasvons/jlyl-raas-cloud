@@ -1290,6 +1290,36 @@ export async function migrate() {
     await client.query(`ALTER TABLE writing_instruction ALTER COLUMN system_prompt DROP NOT NULL`);
     await client.query(`ALTER TABLE writing_instruction ALTER COLUMN user_prompt_template DROP NOT NULL`);
 
+    // 8.2.3 category 字段从 VARCHAR(32) 迁移为 JSONB 数组
+    //   原 VARCHAR(32) 只能存 32 字符，多选方向（如 brand_exposure,product_seeding,pain_point_solution）
+    //   会被截断为 "brand_exposure,product_seeding,p"，导致前端显示英文原始值而非中文标签。
+    //   改为 JSONB 后与 content_types 一致，支持任意长度数组。
+    //   迁移策略：逗号分隔字符串 → JSON 数组；NULL/空 → '[]'
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'writing_instruction' AND column_name = 'category'
+            AND data_type = 'character varying'
+        ) THEN
+          -- 先把逗号分隔字符串转为 JSON 数组，再改列类型
+          UPDATE writing_instruction
+            SET category = category
+            WHERE category IS NOT NULL AND category != '';
+          ALTER TABLE writing_instruction
+            ALTER COLUMN category TYPE JSONB
+            USING CASE
+              WHEN category IS NULL OR category = '' THEN '[]'::jsonb
+              WHEN category LIKE '[%' THEN category::jsonb
+              ELSE ('["' || REPLACE(category, ',', '","') || '"]')::jsonb
+            END;
+          ALTER TABLE writing_instruction ALTER COLUMN category SET DEFAULT '[]'::jsonb;
+          RAISE NOTICE 'writing_instruction.category 已从 VARCHAR(32) 迁移为 JSONB';
+        END IF;
+      END $$;
+    `);
+
     // 8.2.2 写作任务表新增 generation_mode 字段（专家系统/扣子工作流双模式）
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS generation_mode VARCHAR(16) DEFAULT 'expert'`);
 

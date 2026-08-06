@@ -5613,7 +5613,7 @@ export async function createWritingInstruction(data: any): Promise<number> {
             target_word_count, include_faq, include_comparison_table, is_active, content_types, random_mode)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, $10)
      RETURNING id`,
-    [data.user_id, data.name, data.category, data.article_prompt || '', data.title_prompt || '',
+    [data.user_id, data.name, JSON.stringify(data.category || []), data.article_prompt || '', data.title_prompt || '',
      data.target_word_count || 1500, data.include_faq ?? true, data.include_comparison_table ?? true,
      JSON.stringify(data.content_types || []), data.random_mode ?? false]
   );
@@ -5624,11 +5624,16 @@ export async function updateWritingInstruction(id: number, data: any): Promise<v
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;
-  for (const key of ['name', 'category', 'article_prompt', 'title_prompt', 'target_word_count', 'include_faq', 'include_comparison_table', 'is_active', 'random_mode']) {
+  for (const key of ['name', 'article_prompt', 'title_prompt', 'target_word_count', 'include_faq', 'include_comparison_table', 'is_active', 'random_mode']) {
     if (data[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
       values.push(data[key]);
     }
+  }
+  // category 单独处理（JSONB，与 content_types 一致）
+  if (data.category !== undefined) {
+    fields.push(`category = $${idx++}`);
+    values.push(JSON.stringify(data.category || []));
   }
   // content_types 单独处理（JSONB）
   if (data.content_types !== undefined) {
