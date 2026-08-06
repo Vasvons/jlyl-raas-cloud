@@ -3416,6 +3416,20 @@ export async function getBrandQueryKeywords(userId: string): Promise<string[]> {
   return result.rows.map((r: any) => r.value);
 }
 
+/**
+ * v3.8.15：获取用户手动添加的核心关键词（种子词）
+ *   数据来源：distillate_keyword 表（用户在关键词管理页面手动添加的核心关键词）
+ *   区别于 zlgjc 表中的蒸馏关键词（笛卡尔积自动生成的组合词）
+ *   用途：专家选题的方向参考 + article.core_keyword 字段存储
+ */
+export async function getCoreKeywordsByUserId(userId: string): Promise<string[]> {
+  const result = await query(
+    `SELECT distillate_keyword FROM distillate_keyword WHERE user_id = $1 AND zt = 1 ORDER BY id`,
+    [userId]
+  );
+  return result.rows.map((r: any) => r.distillate_keyword).filter(Boolean);
+}
+
 /** 获取用户的蒸馏词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */
 export async function getDistillateKeywords(userId: string): Promise<string[]> {
   const result = await query(

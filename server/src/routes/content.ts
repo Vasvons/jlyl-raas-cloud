@@ -133,6 +133,8 @@ import {
   // v3.8.14：文章覆盖关键词查询（用于前端高亮和统计）
   getKeywordsByIds,
   getBrandQueryKeywords,
+  // v3.8.15：核心关键词查询（从 distillate_keyword 表，用户手动添加的种子词）
+  getCoreKeywordsByUserId,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
@@ -1238,6 +1240,9 @@ router.get('/articles/:id', async (req: Request, res: Response) => {
     // v3.8.14：查询覆盖关键词（蒸馏词+品牌词），用于前端高亮和统计
     //   蒸馏词：从任务 keyword_ids 关联查询（keyword_type=0 或 NULL）
     //   品牌词：从全量库按 user_id 查询（keyword_type=1）
+    // v3.8.15：新增 core_keywords 字段，从 distillate_keyword 表查询用户手动添加的核心关键词
+    //   区别：distilled_keywords 是 zlgjc 表自动生成的组合词（用于正文覆盖高亮）
+    //         core_keywords 是 distillate_keyword 表用户手动添加的种子词（真正的核心关键词）
     try {
       if (article.task_id) {
         const task = await getWritingTaskById(article.task_id);
@@ -1260,12 +1265,15 @@ router.get('/articles/:id', async (req: Request, res: Response) => {
       // 品牌词从全量库查询（不限任务关联，因为品牌词是全量覆盖目标）
       if (article.user_id) {
         article.brand_keywords = await getBrandQueryKeywords(String(article.user_id));
+        // v3.8.15：核心关键词从 distillate_keyword 表查询（用户手动添加的种子词）
+        article.core_keywords = await getCoreKeywordsByUserId(String(article.user_id));
       }
     } catch (err: any) {
       console.warn(`[Content] 查询文章 ${article.id} 覆盖关键词失败:`, err?.message);
       // 查询失败不阻塞文章详情返回
       article.distilled_keywords = article.distilled_keywords || [];
       article.brand_keywords = article.brand_keywords || [];
+      article.core_keywords = article.core_keywords || [];
     }
 
     res.json({ code: 200, data: article });

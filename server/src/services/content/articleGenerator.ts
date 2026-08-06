@@ -25,6 +25,7 @@ import {
   getLatestPeriodReportSuggestions,
   getArticleCountByPeriodReport,
   updateWritingTaskAeoContext,
+  getCoreKeywordsByUserId,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 import crypto from 'crypto';
@@ -624,12 +625,28 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   const keywordIds: number[] = task.keyword_ids || [];
   const keywords = await getKeywordsByIds(keywordIds);
 
-  // v3.8.13：区分蒸馏关键词（核心关键词）和品牌关键词
-  //   蒸馏词（keyword_type=0）：作为专家选题的方向参考
-  //   品牌词（keyword_type=1）：作为正文覆盖目标，不参与选题
-  //   前端只传蒸馏词 ID，品牌词从全量库按 user_id 查询（避免品牌词混入选题）
+  // v3.8.15：核心关键词改为从 distillate_keyword 表获取（用户手动添加的种子词）
+  //   原 v3.8.13 设计：从 zlgjc 表过滤蒸馏词（笛卡尔积自动生成的组合词，如"公司注册公司"）
+  //   问题：自动生成的组合词不是用户真正想要的核心关键词，导致选题方向偏离
+  //         例如川务财税客户的核心关键词应是"公司注册、代理记账、资质许可、资质代办、商标代办"
+  //         而非"公司注册公司、市面上公司注册公司、资质许可公司"等自动组合词
+  //   修复：改用 distillate_keyword 表中用户手动添加的种子词作为专家选题输入
+  //   zlgjc 表的蒸馏词仍保留用于 L4 关键词覆盖层（正文覆盖目标）和诊断日志
   const distilledKeywords = keywords.filter((k: any) => k.keyword_type === 0 || k.keyword_type == null);
-  const coreKeywordValues = distilledKeywords.map((k: any) => k.value);
+  let coreKeywordValues: string[] = [];
+  try {
+    coreKeywordValues = await getCoreKeywordsByUserId(String(userId));
+    if (coreKeywordValues.length === 0) {
+      // 降级：用户未在关键词管理页面添加核心关键词时，使用 zlgjc 蒸馏词兜底
+      console.warn(`[ArticleGen] 任务 ${taskId} 用户 ${userId} 未添加核心关键词（distillate_keyword 表为空），降级使用 zlgjc 蒸馏词`);
+      coreKeywordValues = distilledKeywords.map((k: any) => k.value);
+    } else {
+      console.log(`[ArticleGen] 任务 ${taskId} 获取到 ${coreKeywordValues.length} 个核心关键词（distillate_keyword 表）:`, coreKeywordValues.slice(0, 10).join('、'));
+    }
+  } catch (err: any) {
+    console.warn(`[ArticleGen] 任务 ${taskId} 获取核心关键词失败，降级使用 zlgjc 蒸馏词:`, err?.message);
+    coreKeywordValues = distilledKeywords.map((k: any) => k.value);
+  }
 
   // v3.8.13：从全量库获取品牌关键词（用于正文覆盖目标）
   let brandKeywordValues: string[] = [];
