@@ -465,4 +465,69 @@ router.get('/dstillateKeyword/countDstillateKeyword', authMiddleware, async (req
   }
 });
 
+// ============ 临时诊断接口（v3.8.17：排查核心关键词显示错误问题）============
+// 用法：GET /api/keyword/debug/core-keywords?userId=xxx
+// 返回：distillate_keyword 表数据 + zlgjc.hxgjc 字段数据 + 诊断信息
+// 这个接口仅用于排查问题，不影响正常业务逻辑
+router.get('/debug/core-keywords', authMiddleware, async (req, res) => {
+  try {
+    const queryUserId = req.query.userId as string;
+    const result: any = {
+      queryUserId,
+      serverTime: new Date().toISOString(),
+    };
+
+    // 1. 查询 distillate_keyword 表的所有 user_id（前20个）
+    const allUsersResult = await query(
+      `SELECT DISTINCT user_id, COUNT(*) as cnt FROM distillate_keyword GROUP BY user_id ORDER BY user_id LIMIT 20`
+    );
+    result.allUserIdsInDistillateTable = allUsersResult.rows.map((r: any) => ({
+      userId: r.user_id,
+      count: parseInt(r.cnt),
+    }));
+
+    // 2. 如果传了 userId，查询该 userId 的核心关键词
+    if (queryUserId) {
+      const userKeywordsResult = await query(
+        `SELECT id, distillate_keyword, user_id, zt, create_time FROM distillate_keyword WHERE user_id = $1 ORDER BY id`,
+        [queryUserId]
+      );
+      result.distillateKeywordForUser = userKeywordsResult.rows.map((r: any) => ({
+        id: r.id,
+        keyword: r.distillate_keyword,
+        userId: r.user_id,
+        zt: r.zt,
+        createTime: r.create_time,
+      }));
+
+      // 3. 查询 zlgjc 表中该 userid 的 hxgjc 字段（前20个）
+      const zlgjcHxgjcResult = await query(
+        `SELECT DISTINCT hxgjc, COUNT(*) as cnt FROM zlgjc WHERE userid = $1 AND hxgjc IS NOT NULL AND hxgjc != '' GROUP BY hxgjc ORDER BY cnt DESC LIMIT 20`,
+        [queryUserId]
+      );
+      result.zlgjcHxgjcForUser = zlgjcHxgjcResult.rows.map((r: any) => ({
+        hxgjc: r.hxgjc,
+        count: parseInt(r.cnt),
+      }));
+
+      // 4. 查询 zlgjc 表中该 userid 的蒸馏词样本（前10个）
+      const zlgjcSampleResult = await query(
+        `SELECT id, value, hxgjc, keyword_type FROM zlgjc WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL) ORDER BY id LIMIT 10`,
+        [queryUserId]
+      );
+      result.zlgjcSampleForUser = zlgjcSampleResult.rows.map((r: any) => ({
+        id: r.id,
+        value: r.value,
+        hxgjc: r.hxgjc,
+        keywordType: r.keyword_type,
+      }));
+    }
+
+    res.json({ code: 200, data: result });
+  } catch (e: any) {
+    console.error('[debug/core-keywords] 查询失败:', e);
+    res.json({ code: 500, message: '服务器错误: ' + e.message });
+  }
+});
+
 export default router;

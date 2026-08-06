@@ -3441,6 +3441,28 @@ export async function getCoreKeywordsByUserId(userId: string): Promise<string[]>
   return keywords;
 }
 
+/**
+ * v3.8.17：从 zlgjc 表按 userid 查询 hxgjc 字段（C 主词）
+ *   用途：当 distillate_keyword 表查不到核心关键词时，从 zlgjc 表的 hxgjc 字段提取
+ *   背景：hxgjc 是 generateZlgjcKeywords 生成蒸馏词时记录的 C 主词（即用户手动添加的核心关键词）
+ *   注意：过滤掉 hxgjc = value 的情况（手动添加的蒸馏词 hxgjc=value，不是核心关键词）
+ */
+export async function getCoreKeywordsFromZlgjcByUserId(userId: string): Promise<string[]> {
+  const result = await query(
+    `SELECT DISTINCT hxgjc FROM zlgjc
+     WHERE userid = $1
+       AND hxgjc IS NOT NULL
+       AND hxgjc != ''
+       AND hxgjc != value
+       AND (keyword_type = 0 OR keyword_type IS NULL)
+     ORDER BY hxgjc`,
+    [userId]
+  );
+  const keywords = result.rows.map((r: any) => r.hxgjc).filter(Boolean);
+  console.log(`[getCoreKeywordsFromZlgjcByUserId] userId=${userId}, 命中${result.rows.length}条记录, 返回${keywords.length}个关键词: [${keywords.slice(0, 10).join('、')}]`);
+  return keywords;
+}
+
 /** 获取用户的蒸馏词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */
 export async function getDistillateKeywords(userId: string): Promise<string[]> {
   const result = await query(
