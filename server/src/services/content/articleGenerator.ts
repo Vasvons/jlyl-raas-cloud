@@ -625,23 +625,43 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   const keywordIds: number[] = task.keyword_ids || [];
   const keywords = await getKeywordsByIds(keywordIds);
 
-  // v3.8.15：核心关键词改为从 distillate_keyword 表获取（用户手动添加的种子词）
-  //   原 v3.8.13 设计：从 zlgjc 表过滤蒸馏词（笛卡尔积自动生成的组合词，如"公司注册公司"）
-  //   问题：自动生成的组合词不是用户真正想要的核心关键词，导致选题方向偏离
-  //         例如川务财税客户的核心关键词应是"公司注册、代理记账、资质许可、资质代办、商标代办"
-  //         而非"公司注册公司、市面上公司注册公司、资质许可公司"等自动组合词
-  //   修复：改用 distillate_keyword 表中用户手动添加的种子词作为专家选题输入
+  // v3.8.16：核心关键词三级降级链路（修复 v3.8.15 仍显示组合词的问题）
+  //   问题：v3.8.15 部署后用户反馈文章 core_keyword 字段依旧是组合词
+  //         （如"公司注册公司、代理记账公司"），而非种子词（如"公司注册、代理记账"）
+  //   根因：getCoreKeywordsByUserId 有 `AND zt = 1` 条件，但 distillate_keyword 表
+  //         的 zt 字段可能为 NULL 或 0（历史数据/默认值差异），导致查询返回空，
+  //         降级使用 zlgjc 蒸馏词（组合词）
+  //   修复：
+  //     1. repository.ts: getCoreKeywordsByUserId 去掉 zt = 1 条件（已修复）
+  //     2. articleGenerator.ts: 增加 hxgjc 中间降级层，即使 distillate_keyword 表
+  //        查询失败，也从 zlgjc.hxgjc 字段提取 C 主词（即用户手动添加的核心关键词）
+  //   降级链路：distillate_keyword 表 → zlgjc.hxgjc 字段（C 主词）→ zlgjc 蒸馏词
   //   zlgjc 表的蒸馏词仍保留用于 L4 关键词覆盖层（正文覆盖目标）和诊断日志
   const distilledKeywords = keywords.filter((k: any) => k.keyword_type === 0 || k.keyword_type == null);
   let coreKeywordValues: string[] = [];
   try {
     coreKeywordValues = await getCoreKeywordsByUserId(String(userId));
-    if (coreKeywordValues.length === 0) {
-      // 降级：用户未在关键词管理页面添加核心关键词时，使用 zlgjc 蒸馏词兜底
-      console.warn(`[ArticleGen] 任务 ${taskId} 用户 ${userId} 未添加核心关键词（distillate_keyword 表为空），降级使用 zlgjc 蒸馏词`);
-      coreKeywordValues = distilledKeywords.map((k: any) => k.value);
-    } else {
+    if (coreKeywordValues.length > 0) {
       console.log(`[ArticleGen] 任务 ${taskId} 获取到 ${coreKeywordValues.length} 个核心关键词（distillate_keyword 表）:`, coreKeywordValues.slice(0, 10).join('、'));
+    } else {
+      // 降级1：distillate_keyword 表为空（或 userId 不匹配），从 zlgjc.hxgjc 字段提取核心关键词
+      //   hxgjc 是生成蒸馏词时用的 C 主词（即用户手动添加的核心关键词），与 user_id 无关
+      //   过滤掉与 value 相同的（手动添加的蒸馏词 hxgjc=value，不是核心关键词）
+      const hxgjcSet = new Set<string>();
+      for (const k of keywords) {
+        const hxgjc = (k.hxgjc || '').trim();
+        if (hxgjc && hxgjc !== (k.value || '').trim()) {
+          hxgjcSet.add(hxgjc);
+        }
+      }
+      if (hxgjcSet.size > 0) {
+        coreKeywordValues = Array.from(hxgjcSet);
+        console.log(`[ArticleGen] 任务 ${taskId} distillate_keyword 表为空，从 zlgjc.hxgjc 提取到 ${coreKeywordValues.length} 个核心关键词:`, coreKeywordValues.slice(0, 10).join('、'));
+      } else {
+        // 降级2：使用 zlgjc 蒸馏词
+        console.warn(`[ArticleGen] 任务 ${taskId} 用户 ${userId} 未添加核心关键词（distillate_keyword 表为空且 zlgjc.hxgjc 为空），降级使用 zlgjc 蒸馏词`);
+        coreKeywordValues = distilledKeywords.map((k: any) => k.value);
+      }
     }
   } catch (err: any) {
     console.warn(`[ArticleGen] 任务 ${taskId} 获取核心关键词失败，降级使用 zlgjc 蒸馏词:`, err?.message);
