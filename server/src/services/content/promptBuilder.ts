@@ -173,7 +173,11 @@ function formatTriples(triples: Array<{ subject: string; relation: string; objec
 /**
  * 替换 prompt 模板中的占位符
  * 支持的占位符：
- *   {keyword}            - 核心关键词
+ *   {keyword}            - 核心关键词列表（顿号连接，向后兼容）
+ *   {topic}              - v3.8.13 专家选定的本篇主题
+ *   {direction}          - v3.8.13 专家选定的写作方向
+ *   {titleHint}          - v3.8.13 专家建议的标题方向
+ *   {coverage_keywords}  - v3.8.13 需在正文中覆盖的蒸馏词+品牌词列表
  *   {enterprise}         - 企业基础信息（含 v1.2 新增 5 个字段）
  *   {triples}            - 实体三元组
  *   {intro}              - 企业简介
@@ -189,12 +193,21 @@ function formatTriples(triples: Array<{ subject: string; relation: string; objec
  *   {date}               - 当前日期（YYYY-MM-DD 格式）
  */
 export function buildPrompt(template: string, context: {
-  keyword: string;
+  keyword?: string;
+  topic?: string;
+  direction?: string;
+  titleHint?: string;
+  coverageKeywords?: string;
   enterprise?: EnterpriseInfo;
   wordCount?: number;
 }): string {
   let result = template;
-  result = result.replace(/\{keyword\}/g, context.keyword);
+  result = result.replace(/\{keyword\}/g, context.keyword || '');
+  // v3.8.13：专家选题占位符
+  result = result.replace(/\{topic\}/g, context.topic || '');
+  result = result.replace(/\{direction\}/g, context.direction || '');
+  result = result.replace(/\{titleHint\}/g, context.titleHint || '');
+  result = result.replace(/\{coverage_keywords\}/g, context.coverageKeywords || '');
   result = result.replace(/\{enterprise\}/g, context.enterprise ? formatEnterprise(context.enterprise) : '');
   result = result.replace(/\{triples\}/g, context.enterprise?.entity_triples ? formatTriples(context.enterprise.entity_triples) : '');
   result = result.replace(/\{intro\}/g, context.enterprise?.intro_text || '');

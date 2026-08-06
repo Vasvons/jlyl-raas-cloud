@@ -145,10 +145,16 @@ function buildLayer0ExpertPersona(task: any): string {
   const agentName: string = task.agent_profile_name || '';
   const parts: string[] = [];
   // v2.2.19：明确专家角色定位，强化"专家视角，避免营销味"
+  // v3.8.13：专家升级为选题决策者（顶层领导），决定"写什么"和"从什么角度写"
   if (agentName || systemPrompt.trim()) {
     parts.push(`【你的身份】`);
     if (agentName) parts.push(`角色名：${agentName}`);
     if (systemPrompt.trim()) parts.push(systemPrompt.trim());
+    parts.push(``);
+    parts.push(`【核心职责（v3.8.13 专家主导选题）】`);
+    parts.push(`1. 选题决策：围绕客户的核心关键词，找出当前GEO优化效果最优、目标客户最关心、AI采信适配度最高的写作主题`);
+    parts.push(`2. 方向把控：结合AEO建议和历史文章，避免重复，确保每篇文章有独特的切入角度`);
+    parts.push(`3. 内容领导：你是文章的顶层决策者，决定"写什么"和"从什么角度写"，写作指令负责"怎么写"`);
     parts.push(``);
     parts.push(`【身份约束（必须严格遵守）】`);
     parts.push(`1. 你是上述定义的专家，所有内容必须从专家视角出发，提供专业见解、行业洞察、实操建议`);
@@ -256,12 +262,22 @@ function buildLayer3Strategy(strategyMemory?: StrategyMemoryItem[]): string {
   return `【飞轮策略】基于近期收录数据自动总结的创作策略建议：\n${lines.join('\n')}`;
 }
 
-/** L4 主题参考层：关键词库列表 */
+/** L4 关键词覆盖层：蒸馏词+品牌词在正文和标签中自然覆盖（v3.8.13 改造） */
 function buildLayer4TopicReference(keywords: string[]): string {
   const kwText = formatKeywords(keywords);
   if (!kwText) return '';
 
-  return `【主题参考】客户关键词库（请从中选择主题创作，不要逐一展开，也不要一个关键词写一篇）：\n${kwText}`;
+  // v3.8.13：从「主题参考」改为「关键词覆盖目标」
+  //   原设计：关键词作为主题候选让 AI 选一个写 → 限制 AI 选题灵活性
+  //   新设计：专家独立选题，关键词作为覆盖目标自然融入正文和标签 → 提高巡检命中率
+  return `【关键词覆盖目标】请在正文和标签中自然包含以下关键词（软覆盖，不要生硬堆砌）：
+${kwText}
+
+覆盖原则：
+- 自然融入上下文语境，不为覆盖而覆盖
+- 优先保证内容质量和可读性，关键词覆盖是辅助目标
+- 品牌关键词可在提及企业/服务时自然使用
+- 蒸馏关键词可在阐述行业概念/问题时自然使用`;
 }
 
 /** L5 RAG 检索层：向量检索相关历史片段（阶段2） */

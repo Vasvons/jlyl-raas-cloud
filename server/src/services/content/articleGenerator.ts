@@ -6,6 +6,7 @@ import { generateAndSaveEmbedding } from './embeddingService';
 import {
   getWritingTaskById,
   getKeywordsByIds,
+  getBrandQueryKeywords,
   getArticleById,
   createArticle,
   updateWritingTaskProgress,
@@ -393,6 +394,123 @@ async function resolveModelConfig(task: any, userId: number, taskId: number): Pr
 }
 
 /**
+ * v3.8.13：专家选题 — 每篇文章生成前，让专家围绕核心关键词规划本篇主题
+ *
+ * 原流程：轮询选关键词 → 硬注入"本篇核心主题关键词" → AI 围绕固定词写
+ * 新流程：传核心关键词给专家 → 专家独立选题（主题+方向+标题方向） → 注入 prompt
+ *
+ * @returns { topic, direction, titleHint } 选题结果
+ */
+async function planArticleTopic(
+  task: any,
+  coreKeywords: string[],
+  writingCtx: { systemMessage: string },
+  articleIdx: number,
+  recentArticles: RecentArticleItem[],
+  modelConfig: any,
+  apiKey: string,
+  taskId: number,
+  currentPlatform: string | null,
+): Promise<{ topic: string; direction: string; titleHint: string }> {
+  // 构建选题 prompt
+  const lines: string[] = [];
+
+  lines.push(`你是文章选题专家。请基于以下信息，为第 ${articleIdx + 1} 篇文章选择最优写作主题。`);
+
+  // 核心关键词（不带品牌名，作为选题方向参考）
+  if (coreKeywords.length > 0) {
+    const kwPreview = coreKeywords.slice(0, 30).join('、');
+    lines.push(`\n【核心关键词】（围绕这些词找主题方向，不要直接用原词做标题）\n${kwPreview}`);
+  }
+
+  // AEO 建议摘要（从 systemMessage 中提取关键信息）
+  if (task.aeo_context) {
+    try {
+      const aeoCtx = JSON.parse(task.aeo_context);
+      if (Array.isArray(aeoCtx.suggestions) && aeoCtx.suggestions.length > 0) {
+        const suggestion = aeoCtx.suggestions[articleIdx % aeoCtx.suggestions.length];
+        if (suggestion) {
+          lines.push(`\n【AEO优化建议】（来自周报/月报分析，需遵循）`);
+          if (suggestion.topic) lines.push(`  主题：${suggestion.topic}`);
+          if (suggestion.direction) lines.push(`  方向：${suggestion.direction}`);
+          if (suggestion.keywords) lines.push(`  关键词：${suggestion.keywords.join('、')}`);
+        }
+      }
+    } catch {}
+  }
+
+  // 近期已写文章（避免重复）
+  if (recentArticles.length > 0) {
+    const recentTitles = recentArticles.slice(0, 10).map(a => a.title).filter(Boolean);
+    if (recentTitles.length > 0) {
+      lines.push(`\n【近期已写文章】（避免主题重复，需差异化）\n${recentTitles.map((t, i) => `${i + 1}. ${t}`).join('\n')}`);
+    }
+  }
+
+  // 企业信息摘要
+  const companyShort = task.company_short_name || task.company_full_name || '';
+  if (companyShort) {
+    lines.push(`\n【企业信息】${companyShort}${task.industry ? `（${task.industry}）` : ''}${task.city ? `，${task.city}` : ''}`);
+  }
+
+  // 平台约束（如有）
+  if (currentPlatform) {
+    lines.push(`\n【目标平台】${currentPlatform}`);
+  }
+
+  lines.push(`\n请输出JSON格式（不要输出其他内容，不要用markdown代码块包裹）：`);
+  lines.push(`{`);
+  lines.push(`  "topic": "本篇核心主题（如：2026年绵阳公司注册的地址选择难题）",`);
+  lines.push(`  "direction": "写作方向（如：从创业者实际痛点切入，分析地址选择的三种方案及优劣）",`);
+  lines.push(`  "titleHint": "标题方向建议（如：疑问句式，突出'地址选择'和'避坑'，15-25字）"`);
+  lines.push(`}`);
+
+  const topicPrompt = lines.join('\n');
+
+  // 选题用 system message：复用写作上下文的 L0 专家人格，附加选题约束
+  const topicSystem = writingCtx.systemMessage
+    ? writingCtx.systemMessage + '\n\n---\n\n'
+    : '';
+  const topicSystemContent = topicSystem + `你是选题专家。你的职责是围绕客户的核心关键词，找出当前GEO优化效果最优、目标客户最关心、AI采信适配度最高的写作主题。
+只输出JSON，不要输出任何其他内容。`;
+
+  try {
+    const result = await chatCompletion({
+      baseUrl: modelConfig.base_url,
+      apiKey,
+      model: modelConfig.model_name,
+      messages: [
+        { role: 'system', content: topicSystemContent },
+        { role: 'user', content: topicPrompt },
+      ],
+      temperature: 0.8, // 选题用较高温度增加多样性
+      timeout: 30000,
+    });
+
+    const raw = stripThinking(result.content).trim();
+    // 提取 JSON（兼容 AI 可能包裹 ```json 的情况）
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const topic = (parsed.topic || '').trim();
+      const direction = (parsed.direction || '').trim();
+      const titleHint = (parsed.titleHint || '').trim();
+      if (topic) {
+        console.log(`[ArticleGen][专家选题] 任务${taskId} 第${articleIdx + 1}篇: topic="${topic.slice(0, 60)}", direction="${direction.slice(0, 60)}"`);
+        return { topic, direction, titleHint };
+      }
+    }
+    console.warn(`[ArticleGen][专家选题] 任务${taskId} 第${articleIdx + 1}篇: AI 返回无法解析，降级使用关键词轮询`);
+  } catch (err: any) {
+    console.warn(`[ArticleGen][专家选题] 任务${taskId} 第${articleIdx + 1}篇选题失败: ${err?.message || err}，降级使用关键词轮询`);
+  }
+
+  // 降级：用第一个核心关键词作为主题（向后兼容）
+  const fallbackKw = coreKeywords[articleIdx % coreKeywords.length] || coreKeywords[0] || '';
+  return { topic: fallbackKw, direction: '', titleHint: '' };
+}
+
+/**
  * 执行写作任务 — 按用户设定的篇数循环调AI生成文章
  * v1.4+：关键词库作为整体主题参考注入 prompt，不再一对一
  * 支持双模式：expert（专家系统）/ coze（扣子工作流）
@@ -458,21 +576,36 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   const keywordIds: number[] = task.keyword_ids || [];
   const keywords = await getKeywordsByIds(keywordIds);
 
+  // v3.8.13：区分蒸馏关键词（核心关键词）和品牌关键词
+  //   蒸馏词（keyword_type=0）：作为专家选题的方向参考
+  //   品牌词（keyword_type=1）：作为正文覆盖目标，不参与选题
+  //   前端只传蒸馏词 ID，品牌词从全量库按 user_id 查询（避免品牌词混入选题）
+  const distilledKeywords = keywords.filter((k: any) => k.keyword_type === 0 || k.keyword_type == null);
+  const coreKeywordValues = distilledKeywords.map((k: any) => k.value);
+
+  // v3.8.13：从全量库获取品牌关键词（用于正文覆盖目标）
+  let brandKeywordValues: string[] = [];
+  try {
+    brandKeywordValues = await getBrandQueryKeywords(String(userId));
+  } catch (err: any) {
+    console.warn(`[ArticleGen] 任务 ${taskId} 获取品牌关键词失败（不影响写作）:`, err?.message);
+  }
+
   // v1.8.1：限制注入 prompt 的关键词数量，避免关键词库过大（如 15000+ 个）导致 token 超限
-  // 根因：之前 keywordsListStr 全量注入 {keyword} 占位符 + L4 主题参考层全量注入 = 关键词被注入两次
-  // 15000 个关键词 × ~10 字符 × 2 次 ≈ 300K 字符 ≈ 130K tokens，远超模型上下文窗口
   const MAX_KEYWORDS_FOR_PROMPT = 100;   // {keyword} 占位符替换用，前 100 个足够 AI 理解主题方向
-  const MAX_KEYWORDS_FOR_CONTEXT = 200;  // L4 主题参考层用，前 200 个作为主题候选
+  const MAX_KEYWORDS_FOR_CONTEXT = 200;  // L4 关键词覆盖层用，前 200 个
   const keywordsForPrompt = keywords.length > MAX_KEYWORDS_FOR_PROMPT
     ? keywords.slice(0, MAX_KEYWORDS_FOR_PROMPT)
     : keywords;
   const keywordsForContext = keywords.length > MAX_KEYWORDS_FOR_CONTEXT
     ? keywords.slice(0, MAX_KEYWORDS_FOR_CONTEXT)
     : keywords;
-  // 关键词列表字符串（顿号连接），注入到 prompt 中作为主题参考
+  // 关键词列表字符串（顿号连接），注入到 prompt 中作为覆盖目标
   const keywordsListStr = keywordsForPrompt.map((k: any) => k.value).join('、');
+  // v3.8.13：核心关键词列表（选题用，前 30 个）
+  const coreKeywordsForPlanning = coreKeywordValues.slice(0, 30);
   if (keywords.length > MAX_KEYWORDS_FOR_PROMPT) {
-    console.warn(`[ArticleGen] 任务 ${taskId} 关键词库过大：共 ${keywords.length} 个，已截断到前 ${MAX_KEYWORDS_FOR_PROMPT} 个注入 {keyword} 占位符，前 ${MAX_KEYWORDS_FOR_CONTEXT} 个传入 L4 主题参考层`);
+    console.warn(`[ArticleGen] 任务 ${taskId} 关键词库过大：共 ${keywords.length} 个，已截断到前 ${MAX_KEYWORDS_FOR_PROMPT} 个注入 {keyword} 占位符，前 ${MAX_KEYWORDS_FOR_CONTEXT} 个传入 L4 关键词覆盖层`);
   }
 
   // 文章篇数：由用户在创建任务时手动设定（task.total_count）
@@ -592,6 +725,8 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
       let wordCount = 0;
       let modelUsed = '';
       let coverUrlForArticle = '';
+      // v3.8.13：专家选题结果（coze 模式为空对象，expert 模式由 planArticleTopic 填充）
+      let topicPlan = { topic: '', direction: '', titleHint: '' };
 
       // v1.8.0：计算本次迭代的目标平台
       // 平台专属模式（platformCount > 0）：
@@ -609,7 +744,10 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         currentPlatformRule = platformRulesMap.get(currentPlatform) || null;
       }
 
-      // 为本次生成选择一个主题关键词（轮询取，用于文章归属标记，不影响 prompt 内容）
+      // v3.8.13：专家选题 — 让专家围绕核心关键词规划本篇主题，替代轮询选词
+      //   原流程：const kw = keywords[articleIdx % keywords.length]; → 硬注入"本篇核心主题关键词"
+      //   新流程：调 AI 让专家选题 → {topic, direction, titleHint} → 注入 prompt 占位符
+      //   降级：选题失败时用关键词轮询兜底
       const kw = keywords.length > 0 ? keywords[articleIdx % keywords.length] : null;
 
       if (generationMode === 'coze') {
@@ -640,7 +778,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         }
 
         // 构建分层写作上下文（L0专家 + L1客户档案 + L2历史 + L3效果/策略 + L5 RAG + L7 AEO建议）
-        // v1.8.1：使用截断后的 keywordsForContext（前 200 个），避免 L4 主题参考层全量注入导致 token 超限
+        // v1.8.1：使用截断后的 keywordsForContext（前 200 个），避免 L4 关键词覆盖层全量注入导致 token 超限
         // v2.1.4：传入 aeoContext（来自 autoCreateWritingTasksFromPeriod 写入的 AEO 写作建议池）
         const writingCtx = buildWritingContext({
           task,
@@ -653,27 +791,51 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
           articleIdx: i + aeoSuggestionOffset, // v2.6.0: 加跨任务偏移，避免每个任务都从 suggestions[0] 开始
         });
 
-        // 1. 先做占位符替换（向后兼容用户在模板里写的 {enterprise} {keyword} 等）
-        // v1.8.1：article_prompt 模板长度保护，避免写作指令过长导致 prompt 超出模型上下文窗口
-        const MAX_ARTICLE_PROMPT_LEN = 30000; // 3 万字符 ≈ 8K tokens
+        // v3.8.13：专家选题 — 每篇文章独立调用 AI 让专家规划主题，替代关键词轮询
+        //   专家围绕核心关键词找出最优主题+方向+标题方向，注入 prompt 占位符
+        //   选题失败时降级用关键词轮询（向后兼容）
+        const topicPlanResult = await planArticleTopic(
+          task, coreKeywordsForPlanning, writingCtx, articleIdx, recentArticles,
+          modelConfig, apiKey, taskId, currentPlatform,
+        );
+        topicPlan = topicPlanResult;
+
+        // 1. 占位符替换（v3.8.13：新增 {topic}/{direction}/{titleHint}/{coverage_keywords}）
+        // v1.8.1：article_prompt 模板长度保护
+        const MAX_ARTICLE_PROMPT_LEN = 30000;
         let rawArticlePrompt = task.article_prompt || '';
         if (rawArticlePrompt.length > MAX_ARTICLE_PROMPT_LEN) {
           console.warn(`[ArticleGen] article_prompt 过长已截断: 原长=${rawArticlePrompt.length}, 截断到 ${MAX_ARTICLE_PROMPT_LEN}`);
           rawArticlePrompt = rawArticlePrompt.slice(0, MAX_ARTICLE_PROMPT_LEN) + '\n\n[...写作指令已截断...]';
         }
+        // v3.8.13：构建覆盖关键词列表（蒸馏词 + 品牌词）
+        const coverageKeywords = [
+          ...coreKeywordValues.slice(0, 50),
+          ...brandKeywordValues.slice(0, 20),
+        ].join('、');
+
         let articlePrompt = buildPrompt(directionCtx + rawArticlePrompt, {
-          keyword: keywordsListStr || '',
+          keyword: keywordsListStr || '',       // 向后兼容
+          topic: topicPlan.topic,
+          direction: topicPlan.direction,
+          titleHint: topicPlan.titleHint,
+          coverageKeywords,
           enterprise: enterpriseInfo,
           wordCount: task.target_word_count,
         });
 
-        // v2.2.21：本次核心关键词放到 userPrompt 最前面（最高优先级位置），强约束 AI 必须围绕它写
-        //   原 bug（v2.2.19）：【本篇主题关键词】放在 userPrompt 末尾，被前面的 L4 主题参考层
-        //     （200 个关键词顿号连接）淹没，AI 看到一堆关键词后无法聚焦本次主题。
-        //   修复：放到 userPrompt 最前面 + 强约束"必须以此为核心主题，禁止偏离"。
-        //   同时减少 {keyword} 占位符注入的关键词数（避免前 100 个关键词淹没本次主题）。
-        if (kw && kw.value) {
-          articlePrompt = `【本篇核心主题关键词（最高优先级，必须围绕它展开）】${kw.value}\n\n请以"${kw.value}"作为本篇文章的【唯一核心主题】，所有标题、章节、段落、案例都必须围绕这个关键词展开。其他关键词仅作为辅助参考，不要喧宾夺主，不要试图覆盖多个关键词。\n\n---\n\n` + articlePrompt;
+        // v3.8.13：专家选题结果前置（替代原关键词硬注入）
+        //   原设计：【本篇核心主题关键词】+ 硬约束"必须围绕它写"
+        //   新设计：专家选题结果前置，但用引导而非强制的方式
+        const topicPrefix: string[] = [];
+        if (topicPlan.topic) {
+          topicPrefix.push(`【本篇主题（专家选定）】${topicPlan.topic}`);
+        }
+        if (topicPlan.direction) {
+          topicPrefix.push(`【写作方向】${topicPlan.direction}`);
+        }
+        if (topicPrefix.length > 0) {
+          articlePrompt = topicPrefix.join('\n\n') + '\n\n---\n\n' + articlePrompt;
         }
 
         // 2. 附加 L4 主题参考层（userPromptSuffix）
@@ -732,12 +894,13 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
           console.log('[ArticleGen][L2历史] recentArticles 数量:', recentArticles.length);
           console.log('[ArticleGen][L3效果] performanceMemory 数量:', performanceMemory.length);
           console.log('[ArticleGen][L3策略] strategyMemory 数量:', strategyMemory.length);
-          console.log('[ArticleGen][L4主题] keywords 总数:', keywords.length, '/ 注入 {keyword} 数量:', keywordsForPrompt.length, '/ 注入 L4 数量:', keywordsForContext.length, '前5:', keywords.slice(0, 5).map((k: any) => k.value));
+          console.log('[ArticleGen][L4关键词覆盖] keywords 总数:', keywords.length, '/ 蒸馏词:', distilledKeywords.length, '/ 品牌词(全量库):', brandKeywordValues.length, '/ 注入 L4 数量:', keywordsForContext.length);
           console.log('[ArticleGen][L5RAG] ragSnippets 数量:', ragSnippets.length);
           console.log('[ArticleGen][L6平台] currentPlatform:', currentPlatform, '/ rule:', currentPlatformRule ? `${currentPlatformRule.name} 标题${currentPlatformRule.title_min_length}-${currentPlatformRule.title_max_length}字 正文${currentPlatformRule.content_min_length}-${currentPlatformRule.content_max_length}字` : '无（通用模式）');
           console.log('[ArticleGen][写作指令] article_prompt 长度:', (task.article_prompt || '').length, '预览:', (task.article_prompt || '').slice(0, 200));
           console.log('[ArticleGen][标题指令] title_prompt 长度:', (task.title_prompt || '').length, '预览:', (task.title_prompt || '').slice(0, 200));
           console.log('[ArticleGen][创作方向] directionCtx 长度:', directionCtx.length, '内容:', directionCtx.slice(0, 200));
+          console.log('[ArticleGen][v3.8.13专家选题] topic:', topicPlan.topic, '/ direction:', topicPlan.direction, '/ titleHint:', topicPlan.titleHint);
           console.log('[ArticleGen][最终 systemMessage] 总长度:', writingCtx.systemMessage.length, '前300字符:', writingCtx.systemMessage.slice(0, 300));
           console.log('[ArticleGen][最终 userPrompt] 总长度:', articlePrompt.length, '前300字符:', articlePrompt.slice(0, 300));
           // v1.8.1：总长度诊断 + 警告
@@ -801,10 +964,15 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
         });
 
         // 如果指令配置了 title_prompt，单独调用AI生成标题（失败时降级使用正文解析的标题）
+        // v3.8.13：标题生成注入专家选题结果（{topic}/{direction}/{titleHint}），替代关键词列表
         if (task.title_prompt && task.title_prompt.trim()) {
           try {
             let titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
-              keyword: keywordsListStr || '',
+              keyword: keywordsListStr || '',       // 向后兼容
+              topic: topicPlan.topic,
+              direction: topicPlan.direction,
+              titleHint: topicPlan.titleHint,
+              coverageKeywords,
               enterprise: enterpriseInfo,
               wordCount: task.target_word_count,
             });
@@ -955,14 +1123,14 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
             : safeTitle.slice(0, maxLen);
         }
       }
-      const safeCoreKeyword = (kw?.value || '').slice(0, 120);
+      // v3.8.13：core_keyword 记录专家选定的主题（替代原轮询关键词）
+      const safeCoreKeyword = (topicPlan.topic || kw?.value || '').slice(0, 120);
       const safeModelUsed = (modelUsed || '').slice(0, 60);
 
       // v1.8.4：从 core_keyword + entity_triples 派生 tags 数组
-      // 写作阶段不调用 AI 生成话题，而是从已有数据派生，确保与文章内容强关联
-      // 来源优先级：core_keyword 拆词 → entity_triples 实体名 → 截断到 5 个
+      // v3.8.13：core_keyword 改为专家选题结果，拆词逻辑不变
       const derivedTags: string[] = [];
-      const coreKw = (kw?.value || '').trim();
+      const coreKw = (topicPlan.topic || kw?.value || '').trim();
       if (coreKw) {
         // 按常见分隔符拆分 core_keyword
         const parts = coreKw.split(/[，,、|/;\s]+/).map((s: string) => s.trim()).filter(Boolean);
@@ -1225,8 +1393,14 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     aeoContext: task.aeo_context, // v2.1.4
   });
 
+  // v3.8.13：重新生成时用已保存的 core_keyword（即专家选定的主题）作为 {topic}
+  const regenTopic = article.core_keyword || '';
   let articlePrompt = buildPrompt(directionCtx + (task.article_prompt || ''), {
-    keyword: article.core_keyword,
+    keyword: regenTopic,
+    topic: regenTopic,
+    direction: '',
+    titleHint: '',
+    coverageKeywords: regenTopic,
     enterprise: enterpriseInfo,
     wordCount: task.target_word_count,
   });
@@ -1268,7 +1442,11 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
   let title = '';
   if (task.title_prompt && task.title_prompt.trim()) {
     let titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
-      keyword: article.core_keyword,
+      keyword: regenTopic,
+      topic: regenTopic,
+      direction: '',
+      titleHint: '',
+      coverageKeywords: regenTopic,
       enterprise: enterpriseInfo,
       wordCount: task.target_word_count,
     });
