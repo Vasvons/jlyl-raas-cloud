@@ -1,7 +1,7 @@
 {
   "platform": "tt",
-  "version": "1.9.7",
-  "description": "今日头条图文发布流程（v1.9.7：预览并发布按钮恢复用element.click()——v1.9.2能弹出预览弹窗，v1.9.3+改Playwright click反而弹不出）",
+  "version": "1.9.9",
+  "description": "今日头条图文发布流程（v1.9.9：预览并发布/确认发布均改用 定位标记+Playwright真实点击——isTrusted=false 的 element.click() 无法触发字节组件库 onClick，导致按钮点击后30秒仍可见）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
   "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
@@ -131,8 +131,15 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "window.scrollTo(0, document.body.scrollHeight); await new Promise(function(res) { setTimeout(res, 500); }); var btn = null; var candidates = Array.from(document.querySelectorAll('button')); for (var i = 0; i < candidates.length; i++) { var b = candidates[i]; if (b.offsetParent === null) continue; var t = (b.innerText || '').trim(); if (t === '预览并发布' || t === '预览并定时发布' || t.indexOf('预览并发布') >= 0) { btn = b; break; } } if (!btn) throw new Error('未找到预览并发布按钮'); btn.scrollIntoView({ block: 'center' }); await new Promise(function(res) { setTimeout(res, 300); }); btn.click(); await new Promise(function(res) { setTimeout(res, 500); }); return 'clicked: ' + (btn.innerText || '').trim();",
-      "descript": "v1.9.7 滚动到底部并用 element.click() 点击预览并发布按钮（v1.9.2 用 element.click() 能弹出预览弹窗，v1.9.3+ 改 Playwright click 反而弹不出）",
+      "value": "window.scrollTo(0, document.body.scrollHeight); await new Promise(function(res) { setTimeout(res, 500); }); var btn = null; var candidates = Array.from(document.querySelectorAll('button')); for (var i = 0; i < candidates.length; i++) { var b = candidates[i]; if (b.offsetParent === null) continue; var t = (b.innerText || '').trim(); if (t === '预览并发布' || t === '预览并定时发布' || t.indexOf('预览并发布') >= 0) { btn = b; break; } } if (!btn) throw new Error('未找到预览并发布按钮'); btn.scrollIntoView({ block: 'center' }); await new Promise(function(res) { setTimeout(res, 300); }); btn.setAttribute('data-jlyl-click', 'preview-publish'); return 'marked: ' + (btn.innerText || '').trim();",
+      "descript": "v1.9.9 滚动到底部定位预览并发布按钮并打 data-jlyl-click 标记，随后用 Playwright 真实点击",
+      "timeout": 5000
+    },
+    {
+      "type": "click",
+      "selector": "button[data-jlyl-click='preview-publish']",
+      "force": true,
+      "descript": "v1.9.9 Playwright 真实点击预览并发布按钮（isTrusted=true 触发字节组件库 onClick 弹出预览弹窗）",
       "timeout": 5000
     },
     {
@@ -148,9 +155,16 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var matchedBtns = ['确认发布','确认','发布','确定','提交','确认发表','发表','确认并发布','发送','确认提交','确认推送','发布文章','确定发布','确认预览并发布']; var excludeBtns = ['预览并发布','预览并定时发布','定时发布']; for (var attempt = 0; attempt < 30; attempt++) { var target = null; var diag = []; var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog], [class*=Modal], [class*=Dialog], [class*=drawer], .byte-modal, .byte-dialog'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent === null) continue; try { m.scrollTop = m.scrollHeight; } catch(e) {} var scrollables = m.querySelectorAll('[class*=scroll], [class*=content], [style*=overflow]'); for (var si = 0; si < scrollables.length; si++) { try { scrollables[si].scrollTop = scrollables[si].scrollHeight; } catch(e) {} } var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t) diag.push('modal:' + t); if (matchedBtns.indexOf(t) >= 0 && excludeBtns.indexOf(t) < 0) { target = btns[j]; break; } } if (target) break; } if (!target) { var allBtns = document.querySelectorAll('button'); for (var k = 0; k < allBtns.length; k++) { var b = allBtns[k]; if (b.offsetParent === null) continue; var bt = (b.innerText || '').trim(); if (bt) diag.push('page:' + bt); if (matchedBtns.indexOf(bt) >= 0 && excludeBtns.indexOf(bt) < 0) { target = b; break; } } } if (!target) { var iframes = document.querySelectorAll('iframe'); for (var fi = 0; fi < iframes.length; fi++) { try { var doc = iframes[fi].contentDocument; if (!doc) continue; var iframeBtns = doc.querySelectorAll('button'); for (var fb = 0; fb < iframeBtns.length; fb++) { var it = (iframeBtns[fb].innerText || '').trim(); if (it) diag.push('iframe:' + it); if (matchedBtns.indexOf(it) >= 0 && excludeBtns.indexOf(it) < 0) { target = iframeBtns[fb]; diag.push('iframe_match: ' + it); break; } } if (target) break; } catch(e) { diag.push('iframe_error: ' + e.message); } } } if (target) { target.scrollIntoView({ block: 'center' }); await new Promise(function(res) { setTimeout(res, 300); }); target.click(); await new Promise(function(res) { setTimeout(res, 500); }); return 'clicked: ' + (target.innerText || '').trim() + ' (attempt=' + attempt + ')'; } await new Promise(function(res) { setTimeout(res, 1000); }); } throw new Error('预览弹窗内未找到确认发布按钮（轮询30秒）诊断按钮列表: ' + diag.join(' | '));",
-      "descript": "v1.9.7 轮询查找并用 element.click() 点击确认发布按钮（先在modal内查找，再在页面上查找但排除预览并发布/定时发布；最多30秒）",
+      "value": "var matchedBtns = ['确认发布','确认','发布','确定','提交','确认发表','发表','确认并发布','发送','确认提交','确认推送','发布文章','确定发布','确认预览并发布']; var excludeBtns = ['预览并发布','预览并定时发布','定时发布']; for (var attempt = 0; attempt < 30; attempt++) { var target = null; var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog], [class*=Modal], [class*=Dialog], [class*=drawer], .byte-modal, .byte-dialog'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent === null) continue; try { m.scrollTop = m.scrollHeight; } catch(e) {} var scrollables = m.querySelectorAll('[class*=scroll], [class*=content], [style*=overflow]'); for (var si = 0; si < scrollables.length; si++) { try { scrollables[si].scrollTop = scrollables[si].scrollHeight; } catch(e) {} } var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (matchedBtns.indexOf(t) >= 0 && excludeBtns.indexOf(t) < 0) { target = btns[j]; break; } } if (target) break; } if (!target) { var allBtns = document.querySelectorAll('button'); for (var k = 0; k < allBtns.length; k++) { var b = allBtns[k]; if (b.offsetParent === null) continue; var bt = (b.innerText || '').trim(); if (matchedBtns.indexOf(bt) >= 0 && excludeBtns.indexOf(bt) < 0) { target = b; break; } } } if (!target) { var iframes = document.querySelectorAll('iframe'); for (var fi = 0; fi < iframes.length; fi++) { try { var doc = iframes[fi].contentDocument; if (!doc) continue; var iframeBtns = doc.querySelectorAll('button'); for (var fb = 0; fb < iframeBtns.length; fb++) { var it = (iframeBtns[fb].innerText || '').trim(); if (matchedBtns.indexOf(it) >= 0 && excludeBtns.indexOf(it) < 0) { target = iframeBtns[fb]; break; } } if (target) break; } catch(e) {} } } if (target) { target.scrollIntoView({ block: 'center' }); await new Promise(function(res) { setTimeout(res, 300); }); target.setAttribute('data-jlyl-click', 'confirm-publish'); return 'marked: ' + (target.innerText || '').trim() + ' (attempt=' + attempt + ')'; } await new Promise(function(res) { setTimeout(res, 1000); }); } throw new Error('预览弹窗内未找到确认发布按钮（轮询30秒）');",
+      "descript": "v1.9.9 轮询定位预览弹窗确认发布按钮并打 data-jlyl-click 标记（先在modal内查找，再在页面上查找但排除预览并发布/定时发布；最多30秒），随后用 Playwright 真实点击",
       "timeout": 35000
+    },
+    {
+      "type": "click",
+      "selector": "button[data-jlyl-click='confirm-publish']",
+      "force": true,
+      "descript": "v1.9.9 Playwright 真实点击确认发布按钮（isTrusted=true 触发字节组件库 onClick 提交发布）",
+      "timeout": 5000
     },
     {
       "type": "timing",
