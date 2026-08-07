@@ -1,7 +1,7 @@
 {
   "platform": "tt",
-  "version": "1.8.4",
-  "description": "今日头条图文发布流程（v1.8.4：预览并发布按钮点击后增加重试+等待预览弹窗完整加载）",
+  "version": "1.8.5",
+  "description": "今日头条图文发布流程（v1.8.5：预览并发布按钮改用 evaluate_edit+MouseEvent 点击，绕过热点推荐弹窗遮挡）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
   "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
@@ -100,15 +100,15 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var closed = []; var allElements = document.querySelectorAll('div, section, aside, [class*=close], [class*=Close], [aria-label*=关闭], [title*=关闭]'); for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t.indexOf('创作热点推荐') >= 0 || t.indexOf('换一换') >= 0 || t.indexOf('热点图库') >= 0) { var closeIcon = el.querySelector('[class*=close], .icon-close, button[title*=关闭], [aria-label*=关闭], svg, [class*=Close], .byte-icon-close'); if (closeIcon && closeIcon.offsetParent !== null) { closeIcon.click(); closed.push('hot-panel'); break; } } } document.body.style.overflow = ''; return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no_hot_panel';",
-      "descript": "v3.7.13 关闭创作热点推荐弹窗（避免遮挡发布按钮）",
+      "value": "var closed = []; var allElements = document.querySelectorAll('div, section, aside, [class*=close], [class*=Close], [aria-label*=关闭], [title*=关闭]'); for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; var t = (el.innerText || '').trim(); if (t.indexOf('创作热点推荐') >= 0 || t.indexOf('换一换') >= 0 || t.indexOf('热点图库') >= 0) { var closeIcon = el.querySelector('[class*=close], .icon-close, button[title*=关闭], [aria-label*=关闭], svg, [class*=Close], .byte-icon-close'); if (closeIcon && closeIcon.offsetParent !== null) { closeIcon.scrollIntoView({ block: 'center' }); var r = closeIcon.getBoundingClientRect(); closeIcon.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); closed.push('hot-panel'); break; } } } document.body.style.overflow = ''; return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no_hot_panel';",
+      "descript": "v1.8.5 关闭创作热点推荐弹窗（改用 MouseEvent 触发，修复 .click() 不触发 React 事件）",
       "is_try": true,
       "timeout": 3000
     },
     {
       "type": "timing",
       "ms": 1000,
-      "descript": "v1.8.3 等待热点推荐弹窗关闭动画完成"
+      "descript": "v1.8.5 等待热点推荐弹窗关闭动画完成"
     },
     {
       "type": "evaluate_edit",
@@ -118,24 +118,20 @@
       "timeout": 3000
     },
     {
-      "type": "click",
-      "selector": "//button[contains(., \"预览并发布\")] | //button[contains(., \"预览并定时发布\")] | //button[contains(@class,\"byte-btn-primary\") and contains(.,\"发布\")] | //span[text()=\"预览并发布\"]/ancestor::button",
-      "descript": "v3.7.13 预览并发布（直接点击 button 元素而非 span，确保 click 事件触发）",
-      "ai_fallback": true,
-      "ai_intent": "找到头条发布按钮并点击",
-      "force": true,
-      "timeout": 5000
+      "type": "evaluate_edit",
+      "value": "var btn = null; var candidates = Array.from(document.querySelectorAll('button')); for (var i = 0; i < candidates.length; i++) { var b = candidates[i]; if (b.offsetParent === null) continue; var t = (b.innerText || '').trim(); if (t === '预览并发布' || t === '预览并定时发布' || t.indexOf('预览并发布') >= 0) { btn = b; break; } } if (!btn) { btn = Array.from(document.querySelectorAll('button')).find(function(b) { return b.offsetParent !== null && (b.className || '').indexOf('byte-btn-primary') >= 0 && ((b.innerText || '').trim().indexOf('发布') >= 0); }); } if (!btn) throw new Error('未找到预览并发布按钮'); btn.scrollIntoView({ block: 'center' }); var r = btn.getBoundingClientRect(); for (var attempt = 0; attempt < 3; attempt++) { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); await new Promise(function(res) { setTimeout(res, 1500); }); var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], [class*=modal], [class*=dialog], [class*=Modal], [class*=Dialog], .byte-modal, .byte-dialog'); var previewModal = Array.from(modals).find(function(m) { return m.offsetParent !== null && (m.innerText || '').indexOf('预览') >= 0; }); if (previewModal) { return 'preview_modal_opened: attempt=' + attempt; } } return 'preview_modal_not_opened_after_3_attempts';",
+      "descript": "v1.8.5 用 MouseEvent 点击预览并发布按钮（绕过热点推荐弹窗遮挡问题）+ 轮询等待预览弹窗出现（最多3次重试，每次点击后等1.5秒检查弹窗是否打开）",
+      "timeout": 15000
     },
     {
       "type": "timing",
-      "ms": 3000,
-      "descript": "v1.8.4 等待手机预览弹窗出现"
+      "ms": 2000,
+      "descript": "v1.8.5 等待预览弹窗内容完整加载"
     },
     {
       "type": "evaluate_edit",
-      "value": "for (var attempt = 0; attempt < 10; attempt++) { var target = null; var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog], [class*=Modal], [class*=Dialog], .byte-modal, .byte-dialog'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent === null) continue; var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t === '确认发布' || t === '确认' || t === '发布' || t === '确定' || t === '提交' || t === '确认发表' || t === '发表') { target = btns[j]; break; } } if (target) break; } if (!target) { var allBtns = document.querySelectorAll('button'); for (var k = 0; k < allBtns.length; k++) { var b = allBtns[k]; if (b.offsetParent === null) continue; var bt = (b.innerText || '').trim(); if (bt === '确认发布' || bt === '确认' || bt === '确定' || bt === '提交' || bt === '确认发表' || bt === '发表') { target = b; break; } } } if (target) { target.scrollIntoView({ block: 'center' }); var r = target.getBoundingClientRect(); target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); return 'clicked: ' + (target.innerText || '').trim() + ' (attempt=' + attempt + ')'; } var previewModal = Array.from(modals).find(function(m) { return (m.innerText || '').indexOf('预览') >= 0; }); if (!previewModal) { return 'no_preview_modal'; } await new Promise(function(res) { setTimeout(res, 1000); }); } return 'no_confirm_button_after_10s';",
-      "descript": "v1.8.4 轮询等待预览弹窗的确认发布按钮出现（最多10秒，每秒检查一次），找到后用 MouseEvent 点击（修复按钮异步加载导致找不到的问题）",
-      "is_try": true,
+      "value": "for (var attempt = 0; attempt < 10; attempt++) { var target = null; var modals = document.querySelectorAll('.byte-modal__content, [role=dialog], .modal-content, .bytedance-modal, .byte-drawer, [class*=modal], [class*=dialog], [class*=Modal], [class*=Dialog], .byte-modal, .byte-dialog'); for (var i = 0; i < modals.length; i++) { var m = modals[i]; if (m.offsetParent === null) continue; var btns = m.querySelectorAll('button'); for (var j = 0; j < btns.length; j++) { var t = (btns[j].innerText || '').trim(); if (t === '确认发布' || t === '确认' || t === '发布' || t === '确定' || t === '提交' || t === '确认发表' || t === '发表') { target = btns[j]; break; } } if (target) break; } if (!target) { var allBtns = document.querySelectorAll('button'); for (var k = 0; k < allBtns.length; k++) { var b = allBtns[k]; if (b.offsetParent === null) continue; var bt = (b.innerText || '').trim(); if (bt === '确认发布' || bt === '确认' || bt === '确定' || bt === '提交' || bt === '确认发表' || bt === '发表') { target = b; break; } } } if (target) { target.scrollIntoView({ block: 'center' }); var r = target.getBoundingClientRect(); target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); return 'clicked: ' + (target.innerText || '').trim() + ' (attempt=' + attempt + ')'; } await new Promise(function(res) { setTimeout(res, 1000); }); } throw new Error('预览弹窗内未找到确认发布按钮（轮询10秒）');",
+      "descript": "v1.8.5 轮询等待预览弹窗的确认发布按钮出现（最多10秒，每秒检查一次），找到后用 MouseEvent 点击；找不到则抛错（不再静默返回）",
       "timeout": 15000
     },
     {
