@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.8.7",
-  "description": "企鹅号图文发布流程（v1.8.7：自主声明改用 evaluate_edit标记+Playwright click 点击，修复 MouseEvent isTrusted=false 不触发 React 受控组件 onChange 的问题）",
+  "version": "1.8.8",
+  "description": "企鹅号图文发布流程（v1.8.8：自主声明设置移到点击发布按钮之后——企鹅号在点击发布后才弹出自主声明选择弹窗，之前所有版本都在发布前设置导致找不到入口）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -82,44 +82,32 @@
       "else_list": []
     },
     {
+      "type": "click",
+      "selector": "//button[contains(@class,'omui-button--primary') and text()='发布'] | //button[contains(@class,'omui-button--primary') and not(contains(text(),'定时')) and not(contains(text(),'草稿'))]",
+      "descript": "v1.8.8 点击发布按钮（自主声明弹窗在点击后才弹出）",
+      "timeout": 8000,
+      "force": true
+    },
+    {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "v1.8.8 等待自主声明弹窗弹出（企鹅号在点击发布后才弹出自主声明选择）"
+    },
+    {
       "type": "branch",
-      "condition": "var bt = document.body.innerText || ''; bt.indexOf('请选择自主声明') >= 0 || bt.indexOf('添加内容自主声明') >= 0 || bt.indexOf('修改声明') >= 0;",
-      "descript": "v1.8.7 检测是否需要设置自主声明（页面提示'请选择自主声明'或存在'添加内容自主声明/修改声明'按钮）",
+      "condition": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var bodyText = document.body.innerText || ''; var hasHint = bodyText.indexOf('请选择自主声明') >= 0 || bodyText.indexOf('请勾选自主声明') >= 0; var hasDialog = dialogs.some(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }); hasHint || hasDialog;",
+      "descript": "v1.8.8 检测点击发布后是否弹出自主声明弹窗（或页面提示'请选择/勾选自主声明'）",
       "branch_steps": [
         {
           "type": "evaluate_edit",
-          "value": "var candidates = Array.from(document.querySelectorAll('button.omui-button--dashed, button')); var addBtn = candidates.find(function(b) { var t = (b.innerText || '').trim(); return t.indexOf('添加内容自主声明') >= 0 || t === '修改声明' || (t.indexOf('自主声明') >= 0 && t.indexOf('请选择') < 0); }); if (!addBtn) return 'no_add_button'; document.querySelectorAll('[data-publish-target]').forEach(function(el) { el.removeAttribute('data-publish-target'); }); addBtn.setAttribute('data-publish-target', 'open_declaration'); addBtn.scrollIntoView({ block: 'center' }); return 'marked: ' + (addBtn.innerText || '').trim();",
-          "descript": "v1.8.7 定位并标记'添加内容自主声明'按钮（用data-publish-target属性，供Playwright click定位）",
-          "timeout": 5000
-        },
-        {
-          "type": "click",
-          "selector": "[data-publish-target='open_declaration']",
-          "descript": "v1.8.7 用Playwright click点击'添加内容自主声明'按钮（真实鼠标事件isTrusted=true触发React onClick，修复MouseEvent isTrusted=false不触发弹窗的问题）",
-          "force": true,
-          "timeout": 8000
-        },
-        {
-          "type": "wait_for_selector",
-          "selector": ".omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]",
-          "descript": "等待自主声明弹窗出现",
-          "timeout": 8000
-        },
-        {
-          "type": "timing",
-          "ms": 1000,
-          "descript": "等待弹窗内容加载"
-        },
-        {
-          "type": "evaluate_edit",
-          "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs.find(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }) || dialogs[0]; if (!dialog) throw new Error('自主声明弹窗未打开'); document.querySelectorAll('[data-publish-target=\"no_label\"]').forEach(function(el) { el.removeAttribute('data-publish-target'); }); var allElements = Array.from(dialog.querySelectorAll('*')); var noLabel = null; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; if (el.offsetParent === null && el.tagName !== 'INPUT') continue; var t = (el.innerText || el.value || '').trim(); if (t === '无需标注' || (t.indexOf('无需标注') >= 0 && t.length < 20)) { noLabel = el; break; } } if (!noLabel) throw new Error('弹窗内未找到无需标注选项，弹窗文本前200字: ' + (dialog.innerText || '').slice(0, 200)); var clickTarget = noLabel; for (var p = 0; p < 5; p++) { var parent = noLabel.parentElement; if (!parent || parent === dialog) break; var pt = (parent.innerText || '').trim(); if (pt.indexOf('无需标注') >= 0 && pt.length < 30) { clickTarget = parent; break; } noLabel = parent; } clickTarget.setAttribute('data-publish-target', 'no_label'); clickTarget.scrollIntoView({ block: 'center' }); return 'marked: ' + clickTarget.tagName + ' (text=' + (clickTarget.innerText || '').trim().slice(0, 30) + ')';",
-          "descript": "v1.8.7 定位并标记'无需标注'选项（用data-publish-target属性，供Playwright click定位）",
+          "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs.find(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }) || dialogs[0]; if (!dialog) { var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') >= 0 || bodyText.indexOf('请勾选自主声明') >= 0) { var hint = Array.from(document.querySelectorAll('*')).find(function(el) { var t = (el.innerText || '').trim(); return (t === '请选择自主声明' || t === '请勾选自主声明') && el.offsetParent !== null && el.children.length === 0; }); if (hint) { hint.scrollIntoView({ block: 'center' }); document.querySelectorAll('[data-publish-target=\"open_declaration\"]').forEach(function(el) { el.removeAttribute('data-publish-target'); }); hint.setAttribute('data-publish-target', 'open_declaration'); return 'marked_hint: ' + hint.tagName; } return 'hint_found_but_no_clickable'; } throw new Error('自主声明提示存在但未找到弹窗或可点击入口'); } document.querySelectorAll('[data-publish-target=\"no_label\"]').forEach(function(el) { el.removeAttribute('data-publish-target'); }); var allElements = Array.from(dialog.querySelectorAll('*')); var noLabel = null; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; if (el.offsetParent === null && el.tagName !== 'INPUT') continue; var t = (el.innerText || el.value || '').trim(); if (t === '无需标注' || (t.indexOf('无需标注') >= 0 && t.length < 20)) { noLabel = el; break; } } if (!noLabel) throw new Error('弹窗内未找到无需标注选项，弹窗文本前300字: ' + (dialog.innerText || '').slice(0, 300)); var clickTarget = noLabel; for (var p = 0; p < 5; p++) { var parent = noLabel.parentElement; if (!parent || parent === dialog) break; var pt = (parent.innerText || '').trim(); if (pt.indexOf('无需标注') >= 0 && pt.length < 30) { clickTarget = parent; break; } noLabel = parent; } clickTarget.setAttribute('data-publish-target', 'no_label'); clickTarget.scrollIntoView({ block: 'center' }); return 'marked: ' + clickTarget.tagName + ' (text=' + (clickTarget.innerText || '').trim().slice(0, 30) + ')';",
+          "descript": "v1.8.8 定位自主声明弹窗并标记'无需标注'选项（弹窗在点击发布后才弹出）",
           "timeout": 5000
         },
         {
           "type": "click",
           "selector": "[data-publish-target='no_label']",
-          "descript": "v1.8.7 用Playwright click点击'无需标注'选项（真实鼠标事件isTrusted=true触发React onChange，修复受控radio/checkbox不响应MouseEvent的问题）",
+          "descript": "v1.8.8 用Playwright click点击'无需标注'选项",
           "force": true,
           "timeout": 5000
         },
@@ -130,37 +118,24 @@
         },
         {
           "type": "evaluate_edit",
-          "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs[0]; if (!dialog) throw new Error('自主声明弹窗已关闭，无法点击确认'); document.querySelectorAll('[data-publish-target=\"confirm\"]').forEach(function(el) { el.removeAttribute('data-publish-target'); }); var btn = Array.from(dialog.querySelectorAll('button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (!btn) throw new Error('弹窗内未找到确认按钮，弹窗按钮列表: ' + Array.from(dialog.querySelectorAll('button')).map(function(b) { return (b.innerText || '').trim(); }).join('|')); btn.setAttribute('data-publish-target', 'confirm'); btn.scrollIntoView({ block: 'center' }); return 'marked_confirm: ' + btn.tagName + ' (text=' + (btn.innerText || '').trim() + ')';",
-          "descript": "v1.8.7 定位并标记确认按钮（带诊断信息，找不到时返回弹窗内所有按钮文本）",
+          "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs[0]; if (!dialog) throw new Error('自主声明弹窗已关闭，无法点击确认'); document.querySelectorAll('[data-publish-target=\"confirm\"]').forEach(function(el) { el.removeAttribute('data-publish-target'); }); var btn = Array.from(dialog.querySelectorAll('button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交' || t === '发布'; }); if (!btn) throw new Error('弹窗内未找到确认按钮，弹窗按钮列表: ' + Array.from(dialog.querySelectorAll('button')).map(function(b) { return (b.innerText || '').trim(); }).join('|')); btn.setAttribute('data-publish-target', 'confirm'); btn.scrollIntoView({ block: 'center' }); return 'marked_confirm: ' + btn.tagName + ' (text=' + (btn.innerText || '').trim() + ')';",
+          "descript": "v1.8.8 定位并标记确认按钮",
           "timeout": 3000
         },
         {
           "type": "click",
           "selector": "[data-publish-target='confirm']",
-          "descript": "v1.8.7 用Playwright click点击确认按钮提交自主声明（真实鼠标事件触发React表单提交）",
+          "descript": "v1.8.8 用Playwright click点击确认按钮提交自主声明",
           "force": true,
           "timeout": 5000
         },
         {
           "type": "timing",
           "ms": 2000,
-          "descript": "v1.8.7 等待自主声明弹窗关闭和状态更新"
-        },
-        {
-          "type": "evaluate_edit",
-          "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') >= 0) { throw new Error('自主声明设置后页面仍提示\"请选择自主声明\"，设置未生效（v1.8.7 已用Playwright click真实点击无需标注+确认）'); } return 'declaration_set_ok';",
-          "descript": "v1.8.7 验证自主声明设置成功（页面不再提示'请选择自主声明'）",
-          "timeout": 3000
+          "descript": "v1.8.8 等待自主声明提交完成"
         }
       ],
       "else_list": []
-    },
-    {
-      "type": "click",
-      "selector": "//button[contains(@class,'omui-button--primary') and text()='发布'] | //button[contains(@class,'omui-button--primary') and not(contains(text(),'定时')) and not(contains(text(),'草稿'))]",
-      "descript": "点击发布按钮（排除定时发布按钮）",
-      "timeout": 8000,
-      "force": true
     },
     {
       "type": "timing",
