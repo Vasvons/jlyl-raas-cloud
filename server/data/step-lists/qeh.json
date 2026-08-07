@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.8.3",
-  "description": "企鹅号图文发布流程（v1.8.3：自主声明确认按钮改用带坐标 MouseEvent 触发 React 事件 + 设置后验证页面不再提示'请选择自主声明'）",
+  "version": "1.8.4",
+  "description": "企鹅号图文发布流程（v1.8.4：自主声明弹窗先显式点击'无需标注'单选项再确认，不依赖默认选中状态）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -94,19 +94,19 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [class*=Dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs[0]; if (!dialog) throw new Error('自主声明弹窗已关闭或不存在'); var confirmBtn = Array.from(dialog.querySelectorAll('button.omui-button--primary, button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (!confirmBtn) throw new Error('弹窗内未找到确认按钮'); confirmBtn.scrollIntoView({ block: 'center' }); var r = confirmBtn.getBoundingClientRect(); confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); return 'confirmed';",
-      "descript": "v1.8.3 点击弹窗确认按钮（改用带坐标 MouseEvent 触发 React 事件，修复 .click() 不触发导致自主声明未提交；默认\"无需标注\"已选中，直接确认最稳妥）",
-      "timeout": 5000
+      "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [class*=Dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs.find(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }) || dialogs[0]; if (!dialog) throw new Error('自主声明弹窗已关闭或不存在'); var allLabels = Array.from(dialog.querySelectorAll('label, .omui-radio, .omui-radio__label, [class*=radio], [class*=Radio], [role=radio], .omui-checkbox, [class*=checkbox], [class*=Checkbox]')); var noLabel = null; for (var i = 0; i < allLabels.length; i++) { var t = (allLabels[i].innerText || '').trim(); if (t.indexOf('无需标注') >= 0) { noLabel = allLabels[i]; break; } } if (noLabel) { noLabel.scrollIntoView({ block: 'center' }); var r0 = noLabel.getBoundingClientRect(); noLabel.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r0.x + r0.width / 2, clientY: r0.y + r0.height / 2 })); await new Promise(function(res) { setTimeout(res, 600); }); } var confirmBtn = Array.from(dialog.querySelectorAll('button.omui-button--primary, button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (!confirmBtn) throw new Error('弹窗内未找到确认按钮'); confirmBtn.scrollIntoView({ block: 'center' }); var r = confirmBtn.getBoundingClientRect(); confirmBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 })); return noLabel ? 'selected_no_mark_and_confirmed' : 'confirmed_no_label_found';",
+      "descript": "v1.8.4 先显式点击'无需标注'单选项（不依赖默认选中状态，确保 React state 同步），等待 600ms 后再点击确认按钮（带坐标 MouseEvent）",
+      "timeout": 8000
     },
     {
       "type": "timing",
-      "ms": 1500,
-      "descript": "v1.8.3 等待自主声明弹窗关闭和状态更新"
+      "ms": 2000,
+      "descript": "v1.8.4 等待自主声明弹窗关闭和状态更新"
     },
     {
       "type": "evaluate_edit",
-      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') >= 0) { throw new Error('自主声明设置后页面仍提示\"请选择自主声明\"，设置未生效'); } return 'declaration_set_ok';",
-      "descript": "v1.8.3 验证自主声明设置成功（页面不再提示'请选择自主声明'，若仍提示则抛错避免发布按钮空点击）",
+      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') >= 0) { throw new Error('自主声明设置后页面仍提示\"请选择自主声明\"，设置未生效（v1.8.4 已显式选择无需标注+确认）'); } return 'declaration_set_ok';",
+      "descript": "v1.8.4 验证自主声明设置成功（页面不再提示'请选择自主声明'，若仍提示则抛错避免发布按钮空点击）",
       "timeout": 3000
     },
     {
