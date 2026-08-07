@@ -81,7 +81,11 @@ export function getAntiDetectionArgs(): string[] {
     // === 沙箱/安全（容器友好 + 避免权限问题） ===
     '--no-sandbox',
     '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
+    // 注意：不再传 --disable-dev-shm-usage。
+    //   docker-compose.yml 已给 auto-publish-worker 挂载 shm_size: 1g（/dev/shm）。
+    //   若再加 --disable-dev-shm-usage，Chromium 会忽略 /dev/shm，把共享内存挤进物理 RAM，
+    //   与 mem_limit 3g 抢额度，导致微信渲染进程 OOM（Page crashed）。
+    //   删除该 flag 后共享内存走专用 1g /dev/shm，给渲染进程留足 RAM 余量。
 
     // === GPU/渲染（兼容性 + 稳定性） ===
     '--disable-gpu',
