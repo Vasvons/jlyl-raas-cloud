@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.9.6",
-  "description": "企鹅号图文发布流程（v1.9.6：发布按钮改用Playwright click+发布成功检测中检测到请选择自主声明时重新设置）",
+  "version": "1.9.8",
+  "description": "企鹅号图文发布流程（v1.9.8：发布按钮恢复用element.click()——v1.9.6改Playwright click反而触发不了OmUI的onClick，与头条号同类问题）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -89,15 +89,8 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var btns = Array.from(document.querySelectorAll('button')); var publishBtn = btns.find(function(b) { var t = (b.innerText || '').trim(); return t === '发布' && b.offsetParent !== null; }); if (!publishBtn) throw new Error('未找到发布按钮，页面按钮列表: ' + btns.map(function(b) { return (b.innerText || '').trim(); }).join('|')); publishBtn.scrollIntoView({ block: 'center' }); await new Promise(function(r) { setTimeout(r, 300); }); document.querySelectorAll('[data-publish-target=\"publish_btn\"]').forEach(function(el) { el.removeAttribute('data-publish-target'); }); publishBtn.setAttribute('data-publish-target', 'publish_btn'); return 'marked_publish';",
-      "descript": "v1.9.6 标记发布按钮（用data-publish-target属性，供Playwright click定位）",
-      "timeout": 5000
-    },
-    {
-      "type": "click",
-      "selector": "[data-publish-target='publish_btn']",
-      "descript": "v1.9.6 用Playwright click点击发布按钮（element.click()可能不触发OmUI组件库的onClick）",
-      "force": true,
+      "value": "var btns = Array.from(document.querySelectorAll('button')); var publishBtn = btns.find(function(b) { var t = (b.innerText || '').trim(); return t === '发布' && b.offsetParent !== null; }); if (!publishBtn) throw new Error('未找到发布按钮，页面按钮列表: ' + btns.map(function(b) { return (b.innerText || '').trim(); }).join('|')); publishBtn.scrollIntoView({ block: 'center' }); await new Promise(function(r) { setTimeout(r, 300); }); publishBtn.click(); return 'clicked_publish';",
+      "descript": "v1.9.8 用 element.click() 点击发布按钮（v1.9.6 改 Playwright click 反而触发不了 OmUI 的 onClick，与头条号同类问题，恢复 element.click()）",
       "timeout": 5000
     },
     {
