@@ -1,7 +1,7 @@
 {
   "platform": "tt",
-  "version": "1.9.4",
-  "description": "今日头条图文发布流程（v1.9.4：预览并发布按钮改用Playwright click（element.click()可能不触发字节跳动组件库的onClick），等待预览弹窗出现后再查找确认发布按钮）",
+  "version": "1.9.5",
+  "description": "今日头条图文发布流程（v1.9.5：点击预览并发布按钮前先关闭页面上的预览弹窗/抽屉，避免遮挡导致点击无效）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
   "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
@@ -116,6 +116,18 @@
       "descript": "v1.8.6 用CSS隐藏AI创作助手抽屉（该抽屉常驻右侧遮挡底部发布按钮，且没有关闭按钮；用 display:none 彻底移除遮挡）",
       "is_try": true,
       "timeout": 2000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var closed = []; var drawers = Array.from(document.querySelectorAll('.byte-drawer, [class*=drawer], [class*=Drawer]')).filter(function(d) { return d.offsetParent !== null; }); for (var i = 0; i < drawers.length; i++) { var d = drawers[i]; var closeBtn = d.querySelector('.byte-drawer-close, .byte-icon-close, [class*=close], button[aria-label=close], [title*=关闭]'); if (closeBtn && closeBtn.offsetParent !== null) { closeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); closed.push('drawer_close_btn'); } else { d.style.display = 'none'; closed.push('drawer_hide'); } } var modals = Array.from(document.querySelectorAll('.byte-modal, [role=dialog], [class*=modal], [class*=Modal]')).filter(function(m) { return m.offsetParent !== null; }); for (var j = 0; j < modals.length; j++) { var m = modals[j]; var mClose = m.querySelector('.byte-modal-close, .byte-icon-close, [class*=close], button[aria-label=close]'); if (mClose && mClose.offsetParent !== null) { mClose.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); closed.push('modal_close_btn'); } } document.body.style.overflow = ''; return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no_preview_drawer';",
+      "descript": "v1.9.5 关闭页面上的预览弹窗/抽屉（诊断显示[弹窗][\"预览\"]遮挡预览并发布按钮，先关闭所有drawer和modal）",
+      "is_try": true,
+      "timeout": 3000
+    },
+    {
+      "type": "timing",
+      "ms": 1000,
+      "descript": "v1.9.5 等待预览弹窗/抽屉关闭"
     },
     {
       "type": "evaluate_edit",
