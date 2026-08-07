@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.9.1",
-  "description": "企鹅号图文发布流程（v1.9.1：点击发布后用wait_for_selector等待弹窗+重试点击发布+直接在evaluate_edit中用element.click()完成自主声明操作）",
+  "version": "1.9.2",
+  "description": "企鹅号图文发布流程（v1.9.2：在点击发布前设置自主声明——点击'请选择自主声明'提示元素打开选择器，设置'无需标注'后再点击发布）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -83,29 +83,35 @@
     },
     {
       "type": "evaluate_edit",
-      "value": "var btns = Array.from(document.querySelectorAll('button')); var publishBtn = btns.find(function(b) { var t = (b.innerText || '').trim(); return t === '发布' && b.offsetParent !== null; }); if (!publishBtn) throw new Error('未找到发布按钮，页面按钮列表: ' + btns.map(function(b) { return (b.innerText || '').trim(); }).join('|')); publishBtn.scrollIntoView({ block: 'center' }); publishBtn.click(); return 'clicked_publish';",
-      "descript": "v1.9.1 用 element.click() 点击发布按钮（isTrusted=true 触发 React onClick）",
+      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') < 0) return 'no_declaration_needed'; var allElements = Array.from(document.querySelectorAll('*')); var declarationElements = []; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; if (el.offsetParent === null) continue; var t = (el.innerText || '').trim(); var cls = el.className || ''; var tag = el.tagName; if ((t.indexOf('自主声明') >= 0 || t.indexOf('声明内容') >= 0 || cls.indexOf('declaration') >= 0 || cls.indexOf('statement') >= 0) && el.children.length <= 3) { declarationElements.push(tag + '.' + cls + ': ' + t.slice(0, 50)); } } var hint = allElements.find(function(el) { var t = (el.innerText || '').trim(); return t === '请选择自主声明' && el.offsetParent !== null && el.children.length === 0; }); if (hint) { hint.scrollIntoView({ block: 'center' }); await new Promise(function(r) { setTimeout(r, 300); }); hint.click(); await new Promise(function(r) { setTimeout(r, 1500); }); return 'clicked_hint: ' + hint.tagName + '.' + (hint.className || '') + ' | diag: ' + declarationElements.slice(0, 5).join(' || '); } var selectEl = allElements.find(function(el) { return el.tagName === 'SELECT' && el.offsetParent !== null && ((el.innerText || '').indexOf('声明') >= 0 || (el.getAttribute('aria-label') || '').indexOf('声明') >= 0); }); if (selectEl) { selectEl.scrollIntoView({ block: 'center' }); selectEl.click(); await new Promise(function(r) { setTimeout(r, 1500); }); return 'clicked_select: ' + selectEl.tagName; } var clickableHints = allElements.filter(function(el) { if (el.offsetParent === null) return false; var t = (el.innerText || '').trim(); return (t.indexOf('自主声明') >= 0 || t.indexOf('声明内容') >= 0) && t.length < 30 && el.children.length <= 2; }); if (clickableHints.length > 0) { clickableHints[0].scrollIntoView({ block: 'center' }); await new Promise(function(r) { setTimeout(r, 300); }); clickableHints[0].click(); await new Promise(function(r) { setTimeout(r, 1500); }); return 'clicked_hint_alt: ' + clickableHints[0].tagName + '.' + (clickableHints[0].className || '') + ' | diag: ' + declarationElements.slice(0, 5).join(' || '); } throw new Error('未找到自主声明设置入口，诊断元素列表: ' + declarationElements.join(' | '));",
+      "descript": "v1.9.2 点击'请选择自主声明'提示元素打开选择器（含诊断信息：输出所有与声明相关的元素）",
       "timeout": 5000
     },
     {
-      "type": "evaluate_edit",
-      "value": "for (var i = 0; i < 15; i++) { var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var hasDeclarationDialog = dialogs.some(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }); if (hasDeclarationDialog) return 'declaration_dialog_appeared'; var bodyText = document.body.innerText || ''; if (bodyText.indexOf('articleManage') >= 0 || window.location.href.indexOf('articleManage') >= 0) return 'url_changed'; var hasSuccess = bodyText.indexOf('发布成功') >= 0 || bodyText.indexOf('已发布') >= 0; if (hasSuccess) return 'success'; if (i > 2) { var btns = Array.from(document.querySelectorAll('button')); var publishBtn = btns.find(function(b) { var t = (b.innerText || '').trim(); return t === '发布' && b.offsetParent !== null; }); if (!publishBtn && !bodyText.includes('发布') && !bodyText.includes('定时发布')) return 'publish_btn_disappeared'; } await new Promise(function(r) { setTimeout(r, 1000); }); } return 'no_dialog_after_15s';",
-      "descript": "v1.9.1 轮询等待自主声明弹窗出现（最多15秒，每秒检查一次；若URL已跳转或发布按钮消失则视为成功）",
-      "timeout": 20000
-    },
-    {
       "type": "branch",
-      "condition": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); dialogs.some(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; });",
-      "descript": "v1.9.1 检测自主声明弹窗是否出现",
+      "condition": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal], .omui-select-dropdown, [class*=dropdown], [class*=popover], [class*=options]')).filter(function(d) { return d.offsetParent !== null; }); var hasDeclDialog = dialogs.some(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }); var hasOptions = Array.from(document.querySelectorAll('[class*=option], [class*=item], li, [role=option]')).some(function(el) { if (el.offsetParent === null) return false; var t = (el.innerText || '').trim(); return t.indexOf('无需标注') >= 0; }); hasDeclDialog || hasOptions;",
+      "descript": "v1.9.2 检测自主声明选择器是否打开（弹窗/下拉选项/option元素）",
       "branch_steps": [
         {
           "type": "evaluate_edit",
-          "value": "var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs.find(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }) || dialogs[0]; if (!dialog) throw new Error('自主声明弹窗未出现，页面文本前300字: ' + (document.body.innerText || '').slice(0, 300)); var allElements = Array.from(dialog.querySelectorAll('*')); var noLabel = null; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; if (el.offsetParent === null && el.tagName !== 'INPUT') continue; var t = (el.innerText || el.value || '').trim(); if (t === '无需标注' || (t.indexOf('无需标注') >= 0 && t.length < 20)) { noLabel = el; break; } } if (!noLabel) throw new Error('弹窗内未找到无需标注选项，弹窗文本前300字: ' + (dialog.innerText || '').slice(0, 300)); var clickTarget = noLabel; for (var p = 0; p < 5; p++) { var parent = noLabel.parentElement; if (!parent || parent === dialog) break; var pt = (parent.innerText || '').trim(); if (pt.indexOf('无需标注') >= 0 && pt.length < 30) { clickTarget = parent; break; } noLabel = parent; } clickTarget.scrollIntoView({ block: 'center' }); await new Promise(function(res) { setTimeout(res, 300); }); clickTarget.click(); await new Promise(function(res) { setTimeout(res, 1000); }); var confirmBtn = Array.from(dialog.querySelectorAll('button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交' || t === '发布'; }); if (!confirmBtn) throw new Error('弹窗内未找到确认按钮，弹窗按钮列表: ' + Array.from(dialog.querySelectorAll('button')).map(function(b) { return (b.innerText || '').trim(); }).join('|')); confirmBtn.scrollIntoView({ block: 'center' }); await new Promise(function(res) { setTimeout(res, 300); }); confirmBtn.click(); await new Promise(function(res) { setTimeout(res, 2000); }); return 'declaration_set_ok';",
-          "descript": "v1.9.1 在弹窗内用 element.click() 点击无需标注选项和确认按钮（element.click() 的 isTrusted=true 能触发 React onChange/onClick）",
-          "timeout": 10000
+          "value": "var containers = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal], .omui-select-dropdown, [class*=dropdown], [class*=popover], [class*=options]')).filter(function(d) { return d.offsetParent !== null; }); var container = containers.find(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }) || containers[0]; var searchIn = container || document; var allElements = Array.from(searchIn.querySelectorAll('*')); var noLabel = null; for (var i = 0; i < allElements.length; i++) { var el = allElements[i]; if (el.offsetParent === null) continue; var t = (el.innerText || el.value || '').trim(); if (t === '无需标注' || (t.indexOf('无需标注') >= 0 && t.length < 20)) { noLabel = el; break; } } if (!noLabel) { var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') < 0) return 'declaration_already_set'; throw new Error('选择器中未找到无需标注选项，容器文本前300字: ' + ((container && container.innerText) || bodyText).slice(0, 300)); } var clickTarget = noLabel; if (container) { for (var p = 0; p < 5; p++) { var parent = noLabel.parentElement; if (!parent || parent === container) break; var pt = (parent.innerText || '').trim(); if (pt.indexOf('无需标注') >= 0 && pt.length < 30) { clickTarget = parent; break; } noLabel = parent; } } clickTarget.scrollIntoView({ block: 'center' }); await new Promise(function(res) { setTimeout(res, 300); }); clickTarget.click(); await new Promise(function(res) { setTimeout(res, 1500); }); var bodyText2 = document.body.innerText || ''; if (bodyText2.indexOf('请选择自主声明') >= 0) { var dialogs = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal]')).filter(function(d) { return d.offsetParent !== null; }); var dialog = dialogs.find(function(d) { var t = d.innerText || ''; return t.indexOf('声明内容') >= 0 || t.indexOf('取材网络') >= 0 || t.indexOf('无需标注') >= 0 || t.indexOf('自主声明') >= 0; }); if (dialog) { var confirmBtn = Array.from(dialog.querySelectorAll('button')).find(function(b) { var t = (b.innerText || '').trim(); return t === '确认' || t === '确定' || t === '提交'; }); if (confirmBtn) { confirmBtn.scrollIntoView({ block: 'center' }); await new Promise(function(res) { setTimeout(res, 300); }); confirmBtn.click(); await new Promise(function(res) { setTimeout(res, 1500); }); } } } return 'declaration_set_ok';",
+          "descript": "v1.9.2 在选择器中查找并点击'无需标注'选项，如有确认按钮则点击确认",
+          "timeout": 8000
         }
       ],
       "else_list": []
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var bodyText = document.body.innerText || ''; if (bodyText.indexOf('请选择自主声明') >= 0) { throw new Error('自主声明设置后页面仍提示\"请选择自主声明\"，设置未生效'); } return 'declaration_ok';",
+      "descript": "v1.9.2 验证自主声明设置成功",
+      "timeout": 3000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var btns = Array.from(document.querySelectorAll('button')); var publishBtn = btns.find(function(b) { var t = (b.innerText || '').trim(); return t === '发布' && b.offsetParent !== null; }); if (!publishBtn) throw new Error('未找到发布按钮，页面按钮列表: ' + btns.map(function(b) { return (b.innerText || '').trim(); }).join('|')); publishBtn.scrollIntoView({ block: 'center' }); publishBtn.click(); return 'clicked_publish';",
+      "descript": "v1.9.1 用 element.click() 点击发布按钮（isTrusted=true 触发 React onClick）",
+      "timeout": 5000
     },
     {
       "type": "evaluate_edit",
