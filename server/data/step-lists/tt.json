@@ -1,7 +1,7 @@
 {
   "platform": "tt",
-  "version": "1.9.5",
-  "description": "今日头条图文发布流程（v1.9.5：点击预览并发布按钮前先关闭页面上的预览弹窗/抽屉，避免遮挡导致点击无效）",
+  "version": "1.9.6",
+  "description": "今日头条图文发布流程（v1.9.6：点击预览并发布按钮后增加诊断步骤，输出点击后页面状态，定位为什么没有弹出预览弹窗）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
   "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
@@ -138,14 +138,20 @@
     {
       "type": "click",
       "selector": "[data-publish-target='preview_publish']",
-      "descript": "v1.9.4 用Playwright click点击预览并发布按钮（element.click()可能不触发字节跳动组件库的onClick，改用Playwright真实鼠标事件）",
+      "descript": "v1.9.4 用Playwright click点击预览并发布按钮",
       "force": true,
       "timeout": 10000
     },
     {
       "type": "timing",
-      "ms": 3000,
-      "descript": "v1.9.1 等待预览弹窗内容完整加载（增加到3秒）"
+      "ms": 2000,
+      "descript": "v1.9.6 等待2秒后诊断点击效果"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var diag = { url: window.location.href, btnCount: document.querySelectorAll('button').length, previewBtn: null, confirmBtn: null, modals: [], toasts: [], bodyText: (document.body.innerText || '').slice(0, 300) }; var allBtns = Array.from(document.querySelectorAll('button')).filter(function(b) { return b.offsetParent !== null; }); for (var i = 0; i < allBtns.length; i++) { var t = (allBtns[i].innerText || '').trim(); if (t === '预览并发布' || t === '预览并定时发布') diag.previewBtn = { text: t, disabled: allBtns[i].disabled, rect: allBtns[i].getBoundingClientRect() }; if (t === '确认发布' || t === '确认' || t === '发布' || t === '确定') diag.confirmBtn = { text: t, disabled: allBtns[i].disabled, rect: allBtns[i].getBoundingClientRect() }; } var modals = Array.from(document.querySelectorAll('.byte-modal, [role=dialog], [class*=modal], [class*=dialog], [class*=drawer]')).filter(function(m) { return m.offsetParent !== null; }); diag.modals = modals.map(function(m) { return (m.innerText || '').slice(0, 100); }); var toasts = Array.from(document.querySelectorAll('[class*=toast], [class*=notification], [class*=message]')).filter(function(t) { return t.offsetParent !== null; }); diag.toasts = toasts.map(function(t) { return (t.innerText || '').slice(0, 100); }); return JSON.stringify(diag);",
+      "descript": "v1.9.6 诊断点击预览并发布按钮后的页面状态（按钮是否还在、是否有预览弹窗、是否有toast提示）",
+      "timeout": 3000
     },
     {
       "type": "evaluate_edit",
