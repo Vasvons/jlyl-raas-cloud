@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.8.8",
-  "description": "企鹅号图文发布流程（v1.8.8：自主声明设置移到点击发布按钮之后——企鹅号在点击发布后才弹出自主声明选择弹窗，之前所有版本都在发布前设置导致找不到入口）",
+  "version": "1.9.0",
+  "description": "企鹅号图文发布流程（v1.9.0：自主声明设置移到点击发布按钮之后——企鹅号在点击发布后才弹出自主声明选择弹窗，之前所有版本都在发布前设置导致找不到入口。版本号跳到1.9.0确保覆盖守护进程修改的1.8.x版本）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",

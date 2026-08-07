@@ -1,7 +1,7 @@
 {
   "platform": "tt",
-  "version": "1.8.8",
-  "description": "今日头条图文发布流程（v1.8.8：增加 iframe 检查和诊断步骤，扩大按钮文本匹配范围，增加轮询时间到20秒）",
+  "version": "1.9.0",
+  "description": "今日头条图文发布流程（v1.9.0：增加 iframe 检查和诊断步骤，扩大按钮文本匹配范围，增加轮询时间到20秒。版本号跳到1.9.0确保覆盖守护进程修改的1.8.x版本）",
   "is_placeholder": false,
   "login_check_url": "https://mp.toutiao.com/profile_v4/graphic/publish",
   "login_check_selector": "textarea[placeholder*='标题'] | div[contenteditable='true']",
