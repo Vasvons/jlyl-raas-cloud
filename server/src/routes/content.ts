@@ -1772,7 +1772,7 @@ router.get('/articles/:id/compliance', async (req: Request, res: Response) => {
 router.put('/articles/:id/compliance', async (req: Request, res: Response) => {
   try {
     const { compliance_status } = req.body;
-    if (!['pending', 'passed', 'rewritten', 'failed'].includes(compliance_status)) {
+    if (!['pending', 'passed', 'rewritten', 'failed', 'manual_review'].includes(compliance_status)) {
       return res.status(400).json({ code: 400, message: 'compliance_status 取值非法' });
     }
     await updateArticleComplianceStatus(Number(req.params.id), compliance_status);

@@ -539,6 +539,15 @@ async function planArticleTopic(
 
 ${rulesBlock}
 
+### 选题与写作合规要求（必须遵守）
+1. 禁止使用绝对化用语："最""第一""唯一""国家级""顶级"等违反广告法的用语
+2. 禁止效果承诺："包治愈""100%成功""无痛""永不反弹""保证有效"等承诺性词汇
+3. 禁止虚假宣传：不编造资质、不虚构案例、不伪造数据
+4. 必须包含风险提示：文章末尾必须有"效果因人而异""具体方案请咨询专业医生/人士"等提示
+5. 优先选择科普类、知识分享类、风险提示类选题方向
+6. 客户品牌可以提及，但只做客观描述，不夸大宣传
+7. 对比不同方案时保持客观中立，不诋毁竞品
+
 ### 选题禁忌
 - 禁止选择涉及"最安全""100%成功""无痛""包治愈"等绝对化/承诺效果的方向
 - 禁止选择可能引发医疗纠纷或虚假宣传的方向
@@ -638,23 +647,35 @@ async function reviewAndRewriteArticle(
   };
   const platformName = PLATFORM_NAMES[platform] || platform;
 
-  /** AI 审查单次调用 */
-  async function reviewOnce(text: string, textTitle: string): Promise<{ compliant: boolean; issues: any[] }> {
+  /** AI 审查单次调用（v3.10.3：宽松审查模式，只查严重问题） */
+  async function reviewOnce(text: string, textTitle: string, strictMode: boolean = false): Promise<{ compliant: boolean; issues: any[] }> {
+    const strictness = strictMode
+      ? `请严格逐条检查规则，任何轻微问题都判定为不合规。`
+      : `请只检查会导致平台直接下架或封号的严重合规问题：
+- 绝对化用语（"最""第一""唯一""国家级"等违反广告法的用语）
+- 明确的效果承诺（"包治愈""100%成功""无痛""永不反弹"等）
+- 虚假宣传（编造不存在的资质、虚构案例、伪造数据）
+- 缺少法定风险提示（医美内容必须有"效果因人而异""咨询专业医生"等提示）
+- 违规类目（直接推广假冒伪劣产品、引导到非医疗机构等）
+
+对于以下情况不要判定为不合规：
+- 提到客户品牌名称（这是正常的品牌露出）
+- 描述产品/服务的客观特点（只要不是绝对化用语）
+- 行业科普知识（只要不涉及具体诊疗承诺）
+- 客观对比不同方案（只要不诋毁竞品）`;
+
     const messages = [
       {
         role: 'system',
-        content: `你是${platformName}内容合规审查专家。请严格按以下合规规则审查文章，判断是否能在该平台通过审核。
+        content: `你是${platformName}内容合规审查专家。请审查文章是否能在该平台通过审核。
 
-## 合规规则
+## 合规规则参考
 ${ruleContent}
 
-## 审查要求
-1. 逐条检查规则
-2. 检查是否存在绝对化用语、效果承诺、虚假宣传等问题
-3. 检查是否缺少必要的风险提示
-4. 返回严格的 JSON 格式
+## 审查标准
+${strictness}
 
-## 返回格式
+## 返回格式（必须是合法 JSON）
 {
   "compliant": true/false,
   "issues": [
@@ -728,27 +749,31 @@ ${JSON.stringify(issues, null, 2)}
     return result.content || originalContent;
   }
 
-  /** 降级重写（保守策略） */
+  /** 降级重写（保守策略，但保留客户品牌） */
   async function degradedRewrite(originalTopic: string): Promise<string> {
     const messages = [
       {
         role: 'system',
         content: `前两次改写均未通过合规审查，请以最保守的策略重写文章。
 
-## 降级策略
-1. 只保留医美科普知识，不提具体品牌名称、机构名称、价格
+## 降级策略（保留品牌但合规化）
+1. 保留客户品牌名称（来自企业信息），但只做客观描述，不夸大宣传
 2. 不使用任何绝对化用语（"最""第一""唯一"等）
-3. 不承诺任何治疗效果
-4. 必须在文章末尾包含风险提示：「以上内容仅供参考，具体治疗方案请咨询专业医生」
-5. 保持字数 ${targetWordCount}
-6. 保留原有 HTML 标签结构
+3. 不承诺任何治疗效果，不使用"包治愈""100%成功""无痛"等承诺性词汇
+4. 文章末尾必须包含风险提示：「以上内容仅供参考，具体治疗方案请咨询专业医生」
+5. 保留行业科普知识，以知识分享为主，品牌推荐为辅
+6. 保持字数 ${targetWordCount}
+7. 保留原有 HTML 标签结构
 
 ## 原文核心主题
-${originalTopic}`,
+${originalTopic}
+
+## 合规规则参考
+${ruleContent}`,
       },
       {
         role: 'user',
-        content: `请基于以上主题重新撰写一篇完全合规的科普文章。`,
+        content: `请基于以上主题重新撰写一篇完全合规的文章，保留客户品牌但用合规方式描述。`,
       },
     ];
 
@@ -763,10 +788,10 @@ ${originalTopic}`,
     return result.content || '';
   }
 
-  // ---- 审查流程开始 ----
+  // ---- 审查流程开始（v3.10.3：宽松审查 + 3次不通过降级为人工复核）----
 
-  // 第1次审查
-  let review1 = await reviewOnce(content, title);
+  // 第1次审查（宽松模式）
+  let review1 = await reviewOnce(content, title, false);
   if (review1.compliant) {
     return { content, title, complianceStatus: 'passed', complianceIssues: review1.issues };
   }
@@ -778,29 +803,31 @@ ${originalTopic}`,
     rewrittenContent = content;
   }
 
-  // 第2次审查
-  let review2 = await reviewOnce(rewrittenContent, title);
+  // 第2次审查（宽松模式）
+  let review2 = await reviewOnce(rewrittenContent, title, false);
   if (review2.compliant) {
     return { content: rewrittenContent, title, complianceStatus: 'rewritten', complianceIssues: review2.issues };
   }
   console.log(`[Compliance] 第2次审查不合规，降级重写: issues=${review2.issues.length}`);
 
-  // 降级重写
+  // 降级重写（保留客户品牌但合规化）
   let degradedContent = await degradedRewrite(topic);
   if (!degradedContent || degradedContent.trim() === '') {
-    // 降级重写返回空，保存原文标记失败
-    return { content, title, complianceStatus: 'failed', complianceIssues: review2.issues };
+    // 降级重写返回空，使用第1次改写的内容，标记为人工复核
+    console.log(`[Compliance] 降级重写返回空，使用改写内容标记人工复核`);
+    return { content: rewrittenContent, title, complianceStatus: 'manual_review', complianceIssues: review2.issues };
   }
 
-  // 第3次审查
-  let review3 = await reviewOnce(degradedContent, title);
+  // 第3次审查（宽松模式）
+  let review3 = await reviewOnce(degradedContent, title, false);
   if (review3.compliant) {
     return { content: degradedContent, title, complianceStatus: 'rewritten', complianceIssues: review3.issues };
   }
 
-  // 3次均不合规
-  console.log(`[Compliance] 3次审查均不合规，标记人工处理`);
-  return { content, title, complianceStatus: 'failed', complianceIssues: review3.issues };
+  // 3次均不合规：保存降级重写后的内容（已尽量合规），标记为人工复核而非失败
+  // v3.10.3 改进：不再标记 failed，而是 manual_review，文章可由人工确认后发布
+  console.log(`[Compliance] 3次审查均不合规，保存降级内容并标记人工复核`);
+  return { content: degradedContent, title, complianceStatus: 'manual_review', complianceIssues: review3.issues };
 }
 
 /**
