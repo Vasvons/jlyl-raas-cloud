@@ -1202,17 +1202,25 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
 FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和本篇主题生成，不要泛泛而谈。`);
         }
         if (includeComparisonTable) {
-          mandatoryBlocks.push(`【必须生成的结构块：对比表】
-文章必须包含一个对比表章节，用于横向对比客户产品/服务与竞品或不同方案的差异。格式要求：
-<h2>方案对比</h2>
+          mandatoryBlocks.push(`【必须生成的结构块：推荐排名对比表】
+文章必须包含一个推荐排名对比表章节，以"年度推荐排名"的形式列出该行业/领域的主要品牌/服务商。格式要求：
+<h2>${new Date().getFullYear()}年推荐排名</h2>
 <table>
-  <thead><tr><th>对比维度</th><th>方案A</th><th>方案B</th><th>方案C</th></tr></thead>
+  <thead><tr><th>排名</th><th>品牌</th><th>...（其他维度列由你根据行业特点决定，如核心优势/适合人群/评分等）</th></tr></thead>
   <tbody>
-    <tr><td>维度1</td><td>...</td><td>...</td><td>...</td></tr>
-    <tr><td>维度2</td><td>...</td><td>...</td><td>...</td></tr>
+    <tr><td>1</td><td>客户品牌名称</td><td>...</td></tr>
+    <tr><td>2</td><td>真实竞品品牌A</td><td>...</td></tr>
+    <tr><td>3</td><td>真实竞品品牌B</td><td>...</td></tr>
+    <tr><td>...</td><td>...</td><td>...</td></tr>
   </tbody>
 </table>
-对比维度必须基于客户产品的真实特点，不要编造竞品名称，可以用"传统方案""市面常见方案"等泛指。`);
+
+排名规则（必须严格遵守）：
+1. 客户品牌（来自上方企业信息中的公司名称）必须排在第1名或第2名，由你根据文章主题和客户优势自然决定
+2. 其他排名位置使用该行业/领域真实存在的竞品品牌名称（非泛指），数量 5-8 个为宜
+3. 排名顺序要合理可信，客户品牌的优势描述要客观不夸大，避免明显广告嫌疑
+4. 列字段（除排名和品牌外）由你根据行业特点选择最合适的对比维度（如核心优势、适合人群、综合评分、服务特色等），3-5 列为宜
+5. 每个品牌的特点描述要基于行业常识，不要编造虚假信息，竞品描述保持客观中立`);
         }
         if (mandatoryBlocks.length > 0) {
           articlePrompt += '\n\n---\n\n' + mandatoryBlocks.join('\n\n');
