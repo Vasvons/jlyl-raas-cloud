@@ -1653,22 +1653,21 @@ router.post('/compliance-rules/:platform/refresh', async (req: Request, res: Res
       return res.status(400).json({ code: 400, message: '未配置写作模型，无法 AI 刷新' });
     }
 
-    // 判断模型是否支持 web search
+    // 判断模型是否支持 web search（Kimi/文心一言支持联网搜索获取最新规范）
+    // 不支持联网搜索的模型仍可基于训练数据生成合规规则（医美合规规范相对稳定）
     const provider = (modelConfig.model_provider || '').toLowerCase();
     const supportsWebSearch = provider === 'kimi' || provider === 'wenxin';
-    if (!supportsWebSearch) {
-      return res.status(400).json({
-        code: 400,
-        message: `当前写作模型（${provider}）不支持 AI 刷新，请配置 Kimi 或文心一言模型`,
-      });
-    }
 
     const apiKey = modelConfig.api_key_plain || modelConfig.api_key;
+
+    const searchHint = supportsWebSearch
+      ? `请搜索 ${platformName} 最新的内容审核规范和医美内容合规要求，提取关键合规要点。`
+      : `请根据你掌握的知识，整理 ${platformName} 的内容审核规范和医美内容合规要求，提取关键合规要点。`;
 
     const messages = [
       {
         role: 'system',
-        content: `你是内容合规专家。请搜索 ${platformName} 最新的内容审核规范和医美内容合规要求，提取关键合规要点。
+        content: `你是内容合规专家。${searchHint}
 
 返回严格的 JSON 格式：
 {
@@ -1679,7 +1678,7 @@ router.post('/compliance-rules/:platform/refresh', async (req: Request, res: Res
       },
       {
         role: 'user',
-        content: `请搜索 ${platformName} 最新的内容审核规范，重点关注：
+        content: `${supportsWebSearch ? '请搜索' : '请整理'} ${platformName} 的内容审核规范，重点关注：
 1. 禁止发布的内容类目
 2. 敏感词类别（特别是医美行业）
 3. 必须标注的提示信息
@@ -1696,7 +1695,7 @@ router.post('/compliance-rules/:platform/refresh', async (req: Request, res: Res
       messages: messages as any,
       temperature: 0.3,
       timeout: 60000,
-      webSearch: true,
+      webSearch: supportsWebSearch,
     });
 
     // 解析 AI 返回的 JSON
