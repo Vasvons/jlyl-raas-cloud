@@ -1636,85 +1636,75 @@ router.post('/compliance-rules/:platform', async (req: Request, res: Response) =
   }
 });
 
-/** AI 刷新平台合规规则 */
-router.post('/compliance-rules/:platform/refresh', async (req: Request, res: Response) => {
+/** 爬取官方规则文档页面，提取正文存为 rule_content */
+router.post('/compliance-rules/:platform/crawl', async (req: Request, res: Response) => {
   try {
     const platform = req.params.platform;
-    const PLATFORM_NAMES: Record<string, string> = {
-      wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
-      js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
-      sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
-    };
-    const platformName = PLATFORM_NAMES[platform] || platform;
-
-    // 获取写作模型配置
-    const modelConfig = await getDefaultModelConfig(getUserId(req));
-    if (!modelConfig) {
-      return res.status(400).json({ code: 400, message: '未配置写作模型，无法 AI 刷新' });
+    const { url: docUrl } = req.body;
+    if (!docUrl || !/^https?:\/\//.test(docUrl)) {
+      return res.status(400).json({ code: 400, message: '请提供有效的官方规则文档 URL（http/https）' });
     }
 
-    // 判断模型是否支持 web search（Kimi/文心一言支持联网搜索获取最新规范）
-    // 不支持联网搜索的模型仍可基于训练数据生成合规规则（医美合规规范相对稳定）
-    const provider = (modelConfig.model_provider || '').toLowerCase();
-    const supportsWebSearch = provider === 'kimi' || provider === 'wenxin';
-
-    const apiKey = modelConfig.api_key_plain || modelConfig.api_key;
-
-    const searchHint = supportsWebSearch
-      ? `请搜索 ${platformName} 最新的内容审核规范和医美内容合规要求，提取关键合规要点。`
-      : `请根据你掌握的知识，整理 ${platformName} 的内容审核规范和医美内容合规要求，提取关键合规要点。`;
-
-    const messages = [
-      {
-        role: 'system',
-        content: `你是内容合规专家。${searchHint}
-
-返回严格的 JSON 格式：
-{
-  "rule_content": "结构化规则文本（包含禁止类目、敏感词类别、必须标注项等）",
-  "official_rule_url": "官方规则文档 URL",
-  "official_rule_title": "官方文档标题"
-}`,
+    // 用 axios 抓取页面 HTML
+    const axios = (await import('axios')).default;
+    const resp = await axios.get(docUrl, {
+      timeout: 15000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       },
-      {
-        role: 'user',
-        content: `${supportsWebSearch ? '请搜索' : '请整理'} ${platformName} 的内容审核规范，重点关注：
-1. 禁止发布的内容类目
-2. 敏感词类别（特别是医美行业）
-3. 必须标注的提示信息
-4. 医美行业的特殊要求
-
-返回 JSON 格式。`,
-      },
-    ];
-
-    const result = await chatCompletion({
-      baseUrl: modelConfig.base_url,
-      apiKey,
-      model: modelConfig.model_name,
-      messages: messages as any,
-      temperature: 0.3,
-      timeout: 60000,
-      webSearch: supportsWebSearch,
+      responseType: 'text',
     });
+    const html: string = typeof resp.data === 'string' ? resp.data : String(resp.data);
 
-    // 解析 AI 返回的 JSON
-    let parsed: any;
-    try {
-      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
-      parsed = JSON.parse(jsonMatch ? jsonMatch[0] : result.content);
-    } catch {
-      return res.status(500).json({ code: 500, message: 'AI 返回内容解析失败', raw: result.content.slice(0, 500) });
+    // 提取 <title> 作为 official_rule_title
+    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    const docTitle = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : docUrl;
+
+    // 清洗 HTML：去除 script/style/nav/header/footer/noscript 标签及其内容
+    let cleaned = html
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+      .replace(/<header[\s\S]*?<\/header>/gi, '')
+      .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+      .replace(/<!--[\s\S]*?-->/g, '');
+
+    // 去除所有 HTML 标签，保留文本
+    cleaned = cleaned.replace(/<[^>]+>/g, '\n');
+    // 解码常见 HTML 实体
+    cleaned = cleaned
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+    // 合并多余空行，去除行首尾空格
+    const lines = cleaned
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const ruleContent = lines.join('\n');
+
+    if (!ruleContent || ruleContent.length < 50) {
+      return res.status(500).json({ code: 500, message: '爬取到的正文内容过短，请检查 URL 是否正确，或手动填写规则内容' });
     }
+
+    // 截断过长内容（避免数据库存储过大，保留前 20000 字符）
+    const truncatedContent = ruleContent.length > 20000 ? ruleContent.slice(0, 20000) + '\n...(内容已截断)' : ruleContent;
 
     const rule = await refreshComplianceRule(platform, {
-      rule_content: parsed.rule_content,
-      official_rule_url: parsed.official_rule_url,
-      official_rule_title: parsed.official_rule_title,
+      rule_content: truncatedContent,
+      official_rule_url: docUrl,
+      official_rule_title: docTitle,
     });
     res.json({ code: 200, data: rule });
   } catch (err: any) {
-    res.status(500).json({ code: 500, message: err.message });
+    const msg = err?.code === 'ECONNABORTED' ? '请求超时，请检查 URL 是否可访问' : err.message || '爬取失败';
+    res.status(500).json({ code: 500, message: msg });
   }
 });
 
