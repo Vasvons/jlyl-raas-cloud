@@ -135,6 +135,13 @@ import {
   getBrandQueryKeywords,
   // v3.8.15：核心关键词查询（从 distillate_keyword 表，用户手动添加的种子词）
   getCoreKeywordsByUserId,
+  // v3.10：合规审查
+  getComplianceRules,
+  getComplianceRuleByPlatform,
+  upsertComplianceRule,
+  refreshComplianceRule,
+  deleteComplianceRule,
+  updateArticleComplianceStatus,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
@@ -875,7 +882,8 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     const callerUserId = getUserId(req);
     const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id, article_count,
             cover_image_mode, cover_image_id, illustration_count,
-            target_platforms, auto_generated, user_id, apply_aeo_suggestions } = req.body;
+            target_platforms, auto_generated, user_id, apply_aeo_suggestions,
+            enable_compliance_review } = req.body;
     // v2.0.9：管理员可通过 user_id 字段为客户创建任务（飞轮守护进程场景）
     // 非管理员调用时强制使用自己的 userId，防止越权
     let userId = callerUserId;
@@ -1083,6 +1091,10 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
       auto_generated: auto_generated === true,
       aeo_context: aeoContext,
     });
+    // v3.10：保存合规审查开关
+    if (enable_compliance_review !== undefined) {
+      await query(`UPDATE ai_writing_task SET enable_compliance_review = $1 WHERE id = $2`, [!!enable_compliance_review, taskId]);
+    }
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {
       console.error(`Writing task ${taskId} failed:`, err);
@@ -1574,6 +1586,174 @@ router.delete('/platform-rules/:platform', async (req: Request, res: Response) =
   try {
     await deletePlatformRule(req.params.platform);
     res.json({ code: 200, data: { ok: true } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ v3.10 合规规则管理 ============
+
+/** 获取所有平台合规规则 */
+router.get('/compliance-rules', async (req: Request, res: Response) => {
+  try {
+    const onlyActive = req.query.only_active === 'true';
+    const rules = await getComplianceRules(onlyActive);
+    res.json({ code: 200, data: rules });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 获取指定平台合规规则 */
+router.get('/compliance-rules/:platform', async (req: Request, res: Response) => {
+  try {
+    const rule = await getComplianceRuleByPlatform(req.params.platform);
+    if (!rule) {
+      return res.status(404).json({ code: 404, message: '未找到该平台的合规规则' });
+    }
+    res.json({ code: 200, data: rule });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 创建或更新平台合规规则（人工编辑保存） */
+router.post('/compliance-rules/:platform', async (req: Request, res: Response) => {
+  try {
+    const { rule_content, official_rule_url, official_rule_title } = req.body;
+    if (!rule_content || rule_content.trim() === '') {
+      return res.status(400).json({ code: 400, message: 'rule_content 不能为空' });
+    }
+    const rule = await upsertComplianceRule({
+      platform: req.params.platform,
+      rule_content,
+      official_rule_url,
+      official_rule_title,
+    });
+    res.json({ code: 200, data: rule });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** AI 刷新平台合规规则 */
+router.post('/compliance-rules/:platform/refresh', async (req: Request, res: Response) => {
+  try {
+    const platform = req.params.platform;
+    const PLATFORM_NAMES: Record<string, string> = {
+      wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
+      js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
+      sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
+    };
+    const platformName = PLATFORM_NAMES[platform] || platform;
+
+    // 获取写作模型配置
+    const modelConfig = await getDefaultModelConfig(getUserId(req));
+    if (!modelConfig) {
+      return res.status(400).json({ code: 400, message: '未配置写作模型，无法 AI 刷新' });
+    }
+
+    // 判断模型是否支持 web search
+    const provider = (modelConfig.model_provider || '').toLowerCase();
+    const supportsWebSearch = provider === 'kimi' || provider === 'wenxin';
+    if (!supportsWebSearch) {
+      return res.status(400).json({
+        code: 400,
+        message: `当前写作模型（${provider}）不支持 AI 刷新，请配置 Kimi 或文心一言模型`,
+      });
+    }
+
+    const apiKey = modelConfig.api_key_plain || modelConfig.api_key;
+
+    const messages = [
+      {
+        role: 'system',
+        content: `你是内容合规专家。请搜索 ${platformName} 最新的内容审核规范和医美内容合规要求，提取关键合规要点。
+
+返回严格的 JSON 格式：
+{
+  "rule_content": "结构化规则文本（包含禁止类目、敏感词类别、必须标注项等）",
+  "official_rule_url": "官方规则文档 URL",
+  "official_rule_title": "官方文档标题"
+}`,
+      },
+      {
+        role: 'user',
+        content: `请搜索 ${platformName} 最新的内容审核规范，重点关注：
+1. 禁止发布的内容类目
+2. 敏感词类别（特别是医美行业）
+3. 必须标注的提示信息
+4. 医美行业的特殊要求
+
+返回 JSON 格式。`,
+      },
+    ];
+
+    const result = await chatCompletion({
+      baseUrl: modelConfig.base_url,
+      apiKey,
+      model: modelConfig.model_name,
+      messages: messages as any,
+      temperature: 0.3,
+      timeout: 60000,
+      webSearch: true,
+    });
+
+    // 解析 AI 返回的 JSON
+    let parsed: any;
+    try {
+      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
+      parsed = JSON.parse(jsonMatch ? jsonMatch[0] : result.content);
+    } catch {
+      return res.status(500).json({ code: 500, message: 'AI 返回内容解析失败', raw: result.content.slice(0, 500) });
+    }
+
+    const rule = await refreshComplianceRule(platform, {
+      rule_content: parsed.rule_content,
+      official_rule_url: parsed.official_rule_url,
+      official_rule_title: parsed.official_rule_title,
+    });
+    res.json({ code: 200, data: rule });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 删除平台合规规则 */
+router.delete('/compliance-rules/:platform', async (req: Request, res: Response) => {
+  try {
+    await deleteComplianceRule(req.params.platform);
+    res.json({ code: 200, message: '删除成功' });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 获取文章合规审查详情 */
+router.get('/articles/:id/compliance', async (req: Request, res: Response) => {
+  try {
+    const result = await query(
+      `SELECT compliance_status, compliance_issues FROM article WHERE id = $1`,
+      [req.params.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ code: 404, message: '文章不存在' });
+    }
+    res.json({ code: 200, data: result.rows[0] });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 人工修改文章合规状态 */
+router.put('/articles/:id/compliance', async (req: Request, res: Response) => {
+  try {
+    const { compliance_status } = req.body;
+    if (!['pending', 'passed', 'rewritten', 'failed'].includes(compliance_status)) {
+      return res.status(400).json({ code: 400, message: 'compliance_status 取值非法' });
+    }
+    await updateArticleComplianceStatus(Number(req.params.id), compliance_status);
+    res.json({ code: 200, message: '更新成功' });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

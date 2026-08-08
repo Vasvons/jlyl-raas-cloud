@@ -5503,6 +5503,8 @@ const AEO_QUOTA_FIELDS = [
   // v2.2.18: 补齐生成方式/目标平台
   'auto_generation_mode',
   'auto_target_platforms',
+  // v3.10: 合规审查开关
+  'enable_compliance_review',
 ] as const;
 
 /** 获取当前用户的 AEO 配额配置 */
@@ -5606,6 +5608,10 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
     // null 或空数组都存 null（等价于"由 AEO 信源权重自动分配"）
     const arr = Array.isArray(data.auto_target_platforms) ? data.auto_target_platforms : null;
     values.push(arr && arr.length > 0 ? JSON.stringify(arr) : null);
+  }
+  if (data.enable_compliance_review !== undefined) {
+    fields.push(`enable_compliance_review = $${idx++}`);
+    values.push(!!data.enable_compliance_review);
   }
 
   if (fields.length === 0) return;
@@ -8690,9 +8696,10 @@ export async function allocateArticlesByWeight(
  */
 export async function getPlatformArticlesByTask(taskId: number): Promise<any[]> {
   const result = await query(
-    `SELECT id, title, core_keyword, target_platform, word_count, status
+    `SELECT id, title, core_keyword, target_platform, word_count, status, compliance_status
      FROM article
      WHERE task_id = $1 AND target_platform IS NOT NULL
+       AND (compliance_status IS NULL OR compliance_status != 'failed')
      ORDER BY target_platform ASC, id ASC`,
     [taskId]
   );
@@ -9018,5 +9025,79 @@ export async function getStepListHistory(platform: string, limit: number = 5): P
     [platform, limit]
   );
   return result.rows;
+}
+
+// ============ v3.10 合规审查 ============
+
+/** 获取所有平台合规规则 */
+export async function getComplianceRules(onlyActive: boolean = false): Promise<any[]> {
+  const sql = onlyActive
+    ? `SELECT * FROM platform_compliance_rule WHERE is_active = true ORDER BY platform ASC`
+    : `SELECT * FROM platform_compliance_rule ORDER BY platform ASC`;
+  const result = await query(sql);
+  return result.rows;
+}
+
+/** 获取指定平台合规规则 */
+export async function getComplianceRuleByPlatform(platform: string): Promise<any | null> {
+  const result = await query(
+    `SELECT * FROM platform_compliance_rule WHERE platform = $1`,
+    [platform]
+  );
+  return result.rows[0] || null;
+}
+
+/** 创建或更新平台合规规则（upsert） */
+export async function upsertComplianceRule(data: {
+  platform: string;
+  rule_content: string;
+  official_rule_url?: string;
+  official_rule_title?: string;
+}): Promise<any> {
+  const result = await query(
+    `INSERT INTO platform_compliance_rule (platform, rule_content, official_rule_url, official_rule_title, updated_at)
+     VALUES ($1, $2, $3, $4, NOW())
+     ON CONFLICT (platform)
+     DO UPDATE SET rule_content = $2, official_rule_url = $3, official_rule_title = $4, updated_at = NOW()
+     RETURNING *`,
+    [data.platform, data.rule_content, data.official_rule_url || null, data.official_rule_title || null]
+  );
+  return result.rows[0];
+}
+
+/** AI 刷新后更新规则（同时更新 last_refreshed_at） */
+export async function refreshComplianceRule(platform: string, data: {
+  rule_content: string;
+  official_rule_url?: string;
+  official_rule_title?: string;
+}): Promise<any> {
+  const result = await query(
+    `UPDATE platform_compliance_rule
+     SET rule_content = $2, official_rule_url = $3, official_rule_title = $4, last_refreshed_at = NOW(), updated_at = NOW()
+     WHERE platform = $1
+     RETURNING *`,
+    [platform, data.rule_content, data.official_rule_url || null, data.official_rule_title || null]
+  );
+  if (result.rows.length === 0) {
+    return upsertComplianceRule({ platform, ...data });
+  }
+  return result.rows[0];
+}
+
+/** 删除平台合规规则 */
+export async function deleteComplianceRule(platform: string): Promise<void> {
+  await query(`DELETE FROM platform_compliance_rule WHERE platform = $1`, [platform]);
+}
+
+/** 更新文章合规状态 */
+export async function updateArticleComplianceStatus(
+  articleId: number,
+  status: string,
+  issues?: any
+): Promise<void> {
+  await query(
+    `UPDATE article SET compliance_status = $2, compliance_issues = $3 WHERE id = $1`,
+    [articleId, status, issues ? JSON.stringify(issues) : null]
+  );
 }
 

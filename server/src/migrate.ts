@@ -2661,6 +2661,32 @@ export async function migrate() {
     await client.query(`ALTER TABLE publish_step_list ADD COLUMN IF NOT EXISTS modified_reason TEXT`);
     await client.query(`ALTER TABLE publish_step_list ADD COLUMN IF NOT EXISTS guardian_log_id BIGINT`);
 
+    // ============ v3.10 合规审查架构 ============
+    // 1. 平台合规规则表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS platform_compliance_rule (
+        id SERIAL PRIMARY KEY,
+        platform VARCHAR(32) NOT NULL,
+        rule_content TEXT NOT NULL,
+        official_rule_url TEXT,
+        official_rule_title VARCHAR(255),
+        last_refreshed_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        is_active BOOLEAN DEFAULT true,
+        UNIQUE(platform)
+      )
+    `);
+
+    // 2. ai_writing_task 新增合规审查开关
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS enable_compliance_review BOOLEAN DEFAULT false`);
+
+    // 3. article 新增合规审查状态
+    await client.query(`ALTER TABLE article ADD COLUMN IF NOT EXISTS compliance_issues JSONB`);
+    await client.query(`ALTER TABLE article ADD COLUMN IF NOT EXISTS compliance_status VARCHAR(32)`);
+
+    // 4. cloud_api_config 新增合规审查开关（AEO 配额配置使用 cloud_api_config 表存储）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS enable_compliance_review BOOLEAN DEFAULT false`);
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

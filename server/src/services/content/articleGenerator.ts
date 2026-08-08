@@ -27,6 +27,8 @@ import {
   updateWritingTaskAeoContext,
   getCoreKeywordsByUserId,
   getCoreKeywordsFromZlgjcByUserId,
+  getComplianceRuleByPlatform,
+  updateArticleComplianceStatus,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 import crypto from 'crypto';
@@ -507,9 +509,48 @@ async function planArticleTopic(
 
   const topicPrompt = lines.join('\n');
 
+  // v3.10：写作前置合规 — 注入目标平台合规约束
+  let complianceSuffix = '';
+  if (task.enable_compliance_review === true && currentPlatform) {
+    try {
+      const rule = await getComplianceRuleByPlatform(currentPlatform);
+      if (rule && rule.rule_content) {
+        const PLATFORM_NAMES: Record<string, string> = {
+          wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
+          js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
+          sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
+        };
+        const platformName = PLATFORM_NAMES[currentPlatform] || currentPlatform;
+        complianceSuffix = `
+
+## 目标平台合规约束（${platformName}）
+
+本次选题将发布到 ${platformName}，请严格遵守以下合规规则，确保选题方向不会导致内容审核不通过：
+
+${rule.rule_content}
+
+${rule.official_rule_url ? `官方规则参考：${rule.official_rule_url}` : ''}
+
+### 选题禁忌
+- 禁止选择涉及"最安全""100%成功""无痛""包治愈"等绝对化/承诺效果的方向
+- 禁止选择可能引发医疗纠纷或虚假宣传的方向
+- 优先选择科普类、知识分享类、风险提示类选题方向
+`;
+        console.log(`[ArticleGen] 选题注入合规约束: platform=${currentPlatform}, ruleLen=${rule.rule_content.length}`);
+      } else {
+        console.log(`[ArticleGen] 合规规则未配置，跳过前置合规: platform=${currentPlatform}`);
+      }
+    } catch (e: any) {
+      console.warn(`[ArticleGen] 合规规则查询失败，跳过前置合规: ${e.message}`);
+    }
+  }
+
+  // 在原有 systemMessage 末尾追加合规约束
+  const finalSystemMessage = writingCtx.systemMessage + complianceSuffix;
+
   // 选题用 system message：复用写作上下文的 L0 专家人格，附加选题约束
-  const topicSystem = writingCtx.systemMessage
-    ? writingCtx.systemMessage + '\n\n---\n\n'
+  const topicSystem = finalSystemMessage
+    ? finalSystemMessage + '\n\n---\n\n'
     : '';
   const topicSystemContent = topicSystem + `你是选题专家。你的职责是围绕客户的核心关键词，找出当前GEO优化效果最优、目标客户最关心、AI采信适配度最高的写作主题。
 只输出JSON，不要输出任何其他内容。`;
@@ -558,6 +599,200 @@ async function planArticleTopic(
   // 降级：用第一个核心关键词作为主题（向后兼容）
   const fallbackKw = coreKeywords[articleIdx % coreKeywords.length] || coreKeywords[0] || '';
   return { topic: fallbackKw, direction: '', titleHint: '', coreKeywords: fallbackKw ? [fallbackKw] : [] };
+}
+
+/**
+ * v3.10：写作后 AI 合规审查 + 自动改写
+ *
+ * 审查流程：
+ * 1. AI 审查（第1次）→ 合规则直接返回
+ * 2. 不合规 → AI 改写 → AI 审查（第2次）
+ * 3. 仍不合规 → 降级重写（保守策略）→ AI 审查（第3次）
+ * 4. 仍不合规 → 返回 compliance_status='failed'
+ *
+ * @returns { content, title, complianceStatus, complianceIssues }
+ */
+async function reviewAndRewriteArticle(
+  content: string,
+  title: string,
+  topic: string,
+  platform: string,
+  ruleContent: string,
+  targetWordCount: number,
+  modelConfig: any,
+  apiKey: string,
+): Promise<{ content: string; title: string; complianceStatus: string; complianceIssues: any[] }> {
+  const { chatCompletion } = await import('./aiClient');
+  const PLATFORM_NAMES: Record<string, string> = {
+    wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
+    js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
+    sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
+  };
+  const platformName = PLATFORM_NAMES[platform] || platform;
+
+  /** AI 审查单次调用 */
+  async function reviewOnce(text: string, textTitle: string): Promise<{ compliant: boolean; issues: any[] }> {
+    const messages = [
+      {
+        role: 'system',
+        content: `你是${platformName}内容合规审查专家。请严格按以下合规规则审查文章，判断是否能在该平台通过审核。
+
+## 合规规则
+${ruleContent}
+
+## 审查要求
+1. 逐条检查规则
+2. 检查是否存在绝对化用语、效果承诺、虚假宣传等问题
+3. 检查是否缺少必要的风险提示
+4. 返回严格的 JSON 格式
+
+## 返回格式
+{
+  "compliant": true/false,
+  "issues": [
+    {"issue": "具体问题描述", "severity": "high/medium/low", "location": "问题位置"}
+  ],
+  "summary": "整体审查结论"
+}`,
+      },
+      {
+        role: 'user',
+        content: `待审查文章：\n标题：${textTitle}\n正文：${text}`,
+      },
+    ];
+
+    const result = await chatCompletion({
+      baseUrl: modelConfig.base_url,
+      apiKey,
+      model: modelConfig.model_name,
+      messages: messages as any,
+      temperature: 0.3,
+      timeout: 60000,
+    });
+
+    try {
+      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : result.content);
+      return {
+        compliant: parsed.compliant === true,
+        issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+      };
+    } catch {
+      console.warn(`[Compliance] 审查 JSON 解析失败，按合规处理: ${result.content.slice(0, 200)}`);
+      return { compliant: true, issues: [] };
+    }
+  }
+
+  /** AI 改写 */
+  async function rewriteOnce(originalContent: string, issues: any[]): Promise<string> {
+    const messages = [
+      {
+        role: 'system',
+        content: `你是医美内容合规改写专家。请根据审查意见改写文章，使其完全符合目标平台的合规要求。
+
+## 目标平台合规规则
+${ruleContent}
+
+## 审查发现的问题
+${JSON.stringify(issues, null, 2)}
+
+## 改写要求
+1. 保留文章核心信息和专业知识
+2. 消除所有合规问题（替换绝对化用语、删除效果承诺、添加风险提示等）
+3. 保持文章可读性和专业度
+4. 保持字数不低于 ${targetWordCount}
+5. 保留原有 HTML 标签结构`,
+      },
+      {
+        role: 'user',
+        content: `原文：\n${originalContent}`,
+      },
+    ];
+
+    const result = await chatCompletion({
+      baseUrl: modelConfig.base_url,
+      apiKey,
+      model: modelConfig.model_name,
+      messages: messages as any,
+      temperature: 0.3,
+      timeout: 120000,
+    });
+    return result.content || originalContent;
+  }
+
+  /** 降级重写（保守策略） */
+  async function degradedRewrite(originalTopic: string): Promise<string> {
+    const messages = [
+      {
+        role: 'system',
+        content: `前两次改写均未通过合规审查，请以最保守的策略重写文章。
+
+## 降级策略
+1. 只保留医美科普知识，不提具体品牌名称、机构名称、价格
+2. 不使用任何绝对化用语（"最""第一""唯一"等）
+3. 不承诺任何治疗效果
+4. 必须在文章末尾包含风险提示：「以上内容仅供参考，具体治疗方案请咨询专业医生」
+5. 保持字数 ${targetWordCount}
+6. 保留原有 HTML 标签结构
+
+## 原文核心主题
+${originalTopic}`,
+      },
+      {
+        role: 'user',
+        content: `请基于以上主题重新撰写一篇完全合规的科普文章。`,
+      },
+    ];
+
+    const result = await chatCompletion({
+      baseUrl: modelConfig.base_url,
+      apiKey,
+      model: modelConfig.model_name,
+      messages: messages as any,
+      temperature: 0.3,
+      timeout: 120000,
+    });
+    return result.content || '';
+  }
+
+  // ---- 审查流程开始 ----
+
+  // 第1次审查
+  let review1 = await reviewOnce(content, title);
+  if (review1.compliant) {
+    return { content, title, complianceStatus: 'passed', complianceIssues: review1.issues };
+  }
+  console.log(`[Compliance] 第1次审查不合规，开始改写: issues=${review1.issues.length}`);
+
+  // 第1次改写
+  let rewrittenContent = await rewriteOnce(content, review1.issues);
+  if (!rewrittenContent || rewrittenContent.trim() === '') {
+    rewrittenContent = content;
+  }
+
+  // 第2次审查
+  let review2 = await reviewOnce(rewrittenContent, title);
+  if (review2.compliant) {
+    return { content: rewrittenContent, title, complianceStatus: 'rewritten', complianceIssues: review2.issues };
+  }
+  console.log(`[Compliance] 第2次审查不合规，降级重写: issues=${review2.issues.length}`);
+
+  // 降级重写
+  let degradedContent = await degradedRewrite(topic);
+  if (!degradedContent || degradedContent.trim() === '') {
+    // 降级重写返回空，保存原文标记失败
+    return { content, title, complianceStatus: 'failed', complianceIssues: review2.issues };
+  }
+
+  // 第3次审查
+  let review3 = await reviewOnce(degradedContent, title);
+  if (review3.compliant) {
+    return { content: degradedContent, title, complianceStatus: 'rewritten', complianceIssues: review3.issues };
+  }
+
+  // 3次均不合规
+  console.log(`[Compliance] 3次审查均不合规，标记人工处理`);
+  return { content, title, complianceStatus: 'failed', complianceIssues: review3.issues };
 }
 
 /**
@@ -1256,16 +1491,53 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
       // 截断到 5 个，每个不超过 20 字
       const articleTags = derivedTags.slice(0, 5).map(t => t.slice(0, 20));
 
+      // v3.10：写作后合规审查 + 自动改写
+      let finalContentHtml = contentHtml;
+      let finalTitle = safeTitle;
+      let complianceStatus = 'pending';
+      let complianceIssues: any[] = [];
+
+      if (task.enable_compliance_review === true && currentPlatform) {
+        try {
+          const rule = await getComplianceRuleByPlatform(currentPlatform);
+          if (rule && rule.rule_content) {
+            console.log(`[ArticleGen] 开始合规审查: platform=${currentPlatform}, articleIdx=${articleIdx}`);
+            const reviewResult = await reviewAndRewriteArticle(
+              contentHtml,
+              safeTitle,
+              topicPlan.topic || safeCoreKeyword,
+              currentPlatform,
+              rule.rule_content,
+              task.target_word_count || 1500,
+              modelConfig,
+              apiKey,
+            );
+            finalContentHtml = reviewResult.content;
+            finalTitle = reviewResult.title;
+            complianceStatus = reviewResult.complianceStatus;
+            complianceIssues = reviewResult.complianceIssues;
+            console.log(`[ArticleGen] 合规审查完成: status=${complianceStatus}, issues=${complianceIssues.length}`);
+
+            // 重新计算字数（改写后可能变化）
+            wordCount = Math.ceil(finalContentHtml.replace(/<[^>]+>/g, '').length / 3);
+          } else {
+            console.log(`[ArticleGen] 合规规则未配置，跳过审查: platform=${currentPlatform}`);
+          }
+        } catch (e: any) {
+          console.warn(`[ArticleGen] 合规审查异常，跳过: ${e.message}`);
+        }
+      }
+
       const articleId = await createArticle({
         user_id: userId,
         task_id: taskId,
         keyword_id: kw?.id ?? null,
         core_keyword: safeCoreKeyword,
         keyword_type: kw?.keyword_type || 0,
-        title: safeTitle,
-        content_html: contentHtml,
+        title: finalTitle,           // v3.10：使用审查后的标题
+        content_html: finalContentHtml, // v3.10：使用审查后的内容
         // v2.5.21：只保存被文章正文实际使用的三元组（原 bug：存所有企业三元组）
-        entity_triples: filterUsedTriples(contentHtml, enterpriseInfo.entity_triples),
+        entity_triples: filterUsedTriples(finalContentHtml, enterpriseInfo.entity_triples),
         target_platform: currentPlatform, // v1.8.0：写入平台标识（通用模式为 null）
         word_count: wordCount,
         status: 'generated',
@@ -1273,6 +1545,11 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
         cover_image_url: coverUrlForArticle || null,
         tags: articleTags, // v1.8.4：派生 tags 用于发布时添加话题
       });
+
+      // v3.10：保存合规审查状态
+      if (complianceStatus !== 'pending') {
+        await updateArticleComplianceStatus(articleId, complianceStatus, complianceIssues);
+      }
 
       // 异步生成 embedding（不阻塞主流程，失败不影响文章生成）
       generateAndSaveEmbedding(articleId, task.knowledge_id || null, title, contentHtml).catch(err => {
