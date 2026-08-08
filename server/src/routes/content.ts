@@ -135,12 +135,15 @@ import {
   getBrandQueryKeywords,
   // v3.8.15：核心关键词查询（从 distillate_keyword 表，用户手动添加的种子词）
   getCoreKeywordsByUserId,
-  // v3.10：合规审查
+  // v3.10：合规审查（v3.10.1 双池架构）
   getComplianceRules,
+  getComplianceRulesByPlatform,
   getComplianceRuleByPlatform,
-  upsertComplianceRule,
-  refreshComplianceRule,
-  deleteComplianceRule,
+  createManualRule,
+  updateManualRule,
+  upsertCrawledRule,
+  deleteComplianceRuleById,
+  deleteComplianceRulesByPlatform,
   updateArticleComplianceStatus,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
@@ -1593,42 +1596,50 @@ router.delete('/platform-rules/:platform', async (req: Request, res: Response) =
 
 // ============ v3.10 合规规则管理 ============
 
-/** 获取所有平台合规规则 */
+// ============ v3.10.1 合规规则双池架构 API ============
+
+/** 获取所有平台合规规则（支持按 source / industry 过滤） */
 router.get('/compliance-rules', async (req: Request, res: Response) => {
   try {
-    const onlyActive = req.query.only_active === 'true';
-    const rules = await getComplianceRules(onlyActive);
+    const rules = await getComplianceRules({
+      onlyActive: req.query.only_active === 'true',
+      source: req.query.source as string | undefined,
+      industry: req.query.industry as string | undefined,
+    });
     res.json({ code: 200, data: rules });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
 });
 
-/** 获取指定平台合规规则 */
+/** 获取指定平台的所有合规规则（双池：crawled + manual） */
 router.get('/compliance-rules/:platform', async (req: Request, res: Response) => {
   try {
-    const rule = await getComplianceRuleByPlatform(req.params.platform);
-    if (!rule) {
-      return res.status(404).json({ code: 404, message: '未找到该平台的合规规则' });
-    }
-    res.json({ code: 200, data: rule });
+    const rules = await getComplianceRulesByPlatform(req.params.platform, {
+      onlyActive: req.query.only_active === 'true',
+    });
+    // 返回数组（可能为空），不再返回 404
+    res.json({ code: 200, data: rules });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
 });
 
-/** 创建或更新平台合规规则（人工编辑保存） */
-router.post('/compliance-rules/:platform', async (req: Request, res: Response) => {
+/** 创建手动规则 */
+router.post('/compliance-rules/:platform/manual', async (req: Request, res: Response) => {
   try {
-    const { rule_content, official_rule_url, official_rule_title } = req.body;
+    const { rule_title, rule_content, industry } = req.body;
     if (!rule_content || rule_content.trim() === '') {
       return res.status(400).json({ code: 400, message: 'rule_content 不能为空' });
     }
-    const rule = await upsertComplianceRule({
+    if (!rule_title || rule_title.trim() === '') {
+      return res.status(400).json({ code: 400, message: 'rule_title 不能为空' });
+    }
+    const rule = await createManualRule({
       platform: req.params.platform,
+      rule_title,
       rule_content,
-      official_rule_url,
-      official_rule_title,
+      industry: industry || 'general',
     });
     res.json({ code: 200, data: rule });
   } catch (err: any) {
@@ -1636,7 +1647,26 @@ router.post('/compliance-rules/:platform', async (req: Request, res: Response) =
   }
 });
 
-/** 爬取官方规则文档页面，提取正文存为 rule_content */
+/** 更新手动规则（按 id） */
+router.put('/compliance-rules/manual/:id', async (req: Request, res: Response) => {
+  try {
+    const { rule_title, rule_content, industry, is_active } = req.body;
+    const rule = await updateManualRule(Number(req.params.id), {
+      rule_title,
+      rule_content,
+      industry,
+      is_active,
+    });
+    if (!rule) {
+      return res.status(404).json({ code: 404, message: '未找到该手动规则' });
+    }
+    res.json({ code: 200, data: rule });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/** 爬取官方规则文档页面，提取正文存为 crawled 规则 */
 router.post('/compliance-rules/:platform/crawl', async (req: Request, res: Response) => {
   try {
     const platform = req.params.platform;
@@ -1696,7 +1726,7 @@ router.post('/compliance-rules/:platform/crawl', async (req: Request, res: Respo
     // 截断过长内容（避免数据库存储过大，保留前 20000 字符）
     const truncatedContent = ruleContent.length > 20000 ? ruleContent.slice(0, 20000) + '\n...(内容已截断)' : ruleContent;
 
-    const rule = await refreshComplianceRule(platform, {
+    const rule = await upsertCrawledRule(platform, {
       rule_content: truncatedContent,
       official_rule_url: docUrl,
       official_rule_title: docTitle,
@@ -1708,10 +1738,14 @@ router.post('/compliance-rules/:platform/crawl', async (req: Request, res: Respo
   }
 });
 
-/** 删除平台合规规则 */
-router.delete('/compliance-rules/:platform', async (req: Request, res: Response) => {
+/** 删除合规规则（按 id） */
+router.delete('/compliance-rules/:id', async (req: Request, res: Response) => {
   try {
-    await deleteComplianceRule(req.params.platform);
+    const id = Number(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ code: 400, message: '无效的规则 ID' });
+    }
+    await deleteComplianceRuleById(id);
     res.json({ code: 200, message: '删除成功' });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });

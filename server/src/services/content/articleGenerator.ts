@@ -27,7 +27,7 @@ import {
   updateWritingTaskAeoContext,
   getCoreKeywordsByUserId,
   getCoreKeywordsFromZlgjcByUserId,
-  getComplianceRuleByPlatform,
+  getComplianceRulesByPlatform,
   updateArticleComplianceStatus,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
@@ -509,34 +509,42 @@ async function planArticleTopic(
 
   const topicPrompt = lines.join('\n');
 
-  // v3.10：写作前置合规 — 注入目标平台合规约束
+  // v3.10：写作前置合规 — 注入目标平台合规约束（v3.10.1 双池：crawled + manual 全部注入）
   let complianceSuffix = '';
   if (task.enable_compliance_review === true && currentPlatform) {
     try {
-      const rule = await getComplianceRuleByPlatform(currentPlatform);
-      if (rule && rule.rule_content) {
+      const rules = await getComplianceRulesByPlatform(currentPlatform, { onlyActive: true });
+      const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
+      if (validRules.length > 0) {
         const PLATFORM_NAMES: Record<string, string> = {
           wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
           js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
           sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
         };
         const platformName = PLATFORM_NAMES[currentPlatform] || currentPlatform;
+        // 拼接双池所有规则内容
+        const rulesBlock = validRules.map((r, idx) => {
+          const sourceLabel = r.source === 'crawled' ? '爬取参考' : '手动规则';
+          const industryLabel = r.industry && r.industry !== 'general' ? `［${r.industry}］` : '';
+          const titleLabel = r.rule_title ? `《${r.rule_title}》` : '';
+          const urlLabel = r.official_rule_url ? `\n官方规则参考：${r.official_rule_url}` : '';
+          return `### 规则 ${idx + 1}（${sourceLabel}${industryLabel}）${titleLabel}\n${r.rule_content}${urlLabel}`;
+        }).join('\n\n');
+        const totalLen = validRules.reduce((s, r) => s + (r.rule_content?.length || 0), 0);
         complianceSuffix = `
 
 ## 目标平台合规约束（${platformName}）
 
-本次选题将发布到 ${platformName}，请严格遵守以下合规规则，确保选题方向不会导致内容审核不通过：
+本次选题将发布到 ${platformName}，请严格遵守以下合规规则（含 ${validRules.length} 条：爬取参考池+手动规则池），确保选题方向不会导致内容审核不通过：
 
-${rule.rule_content}
-
-${rule.official_rule_url ? `官方规则参考：${rule.official_rule_url}` : ''}
+${rulesBlock}
 
 ### 选题禁忌
 - 禁止选择涉及"最安全""100%成功""无痛""包治愈"等绝对化/承诺效果的方向
 - 禁止选择可能引发医疗纠纷或虚假宣传的方向
 - 优先选择科普类、知识分享类、风险提示类选题方向
 `;
-        console.log(`[ArticleGen] 选题注入合规约束: platform=${currentPlatform}, ruleLen=${rule.rule_content.length}`);
+        console.log(`[ArticleGen] 选题注入合规约束: platform=${currentPlatform}, rules=${validRules.length}, totalLen=${totalLen}`);
       } else {
         console.log(`[ArticleGen] 合规规则未配置，跳过前置合规: platform=${currentPlatform}`);
       }
@@ -1499,15 +1507,24 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 
       if (task.enable_compliance_review === true && currentPlatform) {
         try {
-          const rule = await getComplianceRuleByPlatform(currentPlatform);
-          if (rule && rule.rule_content) {
-            console.log(`[ArticleGen] 开始合规审查: platform=${currentPlatform}, articleIdx=${articleIdx}`);
+          // v3.10.1：双池架构，合并 crawled + manual 所有规则的 rule_content
+          const rules = await getComplianceRulesByPlatform(currentPlatform, { onlyActive: true });
+          const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
+          if (validRules.length > 0) {
+            // 拼接双池规则内容供审查/改写使用
+            const mergedRuleContent = validRules.map((r, idx) => {
+              const sourceLabel = r.source === 'crawled' ? '爬取参考' : '手动规则';
+              const industryLabel = r.industry && r.industry !== 'general' ? `［${r.industry}］` : '';
+              const titleLabel = r.rule_title ? `《${r.rule_title}》` : '';
+              return `### 规则 ${idx + 1}（${sourceLabel}${industryLabel}）${titleLabel}\n${r.rule_content}`;
+            }).join('\n\n');
+            console.log(`[ArticleGen] 开始合规审查: platform=${currentPlatform}, articleIdx=${articleIdx}, rules=${validRules.length}`);
             const reviewResult = await reviewAndRewriteArticle(
               contentHtml,
               safeTitle,
               topicPlan.topic || safeCoreKeyword,
               currentPlatform,
-              rule.rule_content,
+              mergedRuleContent,
               task.target_word_count || 1500,
               modelConfig,
               apiKey,

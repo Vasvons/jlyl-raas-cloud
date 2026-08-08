@@ -2677,6 +2677,18 @@ export async function migrate() {
       )
     `);
 
+    // v3.10.1 合规规则双池重构：去掉 UNIQUE(platform)，支持每平台多条规则
+    // 去掉唯一约束（如果存在）
+    await client.query(`ALTER TABLE platform_compliance_rule DROP CONSTRAINT IF EXISTS platform_compliance_rule_platform_key`);
+    // 新增 source 字段：'crawled'（爬取参考池）/ 'manual'（手动规则池）
+    await client.query(`ALTER TABLE platform_compliance_rule ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'manual'`);
+    // 新增 industry 字段：行业分类，如 'general'（通用）/ 'medical_beauty'（医美）
+    await client.query(`ALTER TABLE platform_compliance_rule ADD COLUMN IF NOT EXISTS industry VARCHAR(32) DEFAULT 'general'`);
+    // 新增 rule_title 字段：手动规则的标题
+    await client.query(`ALTER TABLE platform_compliance_rule ADD COLUMN IF NOT EXISTS rule_title VARCHAR(255)`);
+    // 已有数据标记为 crawled（之前都是通过爬取/刷新创建的）
+    await client.query(`UPDATE platform_compliance_rule SET source = 'crawled' WHERE source = 'manual' AND official_rule_url IS NOT NULL`);
+
     // 2. ai_writing_task 新增合规审查开关
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS enable_compliance_review BOOLEAN DEFAULT false`);
 

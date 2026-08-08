@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import http from 'http';
 import { migrate } from './migrate';
 import { seedStepLists } from './services/content/stepListSeeder';
+import { seedMedicalBeautyRules } from './seeds/medicalBeautyRules';
 import { startScheduler, getSchedulerStatus } from './scheduler';
 import authRoutes from './routes/auth';
 import dashboardRoutes from './routes/dashboard';
@@ -303,6 +304,11 @@ async function start() {
     // 导入发布 step_list 种子数据（幂等，仅缺失平台才导入）
     await seedStepLists().catch(e => {
       console.error('[Server] step_list 种子导入失败（不阻断启动）:', e.message);
+    });
+
+    // 导入医美行业合规规则种子数据（幂等，仅缺失平台才导入）
+    await seedMedicalBeautyRules().catch(e => {
+      console.error('[Server] 医美合规规则种子导入失败（不阻断启动）:', e.message);
     });
 
     // 启动定时任务
