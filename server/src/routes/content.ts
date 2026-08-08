@@ -1208,7 +1208,7 @@ router.get('/writing-tasks/:id/articles', async (req: Request, res: Response) =>
   try {
     const taskId = Number(req.params.id);
     const result = await query(
-      `SELECT id, title, core_keyword, keyword_type, target_platform, word_count, status, model_used, create_time
+      `SELECT id, title, core_keyword, keyword_type, target_platform, word_count, status, compliance_status, model_used, create_time
        FROM article WHERE task_id = $1 ORDER BY create_time DESC`,
       [taskId]
     );

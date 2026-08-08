@@ -6520,7 +6520,7 @@ export async function getArticles(userId: number, filters: { keyword?: string; s
   params.push(pageSize, offset);
   const result = await query(
     `SELECT id, task_id, keyword_id, core_keyword, keyword_type, title, target_platform,
-            word_count, status, cover_image_url, tags, model_used, create_time, update_time,
+            word_count, status, compliance_status, cover_image_url, tags, model_used, create_time, update_time,
             COALESCE((SELECT array_agg(DISTINCT pr.platform)
                       FROM publish_record pr
                       JOIN publish_task pt ON pt.id = pr.task_id
