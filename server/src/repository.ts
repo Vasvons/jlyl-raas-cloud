@@ -7050,7 +7050,11 @@ export async function createPublishTask(data: {
       platformsToCreate.push(platform);
     }
 
-    // 1. 创建任务（允许 total_count=0，表示所有平台都已发布过）
+    // 1. 创建任务
+    // v3.9.1：所有平台都被跳过时不创建空任务（total_count=0），避免进度统计错误
+    if (platformsToCreate.length === 0) {
+      return { taskId: 0, skipped };
+    }
     const taskResult = await client.query(
       `INSERT INTO publish_task (user_id, article_id, target_platforms, scheduled_at, status, total_count, batch_id, auto_generated)
        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)

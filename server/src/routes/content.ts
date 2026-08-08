@@ -1387,8 +1387,10 @@ router.post('/articles/batch-publish', async (req: Request, res: Response) => {
       for (const s of taskSkipped) {
         skipped.push({ article_id: numId, reason: s.reason });
       }
-      // 若所有平台都已发布过，total_count=0，不加入任务列表
-      taskIds.push(taskId);
+      // v3.9.1：taskId=0 表示所有平台已被跳过，不加入任务列表
+      if (taskId > 0) {
+        taskIds.push(taskId);
+      }
     }
     res.json({
       code: 200,
