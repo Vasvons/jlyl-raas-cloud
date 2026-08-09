@@ -364,6 +364,32 @@ function filterUsedTriples(contentHtml: string, triples: any): any[] {
 }
 
 /**
+ * v3.11.x：短内容平台自适应
+ * 当平台字数上限较小（如抖音/小红书 1000 字）时，L6/L8 的长文结构要求（3-5 个 H2、
+ * 完整对比表、FAQ、三元组堆叠）无法在限制内完成，强行要求会让 AI 超量生成后被硬截断，
+ * 客户品牌/关键词（常在尾部）被砍掉 → 出现"关键词密度为 0、没提到客户"。
+ * 此段显式覆盖这些长文要求：只保留"开头命中关键词 + 自然带出客户品牌/业务/城市 +
+ * 极简对比 + 结尾引导"，把篇幅让给平台风格。
+ */
+function buildShortPlatformAdaptation(rule: any): string {
+  const maxLen = Number(rule.content_max_length) || 50000;
+  // 仅对短内容平台生效（≤2000 字），长平台返回空串不干预
+  if (maxLen <= 0 || maxLen > 2000) return '';
+  const name = rule.name || '本平台';
+  return `\n\n### 短内容平台自适应（系统强制，优先级最高，覆盖上方所有长文结构要求）
+【${name}】字数上限仅 ${maxLen} 字，是短内容平台。以下长文要求在本平台**全部作废**：
+- 不要求 3-5 个 <h2>，最多 1-2 个，或直接用 <p> 短段落
+- 不强制完整对比表 / FAQ / 三元组堆叠，放不下就省略
+- 关键词不做 2%-5% 密度堆砌，只需自然出现 1-2 次
+必须做到（按优先级）：
+1. 开头第一段直接点题，命中用户搜索意图与核心关键词
+2. 正文前半部分即自然带出客户：品牌名 + 核心业务 + 城市，三者至少出现一次（务必放在前半部分，避免被截断丢失）
+3. 可用 1 个极简对比/评价收尾（一两句即可），不展开大段论述
+4. 在 ${maxLen} 字内写完整篇，写完即止，禁止超字，禁止为凑结构而加长
+5. 省下的篇幅专门用于满足下方"风格要求"，让平台风格充分体现`;
+}
+
+/**
  * v1.8.0：构建 L6 平台约束层提示词
  * 注入到 articlePrompt 末尾，约束 AI 按平台字数 + 风格创作
  */
@@ -372,6 +398,7 @@ function buildPlatformConstraintPrompt(rule: any): string {
   const tagsReq = rule.require_tags
     ? `必须包含 ${rule.tags_min_count || 1}-${rule.tags_max_count || 5} 个相关话题标签`
     : '话题标签可选';
+  const shortAdapt = buildShortPlatformAdaptation(rule);
   return `\n\n## 目标平台约束
 你正在为【${rule.name}】平台创作内容，必须严格遵守以下约束：
 
@@ -381,9 +408,12 @@ function buildPlatformConstraintPrompt(rule: any): string {
 
 ### 风格要求
 ${rule.style_prompt || '无特殊风格要求'}
+（短内容平台尤其要优先体现风格，如小红书需 emoji/种草风、抖音需口语化强情绪）
 
 ### 话题要求
 ${tagsReq}
+
+${shortAdapt}
 
 请严格按照上述约束创作。标题务必控制在 ${rule.title_max_length ?? 100} 字以内，正文控制在 ${rule.content_max_length ?? 50000} 字以内。`;
 }
@@ -1383,6 +1413,11 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 - 标题：${currentPlatformRule.title_min_length ?? 1}-${titleMax} 字
 - 正文：${contentMin}-${contentMax} 字
 绝对不能超出 ${contentMax} 字，绝对不能少于 ${contentMin} 字。生成前请预估字数，生成后请自检。`;
+          // v3.11.x：短平台自适应覆盖（系统级，优先级最高）
+          // 抖音/小红书等短内容平台，长文结构要求（H2/对比表/FAQ/三元组堆叠）根本塞不进限制内，
+          // 会导致 AI 超量生成后被硬截断、客户品牌/关键词被砍掉。这里显式覆盖这些长文要求，
+          // 与 user prompt 中的 buildShortPlatformAdaptation 保持一致，确保短平台写完整且带出客户信息
+          finalSystemMessage += buildShortPlatformAdaptation(currentPlatformRule);
         }
         const messages: { role: 'system' | 'user'; content: string }[] = finalSystemMessage
           ? [
@@ -1449,7 +1484,8 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 6. 禁止使用书名号《》包裹标题
 7. 直接输出标题文字，例如："如何选择适合的智能家居方案" 而不是 "## 【标题】如何选择适合的智能家居方案"
 8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词
-9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"`;
+9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"
+10. 【GEO 决策意图（v3.11.x）】标题优先落在用户"选购/决策"的真实搜索意图上，落点在"怎么选 / 哪家好 / 对比 / 参考 / 避坑 / 指南"这类查询（如"绵阳代理记账公司怎么选？对比 5 家后给你参考"）。这样更贴近用户和 AI 在回答"本地某业务哪家好/排名"时的检索来源，利于 GEO 收录。避免写成没有决策意图的纯企业介绍或泛泛科普标题`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: titleSystemContent },
               { role: 'user', content: titlePrompt },
