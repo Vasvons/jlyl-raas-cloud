@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.7.14",
-  "description": "抖音图文发布流程（v1.7.14：修复登录预检假阳性——home页匿名可访问且含avatar容器导致误判已登录；移除宽泛avatar选择器，新增扫码登录/验证码登录关键词）",
+  "version": "1.9.60",
+  "description": "抖音图文发布流程（v1.9.60：登录预检改到 home 页，避免预检与 step_list 重复加载 upload 发布页触发抖音风控导致页面崩溃；v1.7.14：修复登录预检假阳性——home页匿名可访问且含avatar容器导致误判已登录；移除宽泛avatar选择器，新增扫码登录/验证码登录关键词）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/home",
   "login_check_selector": "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')]",
@@ -11,8 +11,8 @@
     {
       "type": "navigate",
       "value": "https://creator.douyin.com/creator-micro/content/upload?default-tab=3",
-      "descript": "导航到抖音图文上传页",
-      "timeout": 30000
+      "descript": "导航到抖音图文上传页（超时增至60s，缓解 Page crashed）",
+      "timeout": 60000
     },
     {
       "type": "wait_for_url",

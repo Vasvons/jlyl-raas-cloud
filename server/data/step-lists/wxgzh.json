@@ -1,13 +1,24 @@
 {
   "platform": "wxgzh",
-  "version": "1.9.35",
-  "description": "微信公众号/服务号图文发布流程（v1.9.35：封面设置改用'从图片库选择'上传 cover_image_url，替代'从正文选择'，彻底避免'未授权使用切换账号能力'弹窗阻塞——该弹窗是微信平台对'从正文选择'功能的权限限制，非脚本 bug）",
+  "version": "1.9.36",
+  "description": "微信公众号/服务号图文发布流程（v1.9.36：step_list 首步新增 navigate 到主页，解决登录预检被跳过时页面停在 about:blank 导致 token 提取失败的回归；v1.9.35：封面设置改用'从图片库选择'上传 cover_image_url，替代'从正文选择'，彻底避免'未授权使用切换账号能力'弹窗阻塞——该弹窗是微信平台对'从正文选择'功能的权限限制，非脚本 bug）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
   "login_check_url_pattern": "^https://mp\\.weixin\\.qq\\.com/cgi-bin/loginpage",
   "logout_keywords": ["请登录", "请重新登录", "sign in"],
   "steps": [
+    {
+      "type": "navigate",
+      "value": "https://mp.weixin.qq.com/cgi-bin/home",
+      "descript": "v1.9.36：导航到公众号后台主页（与 dy/bjh/zh 一致的自带导航，修复登录预检被跳过时页面停在 about:blank 导致 token 无法提取）",
+      "timeout": 30000
+    },
+    {
+      "type": "timing",
+      "ms": 2000,
+      "descript": "v1.9.36：等待主页加载（微信几乎每次需点击登录按钮，由 wpzg adapter 的 onAfterNavigateForLoginCheck 处理，此处等待页面渲染）"
+    },
     {
       "type": "evaluate_edit",
       "value": "const findToken = () => { const urlMatch = location.href.match(/token=(\\d+)/); if (urlMatch) return urlMatch[1]; const links = document.querySelectorAll('a[href*=\"token=\"]'); for (const a of links) { const m = (a.href || '').match(/token=(\\d+)/); if (m) return m[1]; } const htmlMatch = document.documentElement.innerHTML.match(/token[=:'\"\\s]+(\\d{6,})/); if (htmlMatch) return htmlMatch[1]; const scripts = document.querySelectorAll('script'); for (const s of scripts) { const m = (s.textContent || '').match(/token[=:'\"\\s]+(\\d{6,})/); if (m) return m[1]; } return null; }; let token = findToken(); if (token) { const url = 'https://mp.weixin.qq.com/cgi-bin/appmsg?t=media/appmsg_edit_v2&action=edit&isNew=1&type=10&token=' + token + '&lang=zh_CN'; setTimeout(() => { window.location.href = url; }, 0); return JSON.stringify({ ok: true, token, url, source: 'home' }); } const diag = { url: location.href, bodyText: (document.body.innerText || '').slice(0, 300), linkCount: document.querySelectorAll('a').length, links: Array.from(document.querySelectorAll('a')).slice(0, 15).map(a => ({ text: (a.innerText||'').trim().slice(0, 30), href: (a.href||'').slice(0, 120) })), hasWeuiName: !!document.querySelector('.weui-desktop_name'), hasAccountInfo: !!document.querySelector('.account_info'), hasDesktopCard: !!document.querySelector('.weui-desktop-card'), title: document.title }; throw new Error('token 未找到（诊断: ' + JSON.stringify(diag) + '）');",
