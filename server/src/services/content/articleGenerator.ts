@@ -648,6 +648,14 @@ async function reviewAndRewriteArticle(
   targetWordCount: number,
   modelConfig: any,
   apiKey: string,
+  // v3.10.6：传入结构化元素上下文，确保改写时保留 FAQ/对比表/品牌词/关键词/三元组
+  preserveCtx?: {
+    enterpriseInfo: any;
+    coreKeywords: string[];
+    includeFaq: boolean;
+    includeComparisonTable: boolean;
+    keywordValue: string;
+  },
 ): Promise<{ content: string; title: string; complianceStatus: string; complianceIssues: any[] }> {
   const { chatCompletion } = await import('./aiClient');
   const PLATFORM_NAMES: Record<string, string> = {
@@ -656,6 +664,50 @@ async function reviewAndRewriteArticle(
     sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
   };
   const platformName = PLATFORM_NAMES[platform] || platform;
+
+  // v3.10.6：构建「必须保留的结构化元素」约束文本，注入到改写 prompt
+  //   原 bug：改写函数只要求"保留原有 HTML 标签结构"，AI 会自作主张删掉 FAQ/对比表/品牌词/关键词/三元组
+  //   修复：明确列出必须保留的元素，让 AI 改写时只调整措辞，不删除结构化内容
+  const ent = preserveCtx?.enterpriseInfo || {};
+  const companyName = ent.company_full_name || ent.company_short_name || '';
+  const coreKwList = Array.isArray(preserveCtx?.coreKeywords) ? preserveCtx.coreKeywords : [];
+  const keywordVal = preserveCtx?.keywordValue || '';
+  const triples = Array.isArray(ent.entity_triples) ? ent.entity_triples : [];
+
+  const preserveBlocks: string[] = [];
+  preserveBlocks.push(`【改写时必须保留的结构化元素（重要！）】
+改写时只调整违规措辞，必须完整保留以下结构化元素，不得删除或弱化：`);
+
+  // 1. 客户品牌词
+  if (companyName) {
+    preserveBlocks.push(`1. 客户品牌名称："${companyName}"——必须在文中自然出现（正文+对比表），只做客观描述不夸大宣传，但绝不能删除品牌露出`);
+  }
+  // 2. 核心关键词
+  if (coreKwList.length > 0) {
+    preserveBlocks.push(`2. 核心关键词：${coreKwList.join('、')}——必须在标题或正文中自然出现，不可遗漏`);
+  } else if (keywordVal) {
+    preserveBlocks.push(`2. 本篇关键词：${keywordVal}——必须在标题或正文中自然出现，不可遗漏`);
+  }
+  // 3. 三元组
+  if (triples.length > 0) {
+    const triplesPreview = triples.slice(0, 10).map((t: any) => {
+      const s = t?.subject || ''; const p = t?.predicate || ''; const o = t?.object || '';
+      return `- ${s} ${p} ${o}`;
+    }).join('\n');
+    preserveBlocks.push(`3. 企业实体三元组（企业核心事实，必须在正文中体现至少 3 条）：
+${triplesPreview}`);
+  }
+  // 4. FAQ 结构块
+  if (preserveCtx?.includeFaq) {
+    preserveBlocks.push(`4. FAQ 章节——必须保留 <h2>常见问题</h2> + <ul><li><strong>问题</strong>回答</li></ul> 结构，至少 3 个问答，问题基于客户档案和本篇主题生成`);
+  }
+  // 5. 对比表结构块
+  if (preserveCtx?.includeComparisonTable) {
+    preserveBlocks.push(`5. 推荐排名对比表——必须保留 <h2>${new Date().getFullYear()}年推荐排名</h2> + <table> 结构，客户品牌必须出现在表中（第1或第2名），其他位置用真实竞品品牌`);
+  }
+  preserveBlocks.push(`6. 保留原文的 <h1>/<h2>/<p>/<ul>/<li>/<table> 等 HTML 标签结构，只改写文字内容
+7. 字数不低于 ${targetWordCount}`);
+  const preserveConstraint = preserveBlocks.join('\n');
 
   /** AI 审查单次调用（v3.10.3：宽松审查模式，只查严重问题） */
   async function reviewOnce(text: string, textTitle: string, strictMode: boolean = false): Promise<{ compliant: boolean; issues: any[] }> {
@@ -722,7 +774,7 @@ ${strictness}
     }
   }
 
-  /** AI 改写 */
+  /** AI 改写（v3.10.6：明确要求保留 FAQ/对比表/品牌词/关键词/三元组） */
   async function rewriteOnce(originalContent: string, issues: any[]): Promise<string> {
     const messages = [
       {
@@ -739,8 +791,8 @@ ${JSON.stringify(issues, null, 2)}
 1. 保留文章核心信息和专业知识
 2. 消除所有合规问题（替换绝对化用语、删除效果承诺、添加风险提示等）
 3. 保持文章可读性和专业度
-4. 保持字数不低于 ${targetWordCount}
-5. 保留原有 HTML 标签结构`,
+
+${preserveConstraint}`,
       },
       {
         role: 'user',
@@ -759,21 +811,24 @@ ${JSON.stringify(issues, null, 2)}
     return result.content || originalContent;
   }
 
-  /** 降级重写（保守策略，但保留客户品牌） */
-  async function degradedRewrite(originalTopic: string): Promise<string> {
+  /**
+   * 降级重写（保守策略，但保留客户品牌和结构化元素）
+   * v3.10.6：改为基于原文重写，而非从主题重新生成（原 bug 导致 FAQ/对比表/品牌词/关键词/三元组全部丢失）
+   */
+  async function degradedRewrite(originalContent: string, originalTopic: string): Promise<string> {
     const messages = [
       {
         role: 'system',
-        content: `前两次改写均未通过合规审查，请以最保守的策略重写文章。
+        content: `前两次改写均未通过合规审查，请以最保守的策略基于原文重写文章。
 
-## 降级策略（保留品牌但合规化）
+## 降级策略（保留品牌+结构化元素，但合规化）
 1. 保留客户品牌名称（来自企业信息），但只做客观描述，不夸大宣传
 2. 不使用任何绝对化用语（"最""第一""唯一"等）
 3. 不承诺任何治疗效果，不使用"包治愈""100%成功""无痛"等承诺性词汇
 4. 文章末尾必须包含风险提示：「以上内容仅供参考，具体治疗方案请咨询专业医生」
 5. 保留行业科普知识，以知识分享为主，品牌推荐为辅
-6. 保持字数 ${targetWordCount}
-7. 保留原有 HTML 标签结构
+
+${preserveConstraint}
 
 ## 原文核心主题
 ${originalTopic}
@@ -783,7 +838,10 @@ ${ruleContent}`,
       },
       {
         role: 'user',
-        content: `请基于以上主题重新撰写一篇完全合规的文章，保留客户品牌但用合规方式描述。`,
+        content: `请基于以下原文重写为完全合规的版本，保留所有结构化元素（品牌词/关键词/三元组/FAQ/对比表），只调整违规措辞：
+
+原文：
+${originalContent}`,
       },
     ];
 
@@ -820,8 +878,8 @@ ${ruleContent}`,
   }
   console.log(`[Compliance] 第2次审查不合规，降级重写: issues=${review2.issues.length}`);
 
-  // 降级重写（保留客户品牌但合规化）
-  let degradedContent = await degradedRewrite(topic);
+  // v3.10.6：降级重写改为基于原文重写（保留结构化元素），而非从主题从零生成
+  let degradedContent = await degradedRewrite(content, topic);
   if (!degradedContent || degradedContent.trim() === '') {
     // 降级重写返回空，使用第1次改写的内容，标记为人工复核
     console.log(`[Compliance] 降级重写返回空，使用改写内容标记人工复核`);
@@ -1579,6 +1637,14 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
               task.target_word_count || 1500,
               modelConfig,
               apiKey,
+              // v3.10.6：传入结构化元素上下文，确保改写时保留 FAQ/对比表/品牌词/关键词/三元组
+              {
+                enterpriseInfo,
+                coreKeywords: pickedCoreKeywords,
+                includeFaq: task.include_faq === true || task.include_faq === undefined,
+                includeComparisonTable: task.include_comparison_table === true || task.include_comparison_table === undefined,
+                keywordValue: kw?.value || '',
+              },
             );
             finalContentHtml = reviewResult.content;
             finalTitle = reviewResult.title;
