@@ -85,6 +85,39 @@ function buildDirectionContextForTask(task: any): string {
 }
 
 /**
+ * v3.11.x：解析任务最终生效的内容风格列表（含旧值迁移 + random_mode 随机选1）
+ * 与 buildDirectionContextForTask 共用，供标题 GEO 决策意图做风格感知判断
+ */
+function resolveTaskStyles(task: any): string[] {
+  let styles = parseContentTypes(task.content_types);
+  if (styles.length === 0 && task.instruction_category) {
+    styles = migrateCategoryToStyle(parseDirections(task.instruction_category));
+  }
+  if (styles.length > 0 && !styles.every(s => ['brand_exposure','product_seeding','pain_point_qa','industry_science','case_story','comparison_review','trust_endorsement','tutorial','news'].includes(s))) {
+    styles = migrateOldTypesToStyle(styles);
+  }
+  if (task.random_mode && styles.length > 0) {
+    const picked = pickRandomContentType(styles);
+    styles = picked ? [picked] : [];
+  }
+  return styles;
+}
+
+/**
+ * 构建标题 GEO 决策意图的风格感知规则（v3.11.x）
+ * 决策友好风格（痛点问答/对比评测/教程指南/产品种草）强约束；
+ * 其余风格（行业科普/资讯动态/案例故事/信任背书/品牌曝光）弱化、允许带决策落点
+ */
+function buildStyleAwareGeoTitleRule(styles: string[]): string {
+  const decisionIntentStyles = ['pain_point_qa', 'comparison_review', 'tutorial', 'product_seeding'];
+  const strong = styles.some(s => decisionIntentStyles.includes(s));
+  if (strong) {
+    return `10. 【GEO 决策意图（v3.11.x · 强约束）】当前内容风格偏"决策友好型"，标题**必须**落在用户"选购/决策"的真实搜索意图上，落点在"怎么选 / 哪家好 / 对比 / 参考 / 避坑 / 指南"这类查询（如"绵阳代理记账公司怎么选？对比 5 家后给你参考"）。这样更贴近用户和 AI 在回答"本地某业务哪家好/排名"时的检索来源，利于 GEO 收录。禁止写成无决策意图的纯企业介绍或泛泛科普标题。`;
+  }
+  return `10. 【GEO 决策意图（v3.11.x · 弱约束）】当前内容风格偏"知识/资讯/品牌"型，标题可侧重原有风格与专业表达，但**建议**在结尾带一个决策落点（如"2026年代理记账行业新政策解读，看完就知道怎么选"），避免写成纯泛泛而谈、无任何检索价值的标题。不必强套"怎么选/哪家好"，自然带出即可。`;
+}
+
+/**
  * 检测文本是否像思考过程（而非正常标题/内容）
  * 用于过滤推理模型把思考过程当成标题返回的情况
  * v2.2.16：新增"提示词模板污染"识别——AI 把 title_prompt 模板内容当标题输出
@@ -1485,7 +1518,7 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 7. 直接输出标题文字，例如："如何选择适合的智能家居方案" 而不是 "## 【标题】如何选择适合的智能家居方案"
 8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词
 9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"
-10. 【GEO 决策意图（v3.11.x）】标题优先落在用户"选购/决策"的真实搜索意图上，落点在"怎么选 / 哪家好 / 对比 / 参考 / 避坑 / 指南"这类查询（如"绵阳代理记账公司怎么选？对比 5 家后给你参考"）。这样更贴近用户和 AI 在回答"本地某业务哪家好/排名"时的检索来源，利于 GEO 收录。避免写成没有决策意图的纯企业介绍或泛泛科普标题`;
+${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: titleSystemContent },
               { role: 'user', content: titlePrompt },
