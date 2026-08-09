@@ -28,6 +28,7 @@ import {
   getCoreKeywordsByUserId,
   getCoreKeywordsFromZlgjcByUserId,
   getActiveManualRulesByPlatform,
+  getComplianceRulesByIds,
   updateArticleComplianceStatus,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
@@ -510,10 +511,19 @@ async function planArticleTopic(
   const topicPrompt = lines.join('\n');
 
   // v3.10：写作前置合规 — 仅注入合规规则池（manual+active）规则，爬取池仅作参考工具不参与注入
+  // v3.10.5：如果 task.compliance_rule_ids 非空，则按选中规则 ID 注入；否则用当前平台全部启用规则
   let complianceSuffix = '';
   if (task.enable_compliance_review === true && currentPlatform) {
     try {
-      const rules = await getActiveManualRulesByPlatform(currentPlatform);
+      let rules: any[];
+      const selectedIds: number[] = Array.isArray(task.compliance_rule_ids) ? task.compliance_rule_ids : [];
+      if (selectedIds.length > 0) {
+        // v3.10.5：按选中规则 ID 查询（额外过滤当前平台）
+        rules = await getComplianceRulesByIds(selectedIds, currentPlatform);
+      } else {
+        // 未选规则，使用当前平台全部启用规则
+        rules = await getActiveManualRulesByPlatform(currentPlatform);
+      }
       const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
       if (validRules.length > 0) {
         const PLATFORM_NAMES: Record<string, string> = {
@@ -1542,8 +1552,14 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 
       if (task.enable_compliance_review === true && currentPlatform) {
         try {
-          // v3.10.4：仅使用合规规则池（manual+active）规则，爬取池不参与审查
-          const rules = await getActiveManualRulesByPlatform(currentPlatform);
+          // v3.10.5：优先用选中的规则 ID，未选则用当前平台全部启用规则
+          let rules: any[];
+          const selectedIds: number[] = Array.isArray(task.compliance_rule_ids) ? task.compliance_rule_ids : [];
+          if (selectedIds.length > 0) {
+            rules = await getComplianceRulesByIds(selectedIds, currentPlatform);
+          } else {
+            rules = await getActiveManualRulesByPlatform(currentPlatform);
+          }
           const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
           if (validRules.length > 0) {
             // 拼接双池规则内容供审查/改写使用

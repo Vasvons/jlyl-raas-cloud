@@ -5505,6 +5505,8 @@ const AEO_QUOTA_FIELDS = [
   'auto_target_platforms',
   // v3.10: 合规审查开关
   'enable_compliance_review',
+  // v3.10.5: 合规规则 ID 列表
+  'compliance_rule_ids',
 ] as const;
 
 /** 获取当前用户的 AEO 配额配置 */
@@ -5612,6 +5614,12 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
   if (data.enable_compliance_review !== undefined) {
     fields.push(`enable_compliance_review = $${idx++}`);
     values.push(!!data.enable_compliance_review);
+  }
+  // v3.10.5：合规规则 ID 列表
+  if (data.compliance_rule_ids !== undefined) {
+    fields.push(`compliance_rule_ids = $${idx++}`);
+    const arr = Array.isArray(data.compliance_rule_ids) ? data.compliance_rule_ids : null;
+    values.push(arr && arr.length > 0 ? JSON.stringify(arr) : null);
   }
 
   if (fields.length === 0) return;
@@ -9089,6 +9097,26 @@ export async function getActiveManualRulesByPlatform(platform: string): Promise<
      ORDER BY updated_at DESC`,
     [platform]
   );
+  return result.rows;
+}
+
+/**
+ * 按 ID 列表获取合规规则（v3.10.5）
+ * @param ids 规则 ID 数组
+ * @param platform 可选，按平台过滤
+ * @returns 规则记录数组
+ */
+export async function getComplianceRulesByIds(ids: number[], platform?: string): Promise<any[]> {
+  if (!ids || ids.length === 0) return [];
+  const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+  const params: any[] = [...ids];
+  let sql = `SELECT * FROM platform_compliance_rule WHERE id IN (${placeholders}) AND source = 'manual' AND is_active = true`;
+  if (platform) {
+    params.push(platform);
+    sql += ` AND platform = $${params.length}`;
+  }
+  sql += ` ORDER BY updated_at DESC`;
+  const result = await query(sql, params);
   return result.rows;
 }
 

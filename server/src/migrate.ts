@@ -2691,6 +2691,8 @@ export async function migrate() {
 
     // 2. ai_writing_task 新增合规审查开关
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS enable_compliance_review BOOLEAN DEFAULT false`);
+    // v3.10.5：新增 compliance_rule_ids 字段（JSONB 数组，存选中的合规规则 ID）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS compliance_rule_ids JSONB DEFAULT NULL`);
 
     // 3. article 新增合规审查状态
     await client.query(`ALTER TABLE article ADD COLUMN IF NOT EXISTS compliance_issues JSONB`);
@@ -2698,6 +2700,8 @@ export async function migrate() {
 
     // 4. cloud_api_config 新增合规审查开关（AEO 配额配置使用 cloud_api_config 表存储）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS enable_compliance_review BOOLEAN DEFAULT false`);
+    // v3.10.5：cloud_api_config 新增 compliance_rule_ids 字段（自动写作配置选中的规则 ID）
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS compliance_rule_ids JSONB DEFAULT NULL`);
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {

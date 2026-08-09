@@ -887,6 +887,8 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
             cover_image_mode, cover_image_id, illustration_count,
             target_platforms, auto_generated, user_id, apply_aeo_suggestions,
             enable_compliance_review } = req.body;
+    // v3.10.5：compliance_rule_ids 用 let 声明，auto_generated=true 时可从 AEO 配置补全
+    let compliance_rule_ids = req.body.compliance_rule_ids;
     // v2.0.9：管理员可通过 user_id 字段为客户创建任务（飞轮守护进程场景）
     // 非管理员调用时强制使用自己的 userId，防止越权
     let userId = callerUserId;
@@ -1006,6 +1008,11 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
             finalTargetPlatforms = cfgPlatforms.filter((p: any) => typeof p === 'string' && p.trim());
             console.log(`[WritingTask] auto_generated=true：从 AEO 配置取 target_platforms=${finalTargetPlatforms.join(',')}`);
           }
+          // v3.10.5：auto_generated=true 时，若调用方未传 compliance_rule_ids，则从 AEO 配置补全
+          if (compliance_rule_ids === undefined && Array.isArray(aeoConfig.compliance_rule_ids)) {
+            compliance_rule_ids = aeoConfig.compliance_rule_ids.filter((id: any) => typeof id === 'number' && id > 0);
+            console.log(`[WritingTask] auto_generated=true：从 AEO 配置取 compliance_rule_ids=${JSON.stringify(compliance_rule_ids)}`);
+          }
           console.log(`[WritingTask] auto_generated=true：AEO 配置覆盖结果 instructionId=${finalInstructionId}, knowledgeId=${finalKnowledgeId}, agentProfileId=${finalAgentProfileId}, coverMode=${finalCoverImageMode}, illuCount=${finalIllustrationCount}, genMode=${finalGenerationMode}, articleCount=${finalArticleCount}`);
         }
       } catch (e: any) {
@@ -1097,6 +1104,11 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     // v3.10：保存合规审查开关
     if (enable_compliance_review !== undefined) {
       await query(`UPDATE ai_writing_task SET enable_compliance_review = $1 WHERE id = $2`, [!!enable_compliance_review, taskId]);
+    }
+    // v3.10.5：保存选中的合规规则 ID 列表
+    if (compliance_rule_ids !== undefined) {
+      const ids = Array.isArray(compliance_rule_ids) ? JSON.stringify(compliance_rule_ids.filter((id: any) => typeof id === 'number' && id > 0)) : null;
+      await query(`UPDATE ai_writing_task SET compliance_rule_ids = $1 WHERE id = $2`, [ids, taskId]);
     }
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {
