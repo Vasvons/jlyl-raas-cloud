@@ -1429,6 +1429,12 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
               ? writingCtx.systemMessage + '\n\n---\n\n'
               : '';
             // v2.2.19：强化"只输出标题文字"约束，禁止 # / 【标题】 / 标题：等前缀
+            // v3.10.7：标题去品牌约束——客户档案（含公司全称/简称）作为上下文传给 AI，
+            //   但标题是 SEO/GEO 抓取的核心字段，每篇都带品牌名会导致：
+            //   1) 标题同质化严重，多平台分发时被判定为营销软文
+            //   2) 品牌词堆砌触发平台限流（尤其头条号/百家号）
+            //   3) 用户搜索意图匹配度下降（用户搜"绵阳代理记账怎么选"而非"川务财税"）
+            //   品牌露出应放在正文（对比表第1名+案例段落），标题聚焦用户痛点和知识性
             const titleSystemContent = titleSystemPrefix + `你是标题生成器。基于上述所有上下文（客户档案、AEO 写作建议、专家角色等）生成与文章方向一致的标题。
 
 【输出规则（必须严格遵守）】
@@ -1439,7 +1445,8 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 5. 禁止使用项目符号（- 1. 1、等）
 6. 禁止使用书名号《》包裹标题
 7. 直接输出标题文字，例如："如何选择适合的智能家居方案" 而不是 "## 【标题】如何选择适合的智能家居方案"
-8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词`;
+8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词
+9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: titleSystemContent },
               { role: 'user', content: titlePrompt },
@@ -1491,6 +1498,28 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
             title = kw?.value || '未命名文章';
           }
           console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文标题也是思考过程/提示词污染，用关键词+首段生成标题:`, title);
+        }
+        // v3.10.7：标题去品牌统一兜底（覆盖所有标题来源：title_prompt生成/正文title解析/关键词+首段兜底）
+        //   AI 可能无视 prompt 约束仍把品牌名写入标题，这里硬性剥离确保标题纯净
+        {
+          const brandVariants = [
+            enterpriseInfo.company_full_name,
+            enterpriseInfo.company_short_name,
+          ].filter((n): n is string => !!n && n.length >= 2);
+          for (const brand of brandVariants) {
+            if (title.includes(brand)) {
+              const before = title;
+              title = title.replace(new RegExp(brand, 'g'), '');
+              title = title.replace(/^[\s：:、,\-—|]+/, '').replace(/[\s：:、,\-—|]+$/, '');
+              if (before !== title) {
+                console.warn(`[ArticleGen][标题去品牌-兜底] 剥离品牌名"${brand}": "${before}" → "${title}"`);
+              }
+            }
+          }
+          // 剥离后标题过短则用关键词补前缀
+          if (title.length < 8 && kw?.value) {
+            title = `${kw.value}：${title}`.slice(0, 50);
+          }
         }
         // 空内容校验：AI 返回空内容时跳过保存，避免出现"空文章"
         if (!contentHtml || contentHtml.replace(/<[^>]+>/g, '').trim().length < 50) {
