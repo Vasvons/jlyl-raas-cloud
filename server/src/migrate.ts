@@ -1268,6 +1268,12 @@ export async function migrate() {
     await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS trust_endorsement TEXT`);
     await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS other_info TEXT`);
 
+    // 8.1.1 企业知识库新增 本地同行 / 本地权威来源 字段（手动维护，用于 GEO 本地对比 + 权威背书）
+    //   local_competitors: 运营/客户手动确认的本地同行或本地区域机构清单（客观、可安全提及，避免编造竞对/商业诋毁）
+    //   local_authority_sources: 本地权威背书来源（本地媒体、政府/协会、荣誉奖项等），增强 E-E-A-T 权威确认
+    await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS local_competitors TEXT`);
+    await client.query(`ALTER TABLE enterprise_knowledge ADD COLUMN IF NOT EXISTS local_authority_sources TEXT`);
+
     // 8.2 写作指令新增 创作方向(多选)/文案类型(多选)/随机模式 字段
     // category 字段语义升级：原为单选分层(认知层等)，现改为多选创作方向(品牌曝光/产品种草等)
     // content_types: JSON数组，存储文案类型（科普/测评/案例/问答/对比/资讯/教程）

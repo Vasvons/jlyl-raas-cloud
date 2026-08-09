@@ -5743,14 +5743,16 @@ export async function createEnterpriseKnowledge(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO enterprise_knowledge (user_id, company_full_name, company_short_name, city, address,
             industry, founded_year, business_scope, entity_triples, intro_text, cases_text,
-            products_services, product_features, user_pain_points, trust_endorsement, other_info, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, true)
+            products_services, product_features, user_pain_points, trust_endorsement, other_info,
+            local_competitors, local_authority_sources, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, true)
      RETURNING id`,
     [data.user_id, data.company_full_name, data.company_short_name, data.city, data.address,
      data.industry, data.founded_year, data.business_scope,
      JSON.stringify(data.entity_triples || []), data.intro_text, data.cases_text,
      data.products_services, data.product_features, data.user_pain_points,
-     data.trust_endorsement, data.other_info]
+     data.trust_endorsement, data.other_info,
+     data.local_competitors, data.local_authority_sources]
   );
   return result.rows[0].id;
 }
@@ -5759,7 +5761,7 @@ export async function updateEnterpriseKnowledge(id: number, data: any): Promise<
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;
-  for (const key of ['company_full_name', 'company_short_name', 'city', 'address', 'industry', 'founded_year', 'business_scope', 'intro_text', 'cases_text', 'products_services', 'product_features', 'user_pain_points', 'trust_endorsement', 'other_info']) {
+  for (const key of ['company_full_name', 'company_short_name', 'city', 'address', 'industry', 'founded_year', 'business_scope', 'intro_text', 'cases_text', 'products_services', 'product_features', 'user_pain_points', 'trust_endorsement', 'other_info', 'local_competitors', 'local_authority_sources']) {
     if (data[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
       values.push(data[key]);
@@ -6099,6 +6101,7 @@ export async function getWritingTaskById(id: number): Promise<any | null> {
             k.company_full_name, k.company_short_name, k.city, k.industry, k.business_scope,
             k.entity_triples, k.intro_text, k.cases_text,
             k.products_services, k.product_features, k.user_pain_points, k.trust_endorsement, k.other_info,
+            k.local_competitors, k.local_authority_sources,
             ap.system_prompt as agent_system_prompt, ap.skills_content as agent_skills_content,
             ap.name as agent_profile_name
      FROM ai_writing_task t

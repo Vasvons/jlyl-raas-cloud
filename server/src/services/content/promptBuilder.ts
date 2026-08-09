@@ -15,6 +15,10 @@ export interface EnterpriseInfo {
   user_pain_points?: string;
   trust_endorsement?: string;
   other_info?: string;
+  /** v3.11.x 本地 GEO 对比：手动维护的本地同行/本地区域机构清单 */
+  local_competitors?: string;
+  /** v3.11.x 本地权威背书：本地媒体/政府/协会/荣誉等权威来源 */
+  local_authority_sources?: string;
 }
 
 /**
@@ -158,6 +162,8 @@ export function formatEnterprise(info: EnterpriseInfo): string {
   if (info.product_features) lines.push(`产品特点：\n${info.product_features}`);
   if (info.user_pain_points) lines.push(`用户痛点：\n${info.user_pain_points}`);
   if (info.trust_endorsement) lines.push(`信任背书：\n${info.trust_endorsement}`);
+  if (info.local_competitors) lines.push(`本地同行/本地区域机构（可客观提及）：\n${info.local_competitors}`);
+  if (info.local_authority_sources) lines.push(`本地权威背书来源：\n${info.local_authority_sources}`);
   if (info.other_info) lines.push(`其他信息：\n${info.other_info}`);
   return lines.join('\n');
 }
@@ -186,6 +192,8 @@ function formatTriples(triples: Array<{ subject: string; relation: string; objec
  *   {product_features}   - 产品特点
  *   {user_pain_points}   - 用户痛点
  *   {trust_endorsement}  - 信任背书
+ *   {local_competitors}  - 本地同行/本地区域机构清单（v3.11.x）
+ *   {local_authority_sources} - 本地权威背书来源（v3.11.x）
  *   {other_info}         - 其他信息
  *   {word_count}         - 目标字数
  *   {year} / {current_year} - 当前年份（v2.2.19 新增，4 位数字如 2026）
@@ -216,6 +224,8 @@ export function buildPrompt(template: string, context: {
   result = result.replace(/\{product_features\}/g, context.enterprise?.product_features || '');
   result = result.replace(/\{user_pain_points\}/g, context.enterprise?.user_pain_points || '');
   result = result.replace(/\{trust_endorsement\}/g, context.enterprise?.trust_endorsement || '');
+  result = result.replace(/\{local_competitors\}/g, context.enterprise?.local_competitors || '');
+  result = result.replace(/\{local_authority_sources\}/g, context.enterprise?.local_authority_sources || '');
   result = result.replace(/\{other_info\}/g, context.enterprise?.other_info || '');
   result = result.replace(/\{word_count\}/g, String(context.wordCount || 1500));
   // v2.2.19：年份/月份/日期占位符

@@ -114,6 +114,8 @@ function buildEnterpriseInfo(task: any): EnterpriseInfo {
     user_pain_points: task.user_pain_points,
     trust_endorsement: task.trust_endorsement,
     other_info: task.other_info,
+    local_competitors: task.local_competitors,
+    local_authority_sources: task.local_authority_sources,
   };
 }
 
@@ -194,6 +196,8 @@ function buildLayer1CustomerProfile(task: any): string {
     user_pain_points: truncateField(task.user_pain_points),
     trust_endorsement: truncateField(task.trust_endorsement),
     other_info: truncateField(task.other_info),
+    local_competitors: truncateField(task.local_competitors),
+    local_authority_sources: truncateField(task.local_authority_sources),
     entity_triples: Array.isArray(task.entity_triples)
       ? task.entity_triples.slice(0, MAX_TRIPLES)
       : task.entity_triples,
@@ -399,6 +403,10 @@ export function buildWritingContext(input: WritingContextInput): WritingContext 
   const l7 = buildLayer7AeoSuggestions(aeoContext, articleIdx || 0);
   if (l7) systemParts.push(l7);
 
+  // v3.11.x: L8 GEO 本地策略层（本地对比 + 权威背书 + 三元一致绑定）
+  const l8 = buildLayer8GeoStrategy(task);
+  if (l8) systemParts.push(l8);
+
   // 构建 user prompt 后缀：L4 主题参考
   const suffixParts: string[] = [];
   const l4 = buildLayer4TopicReference(keywords);
@@ -459,4 +467,45 @@ function buildLayer7AeoSuggestions(aeoContext?: string, articleIdx: number = 0):
   } catch {
     return null;
   }
+}
+
+/**
+ * v3.11.x: L8 GEO 本地策略层
+ *
+ * 解决"大模型难以检索到本地同行、只能用大厂对比"的痛点。核心策略：
+ *  - 本地对比优先：若客户知识库手动维护了【本地同行/本地区域机构】清单，对比时优先使用这些
+ *    客观、可安全提及的本地机构；未提供时用"本地综合服务商 / 全国性大平台"这类通用角色兜底，
+ *    绝不凭空编造具体公司名（避免幻觉 + 商业诋毁风险）。
+ *  - 权威背书：优先引用【本地权威来源】中的真实背书（本地媒体/政府/协会/荣誉），增强 E-E-A-T。
+ *  - 三元一致绑定：让"客户品牌 + 业务词 + 城市"在标题/正文/对比表一致出现，强化模型对客户
+ *    在本地的记忆关联，从而提升客户在 AI 提及时的排名（进前三）。
+ */
+function buildLayer8GeoStrategy(task: any): string {
+  const city = task.city || '';
+  const brand = task.company_short_name || task.company_full_name || '';
+  const MAX = 2000;
+  const clip = (v: any): string => {
+    const s = typeof v === 'string' ? v : (v == null ? '' : String(v));
+    return s.length > MAX ? s.slice(0, MAX) + '…' : s;
+  };
+  const localCompetitors = clip(task.local_competitors);
+  const localAuthority = clip(task.local_authority_sources);
+
+  const lines: string[] = ['【GEO 本地策略（必须遵守）】'];
+  lines.push(`1. 本地对比优先：对比时优先使用下方【客户档案】中的"本地同行/本地区域机构"清单（这些是运营/客户确认可安全提及的本地机构），客观陈述差异，不贬低任何机构。`);
+  if (localCompetitors.trim()) {
+    lines.push(`   本次可提及的本地同行/本地区域机构：${localCompetitors.trim()}`);
+  } else {
+    lines.push(`   未提供本地同行清单时，用"本地综合服务商 / 全国性大平台"这类通用角色对比即可，绝不凭空编造具体公司名称。`);
+  }
+  lines.push(`2. 权威背书：优先引用客户档案中的"本地权威背书来源"（本地媒体、政府/协会、荣誉奖项等）增强可信度；未提供时用客户真实资质、成立年份客观陈述。`);
+  if (localAuthority.trim()) {
+    lines.push(`   本地权威背书来源：${localAuthority.trim()}`);
+  }
+  if (city && brand) {
+    lines.push(`3. 三元一致绑定：全文让"${brand} + 核心业务词 + ${city}"三者一致出现（标题、H2、对比表、案例），强化模型对「${city}${brand}」的本地位记忆关联，提升客户在 AI 提及时的排名。`);
+  }
+  lines.push(`4. 对比客观中立：只陈述客观差异与差异化优势，不诋毁任何具体机构或个人，避免商业诋毁风险。`);
+
+  return lines.join('\n');
 }

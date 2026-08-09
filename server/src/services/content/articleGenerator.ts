@@ -275,6 +275,8 @@ function buildEnterpriseInfo(task: any) {
     user_pain_points: task.user_pain_points,
     trust_endorsement: task.trust_endorsement,
     other_info: task.other_info,
+    local_competitors: task.local_competitors,
+    local_authority_sources: task.local_authority_sources,
   };
 }
 
@@ -1330,6 +1332,7 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
           console.log('[ArticleGen][L1客户] products_services 长度:', (task.products_services || '').length, '/ user_pain_points 长度:', (task.user_pain_points || '').length);
           console.log('[ArticleGen][L1客户] cases_text 长度:', (task.cases_text || '').length, '/ product_features 长度:', (task.product_features || '').length);
           console.log('[ArticleGen][L1客户] trust_endorsement 长度:', (task.trust_endorsement || '').length, '/ other_info 长度:', (task.other_info || '').length);
+          console.log('[ArticleGen][L1客户] local_competitors 长度:', (task.local_competitors || '').length, '/ local_authority_sources 长度:', (task.local_authority_sources || '').length);
           console.log('[ArticleGen][L1客户] business_scope 长度:', (task.business_scope || '').length);
           console.log('[ArticleGen][L1客户] entity_triples 数量:', Array.isArray(task.entity_triples) ? task.entity_triples.length : 0);
           console.log('[ArticleGen][L2历史] recentArticles 数量:', recentArticles.length);
