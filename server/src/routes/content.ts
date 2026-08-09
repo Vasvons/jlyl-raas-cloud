@@ -150,6 +150,7 @@ import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
 import { testModelConnection, chatCompletion } from '../services/content/aiClient';
 import { executeWritingTask, regenerateArticle } from '../services/content/articleGenerator';
 import { extractTriplesFromKnowledge } from '../services/content/tripleExtractor';
+import { organizeLocalCompetitors } from '../services/content/geoOrganizer';
 import { autoCreateWritingFromLatestPeriod } from '../services/aeo/analyzer';
 import { wsBroadcast } from '../wsServer';
 import multer from 'multer';
@@ -650,6 +651,26 @@ router.post('/knowledge/:id/extract-triples', async (req: Request, res: Response
     res.json({ code: 200, data: triples });
   } catch (err: any) {
     console.error('[POST /knowledge/:id/extract-triples] 抽取失败:', err.message);
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+/**
+ * 一键整理本地同行 / 本地区域机构清单
+ * 用户从外部 AI 平台复制回答文本，调用本系统 AI 模型整理成结构化清单，
+ * 回填到输入框，用户确认后再保存（不自动写入数据库）
+ */
+router.post('/knowledge/organize-local-competitors', async (req: Request, res: Response) => {
+  try {
+    const userId = getUserId(req);
+    const { raw_text, city, industry } = req.body || {};
+    if (!raw_text || !String(raw_text).trim()) {
+      return res.status(400).json({ code: 400, message: '请先粘贴需要整理的文本' });
+    }
+    const organized = await organizeLocalCompetitors(String(raw_text), userId, city, industry);
+    res.json({ code: 200, data: organized });
+  } catch (err: any) {
+    console.error('[POST /knowledge/organize-local-competitors] 整理失败:', err.message);
     res.status(500).json({ code: 500, message: err.message });
   }
 });
