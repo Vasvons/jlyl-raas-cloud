@@ -1,12 +1,12 @@
 {
   "platform": "dy",
-  "version": "1.7.13",
-  "description": "抖音图文发布流程（v1.7.13：话题统一补 # 前缀——article.tags 数据源有时带 # 有时不带，导致抖音识别不一致，新增 add_hash:true 自动补 #）",
+  "version": "1.7.14",
+  "description": "抖音图文发布流程（v1.7.14：修复登录预检假阳性——home页匿名可访问且含avatar容器导致误判已登录；移除宽泛avatar选择器，新增扫码登录/验证码登录关键词）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/home",
-  "login_check_selector": "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')] | //div[contains(@class,'avatar')]",
+  "login_check_selector": "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')]",
   "login_check_url_pattern": "^https://creator\\.douyin\\.com/.*login.*",
-  "logout_keywords": ["请登录", "请先登录", "sign in"],
+  "logout_keywords": ["请登录", "请先登录", "sign in", "扫码登录", "验证码登录", "密码登录", "登录即代表同意"],
   "steps": [
     {
       "type": "navigate",
