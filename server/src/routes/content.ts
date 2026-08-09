@@ -1738,6 +1738,102 @@ router.post('/compliance-rules/:platform/crawl', async (req: Request, res: Respo
   }
 });
 
+/** AI 整理爬取到的原始文本为结构化合规规则（v3.10.4） */
+router.post('/compliance-rules/:platform/ai-organize', async (req: Request, res: Response) => {
+  try {
+    const platform = req.params.platform;
+    const { raw_content, keywords } = req.body;
+    if (!raw_content || raw_content.trim().length < 50) {
+      return res.status(400).json({ code: 400, message: '原始规则文本内容过短' });
+    }
+
+    const PLATFORM_NAMES: Record<string, string> = {
+      wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
+      js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
+      sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
+    };
+    const platformName = PLATFORM_NAMES[platform] || platform;
+
+    // 获取 AI 模型配置（与写作模型一致）
+    const modelConfig = await getDefaultModelConfig(getUserId(req));
+    if (!modelConfig) {
+      return res.status(500).json({ code: 500, message: '未配置 AI 写作模型，无法进行 AI 整理' });
+    }
+    // 解密 API KEY（与 articleGenerator resolveModelConfig 一致）
+    const { decrypt } = await import('../utils/crypto');
+    let apiKey = '';
+    if (modelConfig.api_key_encrypted) {
+      try {
+        apiKey = decrypt(modelConfig.api_key_encrypted);
+      } catch {
+        return res.status(500).json({ code: 500, message: 'API-KEY 解密失败，请重新配置模型' });
+      }
+    }
+    if (!apiKey) {
+      return res.status(500).json({ code: 500, message: 'API-KEY 为空，请到「后台配置 > 生文模型配置」中配置' });
+    }
+
+    const keywordHint = keywords && keywords.trim()
+      ? `\n\n请特别关注与以下关键词相关的内容（如有）：${keywords.trim()}`
+      : '';
+
+    const messages = [
+      {
+        role: 'system',
+        content: `你是合规规则整理专家。请将下面从 ${platformName} 官方文档爬取到的原始文本，整理为结构化的合规规则。
+
+## 整理要求
+1. 提取核心合规要求，去除导航、广告、版权声明等无关内容
+2. 按以下结构组织（如原文有对应内容）：
+   - 【资质要求】发布内容需要的资质或许可
+   - 【禁止发布的内容类目】明确禁止的内容类型
+   - 【敏感词类别】需要避免使用的词汇类别
+   - 【行业特殊限制】针对特定行业的限制（如医美、金融等）
+   - 【必须标注的提示信息】内容中必须包含的提示或声明
+3. 每个类别下列出具体条目，用编号或项目符号
+4. 保留原文的具体数字、条款编号、法律引用等关键信息
+5. 如果原文没有明确分类，按内容性质自行归类
+6. 输出纯文本，不要 Markdown 代码块包裹${keywordHint}
+
+## 输出格式示例
+【资质要求】
+1. xxx
+2. xxx
+
+【禁止发布的内容类目】
+1. xxx
+2. xxx
+
+...（其他类别）`,
+      },
+      {
+        role: 'user',
+        content: `原始文本（来自 ${platformName} 官方文档）：\n\n${raw_content}`,
+      },
+    ];
+
+    const { chatCompletion } = await import('../services/content/aiClient');
+    const result = await chatCompletion({
+      baseUrl: modelConfig.base_url,
+      apiKey,
+      model: modelConfig.model_name,
+      messages: messages as any,
+      temperature: 0.3,
+      timeout: 120000,
+    });
+
+    const organizedContent = result.content || '';
+    if (!organizedContent.trim()) {
+      return res.status(500).json({ code: 500, message: 'AI 整理返回空内容，请重试' });
+    }
+
+    res.json({ code: 200, data: { organized_content: organizedContent } });
+  } catch (err: any) {
+    console.error('[AI Organize] 整理失败:', err);
+    res.status(500).json({ code: 500, message: err.message || 'AI 整理失败' });
+  }
+});
+
 /** 删除合规规则（按 id） */
 router.delete('/compliance-rules/:id', async (req: Request, res: Response) => {
   try {

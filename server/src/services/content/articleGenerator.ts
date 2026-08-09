@@ -27,7 +27,7 @@ import {
   updateWritingTaskAeoContext,
   getCoreKeywordsByUserId,
   getCoreKeywordsFromZlgjcByUserId,
-  getComplianceRulesByPlatform,
+  getActiveManualRulesByPlatform,
   updateArticleComplianceStatus,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
@@ -509,11 +509,11 @@ async function planArticleTopic(
 
   const topicPrompt = lines.join('\n');
 
-  // v3.10：写作前置合规 — 注入目标平台合规约束（v3.10.1 双池：crawled + manual 全部注入）
+  // v3.10：写作前置合规 — 仅注入合规规则池（manual+active）规则，爬取池仅作参考工具不参与注入
   let complianceSuffix = '';
   if (task.enable_compliance_review === true && currentPlatform) {
     try {
-      const rules = await getComplianceRulesByPlatform(currentPlatform, { onlyActive: true });
+      const rules = await getActiveManualRulesByPlatform(currentPlatform);
       const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
       if (validRules.length > 0) {
         const PLATFORM_NAMES: Record<string, string> = {
@@ -1542,8 +1542,8 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 
       if (task.enable_compliance_review === true && currentPlatform) {
         try {
-          // v3.10.1：双池架构，合并 crawled + manual 所有规则的 rule_content
-          const rules = await getComplianceRulesByPlatform(currentPlatform, { onlyActive: true });
+          // v3.10.4：仅使用合规规则池（manual+active）规则，爬取池不参与审查
+          const rules = await getActiveManualRulesByPlatform(currentPlatform);
           const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
           if (validRules.length > 0) {
             // 拼接双池规则内容供审查/改写使用

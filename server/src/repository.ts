@@ -9058,6 +9058,7 @@ export async function getComplianceRules(opts?: {
 export async function getComplianceRulesByPlatform(platform: string, opts?: {
   onlyActive?: boolean;
   industry?: string;
+  source?: string;
 }): Promise<any[]> {
   const conditions: string[] = [`platform = $1`];
   const params: any[] = [platform];
@@ -9066,9 +9067,27 @@ export async function getComplianceRulesByPlatform(platform: string, opts?: {
     params.push(opts.industry);
     conditions.push(`industry = $${params.length}`);
   }
+  if (opts?.source) {
+    params.push(opts.source);
+    conditions.push(`source = $${params.length}`);
+  }
   const result = await query(
     `SELECT * FROM platform_compliance_rule WHERE ${conditions.join(' AND ')} ORDER BY source ASC, updated_at DESC`,
     params
+  );
+  return result.rows;
+}
+
+/**
+ * 获取写作时生效的合规规则（仅合规规则池：source='manual' + is_active=true）
+ * v3.10.4：爬取池仅作为参考工具，不参与写作注入
+ */
+export async function getActiveManualRulesByPlatform(platform: string): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM platform_compliance_rule
+     WHERE platform = $1 AND source = 'manual' AND is_active = true
+     ORDER BY updated_at DESC`,
+    [platform]
   );
   return result.rows;
 }
