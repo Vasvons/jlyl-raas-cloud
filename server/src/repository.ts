@@ -1119,9 +1119,36 @@ export async function insertDistillateKeyword(userId: string, keyword: string): 
   return result.rows[0].id;
 }
 
-// 删除核心关键词
+// 删除核心关键词（同步删除蒸馏关键词库中由该核心词生成的组合词）
 export async function deleteDistillateKeyword(id: number): Promise<void> {
-  await query('DELETE FROM distillate_keyword WHERE id = $1', [id]);
+  await withTransaction(async (client) => {
+    // 1. 查询要删除的核心关键词文本及所属用户
+    const keywordResult = await client.query(
+      'SELECT distillate_keyword, user_id FROM distillate_keyword WHERE id = $1',
+      [id]
+    );
+    if (keywordResult.rows.length === 0) return;
+    const coreKeyword = keywordResult.rows[0].distillate_keyword;
+    const userId = keywordResult.rows[0].user_id;
+
+    // 2. 同步删除蒸馏关键词库（zlgjc）中由该核心词生成的组合词（keyword_type=0）
+    //    先删除关联的跳转链接（zlgjcurl），再删除蒸馏词本身，保证引用完整
+    const zlgjcResult = await client.query(
+      'SELECT id FROM zlgjc WHERE userid = $1 AND hxgjc = $2 AND keyword_type = 0',
+      [userId, coreKeyword]
+    );
+    const zlgjcIds = zlgjcResult.rows.map((r: any) => r.id);
+    if (zlgjcIds.length > 0) {
+      await client.query('DELETE FROM zlgjcurl WHERE zlgjcid = ANY($1::int[])', [zlgjcIds]);
+      await client.query(
+        'DELETE FROM zlgjc WHERE userid = $1 AND hxgjc = $2 AND keyword_type = 0',
+        [userId, coreKeyword]
+      );
+    }
+
+    // 3. 删除核心关键词本身
+    await client.query('DELETE FROM distillate_keyword WHERE id = $1', [id]);
+  });
 }
 
 // ============ 蒸馏关键词库（zlgjc）分页查询和删除 ============
