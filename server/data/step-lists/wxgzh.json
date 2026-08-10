@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.9.36",
-  "description": "微信公众号/服务号图文发布流程（v1.9.36：step_list 首步新增 navigate 到主页，解决登录预检被跳过时页面停在 about:blank 导致 token 提取失败的回归；v1.9.35：封面设置改用'从图片库选择'上传 cover_image_url，替代'从正文选择'，彻底避免'未授权使用切换账号能力'弹窗阻塞——该弹窗是微信平台对'从正文选择'功能的权限限制，非脚本 bug）",
+  "version": "1.9.40",
+  "description": "微信公众号/服务号图文发布流程（v1.9.40：版本号大幅提升以覆盖 guardian 递增版本，强制 seed 刷新；v1.9.36：step_list 首步新增 navigate 到主页，解决登录预检被跳过时页面停在 about:blank 导致 token 提取失败的回归；v1.9.35：封面设置改用'从图片库选择'上传 cover_image_url，替代'从正文选择'，彻底避免'未授权使用切换账号能力'弹窗阻塞——该弹窗是微信平台对'从正文选择'功能的权限限制，非脚本 bug）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
