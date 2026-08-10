@@ -749,6 +749,10 @@ async function reviewAndRewriteArticle(
   targetWordCount: number,
   modelConfig: any,
   apiKey: string,
+  // v3.14.x：目标平台正文上限（content_max_length），改写时作为硬性上限，覆盖"字数不低于"矛盾约束
+  //   原 bug：合规改写只要求"字数不低于 targetWordCount"，与平台字数上限（如抖音/小红书 1000 字）冲突，
+  //   导致短平台文章被改写扩容到 2000-4000 字，完全脱离后台配置的平台字数限制。
+  maxContentLength?: number,
   // v3.10.6：传入结构化元素上下文，确保改写时保留 FAQ/对比表/品牌词/关键词/三元组
   preserveCtx?: {
     enterpriseInfo: any;
@@ -807,7 +811,9 @@ ${triplesPreview}`);
     preserveBlocks.push(`5. 推荐排名对比表——必须保留 <h2>${new Date().getFullYear()}年推荐排名</h2> + <table> 结构，客户品牌必须出现在表中（第1或第2名），其他位置用真实竞品品牌`);
   }
   preserveBlocks.push(`6. 保留原文的 <h1>/<h2>/<p>/<ul>/<li>/<table> 等 HTML 标签结构，只改写文字内容
-7. 字数不低于 ${targetWordCount}`);
+${maxContentLength && maxContentLength > 0
+  ? `7. 字数硬性上限：正文总字数不得超过 ${maxContentLength} 字（目标平台审核硬性上限，超出会被平台拒绝），改写后必须控制在限制以内，精简冗余内容`
+  : `7. 字数不低于 ${targetWordCount}`}`);
   const preserveConstraint = preserveBlocks.join('\n');
 
   /** AI 审查单次调用（v3.10.3：宽松审查模式，只查严重问题） */
@@ -1781,6 +1787,10 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
               task.target_word_count || 1500,
               modelConfig,
               apiKey,
+              // v3.14.x：传入平台正文上限，让合规改写严格遵守平台字数限制（短平台不再被扩容）
+              currentPlatformRule && currentPlatformRule.content_max_length
+                ? Number(currentPlatformRule.content_max_length)
+                : undefined,
               // v3.10.6：传入结构化元素上下文，确保改写时保留 FAQ/对比表/品牌词/关键词/三元组
               {
                 enterpriseInfo,
@@ -1796,8 +1806,42 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
             complianceIssues = reviewResult.complianceIssues;
             console.log(`[ArticleGen] 合规审查完成: status=${complianceStatus}, issues=${complianceIssues.length}`);
 
+            // v3.14.x：合规改写后再次执行平台字数硬截断兜底
+            //   原 bug：改写前已截断到平台上限，但合规改写（reviewAndRewriteArticle）可能再次扩容，
+            //   改写后的 finalContentHtml 未再校验字数，导致短平台文章超限。
+            //   修复：改写后若超过平台 content_max_length，按段落自然截断到限制内。
+            if (currentPlatformRule && currentPlatformRule.content_max_length) {
+              const maxLen = Number(currentPlatformRule.content_max_length);
+              const plainTextLen = finalContentHtml.replace(/<[^>]+>/g, '').length;
+              if (maxLen > 0 && plainTextLen > maxLen) {
+                console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇合规改写后超限: ${plainTextLen} > ${maxLen}（${currentPlatformRule.name}），执行二次硬截断`);
+                const paragraphs = finalContentHtml.split(/(<\/p>\s*)/).filter(Boolean);
+                let accumulated = 0;
+                const kept: string[] = [];
+                for (const chunk of paragraphs) {
+                  const chunkTextLen = chunk.replace(/<[^>]+>/g, '').length;
+                  if (accumulated + chunkTextLen > maxLen) {
+                    const remaining = maxLen - accumulated;
+                    if (remaining > 20) {
+                      const m = chunk.match(/^(\s*<p[^>]*>)([\s\S]*?)(<\/p>\s*)$/i);
+                      if (m) {
+                        const innerText = m[2].replace(/<[^>]+>/g, '');
+                        kept.push(`${m[1]}${innerText.slice(0, remaining)}…${m[3]}`);
+                      }
+                    }
+                    break;
+                  }
+                  kept.push(chunk);
+                  accumulated += chunkTextLen;
+                }
+                finalContentHtml = kept.join('') + '\n<p>…（已按平台字数限制截断）</p>';
+              }
+            }
+
             // 重新计算字数（改写后可能变化）
-            wordCount = Math.ceil(finalContentHtml.replace(/<[^>]+>/g, '').length / 3);
+            // v3.14.x：修复字数统计错误——原代码 `Math.ceil(len / 3)` 把字数除 3，
+            //   导致文章列表显示的字数与实际正文不符（约为实际 1/3）。字数应统计纯文本字符长度。
+            wordCount = finalContentHtml.replace(/<[^>]+>/g, '').length;
           } else {
             console.log(`[ArticleGen] 合规规则未配置，跳过审查: industry=${complianceIndustry || 'all'}`);
           }
