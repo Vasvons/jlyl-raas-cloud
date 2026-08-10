@@ -423,6 +423,26 @@ function buildShortPlatformAdaptation(rule: any): string {
 }
 
 /**
+ * v3.11.x：答案文结构总纲（GEO Answer，通用强制）
+ * 对标 GEO 收录效果最好的"答案文"写法：首段直接回答、逐维度小标题分层、对比表补客观信息、
+ * FAQ 对齐真实搜索词、结尾结论+免责。AI 引擎按可独立摘录的"答案块"抽取，问句命中用户 query，
+ * 客观对比提升采信度，从而更容易收录并被 AI 引擎推荐到前三。
+ *
+ * 说明：短内容平台（≤2000 字，如抖音/小红书）由 buildShortPlatformAdaptation 显式覆盖接管
+ * （不强制长文结构），此处总纲对长文平台生效；短平台的核心价值（首段点题、命中关键词）已由
+ * buildShortPlatformAdaptation 的第 1 条覆盖。
+ */
+function buildGeoAnswerStructure(): string {
+  return `### 答案文结构总纲（GEO Answer，系统强制，通用最高优先级）
+全文按"答案文"骨架组织，让 AI 引擎（豆包/文心/Kimi/DeepSeek 等）能直接抽出你的答案、并命中用户搜索意图。必须遵守：
+1. 【首段直接回答】文章第 1 段就先直接给出结论/答案（如"XX 哪家好，看的不是机构名气，而是 A/B/C 三个可核验指标"），再展开论证。禁止从宽泛背景、衰老/行业大环境等铺垫讲起。让 AI 能独立摘录开头这段作为"直接回答"的答案块。
+2. 【逐维度小标题分层】正文用 <h2> 按维度分层组织（如"一、怎么判断"→"二、XX 怎么样：逐个维度看"→"三、常见问题"），每层聚焦一个主题，便于 AI 按维度抽取，避免整篇流水账。
+3. 【对比表补客观信息】下方"推荐排名对比表"块中，除客户品牌外的机构/竞品也要填写可核验的客观信息（资质等级、成立年份、科室/备案、规模等），避免"别人全空、独捧一家"的偏袒感——有对比依据的结论，AI 才更愿意采信。
+4. 【FAQ 对齐真实搜索词】FAQ（下方"FAQ"块）的问题必须是用户真实输入的问句（如"XX 哪家好""XX 多少钱""能做 XX 吗"），直接复刻用户怎么搜，覆盖长尾 query，而不是自说自话的官方式问题。
+5. 【结论 + 免责前置】结尾给"结论与行动建议"（可独立引用的总括段），并保留免责声明降低营销感，AI 更愿引用。`;
+}
+
+/**
  * v1.8.0：构建 L6 平台约束层提示词
  * 注入到 articlePrompt 末尾，约束 AI 按平台字数 + 风格创作
  */
@@ -1350,6 +1370,9 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         if (directionCtx && directionCtx.trim()) {
           mandatoryBlocks.push(directionCtx.trim());
         }
+        // v3.11.x：答案文结构总纲（通用强制）——长文平台全文骨架，放在创作方向之后、FAQ/对比表之前，
+        //   让 AI 先建立"答案文"整体骨架，再填充 FAQ/对比表细节。短平台由 buildShortPlatformAdaptation 覆盖。
+        mandatoryBlocks.push(buildGeoAnswerStructure());
         if (includeFaq) {
           mandatoryBlocks.push(`【必须生成的结构块：FAQ】
 文章必须包含一个 FAQ 章节，放在正文末尾（结论之前）。格式要求：
@@ -1519,6 +1542,7 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 7. 直接输出标题文字，例如："如何选择适合的智能家居方案" 而不是 "## 【标题】如何选择适合的智能家居方案"
 8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词
 9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"
+10. 【标题问句优先（v3.11.x 通用）】标题优先采用"用户原话型"问句，直接复刻目标客户在搜索框里的输入（如"郑州脂肪填充哪家做的好？""XX 怎么样？"），提升 GEO/AI 检索命中率。若与下方"GEO 决策意图"风格规则冲突：对决策类风格（痛点问答/对比评测/教程指南/产品种草）强制问句；对知识/资讯/品牌型风格不强求问句形式，但标题应包含用户可能搜索的关键词。
 ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: titleSystemContent },
