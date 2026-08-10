@@ -118,7 +118,14 @@ function buildStyleAwareGeoTitleRule(styles: string[]): string {
   const decisionIntentStyles = ['pain_point_qa', 'comparison_review', 'tutorial', 'product_seeding'];
   const strong = styles.some(s => decisionIntentStyles.includes(s));
   if (strong) {
-    return `10. 【GEO 决策意图（v3.11.x · 强约束）】当前内容风格偏"决策友好型"，标题**必须**落在用户"选购/决策"的真实搜索意图上，落点在"怎么选 / 哪家好 / 对比 / 参考 / 避坑 / 指南"这类查询（如"绵阳代理记账公司怎么选？对比 5 家后给你参考"）。这样更贴近用户和 AI 在回答"本地某业务哪家好/排名"时的检索来源，利于 GEO 收录。禁止写成无决策意图的纯企业介绍或泛泛科普标题。`;
+    return `10. 【GEO 决策意图（v3.14.x · 强约束）】当前内容风格偏"决策友好型"，标题**必须**写成"用户原话式"选购问句，且固定套用以下格式之一：
+- **{城市}{业务}哪家做的好？**　例："郑州脂肪填充哪家做的好？"
+- **{城市}{业务}选哪家{行业}？**　例："安阳下巴吸脂选哪家医美？"
+三个必备要素缺一不可：
+a. 【城市】必须带上客户所在城市（来自企业信息中的"所在城市"，如"郑州/安阳"），让标题对本地区搜索强相关；
+b. 【业务】必须是用户会搜的具体业务/项目名（如"脂肪填充/下巴吸脂/鼻部整形"）；
+c. 【决策对象】必须是"哪家做的好 / 选哪家 / 哪家好 / 哪家便宜"这类明确选购意图。
+**禁止**单独使用"{业务}怎么选"这种标题——它缺少城市与"哪家"决策对象，语义残缺，用户根本不会这样搜，GEO 无法命中。要点：能写成"XX 选哪家/哪家做的好"就绝不用"怎么选"。`;
   }
   return `10. 【GEO 决策意图（v3.11.x · 弱约束）】当前内容风格偏"知识/资讯/品牌"型，标题可侧重原有风格与专业表达，但**建议**在结尾带一个决策落点（如"2026年代理记账行业新政策解读，看完就知道怎么选"），避免写成纯泛泛而谈、无任何检索价值的标题。不必强套"怎么选/哪家好"，自然带出即可。`;
 }
@@ -197,6 +204,32 @@ function cleanTitlePrefix(title: string): string {
   // 合并中间多余空白
   t = t.replace(/\s+/g, ' ').trim();
   return t;
+}
+
+/**
+ * v3.14.x：标题决策意图规范化（安全兜底）
+ * 场景：AI 仍可能产出"下巴吸脂怎么选""鼻部整形怎么选"这类残缺标题——
+ *   缺少城市、也未落在"哪家/选哪家"决策对象上，GEO 无法命中用户搜索。
+ * 修复：检测到"XX怎么选/如何选"且未含"哪家/选哪家"时，规范为"{城市}{业务}选哪家{行业}？"
+ *   例："下巴吸脂怎么选" → "安阳下巴吸脂选哪家医美？"
+ */
+function normalizeGeoDecisionTitle(title: string, enterpriseInfo: any): string {
+  if (!title) return title;
+  const city = enterpriseInfo?.city || '';
+  const industry = enterpriseInfo?.industry || '';
+  // 已含明确决策对象（哪家/选哪家/哪家好）则不动，避免误改
+  if (/哪家|选哪家|哪家好|哪家做/.test(title)) return title;
+  // 匹配"{业务}怎么选/如何选"结尾（前半段为业务名，2-12 字）
+  const m = title.match(/^(.{2,12}?)\s*(怎么选|如何选|怎么挑|怎么找|怎么选好|如何挑)([？?。！!\s]*)$/);
+  if (!m) return title;
+  let business = m[1].trim();
+  // 业务名若已带城市前缀或行业后缀，剥离，避免重复（如"安阳下巴吸脂怎么选"）
+  if (city && business.startsWith(city)) business = business.slice(city.length).trim();
+  const prefix = city ? city : '';
+  const decision = '选哪家';
+  const suffix = industry ? industry : '';
+  const q = '？';
+  return `${prefix}${business}${decision}${suffix}${q}`;
 }
 
 /**
@@ -472,18 +505,26 @@ function buildWritingCraftRule(): string {
  * v1.8.0：构建 L6 平台约束层提示词
  * 注入到 articlePrompt 末尾，约束 AI 按平台字数 + 风格创作
  */
-function buildPlatformConstraintPrompt(rule: any): string {
+function buildPlatformConstraintPrompt(rule: any, targetWordCount?: number): string {
   if (!rule) return '';
   const tagsReq = rule.require_tags
     ? `必须包含 ${rule.tags_min_count || 1}-${rule.tags_max_count || 5} 个相关话题标签`
     : '话题标签可选';
   const shortAdapt = buildShortPlatformAdaptation(rule);
+  // v3.14.x：字数上限取「用户设定目标字数」与「平台硬上限」的较小值。
+  //   原 bug：只按平台 content_max_length 约束，用户明明设定 2500 字，AI 却按平台上限
+  //   （可能 5000/10000）生成大幅超字，最后被硬截断成残缺内容。
+  //   修复：用户设定字数（target_word_count）是真正的创作目标，用它做硬性封顶。
+  const platformMax = rule.content_max_length ?? 50000;
+  const effectiveMax = targetWordCount && targetWordCount > 0
+    ? Math.min(Number(targetWordCount), Number(platformMax))
+    : Number(platformMax);
   return `\n\n## 目标平台约束
 你正在为【${rule.name}】平台创作内容，必须严格遵守以下约束：
 
 ### 字数限制（硬性约束，超出会被平台拒绝）
 - 标题：${rule.title_min_length ?? 1}-${rule.title_max_length ?? 100} 字
-- 正文：${rule.content_min_length ?? 100}-${rule.content_max_length ?? 50000} 字
+- 正文：${rule.content_min_length ?? 100}-${effectiveMax} 字
 
 ### 风格要求
 ${rule.style_prompt || '无特殊风格要求'}
@@ -492,9 +533,12 @@ ${rule.style_prompt || '无特殊风格要求'}
 ### 话题要求
 ${tagsReq}
 
+### 字数预算（v3.14.x 强制，防超生成）
+本篇正文上限 ${effectiveMax} 字，这是**硬性红线**。请先规划好结构再动笔，确保「开头+正文+对比表+FAQ+结尾」全部能在预算内完成；放不下的次要内容必须精简或删除，绝不能为了凑结构而超字。写完后请自查纯文本总字数，必须 ≤ ${effectiveMax} 字。
+
 ${shortAdapt}
 
-请严格按照上述约束创作。标题务必控制在 ${rule.title_max_length ?? 100} 字以内，正文控制在 ${rule.content_max_length ?? 50000} 字以内。`;
+请严格按照上述约束创作。标题务必控制在 ${rule.title_max_length ?? 100} 字以内，正文控制在 ${effectiveMax} 字以内。`;
 }
 
 /**
@@ -1478,7 +1522,7 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
         // v1.8.0：注入 L6 平台约束层（字数 + 风格 + 话题要求）
         // 仅在平台专属模式下生效，注入到 articlePrompt 末尾，让 AI 按平台约束创作
         if (currentPlatformRule) {
-          articlePrompt += buildPlatformConstraintPrompt(currentPlatformRule);
+          articlePrompt += buildPlatformConstraintPrompt(currentPlatformRule, task.target_word_count);
         }
 
         // 3. 组装 messages（systemMessage 含 L0+L1+L2+L3+L5）
@@ -1488,7 +1532,11 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
         let finalSystemMessage = writingCtx.systemMessage;
         if (currentPlatformRule && finalSystemMessage) {
           const titleMax = currentPlatformRule.title_max_length ?? 100;
-          const contentMax = currentPlatformRule.content_max_length ?? 50000;
+          const platformMax = currentPlatformRule.content_max_length ?? 50000;
+          // v3.14.x：同样以「用户目标字数」与「平台上限」的较小值作为硬性封顶
+          const contentMax = task.target_word_count && task.target_word_count > 0
+            ? Math.min(Number(task.target_word_count), Number(platformMax))
+            : Number(platformMax);
           const contentMin = currentPlatformRule.content_min_length ?? 100;
           finalSystemMessage += `\n\n---\n\n## 字数硬约束（系统级强制，必须严格遵守）
 你正在为【${currentPlatformRule.name}】平台创作，字数约束是平台审核的硬性规则，超出会被平台拒绝。
@@ -1643,6 +1691,15 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
             title = `${kw.value}：${title}`.slice(0, 50);
           }
         }
+        // v3.14.x：标题 GEO 决策意图规范化兜底
+        //   AI 即便收到强约束仍可能产出"下巴吸脂怎么选"这种残缺标题，这里统一兜底转换
+        {
+          const before = title;
+          title = normalizeGeoDecisionTitle(title, enterpriseInfo);
+          if (before !== title) {
+            console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇标题决策意图规范化: "${before}" → "${title}"`);
+          }
+        }
         // 空内容校验：AI 返回空内容时跳过保存，避免出现"空文章"
         if (!contentHtml || contentHtml.replace(/<[^>]+>/g, '').trim().length < 50) {
           throw new Error(`AI 返回内容为空或过短（${contentHtml.length} 字符），可能是内容审查触发或平台限流`);
@@ -1651,7 +1708,11 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
         // 场景：AI 不严格遵守字数约束（如抖音限制 1000 字却生成 1800 字）
         // 修复：保存前检测纯文本字数，超过 content_max_length 时按段落自然截断到限制内
         if (currentPlatformRule && currentPlatformRule.content_max_length) {
-          const maxLen = Number(currentPlatformRule.content_max_length);
+          const platformMax = Number(currentPlatformRule.content_max_length);
+          // v3.14.x：截断上限取「用户目标字数」与「平台上限」的较小值
+          const maxLen = task.target_word_count && task.target_word_count > 0
+            ? Math.min(Number(task.target_word_count), platformMax)
+            : platformMax;
           const plainTextLen = contentHtml.replace(/<[^>]+>/g, '').length;
           if (maxLen > 0 && plainTextLen > maxLen) {
             console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文超限: ${plainTextLen} > ${maxLen}（${currentPlatformRule.name}），执行硬截断`);
@@ -1679,9 +1740,11 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
               accumulated += chunkTextLen;
             }
             contentHtml = kept.join('');
-            // 末尾加省略号段落提示
-            contentHtml += '\n<p>…（已按平台字数限制截断）</p>';
+            // v3.14.x：字数只统计保留的正文字数（不含末尾截断提示），确保统计 ≤ 平台上限
+            //   原 bug：把截断提示「…（已按平台字数限制截断）」也计入字数，导致字数刚好超出上限
             wordCount = contentHtml.replace(/<[^>]+>/g, '').length;
+            // 末尾加省略号段落提示（不计入字数）
+            contentHtml += '\n<p>…（已按平台字数限制截断）</p>';
           }
         }
         modelUsed = modelConfig.model_name;
@@ -1787,9 +1850,13 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
               task.target_word_count || 1500,
               modelConfig,
               apiKey,
-              // v3.14.x：传入平台正文上限，让合规改写严格遵守平台字数限制（短平台不再被扩容）
-              currentPlatformRule && currentPlatformRule.content_max_length
-                ? Number(currentPlatformRule.content_max_length)
+              // v3.14.x：传入正文上限，让合规改写严格遵守字数限制（短平台不再被扩容）
+              //   上限取「用户目标字数」与「平台上限」的较小值
+              (currentPlatformRule && currentPlatformRule.content_max_length)
+                ? Math.min(
+                    Number(currentPlatformRule.content_max_length),
+                    task.target_word_count && task.target_word_count > 0 ? Number(task.target_word_count) : Number(currentPlatformRule.content_max_length),
+                  )
                 : undefined,
               // v3.10.6：传入结构化元素上下文，确保改写时保留 FAQ/对比表/品牌词/关键词/三元组
               {
@@ -1811,7 +1878,11 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
             //   改写后的 finalContentHtml 未再校验字数，导致短平台文章超限。
             //   修复：改写后若超过平台 content_max_length，按段落自然截断到限制内。
             if (currentPlatformRule && currentPlatformRule.content_max_length) {
-              const maxLen = Number(currentPlatformRule.content_max_length);
+              const platformMax = Number(currentPlatformRule.content_max_length);
+              // v3.14.x：截断上限取「用户目标字数」与「平台上限」的较小值
+              const maxLen = task.target_word_count && task.target_word_count > 0
+                ? Math.min(Number(task.target_word_count), platformMax)
+                : platformMax;
               const plainTextLen = finalContentHtml.replace(/<[^>]+>/g, '').length;
               if (maxLen > 0 && plainTextLen > maxLen) {
                 console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇合规改写后超限: ${plainTextLen} > ${maxLen}（${currentPlatformRule.name}），执行二次硬截断`);
@@ -1834,14 +1905,19 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
                   kept.push(chunk);
                   accumulated += chunkTextLen;
                 }
-                finalContentHtml = kept.join('') + '\n<p>…（已按平台字数限制截断）</p>';
+                finalContentHtml = kept.join('');
+                // v3.14.x：字数只统计保留正文（不含末尾截断提示），确保统计 ≤ 平台上限
+                const keptLen = finalContentHtml.replace(/<[^>]+>/g, '').length;
+                finalContentHtml += '\n<p>…（已按平台字数限制截断）</p>';
+                wordCount = keptLen;
               }
             }
 
             // 重新计算字数（改写后可能变化）
             // v3.14.x：修复字数统计错误——原代码 `Math.ceil(len / 3)` 把字数除 3，
-            //   导致文章列表显示的字数与实际正文不符（约为实际 1/3）。字数应统计纯文本字符长度。
-            wordCount = finalContentHtml.replace(/<[^>]+>/g, '').length;
+            //   导致文章列表显示的字数与实际正文不符（约为实际 1/3）。字数应统计纯文本字符长度，
+            //   并排除末尾「已按平台字数限制截断」元信息，确保统计 ≤ 平台上限。
+            wordCount = finalContentHtml.replace(/<[^>]+>/g, '').replace(/…（已按平台字数限制截断）/g, '').length;
           } else {
             console.log(`[ArticleGen] 合规规则未配置，跳过审查: industry=${complianceIndustry || 'all'}`);
           }
@@ -2119,7 +2195,7 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
       const { getPlatformRule } = await import('../../repository');
       regenPlatformRule = await getPlatformRule(article.target_platform);
       if (regenPlatformRule) {
-        articlePrompt += buildPlatformConstraintPrompt(regenPlatformRule);
+        articlePrompt += buildPlatformConstraintPrompt(regenPlatformRule, task.target_word_count);
       }
     } catch (err) {
       console.warn(`[ArticleGen] 文章 ${articleId} 重新生成时查询平台规则失败:`, err);
@@ -2206,11 +2282,52 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     console.warn(`[ArticleGen] 文章 ${articleId} 正文标题也是思考过程，用关键词+首段生成标题:`, title);
   }
 
+  // v3.14.x：标题 GEO 决策意图规范化兜底（重新生成/重写也强制标题符合"哪家/选哪家"决策意图）
+  {
+    const before = title;
+    title = normalizeGeoDecisionTitle(title, enterpriseInfo);
+    if (before !== title) {
+      console.warn(`[ArticleGen] 文章 ${articleId} 标题决策意图规范化: "${before}" → "${title}"`);
+    }
+  }
+
   // v2.5.19：重新生成时也走图片处理流程（原 bug：regenerateArticle 完全没有图片处理逻辑，
   //   导致用户点"重写"后文章永远没图）
   //   调用公共函数 processArticleImages，与 executeWritingTask 共用同一套逻辑
   let finalContentHtml = contentHtml;
   let coverUrlForArticle = '';
+  // v3.14.x：重新生成也执行平台/目标字数硬截断，避免重写后仍超字
+  if (regenPlatformRule && regenPlatformRule.content_max_length) {
+    const platformMax = Number(regenPlatformRule.content_max_length);
+    const maxLen = task.target_word_count && task.target_word_count > 0
+      ? Math.min(Number(task.target_word_count), platformMax)
+      : platformMax;
+    const plainTextLen = finalContentHtml.replace(/<[^>]+>/g, '').length;
+    if (maxLen > 0 && plainTextLen > maxLen) {
+      console.warn(`[ArticleGen] 文章 ${articleId} 重新生成超限: ${plainTextLen} > ${maxLen}（${regenPlatformRule.name}），执行硬截断`);
+      const paragraphs = finalContentHtml.split(/(<\/p>\s*)/).filter(Boolean);
+      let accumulated = 0;
+      const kept: string[] = [];
+      for (const chunk of paragraphs) {
+        const chunkTextLen = chunk.replace(/<[^>]+>/g, '').length;
+        if (accumulated + chunkTextLen > maxLen) {
+          const remaining = maxLen - accumulated;
+          if (remaining > 20) {
+            const m = chunk.match(/^(\s*<p[^>]*>)([\s\S]*?)(<\/p>\s*)$/i);
+            if (m) {
+              const innerText = m[2].replace(/<[^>]+>/g, '');
+              kept.push(`${m[1]}${innerText.slice(0, remaining)}…${m[3]}`);
+            }
+          }
+          break;
+        }
+        kept.push(chunk);
+        accumulated += chunkTextLen;
+      }
+      finalContentHtml = kept.join('');
+      finalContentHtml += '\n<p>…（已按平台字数限制截断）</p>';
+    }
+  }
   try {
     const imageResult = await processArticleImages(task, userId, contentHtml, articleId);
     finalContentHtml = imageResult.contentHtml;
