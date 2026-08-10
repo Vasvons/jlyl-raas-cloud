@@ -2709,6 +2709,57 @@ export async function migrate() {
     // v3.10.5：cloud_api_config 新增 compliance_rule_ids 字段（自动写作配置选中的规则 ID）
     await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS compliance_rule_ids JSONB DEFAULT NULL`);
 
+    // ============ v3.12 合规规则改为「行业维度」，去掉平台相关设计 ============
+    // ai_writing_task / cloud_api_config 新增 compliance_industry 字段（按行业整组选用合规规则）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS compliance_industry VARCHAR(32) DEFAULT ''`);
+    await client.query(`ALTER TABLE cloud_api_config ADD COLUMN IF NOT EXISTS compliance_industry VARCHAR(32) DEFAULT ''`);
+
+    // 存量数据合并：把已经按平台拆分的 medical_beauty 规则合并为 1 条行业通用规则
+    //   规则内容按规则池（source=manual+active）拼接，platform 统一置为 'all'（表示全平台通用）
+    //   仅当存在「按平台拆分的 medical_beauty 规则」且「尚无 platform='all' 的行业规则」时才合并
+    const mbCountResult = await client.query(
+      `SELECT COUNT(*) AS total FROM platform_compliance_rule WHERE industry = 'medical_beauty' AND platform <> 'all'`
+    );
+    const mbCount = parseInt(mbCountResult.rows[0].total) || 0;
+    const allMbResult = await client.query(
+      `SELECT COUNT(*) AS total FROM platform_compliance_rule WHERE industry = 'medical_beauty' AND platform = 'all'`
+    );
+    const allMbCount = parseInt(allMbResult.rows[0].total) || 0;
+    if (mbCount > 0 && allMbCount === 0) {
+      // 取出所有 medical_beauty 手动规则（含启用与禁用），按 rule_id 排序拼接
+      const rulesResult = await client.query(
+        `SELECT id, rule_title, rule_content, source FROM platform_compliance_rule
+         WHERE industry = 'medical_beauty' AND platform <> 'all'
+         ORDER BY id ASC`
+      );
+      const contentParts: string[] = [];
+      const seen = new Set<string>();
+      for (const r of rulesResult.rows) {
+        if (!r.rule_content || !r.rule_content.trim()) continue;
+        const key = r.rule_content.trim();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (r.rule_title) {
+          contentParts.push(`【${r.rule_title}】\n${r.rule_content.trim()}`);
+        } else {
+          contentParts.push(r.rule_content.trim());
+        }
+      }
+      if (contentParts.length > 0) {
+        const mergedContent = contentParts.join('\n\n');
+        await client.query(
+          `INSERT INTO platform_compliance_rule (platform, rule_title, rule_content, source, industry, is_active, updated_at)
+           VALUES ('all', '医疗美容行业通用合规规则', $1, 'manual', 'medical_beauty', true, NOW())`,
+          [mergedContent]
+        );
+      }
+      // 删除旧的按平台拆分规则
+      await client.query(
+        `DELETE FROM platform_compliance_rule WHERE industry = 'medical_beauty' AND platform <> 'all'`
+      );
+      console.log(`[Migrate] 医美行业合规规则已合并: 合并 ${contentParts.length} 份内容, 删除 ${mbCount} 条平台规则`);
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

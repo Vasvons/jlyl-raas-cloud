@@ -27,14 +27,20 @@ import {
   updateWritingTaskAeoContext,
   getCoreKeywordsByUserId,
   getCoreKeywordsFromZlgjcByUserId,
-  getActiveManualRulesByPlatform,
-  getComplianceRulesByIds,
+  getActiveManualRulesByIndustry,
+  getAllActiveManualRules,
   updateArticleComplianceStatus,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 import crypto from 'crypto';
 // v2.5.19：写作过程每篇完成后广播 WS 事件，让前端进度条实时推进
 import { wsBroadcast } from '../../wsServer';
+
+// v3.12：合规规则行业维度名称映射
+const INDUSTRY_NAMES: Record<string, string> = {
+  general: '通用',
+  medical_beauty: '医疗美容',
+};
 
 /**
  * 解析指令的 category（创作方向）字段
@@ -601,41 +607,31 @@ async function planArticleTopic(
   const topicPrompt = lines.join('\n');
 
   // v3.10：写作前置合规 — 仅注入合规规则池（manual+active）规则，爬取池仅作参考工具不参与注入
-  // v3.10.5：如果 task.compliance_rule_ids 非空，则按选中规则 ID 注入；否则用当前平台全部启用规则
+  // v3.12：按行业维度整组选用，规则对全平台生效（去掉平台过滤与逐条勾选）
   let complianceSuffix = '';
-  if (task.enable_compliance_review === true && currentPlatform) {
+  if (task.enable_compliance_review === true) {
     try {
       let rules: any[];
-      const selectedIds: number[] = Array.isArray(task.compliance_rule_ids) ? task.compliance_rule_ids : [];
-      if (selectedIds.length > 0) {
-        // v3.10.5：按选中规则 ID 查询（额外过滤当前平台）
-        rules = await getComplianceRulesByIds(selectedIds, currentPlatform);
+      const industry = task.compliance_industry || '';
+      if (industry) {
+        rules = await getActiveManualRulesByIndustry(industry);
       } else {
-        // 未选规则，使用当前平台全部启用规则
-        rules = await getActiveManualRulesByPlatform(currentPlatform);
+        rules = await getAllActiveManualRules();
       }
       const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
       if (validRules.length > 0) {
-        const PLATFORM_NAMES: Record<string, string> = {
-          wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
-          js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
-          sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
-        };
-        const platformName = PLATFORM_NAMES[currentPlatform] || currentPlatform;
-        // 拼接双池所有规则内容
+        const industryLabel = industry ? INDUSTRY_NAMES[industry] || industry : '通用';
+        // 拼接所有规则内容
         const rulesBlock = validRules.map((r, idx) => {
-          const sourceLabel = r.source === 'crawled' ? '爬取参考' : '手动规则';
-          const industryLabel = r.industry && r.industry !== 'general' ? `［${r.industry}］` : '';
           const titleLabel = r.rule_title ? `《${r.rule_title}》` : '';
-          const urlLabel = r.official_rule_url ? `\n官方规则参考：${r.official_rule_url}` : '';
-          return `### 规则 ${idx + 1}（${sourceLabel}${industryLabel}）${titleLabel}\n${r.rule_content}${urlLabel}`;
+          return `### 规则 ${idx + 1}（${r.industry !== 'general' ? INDUSTRY_NAMES[r.industry] || r.industry : '通用'}）${titleLabel}\n${r.rule_content}`;
         }).join('\n\n');
         const totalLen = validRules.reduce((s, r) => s + (r.rule_content?.length || 0), 0);
         complianceSuffix = `
 
-## 目标平台合规约束（${platformName}）
+## 目标行业合规约束（${industryLabel}）
 
-本次选题将发布到 ${platformName}，请严格遵守以下合规规则（含 ${validRules.length} 条：爬取参考池+手动规则池），确保选题方向不会导致内容审核不通过：
+本次选题将发布到各平台，请严格遵守以下合规规则（含 ${validRules.length} 条），确保选题方向不会导致内容审核不通过：
 
 ${rulesBlock}
 
@@ -653,9 +649,9 @@ ${rulesBlock}
 - 禁止选择可能引发医疗纠纷或虚假宣传的方向
 - 优先选择科普类、知识分享类、风险提示类选题方向
 `;
-        console.log(`[ArticleGen] 选题注入合规约束: platform=${currentPlatform}, rules=${validRules.length}, totalLen=${totalLen}`);
+        console.log(`[ArticleGen] 选题注入合规约束: industry=${industry || 'all'}, rules=${validRules.length}, totalLen=${totalLen}`);
       } else {
-        console.log(`[ArticleGen] 合规规则未配置，跳过前置合规: platform=${currentPlatform}`);
+        console.log(`[ArticleGen] 合规规则未配置，跳过前置合规: industry=${industry || 'all'}`);
       }
     } catch (e: any) {
       console.warn(`[ArticleGen] 合规规则查询失败，跳过前置合规: ${e.message}`);
@@ -1739,31 +1735,30 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
       let complianceStatus = 'pending';
       let complianceIssues: any[] = [];
 
-      if (task.enable_compliance_review === true && currentPlatform) {
+      // v3.12：合规审查改为按行业维度整组选用，对全平台生效（去掉平台过滤与逐条勾选）
+      const complianceIndustry = task.compliance_industry || '';
+      if (task.enable_compliance_review === true) {
         try {
-          // v3.10.5：优先用选中的规则 ID，未选则用当前平台全部启用规则
           let rules: any[];
-          const selectedIds: number[] = Array.isArray(task.compliance_rule_ids) ? task.compliance_rule_ids : [];
-          if (selectedIds.length > 0) {
-            rules = await getComplianceRulesByIds(selectedIds, currentPlatform);
+          if (complianceIndustry) {
+            rules = await getActiveManualRulesByIndustry(complianceIndustry);
           } else {
-            rules = await getActiveManualRulesByPlatform(currentPlatform);
+            rules = await getAllActiveManualRules();
           }
           const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
           if (validRules.length > 0) {
-            // 拼接双池规则内容供审查/改写使用
+            // 拼接规则内容供审查/改写使用
             const mergedRuleContent = validRules.map((r, idx) => {
-              const sourceLabel = r.source === 'crawled' ? '爬取参考' : '手动规则';
-              const industryLabel = r.industry && r.industry !== 'general' ? `［${r.industry}］` : '';
+              const industryLabel = r.industry && r.industry !== 'general' ? `［${INDUSTRY_NAMES[r.industry] || r.industry}］` : '';
               const titleLabel = r.rule_title ? `《${r.rule_title}》` : '';
-              return `### 规则 ${idx + 1}（${sourceLabel}${industryLabel}）${titleLabel}\n${r.rule_content}`;
+              return `### 规则 ${idx + 1}（手动规则${industryLabel}）${titleLabel}\n${r.rule_content}`;
             }).join('\n\n');
-            console.log(`[ArticleGen] 开始合规审查: platform=${currentPlatform}, articleIdx=${articleIdx}, rules=${validRules.length}`);
+            console.log(`[ArticleGen] 开始合规审查: industry=${complianceIndustry || 'all'}, articleIdx=${articleIdx}, rules=${validRules.length}`);
             const reviewResult = await reviewAndRewriteArticle(
               contentHtml,
               safeTitle,
               topicPlan.topic || safeCoreKeyword,
-              currentPlatform,
+              currentPlatform || '',
               mergedRuleContent,
               task.target_word_count || 1500,
               modelConfig,
@@ -1786,7 +1781,7 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
             // 重新计算字数（改写后可能变化）
             wordCount = Math.ceil(finalContentHtml.replace(/<[^>]+>/g, '').length / 3);
           } else {
-            console.log(`[ArticleGen] 合规规则未配置，跳过审查: platform=${currentPlatform}`);
+            console.log(`[ArticleGen] 合规规则未配置，跳过审查: industry=${complianceIndustry || 'all'}`);
           }
         } catch (e: any) {
           console.warn(`[ArticleGen] 合规审查异常，跳过: ${e.message}`);

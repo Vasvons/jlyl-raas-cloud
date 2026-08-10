@@ -3016,6 +3016,8 @@ export async function autoCreateWritingTasksFromPeriod(
     ? quotaConfig!.compliance_rule_ids.filter((id: any) => typeof id === 'number' && id > 0)
     : null;
   const complianceRuleIdsJson = complianceRuleIds && complianceRuleIds.length > 0 ? JSON.stringify(complianceRuleIds) : null;
+  // v3.12：从 AEO 配置读取行业维度合规选用，传递给自动创建的写作任务
+  const complianceIndustry = quotaConfig?.compliance_industry || '';
   await dbQuery(
     `UPDATE ai_writing_task
      SET aeo_context = $1,
@@ -3023,9 +3025,10 @@ export async function autoCreateWritingTasksFromPeriod(
          auto_generated = true,
          trigger_period_report_id = $3,
          enable_compliance_review = $4,
-         compliance_rule_ids = $6
+         compliance_rule_ids = $6,
+         compliance_industry = $7
      WHERE id = $5`,
-    [aeoContext, autoPublishEnabled, periodReportId, enableComplianceReview, taskId, complianceRuleIdsJson]
+    [aeoContext, autoPublishEnabled, periodReportId, enableComplianceReview, taskId, complianceRuleIdsJson, complianceIndustry]
   );
 
   // v2.5.33：不再调用 consumeWritingSuggestions 标记建议为已消费

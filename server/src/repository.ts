@@ -5534,6 +5534,8 @@ const AEO_QUOTA_FIELDS = [
   'enable_compliance_review',
   // v3.10.5: 合规规则 ID 列表
   'compliance_rule_ids',
+  // v3.12: 行业维度合规选用（按行业整组选用，对全平台生效）
+  'compliance_industry',
 ] as const;
 
 /** 获取当前用户的 AEO 配额配置 */
@@ -5647,6 +5649,11 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
     fields.push(`compliance_rule_ids = $${idx++}`);
     const arr = Array.isArray(data.compliance_rule_ids) ? data.compliance_rule_ids : null;
     values.push(arr && arr.length > 0 ? JSON.stringify(arr) : null);
+  }
+  // v3.12：行业维度合规选用（按行业整组选用，对全平台生效）
+  if (data.compliance_industry !== undefined) {
+    fields.push(`compliance_industry = $${idx++}`);
+    values.push(String(data.compliance_industry || ''));
   }
 
   if (fields.length === 0) return;
@@ -9067,7 +9074,7 @@ export async function getStepListHistory(platform: string, limit: number = 5): P
 
 // ============ v3.10 合规审查 ============
 
-/** 获取所有平台合规规则（支持按 source / industry 过滤） */
+/** 获取所有合规规则（按行业维度，v3.12 起不再按平台拆分） */
 export async function getComplianceRules(opts?: {
   onlyActive?: boolean;
   source?: string;
@@ -9086,91 +9093,80 @@ export async function getComplianceRules(opts?: {
   }
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const result = await query(
-    `SELECT * FROM platform_compliance_rule ${where} ORDER BY platform ASC, source ASC, updated_at DESC`,
+    `SELECT * FROM platform_compliance_rule ${where} ORDER BY industry ASC, updated_at DESC`,
     params
   );
   return result.rows;
 }
 
-/** 获取指定平台的所有合规规则（双池：crawled + manual） */
-export async function getComplianceRulesByPlatform(platform: string, opts?: {
+/** 获取指定行业的所有合规规则（按行业维度，v3.12 起不再按平台拆分） */
+export async function getComplianceRulesByIndustry(industry: string, opts?: {
   onlyActive?: boolean;
-  industry?: string;
   source?: string;
 }): Promise<any[]> {
-  const conditions: string[] = [`platform = $1`];
-  const params: any[] = [platform];
+  const conditions: string[] = [`industry = $1`];
+  const params: any[] = [industry];
   if (opts?.onlyActive) conditions.push(`is_active = true`);
-  if (opts?.industry) {
-    params.push(opts.industry);
-    conditions.push(`industry = $${params.length}`);
-  }
   if (opts?.source) {
     params.push(opts.source);
     conditions.push(`source = $${params.length}`);
   }
   const result = await query(
-    `SELECT * FROM platform_compliance_rule WHERE ${conditions.join(' AND ')} ORDER BY source ASC, updated_at DESC`,
+    `SELECT * FROM platform_compliance_rule WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC`,
     params
   );
   return result.rows;
 }
 
 /**
- * 获取写作时生效的合规规则（仅合规规则池：source='manual' + is_active=true）
- * v3.10.4：爬取池仅作为参考工具，不参与写作注入
+ * 获取写作时生效的合规规则（按行业维度，source='manual' + is_active=true）
+ * v3.12：行业维度的规则对全平台生效，不再按平台过滤
  */
-export async function getActiveManualRulesByPlatform(platform: string): Promise<any[]> {
+export async function getActiveManualRulesByIndustry(industry: string): Promise<any[]> {
   const result = await query(
     `SELECT * FROM platform_compliance_rule
-     WHERE platform = $1 AND source = 'manual' AND is_active = true
+     WHERE industry = $1 AND source = 'manual' AND is_active = true
      ORDER BY updated_at DESC`,
-    [platform]
+    [industry]
+  );
+  return result.rows;
+}
+
+/** 获取全部启用中的手动合规规则（未指定行业时使用，对全平台生效） */
+export async function getAllActiveManualRules(): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM platform_compliance_rule
+     WHERE source = 'manual' AND is_active = true
+     ORDER BY industry ASC, updated_at DESC`
   );
   return result.rows;
 }
 
 /**
  * 按 ID 列表获取合规规则（v3.10.5）
+ * v3.12：行业维度，规则对全平台生效，不再按平台过滤
  * @param ids 规则 ID 数组
- * @param platform 可选，按平台过滤
  * @returns 规则记录数组
  */
-export async function getComplianceRulesByIds(ids: number[], platform?: string): Promise<any[]> {
+export async function getComplianceRulesByIds(ids: number[]): Promise<any[]> {
   if (!ids || ids.length === 0) return [];
   const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
-  const params: any[] = [...ids];
-  let sql = `SELECT * FROM platform_compliance_rule WHERE id IN (${placeholders}) AND source = 'manual' AND is_active = true`;
-  if (platform) {
-    params.push(platform);
-    sql += ` AND platform = $${params.length}`;
-  }
-  sql += ` ORDER BY updated_at DESC`;
-  const result = await query(sql, params);
+  const sql = `SELECT * FROM platform_compliance_rule WHERE id IN (${placeholders}) AND source = 'manual' AND is_active = true ORDER BY updated_at DESC`;
+  const result = await query(sql, ids);
   return result.rows;
 }
 
-/** 获取指定平台的爬取参考池规则（单条） */
-export async function getCrawledRuleByPlatform(platform: string): Promise<any | null> {
-  const result = await query(
-    `SELECT * FROM platform_compliance_rule WHERE platform = $1 AND source = 'crawled' ORDER BY updated_at DESC LIMIT 1`,
-    [platform]
-  );
-  return result.rows[0] || null;
-}
-
-/** 创建手动规则 */
+/** 创建手动规则（v3.12：按行业维度，platform 固定为 'all'，规则对全平台生效） */
 export async function createManualRule(data: {
-  platform: string;
   rule_title: string;
   rule_content: string;
   industry?: string;
 }): Promise<any> {
   const result = await query(
     `INSERT INTO platform_compliance_rule (platform, rule_title, rule_content, source, industry, updated_at)
-     VALUES ($1, $2, $3, 'manual', $4, NOW())
+     VALUES ('all', $1, $2, 'manual', $3, NOW())
      RETURNING *`,
-    [data.platform, data.rule_title, data.rule_content, data.industry || 'general']
+    [data.rule_title, data.rule_content, data.industry || 'general']
   );
   return result.rows[0];
 }
@@ -9208,73 +9204,9 @@ export async function updateManualRule(id: number, data: {
   return result.rows[0] || null;
 }
 
-/** 爬取后更新爬取池规则（每平台仅 1 条 crawled 规则，不存在则插入） */
-export async function upsertCrawledRule(platform: string, data: {
-  rule_content: string;
-  official_rule_url?: string;
-  official_rule_title?: string;
-}): Promise<any> {
-  // 先尝试更新
-  const result = await query(
-    `UPDATE platform_compliance_rule
-     SET rule_content = $2, official_rule_url = $3, official_rule_title = $4, last_refreshed_at = NOW(), updated_at = NOW()
-     WHERE platform = $1 AND source = 'crawled'
-     RETURNING *`,
-    [platform, data.rule_content, data.official_rule_url || null, data.official_rule_title || null]
-  );
-  if (result.rows.length === 0) {
-    // 不存在则插入
-    const insertResult = await query(
-      `INSERT INTO platform_compliance_rule (platform, rule_content, official_rule_url, official_rule_title, source, industry, updated_at)
-       VALUES ($1, $2, $3, $4, 'crawled', 'general', NOW())
-       RETURNING *`,
-      [platform, data.rule_content, data.official_rule_url || null, data.official_rule_title || null]
-    );
-    return insertResult.rows[0];
-  }
-  return result.rows[0];
-}
-
 /** 删除合规规则（按 id） */
 export async function deleteComplianceRuleById(id: number): Promise<void> {
   await query(`DELETE FROM platform_compliance_rule WHERE id = $1`, [id]);
-}
-
-/** 删除指定平台的所有合规规则 */
-export async function deleteComplianceRulesByPlatform(platform: string): Promise<void> {
-  await query(`DELETE FROM platform_compliance_rule WHERE platform = $1`, [platform]);
-}
-
-// ============ 以下为向后兼容的旧接口（内部转换为新接口） ============
-
-/** 兼容旧接口：获取指定平台第一条规则 */
-export async function getComplianceRuleByPlatform(platform: string): Promise<any | null> {
-  const rules = await getComplianceRulesByPlatform(platform);
-  return rules[0] || null;
-}
-
-/** 兼容旧接口：upsert（用于保存爬取池规则） */
-export async function upsertComplianceRule(data: {
-  platform: string;
-  rule_content: string;
-  official_rule_url?: string;
-  official_rule_title?: string;
-}): Promise<any> {
-  return upsertCrawledRule(data.platform, data);
-}
-
-/** 兼容旧接口：刷新爬取池规则 */
-export async function refreshComplianceRule(platform: string, data: {
-  rule_content: string;
-  official_rule_url?: string;
-  official_rule_title?: string;
-}): Promise<any> {
-  return upsertCrawledRule(platform, data);
-}
-
-/** 兼容旧接口：删除指定平台所有规则 */
-export async function deleteComplianceRule(platform: string): Promise<void> {
-  await deleteComplianceRulesByPlatform(platform);
 }
 
 /** 更新文章合规状态 */

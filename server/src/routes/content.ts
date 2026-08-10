@@ -135,15 +135,12 @@ import {
   getBrandQueryKeywords,
   // v3.8.15：核心关键词查询（从 distillate_keyword 表，用户手动添加的种子词）
   getCoreKeywordsByUserId,
-  // v3.10：合规审查（v3.10.1 双池架构）
+  // v3.10：合规审查（v3.12 起按行业维度，去掉平台设计）
   getComplianceRules,
-  getComplianceRulesByPlatform,
-  getComplianceRuleByPlatform,
+  getComplianceRulesByIndustry,
   createManualRule,
   updateManualRule,
-  upsertCrawledRule,
   deleteComplianceRuleById,
-  deleteComplianceRulesByPlatform,
   updateArticleComplianceStatus,
 } from '../repository';
 import { encrypt, decrypt, maskApiKey } from '../utils/crypto';
@@ -907,7 +904,9 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id, article_count,
             cover_image_mode, cover_image_id, illustration_count,
             target_platforms, auto_generated, user_id, apply_aeo_suggestions,
-            enable_compliance_review } = req.body;
+            enable_compliance_review, compliance_industry: complianceIndustryInput } = req.body;
+    // v3.12：行业维度合规选用（用 let 声明，auto_generated=true 时可从 AEO 配置回填）
+    let compliance_industry = complianceIndustryInput;
     // v3.10.5：compliance_rule_ids 用 let 声明，auto_generated=true 时可从 AEO 配置补全
     let compliance_rule_ids = req.body.compliance_rule_ids;
     // v2.0.9：管理员可通过 user_id 字段为客户创建任务（飞轮守护进程场景）
@@ -1034,6 +1033,11 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
             compliance_rule_ids = aeoConfig.compliance_rule_ids.filter((id: any) => typeof id === 'number' && id > 0);
             console.log(`[WritingTask] auto_generated=true：从 AEO 配置取 compliance_rule_ids=${JSON.stringify(compliance_rule_ids)}`);
           }
+          // v3.12：auto_generated=true 时，若调用方未传 compliance_industry，则从 AEO 配置补全
+          if ((compliance_industry === undefined || compliance_industry === '') && aeoConfig.compliance_industry) {
+            compliance_industry = aeoConfig.compliance_industry;
+            console.log(`[WritingTask] auto_generated=true：从 AEO 配置取 compliance_industry=${compliance_industry}`);
+          }
           console.log(`[WritingTask] auto_generated=true：AEO 配置覆盖结果 instructionId=${finalInstructionId}, knowledgeId=${finalKnowledgeId}, agentProfileId=${finalAgentProfileId}, coverMode=${finalCoverImageMode}, illuCount=${finalIllustrationCount}, genMode=${finalGenerationMode}, articleCount=${finalArticleCount}`);
         }
       } catch (e: any) {
@@ -1130,6 +1134,10 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     if (compliance_rule_ids !== undefined) {
       const ids = Array.isArray(compliance_rule_ids) ? JSON.stringify(compliance_rule_ids.filter((id: any) => typeof id === 'number' && id > 0)) : null;
       await query(`UPDATE ai_writing_task SET compliance_rule_ids = $1 WHERE id = $2`, [ids, taskId]);
+    }
+    // v3.12：保存行业维度合规字段（按行业整组选用，对全平台生效）
+    if (compliance_industry !== undefined) {
+      await query(`UPDATE ai_writing_task SET compliance_industry = $1 WHERE id = $2`, [String(compliance_industry || ''), taskId]);
     }
     // 异步执行任务（不阻塞响应）
     executeWritingTask(taskId, userId).catch(err => {
@@ -1645,10 +1653,10 @@ router.get('/compliance-rules', async (req: Request, res: Response) => {
   }
 });
 
-/** 获取指定平台的所有合规规则（双池：crawled + manual） */
-router.get('/compliance-rules/:platform', async (req: Request, res: Response) => {
+/** 获取指定行业的所有合规规则（v3.12 起按行业维度，规则对全平台生效） */
+router.get('/compliance-rules/industry/:industry', async (req: Request, res: Response) => {
   try {
-    const rules = await getComplianceRulesByPlatform(req.params.platform, {
+    const rules = await getComplianceRulesByIndustry(req.params.industry, {
       onlyActive: req.query.only_active === 'true',
     });
     // 返回数组（可能为空），不再返回 404
@@ -1658,8 +1666,8 @@ router.get('/compliance-rules/:platform', async (req: Request, res: Response) =>
   }
 });
 
-/** 创建手动规则 */
-router.post('/compliance-rules/:platform/manual', async (req: Request, res: Response) => {
+/** 创建手动规则（v3.12：按行业维度，platform 固定为 'all'） */
+router.post('/compliance-rules/manual', async (req: Request, res: Response) => {
   try {
     const { rule_title, rule_content, industry } = req.body;
     if (!rule_content || rule_content.trim() === '') {
@@ -1669,7 +1677,6 @@ router.post('/compliance-rules/:platform/manual', async (req: Request, res: Resp
       return res.status(400).json({ code: 400, message: 'rule_title 不能为空' });
     }
     const rule = await createManualRule({
-      platform: req.params.platform,
       rule_title,
       rule_content,
       industry: industry || 'general',
@@ -1696,174 +1703,6 @@ router.put('/compliance-rules/manual/:id', async (req: Request, res: Response) =
     res.json({ code: 200, data: rule });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
-  }
-});
-
-/** 爬取官方规则文档页面，提取正文存为 crawled 规则 */
-router.post('/compliance-rules/:platform/crawl', async (req: Request, res: Response) => {
-  try {
-    const platform = req.params.platform;
-    const { url: docUrl } = req.body;
-    if (!docUrl || !/^https?:\/\//.test(docUrl)) {
-      return res.status(400).json({ code: 400, message: '请提供有效的官方规则文档 URL（http/https）' });
-    }
-
-    // 用 axios 抓取页面 HTML
-    const axios = (await import('axios')).default;
-    const resp = await axios.get(docUrl, {
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-      },
-      responseType: 'text',
-    });
-    const html: string = typeof resp.data === 'string' ? resp.data : String(resp.data);
-
-    // 提取 <title> 作为 official_rule_title
-    const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    const docTitle = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : docUrl;
-
-    // 清洗 HTML：去除 script/style/nav/header/footer/noscript 标签及其内容
-    let cleaned = html
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<nav[\s\S]*?<\/nav>/gi, '')
-      .replace(/<header[\s\S]*?<\/header>/gi, '')
-      .replace(/<footer[\s\S]*?<\/footer>/gi, '')
-      .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
-      .replace(/<!--[\s\S]*?-->/g, '');
-
-    // 去除所有 HTML 标签，保留文本
-    cleaned = cleaned.replace(/<[^>]+>/g, '\n');
-    // 解码常见 HTML 实体
-    cleaned = cleaned
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'");
-    // 合并多余空行，去除行首尾空格
-    const lines = cleaned
-      .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-    const ruleContent = lines.join('\n');
-
-    if (!ruleContent || ruleContent.length < 50) {
-      return res.status(500).json({ code: 500, message: '爬取到的正文内容过短，请检查 URL 是否正确，或手动填写规则内容' });
-    }
-
-    // 截断过长内容（避免数据库存储过大，保留前 20000 字符）
-    const truncatedContent = ruleContent.length > 20000 ? ruleContent.slice(0, 20000) + '\n...(内容已截断)' : ruleContent;
-
-    const rule = await upsertCrawledRule(platform, {
-      rule_content: truncatedContent,
-      official_rule_url: docUrl,
-      official_rule_title: docTitle,
-    });
-    res.json({ code: 200, data: rule });
-  } catch (err: any) {
-    const msg = err?.code === 'ECONNABORTED' ? '请求超时，请检查 URL 是否可访问' : err.message || '爬取失败';
-    res.status(500).json({ code: 500, message: msg });
-  }
-});
-
-/** AI 整理爬取到的原始文本为结构化合规规则（v3.10.4） */
-router.post('/compliance-rules/:platform/ai-organize', async (req: Request, res: Response) => {
-  try {
-    const platform = req.params.platform;
-    const { raw_content, keywords } = req.body;
-    if (!raw_content || raw_content.trim().length < 50) {
-      return res.status(400).json({ code: 400, message: '原始规则文本内容过短' });
-    }
-
-    const PLATFORM_NAMES: Record<string, string> = {
-      wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
-      js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
-      sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
-    };
-    const platformName = PLATFORM_NAMES[platform] || platform;
-
-    // 获取 AI 模型配置（与写作模型一致）
-    const modelConfig = await getDefaultModelConfig(getUserId(req));
-    if (!modelConfig) {
-      return res.status(500).json({ code: 500, message: '未配置 AI 写作模型，无法进行 AI 整理' });
-    }
-    // 解密 API KEY（与 articleGenerator resolveModelConfig 一致）
-    const { decrypt } = await import('../utils/crypto');
-    let apiKey = '';
-    if (modelConfig.api_key_encrypted) {
-      try {
-        apiKey = decrypt(modelConfig.api_key_encrypted);
-      } catch {
-        return res.status(500).json({ code: 500, message: 'API-KEY 解密失败，请重新配置模型' });
-      }
-    }
-    if (!apiKey) {
-      return res.status(500).json({ code: 500, message: 'API-KEY 为空，请到「后台配置 > 生文模型配置」中配置' });
-    }
-
-    const keywordHint = keywords && keywords.trim()
-      ? `\n\n请特别关注与以下关键词相关的内容（如有）：${keywords.trim()}`
-      : '';
-
-    const messages = [
-      {
-        role: 'system',
-        content: `你是合规规则整理专家。请将下面从 ${platformName} 官方文档爬取到的原始文本，整理为结构化的合规规则。
-
-## 整理要求
-1. 提取核心合规要求，去除导航、广告、版权声明等无关内容
-2. 按以下结构组织（如原文有对应内容）：
-   - 【资质要求】发布内容需要的资质或许可
-   - 【禁止发布的内容类目】明确禁止的内容类型
-   - 【敏感词类别】需要避免使用的词汇类别
-   - 【行业特殊限制】针对特定行业的限制（如医美、金融等）
-   - 【必须标注的提示信息】内容中必须包含的提示或声明
-3. 每个类别下列出具体条目，用编号或项目符号
-4. 保留原文的具体数字、条款编号、法律引用等关键信息
-5. 如果原文没有明确分类，按内容性质自行归类
-6. 输出纯文本，不要 Markdown 代码块包裹${keywordHint}
-
-## 输出格式示例
-【资质要求】
-1. xxx
-2. xxx
-
-【禁止发布的内容类目】
-1. xxx
-2. xxx
-
-...（其他类别）`,
-      },
-      {
-        role: 'user',
-        content: `原始文本（来自 ${platformName} 官方文档）：\n\n${raw_content}`,
-      },
-    ];
-
-    const { chatCompletion } = await import('../services/content/aiClient');
-    const result = await chatCompletion({
-      baseUrl: modelConfig.base_url,
-      apiKey,
-      model: modelConfig.model_name,
-      messages: messages as any,
-      temperature: 0.3,
-      timeout: 120000,
-    });
-
-    const organizedContent = result.content || '';
-    if (!organizedContent.trim()) {
-      return res.status(500).json({ code: 500, message: 'AI 整理返回空内容，请重试' });
-    }
-
-    res.json({ code: 200, data: { organized_content: organizedContent } });
-  } catch (err: any) {
-    console.error('[AI Organize] 整理失败:', err);
-    res.status(500).json({ code: 500, message: err.message || 'AI 整理失败' });
   }
 });
 
