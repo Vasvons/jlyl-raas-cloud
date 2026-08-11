@@ -206,10 +206,10 @@ app.get('/diagnose', async (req, res) => {
     const { query } = require('./db');
     const kw = await query(`
       SELECT u.id AS user_id, u.username,
-        (SELECT COUNT(*) FROM pp WHERE user_id = u.id) AS pp_count,
-        (SELECT COUNT(*) FROM pp WHERE user_id = u.id AND brand_id IS NULL) AS pp_no_brand,
-        (SELECT COUNT(*) FROM distillate_keyword WHERE user_id = u.id) AS dk_count,
-        (SELECT COUNT(*) FROM distillate_keyword WHERE user_id = u.id AND brand_id IS NULL) AS dk_no_brand,
+        (SELECT COUNT(*) FROM pp WHERE user_id = u.id::text) AS pp_count,
+        (SELECT COUNT(*) FROM pp WHERE user_id = u.id::text AND brand_id IS NULL) AS pp_no_brand,
+        (SELECT COUNT(*) FROM distillate_keyword WHERE user_id = u.id::text) AS dk_count,
+        (SELECT COUNT(*) FROM distillate_keyword WHERE user_id = u.id::text AND brand_id IS NULL) AS dk_no_brand,
         (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id::text) AS zlgjc_count,
         (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id::text AND brand_id IS NULL) AS zlgjc_no_brand,
         (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id::text AND keyword_type = 0) AS zlgjc_type0,
