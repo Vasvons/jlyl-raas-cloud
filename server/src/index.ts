@@ -5,6 +5,7 @@ import http from 'http';
 import { migrate } from './migrate';
 import { seedStepLists } from './services/content/stepListSeeder';
 import { seedMedicalBeautyRules } from './seeds/medicalBeautyRules';
+import { seedGeneralComplianceRules } from './seeds/generalRules';
 import { startScheduler, getSchedulerStatus } from './scheduler';
 import authRoutes from './routes/auth';
 import dashboardRoutes from './routes/dashboard';
@@ -309,6 +310,11 @@ async function start() {
     // 导入医美行业合规规则种子数据（幂等，仅缺失平台才导入）
     await seedMedicalBeautyRules().catch(e => {
       console.error('[Server] 医美合规规则种子导入失败（不阻断启动）:', e.message);
+    });
+
+    // 导入通用行业合规规则种子数据（幂等，仅缺失/过期才覆盖）
+    await seedGeneralComplianceRules().catch(e => {
+      console.error('[Server] 通用合规规则种子导入失败（不阻断启动）:', e.message);
     });
 
     // 启动定时任务
