@@ -5876,34 +5876,42 @@ export async function upsertAeoQuotaConfig(userId: number, data: any): Promise<v
 
 // ============ 内容中枢：写作指令 ============
 
-export async function getWritingInstructions(userId: number, category?: string): Promise<any[]> {
-  let sql = `SELECT * FROM writing_instruction WHERE user_id = $1 AND is_active = true`;
+/**
+ * 获取指定客户的写作指令（含全局预设模板，user_id IS NULL）
+ * opts.includeInactive=true 时返回全部（含停用），用于指令库管理可切换启用/停用；
+ * 默认只返回启用的指令，用于文章写作/自动写作的指令选用。
+ */
+export async function getWritingInstructions(userId: number, category?: string, opts?: { includeInactive?: boolean }): Promise<any[]> {
+  const conditions = ['(user_id = $1 OR user_id IS NULL)'];
   const params: any[] = [userId];
+  if (!opts?.includeInactive) conditions.push('is_active = true');
   if (category) {
-    sql += ` AND category = $2`;
+    conditions.push(`category = $${params.length + 1}`);
     params.push(category);
   }
-  sql += ` ORDER BY category, create_time DESC`;
+  const sql = `SELECT * FROM writing_instruction WHERE ${conditions.join(' AND ')} ORDER BY (user_id IS NULL) DESC, is_active DESC, id ASC`;
   const result = await query(sql, params);
   return result.rows;
 }
 
-/** 获取所有客户的写作指令（管理员视角，用于桌面端指令库管理） */
-export async function getAllWritingInstructions(category?: string): Promise<any[]> {
-  let sql = `SELECT * FROM writing_instruction WHERE is_active = true`;
+/** 获取所有客户的写作指令（管理员视角，用于桌面端指令库管理；含全局预设模板） */
+export async function getAllWritingInstructions(category?: string, opts?: { includeInactive?: boolean }): Promise<any[]> {
+  const conditions: string[] = [];
   const params: any[] = [];
+  if (!opts?.includeInactive) conditions.push('is_active = true');
   if (category) {
+    conditions.push(`category = $${params.length + 1}`);
     params.push(category);
-    sql += ` AND category = $1`;
   }
-  sql += ` ORDER BY user_id, create_time DESC`;
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const sql = `SELECT * FROM writing_instruction ${where} ORDER BY user_id NULLS LAST, is_active DESC, id ASC`;
   const result = await query(sql, params);
   return result.rows;
 }
 
 /** 获取指定客户名下的写作指令（管理员模式：customerId 由前端传入） */
-export async function getWritingInstructionsByCustomer(customerId: number, category?: string): Promise<any[]> {
-  return getWritingInstructions(customerId, category);
+export async function getWritingInstructionsByCustomer(customerId: number, category?: string, opts?: { includeInactive?: boolean }): Promise<any[]> {
+  return getWritingInstructions(customerId, category, opts);
 }
 
 export async function getWritingInstructionById(id: number): Promise<any | null> {

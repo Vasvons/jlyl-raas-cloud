@@ -539,15 +539,18 @@ router.get('/instructions/categories', (req: Request, res: Response) => {
 router.get('/instructions', async (req: Request, res: Response) => {
   try {
     const category = req.query.category as string | undefined;
+    // active=1 时只返回启用的指令（用于文章写作/自动写作的指令选用）；
+    // 默认返回全部（含停用），供指令库管理页切换启用/停用
+    const includeInactive = !(req.query.active === '1');
     // v2.2.12：修复 ?all=1 越权漏洞——必须管理员才能查看所有客户的指令
     // 原 bug：任何登录用户传 ?all=1 即可拉到所有客户的指令库
     if (req.query.all === '1' && (req as any).user?.level === '1') {
-      const list = await getAllWritingInstructions(category);
+      const list = await getAllWritingInstructions(category, { includeInactive });
       res.json({ code: 200, data: list });
       return;
     }
     const customerId = getCustomerId(req);
-    const list = await getWritingInstructions(customerId, category);
+    const list = await getWritingInstructions(customerId, category, { includeInactive });
     res.json({ code: 200, data: list });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
