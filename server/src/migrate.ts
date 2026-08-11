@@ -2828,29 +2828,8 @@ export async function migrate() {
 
     // ============ v3.13 存量数据迁移（品牌词层级，保证旧数据不丢失）============
     // 品牌词重构后，旧数据（品牌词产生前创建）没有 brand_id，会被品牌维度过滤隐藏。
-    // 这里做幂等迁移：
-    //   1) 为「有存量关键词但尚无品牌词」的用户创建默认品牌（优先用企业知识库公司名命名）
-    //   2) 把 brand_id 为 NULL 的存量关键词（核心/蒸馏/品牌）归入该用户的默认品牌
-    //   3) 把旧的 cloud_api_config 单条自动写作配置迁移为一条 auto_writing_task（任务名「历史自动写作配置」）
-    await client.query(`
-      INSERT INTO brand (user_id, name, is_active)
-      SELECT DISTINCT src.user_id,
-        COALESCE(
-          (SELECT company_short_name FROM enterprise_knowledge k
-            WHERE k.user_id = src.user_id AND k.is_active = true ORDER BY k.id LIMIT 1),
-          '默认品牌'
-        ),
-        true
-      FROM (
-        SELECT DISTINCT user_id FROM distillate_keyword WHERE brand_id IS NULL
-        UNION
-        SELECT DISTINCT userid AS user_id FROM zlgjc WHERE brand_id IS NULL
-        UNION
-        SELECT DISTINCT user_id FROM pp WHERE brand_id IS NULL
-      ) src
-      WHERE src.user_id IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM brand b WHERE b.user_id = src.user_id)
-    `).catch((e: any) => console.warn('[Migrate] 创建默认品牌失败（可忽略）:', e.message));
+    // 所有有存量关键词的用户都已有品牌词，无需自动创建，只需把 brand_id 为 NULL 的
+    // 存量关键词（核心/蒸馏/品牌）归入该用户已有的第一个品牌即可恢复可见。
     await client.query(`
       UPDATE distillate_keyword d
       SET brand_id = (SELECT id FROM brand b WHERE b.user_id = d.user_id ORDER BY b.id LIMIT 1)
@@ -2866,6 +2845,7 @@ export async function migrate() {
       SET brand_id = (SELECT id FROM brand b WHERE b.user_id = p.user_id ORDER BY b.id LIMIT 1)
       WHERE p.brand_id IS NULL
     `).catch((e: any) => console.warn('[Migrate] 归并品牌关键词品牌失败（可忽略）:', e.message));
+    // 把旧的 cloud_api_config 单条自动写作配置迁移为一条 auto_writing_task（任务名「历史自动写作配置」）
     await client.query(`
       INSERT INTO auto_writing_task (
         user_id, task_name, instruction_id, knowledge_id, agent_profile_id,
