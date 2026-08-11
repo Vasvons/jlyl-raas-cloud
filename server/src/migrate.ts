@@ -2834,17 +2834,20 @@ export async function migrate() {
     // 回填 brand 表：重构前用户已有品牌词（存放在 pp 品牌关键词表，如"川务财税"），
     // 但 brand 表为空，导致 GEO 报告/关键词管理按品牌切换时无品牌可选。
     // 按"每个品牌词一个品牌"原则，从 pp 表提取非空品牌词为无品牌的用户创建 brand 行。
+    // 注意：brand.user_id 为 INTEGER，而 pp/distillate_keyword/zlgjc 的 user_id 为 TEXT。
+    // 内联 SQL 中 `int4 = text` 列比较会报 "operator does not exist: integer = text"，
+    // 因此所有跨表比较必须显式 `b.user_id::text`（参考 /diagnose 的 u.id::text 写法）。
     await client.query(`
       INSERT INTO brand (user_id, name)
-      SELECT src.user_id, src.name
+      SELECT NULLIF(trim(src.user_id), '')::int4, src.name
       FROM (
         SELECT p.user_id, trim(p.pp) AS name
         FROM pp p
-        WHERE p.pp IS NOT NULL AND trim(p.pp) != ''
+        WHERE p.pp IS NOT NULL AND trim(p.pp) != '' AND p.user_id ~ '^[0-9]+$'
         GROUP BY p.user_id, trim(p.pp)
       ) src
       WHERE NOT EXISTS (
-        SELECT 1 FROM brand b WHERE b.user_id = src.user_id AND b.name = src.name
+        SELECT 1 FROM brand b WHERE b.user_id::text = src.user_id AND b.name = src.name
       )
     `).catch((e: any) => console.warn('[Migrate] 品牌词回填brand失败（可忽略）:', e.message));
     // 将品牌关键词(pp)按名称精确归属到对应品牌（而非一律归入第一个品牌）
@@ -2852,24 +2855,24 @@ export async function migrate() {
       UPDATE pp p
       SET brand_id = (
         SELECT b.id FROM brand b
-        WHERE b.user_id = p.user_id AND trim(b.name) = trim(p.pp)
+        WHERE b.user_id::text = p.user_id AND trim(b.name) = trim(p.pp)
         ORDER BY b.id LIMIT 1
       )
       WHERE p.brand_id IS NULL
     `).catch((e: any) => console.warn('[Migrate] 按名称归属品牌关键词失败（可忽略）:', e.message));
     await client.query(`
       UPDATE distillate_keyword d
-      SET brand_id = (SELECT id FROM brand b WHERE b.user_id = d.user_id ORDER BY b.id LIMIT 1)
+      SET brand_id = (SELECT id FROM brand b WHERE b.user_id::text = d.user_id ORDER BY b.id LIMIT 1)
       WHERE d.brand_id IS NULL
     `).catch((e: any) => console.warn('[Migrate] 归并核心关键词品牌失败（可忽略）:', e.message));
     await client.query(`
       UPDATE zlgjc z
-      SET brand_id = (SELECT id FROM brand b WHERE b.user_id = z.userid ORDER BY b.id LIMIT 1)
+      SET brand_id = (SELECT id FROM brand b WHERE b.user_id::text = z.userid ORDER BY b.id LIMIT 1)
       WHERE z.brand_id IS NULL
     `).catch((e: any) => console.warn('[Migrate] 归并蒸馏关键词品牌失败（可忽略）:', e.message));
     await client.query(`
       UPDATE pp p
-      SET brand_id = (SELECT id FROM brand b WHERE b.user_id = p.user_id ORDER BY b.id LIMIT 1)
+      SET brand_id = (SELECT id FROM brand b WHERE b.user_id::text = p.user_id ORDER BY b.id LIMIT 1)
       WHERE p.brand_id IS NULL
     `).catch((e: any) => console.warn('[Migrate] 归并品牌关键词品牌失败（可忽略）:', e.message));
     // 把旧的 cloud_api_config 单条自动写作配置迁移为一条 auto_writing_task（任务名「历史自动写作配置」）
