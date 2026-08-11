@@ -603,9 +603,10 @@ router.delete('/instructions/:id', async (req: Request, res: Response) => {
 // 品牌词是关键词管理顶层实体，下辖核心关键词/蒸馏关键词/品牌关键词
 router.get('/brands', async (req: Request, res: Response) => {
   try {
+    // 兼容两种传参：桌面端用 customer_id，web 数据监控/巡检用 userId
     const userId = req.query.customer_id
       ? String(Number(req.query.customer_id))
-      : String(getUserId(req));
+      : (req.query.userId ? String(Number(req.query.userId)) : String(getUserId(req)));
     const list = await getBrandsByUserId(userId);
     res.json({ code: 200, data: list });
   } catch (err: any) {
