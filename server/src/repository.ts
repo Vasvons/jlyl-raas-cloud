@@ -1276,12 +1276,15 @@ export async function setDailyRandom(taskId: number, date: Date, num: number): P
 // 分页查询核心关键词
 export async function getDistillateKeywordsByPage(userId: string, pageNum: number, pageSize: number, brandId?: number) {
   const offset = (pageNum - 1) * pageSize;
-  const brandFilter = brandId ? ' AND brand_id = $2' : '';
-  const countResult = await query(`SELECT COUNT(*) as total FROM distillate_keyword WHERE user_id = $1${brandFilter}`, brandId ? [userId, brandId] : [userId]);
+  const hasBrand = brandId != null;
+  const brandFilter = hasBrand ? ' AND brand_id = $2' : '';
+  const countResult = await query(`SELECT COUNT(*) as total FROM distillate_keyword WHERE user_id = $1${brandFilter}`, hasBrand ? [userId, brandId] : [userId]);
   const total = parseInt(countResult.rows[0].total);
+  // LIMIT/OFFSET 占位符索引随 brandId 是否出现而变化
+  const limitIdx = hasBrand ? 3 : 2;
   const result = await query(
-    `SELECT id, distillate_keyword, user_id, brand_id, zt, create_time FROM distillate_keyword WHERE user_id = $1${brandFilter} ORDER BY id LIMIT $3 OFFSET $4`,
-    brandId ? [userId, brandId, pageSize, offset] : [userId, pageSize, offset]
+    `SELECT id, distillate_keyword, user_id, brand_id, zt, create_time FROM distillate_keyword WHERE user_id = $1${brandFilter} ORDER BY id LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+    hasBrand ? [userId, brandId, pageSize, offset] : [userId, pageSize, offset]
   );
   // 将字段名转为驼峰格式以兼容前端
   const list = result.rows.map((r: any) => ({
@@ -1346,12 +1349,15 @@ export async function deleteDistillateKeyword(id: number): Promise<void> {
 // 分页查询蒸馏关键词库
 export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: number, keywordType: number = 0, brandId?: number) {
   const offset = (pageNum - 1) * pageSize;
-  const brandFilter = brandId ? ' AND brand_id = $3' : '';
-  const countResult = await query(`SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1 AND keyword_type = $2${brandFilter}`, brandId ? [userId, keywordType, brandId] : [userId, keywordType]);
+  const hasBrand = brandId != null;
+  const brandFilter = hasBrand ? ' AND brand_id = $3' : '';
+  const countResult = await query(`SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1 AND keyword_type = $2${brandFilter}`, hasBrand ? [userId, keywordType, brandId] : [userId, keywordType]);
   const total = parseInt(countResult.rows[0].total);
+  // LIMIT/OFFSET 占位符索引随 brandId 是否出现而变化
+  const limitIdx = hasBrand ? 4 : 3;
   const result = await query(
-    `SELECT id, value, hxgjc, userid, brand_id, lxfs, create_time FROM zlgjc WHERE userid = $1 AND keyword_type = $2${brandFilter} ORDER BY id LIMIT $4 OFFSET $5`,
-    brandId ? [userId, keywordType, brandId, pageSize, offset] : [userId, keywordType, pageSize, offset]
+    `SELECT id, value, hxgjc, userid, brand_id, lxfs, create_time FROM zlgjc WHERE userid = $1 AND keyword_type = $2${brandFilter} ORDER BY id LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+    hasBrand ? [userId, keywordType, brandId, pageSize, offset] : [userId, keywordType, pageSize, offset]
   );
   const list = result.rows.map((r: any) => ({
     id: r.id,
