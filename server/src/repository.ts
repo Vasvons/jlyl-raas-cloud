@@ -720,18 +720,53 @@ export async function upsertZlgjcUrl(item: any): Promise<number> {
 
 // ============ 品牌关键词 ============
 
-export async function getPPByUserId(userId: string) {
-  const result = await query('SELECT id, pp, user_id FROM pp WHERE user_id = $1 ORDER BY id', [userId]);
+export async function getPPByUserId(userId: string, brandId?: number) {
+  const brandFilter = brandId ? ' AND brand_id = $2' : '';
+  const result = await query(`SELECT id, pp, user_id, brand_id FROM pp WHERE user_id = $1${brandFilter} ORDER BY id`, brandId ? [userId, brandId] : [userId]);
   return result.rows;
 }
 
-export async function insertPP(userId: string, pp: string): Promise<number> {
-  const result = await query('INSERT INTO pp (pp, user_id) VALUES ($1, $2) RETURNING id', [pp, userId]);
+export async function insertPP(userId: string, pp: string, brandId?: number): Promise<number> {
+  const result = brandId
+    ? await query('INSERT INTO pp (pp, user_id, brand_id) VALUES ($1, $2, $3) RETURNING id', [pp, userId, brandId])
+    : await query('INSERT INTO pp (pp, user_id) VALUES ($1, $2) RETURNING id', [pp, userId]);
   return result.rows[0].id;
 }
 
 export async function deletePP(id: number): Promise<void> {
   await query('DELETE FROM pp WHERE id = $1', [id]);
+}
+
+// ============ 品牌词（brand）============
+
+export async function getBrandsByUserId(userId: string) {
+  const result = await query('SELECT id, user_id, name, is_active, create_time FROM brand WHERE user_id = $1 ORDER BY id', [userId]);
+  return result.rows;
+}
+
+export async function insertBrand(userId: string, name: string): Promise<number> {
+  const result = await query('INSERT INTO brand (user_id, name) VALUES ($1, $2) RETURNING id', [userId, name]);
+  return result.rows[0].id;
+}
+
+export async function updateBrand(id: number, name?: string, isActive?: boolean): Promise<void> {
+  await query(
+    'UPDATE brand SET name = COALESCE($2, name), is_active = COALESCE($3, is_active), update_time = NOW() WHERE id = $1',
+    [id, name ?? null, isActive === undefined ? null : isActive]
+  );
+}
+
+export async function deleteBrand(id: number): Promise<void> {
+  await query('DELETE FROM brand WHERE id = $1', [id]);
+}
+
+// 获取某品牌词下的蒸馏关键词（zlgjc，keyword_type=0）
+export async function getZlgjcByBrand(brandId: number) {
+  const result = await query(
+    'SELECT id, value, hxgjc, userid, keyword_type FROM zlgjc WHERE brand_id = $1 ORDER BY id',
+    [brandId]
+  );
+  return result.rows;
 }
 
 // ============ 任务管理 ============
@@ -1091,18 +1126,20 @@ export async function setDailyRandom(taskId: number, date: Date, num: number): P
 // ============ 核心关键词（distillate_keyword）============
 
 // 分页查询核心关键词
-export async function getDistillateKeywordsByPage(userId: string, pageNum: number, pageSize: number) {
+export async function getDistillateKeywordsByPage(userId: string, pageNum: number, pageSize: number, brandId?: number) {
   const offset = (pageNum - 1) * pageSize;
-  const countResult = await query('SELECT COUNT(*) as total FROM distillate_keyword WHERE user_id = $1', [userId]);
+  const brandFilter = brandId ? ' AND brand_id = $2' : '';
+  const countResult = await query(`SELECT COUNT(*) as total FROM distillate_keyword WHERE user_id = $1${brandFilter}`, brandId ? [userId, brandId] : [userId]);
   const total = parseInt(countResult.rows[0].total);
   const result = await query(
-    'SELECT id, distillate_keyword, user_id, zt, create_time FROM distillate_keyword WHERE user_id = $1 ORDER BY id LIMIT $2 OFFSET $3',
-    [userId, pageSize, offset]
+    `SELECT id, distillate_keyword, user_id, brand_id, zt, create_time FROM distillate_keyword WHERE user_id = $1${brandFilter} ORDER BY id LIMIT $3 OFFSET $4`,
+    brandId ? [userId, brandId, pageSize, offset] : [userId, pageSize, offset]
   );
   // 将字段名转为驼峰格式以兼容前端
   const list = result.rows.map((r: any) => ({
     id: r.id,
     userId: r.user_id,
+    brandId: r.brand_id,
     distillateKeyword: r.distillate_keyword,
     zt: String(r.zt),
     createTime: r.create_time,
@@ -1111,11 +1148,16 @@ export async function getDistillateKeywordsByPage(userId: string, pageNum: numbe
 }
 
 // 新增核心关键词
-export async function insertDistillateKeyword(userId: string, keyword: string): Promise<number> {
-  const result = await query(
-    'INSERT INTO distillate_keyword (distillate_keyword, user_id, zt) VALUES ($1, $2, 1) RETURNING id',
-    [keyword, userId]
-  );
+export async function insertDistillateKeyword(userId: string, keyword: string, brandId?: number): Promise<number> {
+  const result = brandId
+    ? await query(
+        'INSERT INTO distillate_keyword (distillate_keyword, user_id, brand_id, zt) VALUES ($1, $2, $3, 1) RETURNING id',
+        [keyword, userId, brandId]
+      )
+    : await query(
+        'INSERT INTO distillate_keyword (distillate_keyword, user_id, zt) VALUES ($1, $2, 1) RETURNING id',
+        [keyword, userId]
+      );
   return result.rows[0].id;
 }
 
@@ -1154,18 +1196,20 @@ export async function deleteDistillateKeyword(id: number): Promise<void> {
 // ============ 蒸馏关键词库（zlgjc）分页查询和删除 ============
 
 // 分页查询蒸馏关键词库
-export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: number, keywordType: number = 0) {
+export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: number, keywordType: number = 0, brandId?: number) {
   const offset = (pageNum - 1) * pageSize;
-  const countResult = await query('SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1 AND keyword_type = $2', [userId, keywordType]);
+  const brandFilter = brandId ? ' AND brand_id = $3' : '';
+  const countResult = await query(`SELECT COUNT(*) as total FROM zlgjc WHERE userid = $1 AND keyword_type = $2${brandFilter}`, brandId ? [userId, keywordType, brandId] : [userId, keywordType]);
   const total = parseInt(countResult.rows[0].total);
   const result = await query(
-    'SELECT id, value, hxgjc, userid, lxfs, create_time FROM zlgjc WHERE userid = $1 AND keyword_type = $2 ORDER BY id LIMIT $3 OFFSET $4',
-    [userId, keywordType, pageSize, offset]
+    `SELECT id, value, hxgjc, userid, brand_id, lxfs, create_time FROM zlgjc WHERE userid = $1 AND keyword_type = $2${brandFilter} ORDER BY id LIMIT $4 OFFSET $5`,
+    brandId ? [userId, keywordType, brandId, pageSize, offset] : [userId, keywordType, pageSize, offset]
   );
   const list = result.rows.map((r: any) => ({
     id: r.id,
     value: r.value,
     userId: r.userid,
+    brandId: r.brand_id,
     hxgjc: r.hxgjc,
     lxfs: r.lxfs,
     createTime: r.create_time,
@@ -1218,7 +1262,7 @@ export async function deleteZlgjc(id: number): Promise<void> {
 // ============ 蒸馏关键词生成（笛卡尔积）============
 
 // 生成蒸馏关键词（笛卡尔积组合）
-export async function generateZlgjcKeywords(userId: string, wordGroups: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[] }, keywordType: number = 0) {
+export async function generateZlgjcKeywords(userId: string, wordGroups: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[] }, keywordType: number = 0, brandId?: number) {
   const { A, B, C, D, E, F, G } = wordGroups;
 
   // 根据组合规则生成所有组合
@@ -1284,10 +1328,14 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
     } else {
       // ON CONFLICT 双保险：即使应用层去重失败，数据库层也会拒绝重复
       await query(
-        `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (userid, value, keyword_type) DO NOTHING`,
-        [keyword, hxgjc, userId, '', keywordType]
+        brandId
+          ? `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type, brand_id)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (userid, value, keyword_type) DO NOTHING`
+          : `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (userid, value, keyword_type) DO NOTHING`,
+        brandId ? [keyword, hxgjc, userId, '', keywordType, brandId] : [keyword, hxgjc, userId, '', keywordType]
       );
       existing.add(keyword);
       inserted++;
@@ -1472,7 +1520,7 @@ function detectKeywordCombo(
 }
 
 // 自动为新添加的核心词生成蒸馏关键词
-export async function autoGenerateDistillateKeywords(userId: string, coreKeyword: string): Promise<{ inserted: number; duplicated: number }> {
+export async function autoGenerateDistillateKeywords(userId: string, coreKeyword: string, brandId?: number): Promise<{ inserted: number; duplicated: number }> {
   // 获取用户保存的蒸馏关键词配置
   const configJson = await getKwConfig(userId, 'distillate');
   let A: string[] = ['市面上', '行业内', '市场', '目前', '国内'];
@@ -1502,12 +1550,12 @@ export async function autoGenerateDistillateKeywords(userId: string, coreKeyword
 
   const result = await generateZlgjcKeywords(userId, {
     A, B, C: [coreKeyword], D, E, F, G
-  }, 0);
+  }, 0, brandId);
   return { inserted: result.inserted, duplicated: result.duplicated };
 }
 
 // 自动为新添加的品牌词生成品牌关键词
-export async function autoGenerateBrandKeywords(userId: string, brandWord: string): Promise<{ inserted: number; duplicated: number }> {
+export async function autoGenerateBrandKeywords(userId: string, brandWord: string, brandId?: number): Promise<{ inserted: number; duplicated: number }> {
   // 获取用户保存的品牌关键词配置
   const configJson = await getKwConfig(userId, 'brand');
   let C: string[] = ['价格', '报价', '厂家', '多少钱', '费用', '成本'];
@@ -1535,7 +1583,7 @@ export async function autoGenerateBrandKeywords(userId: string, brandWord: strin
 
   const result = await generateZlgjcKeywords(userId, {
     A: [brandWord], B, C, D, E: [], F: [], G
-  }, 1);
+  }, 1, brandId);
   return { inserted: result.inserted, duplicated: result.duplicated };
 }
 

@@ -14,6 +14,11 @@ import {
   createWritingInstruction,
   updateWritingInstruction,
   deleteWritingInstruction,
+  getBrandsByUserId,
+  insertBrand,
+  updateBrand,
+  deleteBrand,
+  getZlgjcByBrand,
   getEnterpriseKnowledges,
   getAllEnterpriseKnowledges,
   getEnterpriseKnowledgeById,
@@ -583,6 +588,63 @@ router.delete('/instructions/:id', async (req: Request, res: Response) => {
   try {
     await deleteWritingInstruction(Number(req.params.id));
     res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 品牌词（brand，v3.x 品牌词层级管理）============
+// 品牌词是关键词管理顶层实体，下辖核心关键词/蒸馏关键词/品牌关键词
+router.get('/brands', async (req: Request, res: Response) => {
+  try {
+    const userId = req.query.customer_id
+      ? String(Number(req.query.customer_id))
+      : String(getUserId(req));
+    const list = await getBrandsByUserId(userId);
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.post('/brands', async (req: Request, res: Response) => {
+  try {
+    const userId = req.body.customer_id
+      ? String(Number(req.body.customer_id))
+      : String(getUserId(req));
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ code: 400, message: 'name 必填' });
+    const id = await insertBrand(userId, name);
+    res.json({ code: 200, data: { id } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.put('/brands/:id', async (req: Request, res: Response) => {
+  try {
+    const { name, is_active } = req.body;
+    await updateBrand(Number(req.params.id), name, is_active);
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+router.delete('/brands/:id', async (req: Request, res: Response) => {
+  try {
+    await deleteBrand(Number(req.params.id));
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// 获取某品牌词下的蒸馏关键词（zlgjc）
+router.get('/brands/:id/zlgjc', async (req: Request, res: Response) => {
+  try {
+    const list = await getZlgjcByBrand(Number(req.params.id));
+    res.json({ code: 200, data: list });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }

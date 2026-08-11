@@ -487,6 +487,35 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_zlgjcid_pt ON zlgjcurl(zlgjcid, pt)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_has_lxfs ON zlgjcurl(has_lxfs)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_user ON pp(user_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dk_user ON distillate_keyword(user_id)`);
+
+    // ============ 品牌词（v3.x 品牌词层级管理）============
+    // 品牌词是关键词管理的顶层实体，隶属于客户（user_id）。
+    // 核心关键词(distillate_keyword)、蒸馏关键词(zlgjc)、品牌关键词(pp) 均通过 brand_id 下辖到品牌词。
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS brand (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        name VARCHAR(64) NOT NULL,
+        is_active BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_brand_user ON brand(user_id)`);
+
+    // 增量迁移：为关键词表添加 brand_id 列（品牌词层级归属）
+    try {
+      await client.query(`ALTER TABLE distillate_keyword ADD COLUMN IF NOT EXISTS brand_id INTEGER REFERENCES brand(id)`);
+      await client.query(`ALTER TABLE zlgjc ADD COLUMN IF NOT EXISTS brand_id INTEGER REFERENCES brand(id)`);
+      await client.query(`ALTER TABLE pp ADD COLUMN IF NOT EXISTS brand_id INTEGER REFERENCES brand(id)`);
+    } catch (e: any) {
+      console.log('[Migrate] brand_id 列添加跳过:', e.message);
+    }
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dk_brand ON distillate_keyword(brand_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjc_brand ON zlgjc(brand_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_brand ON pp(brand_id)`);
+
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dr_task_date ON daily_random(task_id, random_date)`);
     // daily_random 需要 UNIQUE 约束才能使用 ON CONFLICT (task_id, random_date)
     // 先删除重复记录（每个 task_id+random_date 只保留 id 最大的一条）
