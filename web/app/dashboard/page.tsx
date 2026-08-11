@@ -68,6 +68,15 @@ interface UserOption {
   level: string;
 }
 
+// 品牌词（v3.x 品牌词层级管理）
+interface BrandItem {
+  id: number;
+  user_id: string;
+  name: string;
+  is_active: boolean;
+  create_time?: string;
+}
+
 // AI名片组件
 function AICard({ isMobile, userId }: { isMobile: boolean; userId: string }) {
   const [user, setUser] = useState<LoginUser>({ id: '-1', username: '', phone: '-', url: '', email: '-', password: '', address: '', level: '', cid: '', dateTime: '' });
@@ -185,7 +194,7 @@ function AICard({ isMobile, userId }: { isMobile: boolean; userId: string }) {
 }
 
 // 各平台收录对比组件
-function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+function PlatformRatioChart({ isMobile, userId, brandId }: { isMobile: boolean; userId: string; brandId?: number }) {
   const [option, setOption] = useState({});
   const [chartData, setChartData] = useState<Array<{ name: string; count: number; color: string }>>([]);
 
@@ -196,7 +205,9 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
       return;
     }
     (async () => {
-      const res = await api.get('/keywordsearchrank/platformRatio', { params: { userId } });
+      const params: Record<string, string> = { userId };
+      if (brandId) params.brandId = String(brandId);
+      const res = await api.get('/keywordsearchrank/platformRatio', { params });
       if (res.data?.code === 200) {
         const data = res.data.data;
         if (!data || data.length === 0) {
@@ -242,7 +253,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
         });
       }
     })();
-  }, [isMobile, userId]);
+  }, [isMobile, userId, brandId]);
 
   return (
     <Card
@@ -276,7 +287,7 @@ function PlatformRatioChart({ isMobile, userId }: { isMobile: boolean; userId: s
 }
 
 // 蒸馏关键词排名组件
-function KeywordRankChart({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+function KeywordRankChart({ isMobile, userId, brandId }: { isMobile: boolean; userId: string; brandId?: number }) {
   const [list, setList] = useState<KeywordCountItem[]>([]);
 
   useEffect(() => {
@@ -285,12 +296,14 @@ function KeywordRankChart({ isMobile, userId }: { isMobile: boolean; userId: str
       return;
     }
     (async () => {
-      const res = await api.get('/keywordsearchrank/keywordcound', { params: { userId } });
+      const params: Record<string, string> = { userId };
+      if (brandId) params.brandId = String(brandId);
+      const res = await api.get('/keywordsearchrank/keywordcound', { params });
       if (res.data?.code === 200) {
         setList(res.data.data || []);
       }
     })();
-  }, [userId]);
+  }, [userId, brandId]);
 
   const maxCount = Math.max(...list.map((e) => e.count), 1);
 
@@ -325,7 +338,7 @@ function KeywordRankChart({ isMobile, userId }: { isMobile: boolean; userId: str
 }
 
 // 关键词数量组件
-function KeywordStats({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+function KeywordStats({ isMobile, userId, brandId }: { isMobile: boolean; userId: string; brandId?: number }) {
   const [stats, setStats] = useState<StatsData>({ count: 0, zlgjc: 0, ppgjc: 0, total: 0 });
 
   useEffect(() => {
@@ -334,12 +347,14 @@ function KeywordStats({ isMobile, userId }: { isMobile: boolean; userId: string 
       return;
     }
     (async () => {
-      const res = await api.get('/dstillateKeyword/countDstillateKeyword', { params: { userId } });
+      const params: Record<string, string> = { userId };
+      if (brandId) params.brandId = String(brandId);
+      const res = await api.get('/dstillateKeyword/countDstillateKeyword', { params });
       if (res.data?.code === 200) {
         setStats(res.data.data);
       }
     })();
-  }, [userId]);
+  }, [userId, brandId]);
 
   const items = [
     { icon: 'Iconly_Glass_Clock.png', title: '核心关键词', count: stats.count },
@@ -397,7 +412,7 @@ function KeywordStats({ isMobile, userId }: { isMobile: boolean; userId: string 
 }
 
 // 搜索排名组件
-function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string }) {
+function SearchRank({ isMobile, userId, brandId }: { isMobile: boolean; userId: string; brandId?: number }) {
   const [searchType, setSearchType] = useState('keywords');
   const [platforms, setPlatforms] = useState<PlatformRatioItem[]>([]);
   const [activePlatform, setActivePlatform] = useState<PlatformRatioItem | undefined>(undefined);
@@ -419,6 +434,7 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
       const params: Record<string, string> = { type, pageNum: String(pageNum), pageSize: String(pageSize), userId };
       if (pt) params.pt = pt;
       if (kw) params.keyword = kw;
+      if (brandId) params.brandId = String(brandId);
       const res = await api.get('/keywordsearchrank/keypage', { params });
       if (res.data?.code === 200) {
         setList(res.data.data?.list || []);
@@ -427,7 +443,7 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, [userId, brandId]);
 
   const init = useCallback(async () => {
     if (!userId) {
@@ -439,6 +455,7 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
       return;
     }
     const params: Record<string, string> = { userId };
+    if (brandId) params.brandId = String(brandId);
     const res = await api.get('/keywordsearchrank/platformRatio', { params: { ...params, type: searchType } });
     if (res.data?.code === 200) {
       setPlatforms(res.data.data || []);
@@ -449,12 +466,12 @@ function SearchRank({ isMobile, userId }: { isMobile: boolean; userId: string })
     if (res2.data?.code === 200) {
       setKeywordOptions([{ distillateKeyword: '', count: 0 }, ...(res2.data.data || [])]);
     }
-  }, [userId, fetchData, searchType, keyword, page.pageSize]);
+  }, [userId, brandId, fetchData, searchType, keyword, page.pageSize]);
 
   useEffect(() => {
     init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  }, [userId, brandId]);
 
   const handleSearchTypeChange = async (v: string) => {
     setSearchType(v);
@@ -681,6 +698,9 @@ export default function DashboardPage() {
   const [currentTime, setCurrentTime] = useState('');
   const [users, setUsers] = useState<UserOption[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string>('');
+  // v3.x 品牌词层级：数据监控按品牌词切换/隔离
+  const [brands, setBrands] = useState<BrandItem[]>([]);
+  const [selectedBrandId, setSelectedBrandId] = useState<number | undefined>(undefined);
   // 是否为管理员（只有管理员才能切换用户）
   const [isAdmin, setIsAdmin] = useState(false);
   // 分享功能相关状态
@@ -791,6 +811,33 @@ export default function DashboardPage() {
         }
       } catch {
         // 忽略错误
+      }
+    })();
+  }, [selectedUserId]);
+
+  // 加载选中用户的品牌词列表（v3.x 品牌词层级）
+  useEffect(() => {
+    if (!selectedUserId) {
+      setBrands([]);
+      setSelectedBrandId(undefined);
+      return;
+    }
+    (async () => {
+      try {
+        const res = await api.get('/brands', { params: { userId: selectedUserId } });
+        if (res.data?.code === 200 && Array.isArray(res.data.data)) {
+          setBrands(res.data.data);
+          setSelectedBrandId((prev) => {
+            const exists = (res.data.data as BrandItem[]).some((b) => b.id === prev);
+            return exists ? prev : (res.data.data as BrandItem[])[0]?.id;
+          });
+        } else {
+          setBrands([]);
+          setSelectedBrandId(undefined);
+        }
+      } catch {
+        setBrands([]);
+        setSelectedBrandId(undefined);
       }
     })();
   }, [selectedUserId]);
@@ -969,7 +1016,17 @@ export default function DashboardPage() {
       {/* Header */}
       {isMobile ? (
         <div className={styles.header}>
-          <div className={styles.headerBanner}>{displayUsername}</div>
+          <div className={styles.headerBanner}>
+            {brands.length > 0 && (
+              <Select
+                value={selectedBrandId}
+                placeholder="选择品牌"
+                onChange={(val) => setSelectedBrandId(val)}
+                style={{ width: 140, background: 'transparent' }}
+                options={brands.map((b) => ({ value: b.id, label: b.name }))}
+              />
+            )}
+          </div>
           <div className={styles.headerUpdate}>最后更新:{lastUpdate}</div>
         </div>
       ) : (
@@ -979,7 +1036,21 @@ export default function DashboardPage() {
               <div className={styles.lastTime}>最后更新时间：{lastUpdate}</div>
             </Col>
             <Col span={8}>
-              <div className={styles.headerName}>{displayUsername}</div>
+              <div className={styles.headerName}>
+                {brands.length > 0 ? (
+                  <Select
+                    value={selectedBrandId}
+                    placeholder="选择品牌词"
+                    onChange={(val) => setSelectedBrandId(val)}
+                    showSearch
+                    optionFilterProp="label"
+                    style={{ width: 180 }}
+                    options={brands.map((b) => ({ value: b.id, label: b.name }))}
+                  />
+                ) : (
+                  <span>{displayUsername}</span>
+                )}
+              </div>
             </Col>
             <Col span={8}>
               <div className={styles.currentTime}>{currentTime}</div>
@@ -1012,22 +1083,22 @@ export default function DashboardPage() {
             <Row className={styles.leftWrapper} gutter={24}>
               <Col span={10} className={styles.leftCol}>
                 <div className={styles.baseInfo}><AICard isMobile={false} userId={selectedUserId} /></div>
-                <div className={styles.info1}><PlatformRatioChart isMobile={false} userId={selectedUserId} /></div>
-                <div className={styles.info2}><KeywordRankChart isMobile={false} userId={selectedUserId} /></div>
+                <div className={styles.info1}><PlatformRatioChart isMobile={false} userId={selectedUserId} brandId={selectedBrandId} /></div>
+                <div className={styles.info2}><KeywordRankChart isMobile={false} userId={selectedUserId} brandId={selectedBrandId} /></div>
               </Col>
               <Col span={13} className={styles.rightCol}>
-                <div className={styles.info3}><KeywordStats isMobile={false} userId={selectedUserId} /></div>
-                <div className={styles.info4}><SearchRank isMobile={false} userId={selectedUserId} /></div>
+                <div className={styles.info3}><KeywordStats isMobile={false} userId={selectedUserId} brandId={selectedBrandId} /></div>
+                <div className={styles.info4}><SearchRank isMobile={false} userId={selectedUserId} brandId={selectedBrandId} /></div>
               </Col>
             </Row>
           </div>
         ) : (
           <div className={styles.mobile}>
             <div className={styles.baseInfo}><AICard isMobile={true} userId={selectedUserId} /></div>
-            <div className={styles.info3}><KeywordStats isMobile={true} userId={selectedUserId} /></div>
-            <div className={styles.info1}><PlatformRatioChart isMobile={true} userId={selectedUserId} /></div>
-            <div className={styles.info2}><KeywordRankChart isMobile={true} userId={selectedUserId} /></div>
-            <div className={styles.info4}><SearchRank isMobile={true} userId={selectedUserId} /></div>
+            <div className={styles.info3}><KeywordStats isMobile={true} userId={selectedUserId} brandId={selectedBrandId} /></div>
+            <div className={styles.info1}><PlatformRatioChart isMobile={true} userId={selectedUserId} brandId={selectedBrandId} /></div>
+            <div className={styles.info2}><KeywordRankChart isMobile={true} userId={selectedUserId} brandId={selectedBrandId} /></div>
+            <div className={styles.info4}><SearchRank isMobile={true} userId={selectedUserId} brandId={selectedBrandId} /></div>
           </div>
         )}
       </div>

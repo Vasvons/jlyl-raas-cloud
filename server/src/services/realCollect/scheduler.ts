@@ -123,8 +123,8 @@ async function startNewRoundForTask(task: any): Promise<boolean> {
     // 获取全量关键词（循环模式：每轮都查全量，不再分片轮询）
     // v2.1.8 修复：keyword_type=1 时从 zlgjc 表读品牌查询关键词（116个），不是从 pp 表读品牌名（1个）
     const keywords = task.keyword_type === 1
-      ? await getBrandQueryKeywords(task.user_id)
-      : await getDistillateKeywords(task.user_id);
+      ? await getBrandQueryKeywords(task.user_id, task.brand_id || undefined)
+      : await getDistillateKeywords(task.user_id, task.brand_id || undefined);
 
     if (keywords.length === 0) {
       // v2.1.5：关键词为空时记录错误信息到 last_error 字段，前端可据此显示"无关键词"状态
@@ -196,8 +196,8 @@ async function checkCompletedRounds(): Promise<void> {
           const shardCount = parseInt(shardCountResult.rows[0]?.cnt || '0');
           if (shardCount > 0) {
             const uniqueKeywords = task.keyword_type === 1
-              ? await getBrandQueryKeywords(task.user_id)
-              : await getDistillateKeywords(task.user_id);
+              ? await getBrandQueryKeywords(task.user_id, task.brand_id || undefined)
+              : await getDistillateKeywords(task.user_id, task.brand_id || undefined);
             const expectedShardSize = task.shard_size || DEFAULT_MAX_KEYWORDS_PER_QUEUE_TASK;
             const expectedShardCount = Math.ceil(uniqueKeywords.length / expectedShardSize);
             if (shardCount > expectedShardCount * 1.2) {
@@ -280,8 +280,8 @@ export async function enqueueTaskNow(task: any): Promise<number> {
   // 2. 获取全量关键词
   // v2.1.8 修复：keyword_type=1 时从 zlgjc 表读品牌关键词（116 个），不是从 pp 表读品牌名（1 个）
   const keywords = task.keyword_type === 1
-    ? await getBrandQueryKeywords(task.user_id)
-    : await getDistillateKeywords(task.user_id);
+    ? await getBrandQueryKeywords(task.user_id, task.brand_id || undefined)
+    : await getDistillateKeywords(task.user_id, task.brand_id || undefined);
 
   if (keywords.length === 0) {
     await updateTaskRunStatus(task.id, {

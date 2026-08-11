@@ -19,6 +19,12 @@ import {
   updateBrand,
   deleteBrand,
   getZlgjcByBrand,
+  getAutoWritingTasks,
+  getAutoWritingTaskById,
+  insertAutoWritingTask,
+  updateAutoWritingTask,
+  deleteAutoWritingTask,
+  toggleAutoWritingTask,
   getEnterpriseKnowledges,
   getAllEnterpriseKnowledges,
   getEnterpriseKnowledgeById,
@@ -637,6 +643,69 @@ router.delete('/brands/:id', async (req: Request, res: Response) => {
     res.json({ code: 200 });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
+  }
+});
+
+// ============ 自动化写作任务（auto_writing_task，v3.13）============
+// 自动写作配置从「每客户单一配置」重构为「多条自动写作任务」。
+// 每条任务选择品牌词，独立的指令/知识库/关键词/平台/每日配额/启停状态。
+router.get('/auto-writing-tasks', async (req: Request, res: Response) => {
+  try {
+    const userId = req.query.customer_id
+      ? String(Number(req.query.customer_id))
+      : String(getUserId(req));
+    const list = await getAutoWritingTasks(userId);
+    res.json({ code: 200, data: list });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: (err as Error).message });
+  }
+});
+
+router.get('/auto-writing-tasks/:id', async (req: Request, res: Response) => {
+  try {
+    const task = await getAutoWritingTaskById(Number(req.params.id));
+    if (!task) return res.status(404).json({ code: 404, message: '任务不存在' });
+    res.json({ code: 200, data: task });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: (err as Error).message });
+  }
+});
+
+router.post('/auto-writing-tasks', async (req: Request, res: Response) => {
+  try {
+    const customerId = req.body.customer_id ? Number(req.body.customer_id) : Number(getUserId(req));
+    const data = { ...req.body, user_id: customerId };
+    const id = await insertAutoWritingTask(data);
+    res.json({ code: 200, data: { id } });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: (err as Error).message });
+  }
+});
+
+router.put('/auto-writing-tasks/:id', async (req: Request, res: Response) => {
+  try {
+    await updateAutoWritingTask(Number(req.params.id), req.body);
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: (err as Error).message });
+  }
+});
+
+router.delete('/auto-writing-tasks/:id', async (req: Request, res: Response) => {
+  try {
+    await deleteAutoWritingTask(Number(req.params.id));
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: (err as Error).message });
+  }
+});
+
+router.put('/auto-writing-tasks/:id/toggle', async (req: Request, res: Response) => {
+  try {
+    await toggleAutoWritingTask(Number(req.params.id), req.body.is_active === true);
+    res.json({ code: 200 });
+  } catch (err: any) {
+    res.status(500).json({ code: 500, message: (err as Error).message });
   }
 });
 

@@ -402,6 +402,7 @@ router.get('/keywordsearchrank/keypage', authMiddleware, async (req, res) => {
       platform: req.query.pt as string,
       keyword: req.query.keyword as string,
       type: req.query.type as string,
+      brandId: req.query.brandId ? parseInt(req.query.brandId as string) : undefined,
       page: parseInt(req.query.pageNum as string) || 1,
       pageSize: parseInt(req.query.pageSize as string) || 20,
     });
@@ -441,7 +442,8 @@ router.get('/keywordsearchrank/platformRatio', authMiddleware, async (req, res) 
     if (!userId) return res.json({ code: 400, message: '缺少userId' });
 
     const type = req.query.type as string | undefined;
-    const data = await getPlatformRatio(userId, type);
+    const brandId = req.query.brandId ? parseInt(req.query.brandId as string) : undefined;
+    const data = await getPlatformRatio(userId, type, brandId);
     res.json({
       code: 200,
       data: data.map((item: any) => ({
@@ -461,7 +463,8 @@ router.get('/keywordsearchrank/keywordcound', authMiddleware, async (req, res) =
     const userId = resolveGeoUserId(req);
     if (!userId) return res.json({ code: 400, message: '缺少userId' });
 
-    const data = await getCoreKeywordRank(userId, 20);
+    const brandId = req.query.brandId ? parseInt(req.query.brandId as string) : undefined;
+    const data = await getCoreKeywordRank(userId, 20, brandId);
     res.json({
       code: 200,
       data: data.map((item: any) => ({
@@ -481,27 +484,34 @@ router.get('/dstillateKeyword/countDstillateKeyword', authMiddleware, async (req
     const userId = resolveGeoUserId(req);
     if (!userId) return res.json({ code: 400, message: '缺少userId' });
 
+    const brandId = req.query.brandId ? parseInt(req.query.brandId as string) : undefined;
+    const brandCoreFilter = brandId ? ' AND brand_id = ' + brandId : '';
+    const brandZlgjcFilter = brandId ? ' AND brand_id = ' + brandId : '';
+    const brandPpFilter = brandId ? ' AND brand_id = ' + brandId : '';
+
     // 核心关键词数（distillate_keyword 表）
     const coreResult = await query(
-      'SELECT COUNT(*) as count FROM distillate_keyword WHERE user_id = $1', [userId]
+      'SELECT COUNT(*) as count FROM distillate_keyword WHERE user_id = $1' + brandCoreFilter, [userId]
     );
     const coreCount = parseInt(coreResult.rows[0].count) || 0;
 
     // 蒸馏关键词数（zlgjc 表）
     const zlgjcResult = await query(
-      'SELECT COUNT(*) as count FROM zlgjc WHERE userid = $1', [userId]
+      'SELECT COUNT(*) as count FROM zlgjc WHERE userid = $1' + brandZlgjcFilter, [userId]
     );
     const zlgjcCount = parseInt(zlgjcResult.rows[0].count) || 0;
 
     // 品牌关键词数（pp 表）
     const ppResult = await query(
-      'SELECT COUNT(*) as count FROM pp WHERE user_id = $1', [userId]
+      'SELECT COUNT(*) as count FROM pp WHERE user_id = $1' + brandPpFilter, [userId]
     );
     const ppCount = parseInt(ppResult.rows[0].count) || 0;
 
-    // 总收录条数（只统计已收录的）
+    // 总收录条数（只统计已收录的，按品牌词过滤）
     const totalResult = await query(
-      'SELECT COUNT(*) as count FROM keyword_search_rank WHERE user_id = $1 AND query_time IS NOT NULL', [userId]
+      'SELECT COUNT(*) as count FROM keyword_search_rank k WHERE k.user_id = $1 AND k.query_time IS NOT NULL' +
+      (brandId ? ` AND EXISTS (SELECT 1 FROM zlgjc zb WHERE zb.value = k.distillate_keyword AND zb.userid = k.user_id AND zb.brand_id = ${brandId})` : ''),
+      [userId]
     );
     const totalCount = parseInt(totalResult.rows[0].count) || 0;
 

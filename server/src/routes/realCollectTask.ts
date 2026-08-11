@@ -78,8 +78,8 @@ router.get('/', async (req, res) => {
       tasks.map(async (t: any) => {
         try {
           const keywords = t.keyword_type === 1
-            ? await getBrandKeywords(t.user_id)
-            : await getDistillateKeywords(t.user_id);
+            ? await getBrandKeywords(t.user_id, t.brand_id || undefined)
+            : await getDistillateKeywords(t.user_id, t.brand_id || undefined);
           return { ...t, keyword_count: keywords.length };
         } catch {
           return { ...t, keyword_count: -1 }; // -1 表示查询失败
@@ -108,25 +108,26 @@ router.post('/', async (req, res) => {
   try {
     // v2.5.36：代理创建任务强制用自己 userId
     const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
-    const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode } = req.body;
+    const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode, brandId } = req.body;
     // cronExpr 可选：循环模式下不传 cronExpr，任务24小时持续执行
     if (!userId || !taskName || keywordType === undefined || !platforms) {
       return res.status(400).json({ code: 400, message: '缺少必要参数' });
     }
     // v2.1.5：创建前检查关键词是否存在，给出警告（但仍允许创建，用户可能稍后导入关键词）
     let warning: string | undefined;
+    const taskBrandId = brandId ? parseInt(brandId) : undefined;
     try {
       const keywords = keywordType === 1
-        ? await getBrandQueryKeywords(userId)
-        : await getDistillateKeywords(userId);
+        ? await getBrandQueryKeywords(userId, taskBrandId)
+        : await getDistillateKeywords(userId, taskBrandId);
       if (keywords.length === 0) {
-        const kwSource = keywordType === 1 ? '品牌词库（pp 表）' : '蒸馏词库（zlgjc 表）';
-        warning = `该用户在${kwSource}中暂无关键词，任务创建后不会立即执行。请先导入关键词。`;
+        const kwSource = keywordType === 1 ? '品牌词库（zlgjc 表）' : '蒸馏词库（zlgjc 表）';
+        warning = `该用户${taskBrandId ? `品牌词下` : ''}在${kwSource}中暂无关键词，任务创建后不会立即执行。请先导入关键词。`;
       }
     } catch {
       // 关键词查询失败不阻塞创建
     }
-    const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode });
+    const id = await createRealCollectTask({ userId, taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode, brandId: taskBrandId });
     // v2.4.0：推送任务创建事件
     wsBroadcast('real_collect_task_changed', { taskId: id, userId, action: 'created' }, userId);
     res.json({ code: 200, message: '创建成功', data: { id }, warning });
@@ -137,10 +138,10 @@ router.post('/', async (req, res) => {
 
 router.put('/:id', async (req, res) => {
   try {
-    const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode } = req.body;
+    const { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode, brandId } = req.body;
     const taskId = parseInt(req.params.id);
     const task = await getRealCollectTaskById(taskId);
-    await updateRealCollectTask(taskId, { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode });
+    await updateRealCollectTask(taskId, { taskName, keywordType, platforms, cronExpr, shardSize, excludePrefixes, excludeCombos, queryMode, brandId: brandId ? parseInt(brandId) : undefined });
     // v2.4.0：推送任务更新事件
     if (task?.user_id) {
       wsBroadcast('real_collect_task_changed', { taskId, userId: task.user_id, action: 'updated' }, task.user_id);

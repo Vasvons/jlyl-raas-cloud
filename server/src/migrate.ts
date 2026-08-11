@@ -915,6 +915,11 @@ export async function migrate() {
     // 用于按任务单独控制查询方式，在智能巡检页面的任务列表操作栏切换
     await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS query_mode VARCHAR(20) DEFAULT 'auto'`);
 
+    // ============ 品牌词（v3.x 品牌词层级管理）============
+    // 巡检任务按品牌词隔离关键词库：brand_id 关联 brand 表，
+    // 任务启动/新一轮时仅查询该品牌词下辖的蒸馏/品牌关键词（zlgjc.brand_id 过滤）
+    await client.query(`ALTER TABLE real_collect_task ADD COLUMN IF NOT EXISTS brand_id INTEGER`);
+
     // ============ 一次性清理：删除 GEO 搜索详情中的脏数据 ============
     // 问题：baseAdapter 的 extractContent 兜底逻辑曾用 document.body.textContent 拿整页文本，
     // 导致营销页/导航内容被误识别为 brand_matched=true，生成错误的"查看详情"跳转链接。
@@ -2788,6 +2793,38 @@ export async function migrate() {
       );
       console.log(`[Migrate] 医美行业合规规则已合并: 合并 ${contentParts.length} 份内容, 删除 ${mbCount} 条平台规则`);
     }
+
+    // ============ v3.13 自动化写作任务化（多条自动写作任务）============
+    // 自动写作配置从「每个客户单一配置」重构为「多条自动写作任务」。
+    // 每条任务选择品牌词(brand_id)，下辖对应的指令/知识库/关键词/平台，独立每日配额与启停状态。
+    // 飞轮每日遍历该客户所有启用的任务，按各自 daily_quota 创建写作任务。
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS auto_writing_task (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        brand_id INTEGER REFERENCES brand(id),
+        task_name VARCHAR(255) NOT NULL,
+        instruction_id INTEGER,
+        knowledge_id INTEGER,
+        agent_profile_id INTEGER,
+        daily_quota INTEGER DEFAULT 0,
+        generation_mode VARCHAR(20) DEFAULT 'expert',
+        cover_image_mode VARCHAR(20) DEFAULT 'random',
+        cover_image_id INTEGER,
+        illustration_count INTEGER DEFAULT -1,
+        target_platforms JSONB,
+        focus_keywords JSONB,
+        auto_publish BOOLEAN DEFAULT false,
+        enable_compliance_review BOOLEAN DEFAULT false,
+        compliance_industry VARCHAR(32) DEFAULT '',
+        compliance_rule_ids JSONB,
+        is_active BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW(),
+        update_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_awt_user ON auto_writing_task(user_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_awt_brand ON auto_writing_task(brand_id)`);
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {

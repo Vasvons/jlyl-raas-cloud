@@ -45,6 +45,9 @@ import {
   getAgentProfiles,
   getCustomerKeywordIds,
   getImageLibrary,
+  getAutoWritingTasks,
+  getCustomerKeywordIdsByBrand,
+  getKeywordIdsByValues,
   // v2.3.0: 写作建议池持久化与消费
   insertWritingSuggestions,
   getSuggestionPoolSourceType,
@@ -2686,6 +2689,31 @@ export async function autoCreateWritingTasksFromPeriod(
   const userIdNum = Number(userId);
   if (!userIdNum || quota <= 0) return 0;
 
+  // v3.13：自动写作配置已改为「多条自动写作任务」。
+  // 若该客户已配置启用的自动化写作任务，则按任务逐条创建写作任务（每任务独立品牌词/指令/关键词/平台/每日配额）。
+  // 若未配置任务，则回退到旧的单配置逻辑（AEO quota 配置），保证向后兼容。
+  try {
+    const autoTasks = await getAutoWritingTasks(String(userIdNum));
+    const activeTasks = (autoTasks || []).filter((t: any) => t.is_active !== false && Number(t.daily_quota) > 0);
+    if (activeTasks.length > 0) {
+      let totalCreated = 0;
+      for (const task of activeTasks) {
+        try {
+          const created = await createWritingTaskFromAutoTask(
+            userIdNum, task, periodReportId, periodType, writingSuggestions, sourceWeights
+          );
+          totalCreated += created;
+        } catch (e: any) {
+          console.warn(`[AEO-Period] 自动写作任务 #${task.id}「${task.task_name}」创建写作任务失败:`, e.message);
+        }
+      }
+      console.log(`[AEO-Period] 用户 ${userId} 按 ${activeTasks.length} 条自动化写作任务创建 ${totalCreated} 篇写作任务`);
+      return totalCreated;
+    }
+  } catch (e: any) {
+    console.warn(`[AEO-Period] 读取自动化写作任务失败，回退到旧单配置逻辑:`, e.message);
+  }
+
   // 1. 获取用户的默认知识库（取第一个活跃的）
   // v2.2.2：getEnterpriseKnowledges 已按 user_id 过滤，无需改动
   // v2.2.17：支持通过 AeoQuotaConfig 指定具体 knowledge_id
@@ -3059,6 +3087,223 @@ export async function autoCreateWritingTasksFromPeriod(
   }
 
   return totalCount;
+}
+
+// ============ v3.13 自动化写作任务：按任务创建写作任务 ============
+
+/**
+ * 根据一条自动化写作任务（auto_writing_task）创建一个写作任务。
+ * 每条任务独立的品牌词/指令/知识库/关键词/平台/每日配额/启停状态。
+ * 返回该任务实际创建的写作任务篇数（= daily_quota）。
+ */
+async function createWritingTaskFromAutoTask(
+  userIdNum: number,
+  task: any,
+  periodReportId: number,
+  periodType: string,
+  writingSuggestions: any[],
+  sourceWeights: Record<string, number>
+): Promise<number> {
+  const dailyQuota = Number(task.daily_quota) || 0;
+  if (dailyQuota <= 0) return 0;
+
+  // 1. 知识库：任务指定或取客户第一个 active
+  const knowledges = await getEnterpriseKnowledges(userIdNum);
+  if (knowledges.length === 0) {
+    console.warn(`[AutoTask] 用户 ${userIdNum} 无企业知识库，跳过任务「${task.task_name}」`);
+    return 0;
+  }
+  const knowledge = task.knowledge_id
+    ? (knowledges.find((k: any) => k.id === Number(task.knowledge_id)) || knowledges[0])
+    : knowledges[0];
+
+  // 2. 指令：任务指定或取客户第一个 active
+  let instructions = await getWritingInstructions(userIdNum);
+  if (instructions.length === 0) instructions = await getAllWritingInstructions();
+  if (instructions.length === 0) {
+    console.warn(`[AutoTask] 无可用写作指令，跳过任务「${task.task_name}」`);
+    return 0;
+  }
+  const instruction = task.instruction_id
+    ? (instructions.find((i: any) => i.id === Number(task.instruction_id)) || instructions[0])
+    : instructions[0];
+
+  // 3. 专家角色：任务指定或取第一个 active
+  let agentProfileId: number | null = null;
+  try {
+    const agentProfiles = await getAgentProfiles(userIdNum);
+    if (task.agent_profile_id) {
+      const matched = agentProfiles.find((p: any) => p.id === Number(task.agent_profile_id));
+      if (matched) agentProfileId = matched.id;
+    }
+    if (!agentProfileId) {
+      const activeProfile = agentProfiles.find((p: any) => p.is_active !== false);
+      if (activeProfile) agentProfileId = activeProfile.id;
+    }
+  } catch (e: any) {
+    console.warn(`[AutoTask] 查询专家角色失败（不影响任务创建）:`, e.message);
+  }
+
+  // 4. 模型配置
+  const modelConfig = await getDefaultModelConfig(userIdNum);
+  if (!modelConfig) {
+    console.warn(`[AutoTask] 用户 ${userIdNum} 无可用写作模型配置，跳过任务「${task.task_name}」`);
+    return 0;
+  }
+
+  // 5. 关键词：优先用任务配置的 focus_keywords；否则按品牌词取该品牌下辖的蒸馏+品牌关键词；否则回退客户全量
+  let focusKeywordIds: number[] = [];
+  if (Array.isArray(task.focus_keywords) && task.focus_keywords.length > 0) {
+    try {
+      focusKeywordIds = await getKeywordIdsByValues(
+        userIdNum,
+        task.focus_keywords.filter((k: any) => typeof k === 'string' && k.trim())
+      );
+    } catch (e: any) {
+      console.warn(`[AutoTask] 查询任务 focus_keywords ID 失败:`, e.message);
+    }
+  }
+  if (focusKeywordIds.length === 0) {
+    try {
+      if (task.brand_id) {
+        const brandKeywords = await getCustomerKeywordIdsByBrand(userIdNum, Number(task.brand_id));
+        if (brandKeywords.ids.length > 0) {
+          focusKeywordIds = brandKeywords.ids;
+          console.log(`[AutoTask] 任务「${task.task_name}」按品牌词 #${task.brand_id} 取关键词: ${brandKeywords.ids.length} 个（蒸馏 ${brandKeywords.distilledCount} + 品牌 ${brandKeywords.brandCount}）`);
+        }
+      }
+      if (focusKeywordIds.length === 0) {
+        const customerKeywords = await getCustomerKeywordIds(userIdNum);
+        if (customerKeywords.ids.length > 0) focusKeywordIds = customerKeywords.ids;
+      }
+    } catch (e: any) {
+      console.warn(`[AutoTask] 查询品牌/客户关键词失败:`, e.message);
+    }
+  }
+
+  // 6. 目标平台：任务白名单 > 写作建议池 platforms > 全部有权重平台
+  let candidatePlatforms: string[] = [];
+  if (Array.isArray(task.target_platforms) && task.target_platforms.length > 0) {
+    candidatePlatforms = task.target_platforms.filter((p: any) => typeof p === 'string' && p.trim());
+  } else {
+    for (const sug of (writingSuggestions || [])) {
+      if (Array.isArray(sug.platforms)) {
+        for (const p of sug.platforms) {
+          if (typeof p === 'string' && p.trim() && !candidatePlatforms.includes(p)) {
+            candidatePlatforms.push(p);
+          }
+        }
+      }
+    }
+  }
+  const allocation = await allocateArticlesByWeight(
+    dailyQuota,
+    candidatePlatforms.length > 0 ? candidatePlatforms : undefined,
+    String(userIdNum)
+  );
+  const targetPlatforms = candidatePlatforms.length > 0
+    ? candidatePlatforms
+    : Object.keys(allocation).filter((p: any) => allocation[p] > 0);
+
+  // 7. 图库配置（封面图模式 + 插画数量）
+  let illustrationCount = 0;
+  let coverMode = 'none';
+  const configuredCoverMode = typeof task.cover_image_mode === 'string' ? task.cover_image_mode : 'random';
+  const configuredIllustrationCount = typeof task.illustration_count === 'number' ? task.illustration_count : -1;
+  try {
+    const needQueryLibrary = configuredCoverMode === 'auto' || configuredIllustrationCount === -1;
+    let illuImages: any[] = [];
+    let coverImages: any[] = [];
+    if (needQueryLibrary) {
+      [illuImages, coverImages] = await Promise.all([
+        getImageLibrary(userIdNum, knowledge.id, 'illustration'),
+        getImageLibrary(userIdNum, knowledge.id, 'cover'),
+      ]);
+    }
+    if (configuredCoverMode === 'auto') {
+      coverMode = coverImages.length > 0 ? 'random' : 'none';
+    } else if (configuredCoverMode === 'none') {
+      coverMode = 'none';
+    } else {
+      coverMode = 'random';
+    }
+    illustrationCount = configuredIllustrationCount === -1
+      ? (illuImages.length > 0 ? Math.min(5, illuImages.length) : 0)
+      : Math.max(0, configuredIllustrationCount);
+  } catch (e: any) {
+    coverMode = (configuredCoverMode === 'none' || configuredCoverMode === 'auto') ? 'none' : 'random';
+    illustrationCount = configuredIllustrationCount === -1 ? 0 : Math.max(0, configuredIllustrationCount);
+  }
+
+  // 8. 生成方式
+  const generationMode = ['expert', 'coze'].includes(task.generation_mode) ? task.generation_mode : 'expert';
+
+  // 9. AEO 上下文（注入写作建议池）
+  const aeoContext = JSON.stringify({
+    auto_writing_task_id: task.id,
+    period_report_id: periodReportId,
+    period_type: periodType,
+    suggestions: writingSuggestions,
+    source_weights: sourceWeights,
+    generated_at: new Date().toISOString(),
+  });
+
+  // 10. 创建写作任务
+  const taskName = task.task_name || `[AEO自动] 品牌#${task.brand_id || 0} 写作任务 ${new Date().toISOString().slice(0, 10)}`;
+  const taskId = await createWritingTask({
+    user_id: userIdNum,
+    task_name: taskName,
+    keyword_ids: focusKeywordIds.length > 0 ? focusKeywordIds : null,
+    instruction_id: instruction.id,
+    knowledge_id: knowledge.id,
+    model_config_id: modelConfig.id,
+    generation_mode: generationMode,
+    agent_profile_id: agentProfileId,
+    total_count: dailyQuota,
+    cover_image_mode: coverMode,
+    cover_image_id: null,
+    illustration_count: illustrationCount,
+    target_platforms: targetPlatforms,
+  });
+
+  // 11. 补充 AEO/合规相关字段
+  const complianceRuleIds: number[] | null = Array.isArray(task.compliance_rule_ids)
+    ? task.compliance_rule_ids.filter((id: any) => typeof id === 'number' && id > 0)
+    : null;
+  const complianceRuleIdsJson = complianceRuleIds && complianceRuleIds.length > 0 ? JSON.stringify(complianceRuleIds) : null;
+  await dbQuery(
+    `UPDATE ai_writing_task
+     SET aeo_context = $1,
+         auto_publish = $2,
+         auto_generated = true,
+         trigger_period_report_id = $3,
+         enable_compliance_review = $4,
+         compliance_rule_ids = $6,
+         compliance_industry = $7
+     WHERE id = $5`,
+    [
+      aeoContext,
+      task.auto_publish === true,
+      periodReportId,
+      task.enable_compliance_review === true,
+      taskId,
+      complianceRuleIdsJson,
+      task.compliance_industry || '',
+    ]
+  );
+
+  // 12. 异步触发写作任务执行
+  try {
+    const { executeWritingTask } = await import('../content/articleGenerator');
+    executeWritingTask(taskId, userIdNum).catch((e: any) => {
+      console.error(`[AutoTask] 写作任务 ${taskId} 异步执行失败:`, e.message);
+    });
+  } catch (e: any) {
+    console.warn(`[AutoTask] 无法触发写作任务执行:`, e.message);
+  }
+
+  console.log(`[AutoTask] 自动写作任务「${taskName}」创建写作任务: taskId=${taskId}, total=${dailyQuota}, platforms=[${targetPlatforms.join(',')}], cover=${coverMode}, illu=${illustrationCount}`);
+  return dailyQuota;
 }
 
 // ============ v2.0.0 P7: 竞品反向 GEO ============

@@ -420,6 +420,7 @@ export interface SearchRankParams {
   keyword?: string;
   scene?: boolean;
   type?: string;  // keywords | brand | scene
+  brandId?: number;  // v3.x 品牌词层级：按品牌词过滤
   page?: number;
   pageSize?: number;
 }
@@ -433,6 +434,7 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
   // 真实结果与生成结果共享 userId / platform 参数（PostgreSQL 允许同一 $N 多次引用）
   const hasPlatform = !!(params.platform && params.platform !== '全部');
   const hasKeyword = !!params.keyword;
+  const hasBrand = !!params.brandId;
 
   const args: any[] = [params.userId]; // $1 = userId
   let argIdx = 1;
@@ -451,6 +453,15 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
     argIdx++;
     keywordParamIdx = argIdx;
     args.push(`%${params.keyword}%`);
+  }
+
+  // 品牌词过滤参数（如果存在，真实结果和生成结果共用）
+  // 通过 zlgjc.brand_id 判断记录关键词是否归属指定品牌词
+  let brandParamIdx = 0;
+  if (hasBrand) {
+    argIdx++;
+    brandParamIdx = argIdx;
+    args.push(params.brandId);
   }
 
   // LIMIT / OFFSET 参数（放在最后，用于外层包装查询）
@@ -472,6 +483,9 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
   if (hasPlatform) {
     realWhere.push(`rcr.platform = $${platformParamIdx}`);
   }
+  if (hasBrand) {
+    realWhere.push(`EXISTS (SELECT 1 FROM zlgjc zb WHERE zb.value = rcr.keyword AND zb.userid = rcr.user_id AND zb.brand_id = $${brandParamIdx})`);
+  }
   if (params.type === 'keywords') {
     realWhere.push(`rcr.keyword_type = 0`);
   } else if (params.type === 'brand') {
@@ -488,6 +502,9 @@ export async function getKeywordSearchRank(params: SearchRankParams) {
   }
   if (hasKeyword) {
     genWhere.push(`(k.expanded_keyword ILIKE $${keywordParamIdx} OR k.distillate_keyword ILIKE $${keywordParamIdx})`);
+  }
+  if (hasBrand) {
+    genWhere.push(`EXISTS (SELECT 1 FROM zlgjc zb WHERE zb.value = k.distillate_keyword AND zb.userid = k.user_id AND zb.brand_id = $${brandParamIdx})`);
   }
   // 类型过滤
   if (params.type === 'keywords') {
@@ -587,23 +604,29 @@ export async function getKeywordCount(userId: string) {
   return result.rows[0];
 }
 
-// 获取平台占比（只统计已收录的，支持按类型过滤）
-export async function getPlatformRatio(userId: string, type?: string) {
+// 获取平台占比（只统计已收录的，支持按类型过滤，支持按品牌词过滤）
+export async function getPlatformRatio(userId: string, type?: string, brandId?: number) {
   // 构建生成结果的额外WHERE条件
   let genExtraWhere = '';
+  if (brandId) {
+    genExtraWhere += ` AND EXISTS (SELECT 1 FROM zlgjc zb WHERE zb.value = k.distillate_keyword AND zb.userid = k.user_id AND zb.brand_id = ${brandId})`;
+  }
   if (type === 'keywords') {
     // 关键词搜索：只统计蒸馏关键词（keyword_type=0）
-    genExtraWhere = `AND EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 0)`;
+    genExtraWhere += ` AND EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 0)`;
   } else if (type === 'brand') {
     // 品牌搜索：distillate_keyword 在品牌关键词库中（keyword_type=1）
-    genExtraWhere = `AND EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 1)`;
+    genExtraWhere += ` AND EXISTS (SELECT 1 FROM zlgjc z3 WHERE z3.value = k.distillate_keyword AND z3.userid = k.user_id AND z3.keyword_type = 1)`;
   } else if (type === 'scene') {
     // 联系方式：has_lxfs = 1
-    genExtraWhere = `AND EXISTS (SELECT 1 FROM zlgjc z2 INNER JOIN zlgjcurl u2 ON z2.id = u2.zlgjcid WHERE z2.value = k.distillate_keyword AND z2.userid = k.user_id AND u2.has_lxfs = 1 AND u2.pt = k.platform)`;
+    genExtraWhere += ` AND EXISTS (SELECT 1 FROM zlgjc z2 INNER JOIN zlgjcurl u2 ON z2.id = u2.zlgjcid WHERE z2.value = k.distillate_keyword AND z2.userid = k.user_id AND u2.has_lxfs = 1 AND u2.pt = k.platform)`;
   }
 
   // 真实结果的额外WHERE条件（与 getKeywordSearchRank 保持一致：只统计命中品牌的记录）
   let realExtraWhere = `AND rcr.brand_matched = true`;
+  if (brandId) {
+    realExtraWhere += ` AND EXISTS (SELECT 1 FROM zlgjc zb WHERE zb.value = rcr.keyword AND zb.userid = rcr.user_id AND zb.brand_id = ${brandId})`;
+  }
   if (type === 'keywords') {
     // 关键词搜索：keyword_type=0 的真实记录
     realExtraWhere += ` AND rcr.keyword_type = 0`;
@@ -635,8 +658,11 @@ export async function getPlatformRatio(userId: string, type?: string) {
   return result.rows;
 }
 
-// 获取核心关键词排名（排除品牌关键词，只统计已收录的）
-export async function getCoreKeywordRank(userId: string, limit: number = 20) {
+// 获取核心关键词排名（排除品牌关键词，只统计已收录的，支持按品牌词过滤）
+export async function getCoreKeywordRank(userId: string, limit: number = 20, brandId?: number) {
+  const brandFilter = brandId
+    ? ` AND EXISTS (SELECT 1 FROM zlgjc zb WHERE zb.value = k.distillate_keyword AND zb.userid = k.user_id AND zb.brand_id = ${brandId})`
+    : '';
   const result = await query(
     `SELECT expanded_keyword as keyword, COUNT(*) as count
      FROM keyword_search_rank k
@@ -644,7 +670,7 @@ export async function getCoreKeywordRank(userId: string, limit: number = 20) {
        AND NOT EXISTS (
          SELECT 1 FROM pp p
          WHERE p.pp = k.expanded_keyword AND p.user_id = k.user_id
-       )
+       )${brandFilter}
      GROUP BY expanded_keyword
      ORDER BY count DESC
      LIMIT $2`,
@@ -758,6 +784,128 @@ export async function updateBrand(id: number, name?: string, isActive?: boolean)
 
 export async function deleteBrand(id: number): Promise<void> {
   await query('DELETE FROM brand WHERE id = $1', [id]);
+}
+
+// ============ 自动化写作任务（auto_writing_task）============
+// v3.13：自动写作配置从「每客户单一配置」重构为「多条自动写作任务」。
+// 每条任务选择品牌词(brand_id)，独立的指令/知识库/关键词/平台/每日配额/启停状态。
+
+export async function getAutoWritingTasks(userId: string) {
+  const result = await query(
+    `SELECT id, user_id, brand_id, task_name, instruction_id, knowledge_id, agent_profile_id,
+            daily_quota, generation_mode, cover_image_mode, cover_image_id, illustration_count,
+            target_platforms, focus_keywords, auto_publish, enable_compliance_review,
+            compliance_industry, compliance_rule_ids, is_active, create_time, update_time
+     FROM auto_writing_task WHERE user_id = $1 ORDER BY id DESC`,
+    [userId]
+  );
+  return result.rows.map((r: any) => ({
+    ...r,
+    target_platforms: parseJsonField(r.target_platforms),
+    focus_keywords: parseJsonField(r.focus_keywords),
+    compliance_rule_ids: parseJsonField(r.compliance_rule_ids),
+  }));
+}
+
+export async function getAutoWritingTaskById(id: number) {
+  const result = await query(
+    `SELECT id, user_id, brand_id, task_name, instruction_id, knowledge_id, agent_profile_id,
+            daily_quota, generation_mode, cover_image_mode, cover_image_id, illustration_count,
+            target_platforms, focus_keywords, auto_publish, enable_compliance_review,
+            compliance_industry, compliance_rule_ids, is_active, create_time, update_time
+     FROM auto_writing_task WHERE id = $1`,
+    [id]
+  );
+  if (result.rows.length === 0) return null;
+  const r = result.rows[0];
+  return {
+    ...r,
+    target_platforms: parseJsonField(r.target_platforms),
+    focus_keywords: parseJsonField(r.focus_keywords),
+    compliance_rule_ids: parseJsonField(r.compliance_rule_ids),
+  };
+}
+
+export async function insertAutoWritingTask(data: any): Promise<number> {
+  const result = await query(
+    `INSERT INTO auto_writing_task
+       (user_id, brand_id, task_name, instruction_id, knowledge_id, agent_profile_id,
+        daily_quota, generation_mode, cover_image_mode, cover_image_id, illustration_count,
+        target_platforms, focus_keywords, auto_publish, enable_compliance_review,
+        compliance_industry, compliance_rule_ids, is_active)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     RETURNING id`,
+    [
+      Number(data.user_id),
+      data.brand_id ? Number(data.brand_id) : null,
+      String(data.task_name || '自动写作任务'),
+      data.instruction_id ? Number(data.instruction_id) : null,
+      data.knowledge_id ? Number(data.knowledge_id) : null,
+      data.agent_profile_id ? Number(data.agent_profile_id) : null,
+      Number(data.daily_quota) || 0,
+      data.generation_mode || 'expert',
+      data.cover_image_mode || 'random',
+      data.cover_image_id ? Number(data.cover_image_id) : null,
+      data.illustration_count === undefined || data.illustration_count === null ? -1 : Number(data.illustration_count),
+      Array.isArray(data.target_platforms) ? JSON.stringify(data.target_platforms) : null,
+      Array.isArray(data.focus_keywords) ? JSON.stringify(data.focus_keywords) : null,
+      data.auto_publish === true,
+      data.enable_compliance_review === true,
+      data.compliance_industry || '',
+      Array.isArray(data.compliance_rule_ids) ? JSON.stringify(data.compliance_rule_ids) : null,
+      data.is_active === false ? false : true,
+    ]
+  );
+  return result.rows[0].id;
+}
+
+export async function updateAutoWritingTask(id: number, data: any): Promise<void> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  const setField = (col: string, val: any) => {
+    fields.push(`${col} = $${idx++}`);
+    values.push(val);
+  };
+  if (data.brand_id !== undefined) setField('brand_id', data.brand_id ? Number(data.brand_id) : null);
+  if (data.task_name !== undefined) setField('task_name', String(data.task_name || '自动写作任务'));
+  if (data.instruction_id !== undefined) setField('instruction_id', data.instruction_id ? Number(data.instruction_id) : null);
+  if (data.knowledge_id !== undefined) setField('knowledge_id', data.knowledge_id ? Number(data.knowledge_id) : null);
+  if (data.agent_profile_id !== undefined) setField('agent_profile_id', data.agent_profile_id ? Number(data.agent_profile_id) : null);
+  if (data.daily_quota !== undefined) setField('daily_quota', Number(data.daily_quota) || 0);
+  if (data.generation_mode !== undefined) setField('generation_mode', data.generation_mode || 'expert');
+  if (data.cover_image_mode !== undefined) setField('cover_image_mode', data.cover_image_mode || 'random');
+  if (data.cover_image_id !== undefined) setField('cover_image_id', data.cover_image_id ? Number(data.cover_image_id) : null);
+  if (data.illustration_count !== undefined) setField('illustration_count', data.illustration_count === undefined || data.illustration_count === null ? -1 : Number(data.illustration_count));
+  if (data.target_platforms !== undefined) setField('target_platforms', Array.isArray(data.target_platforms) ? JSON.stringify(data.target_platforms) : null);
+  if (data.focus_keywords !== undefined) setField('focus_keywords', Array.isArray(data.focus_keywords) ? JSON.stringify(data.focus_keywords) : null);
+  if (data.auto_publish !== undefined) setField('auto_publish', data.auto_publish === true);
+  if (data.enable_compliance_review !== undefined) setField('enable_compliance_review', data.enable_compliance_review === true);
+  if (data.compliance_industry !== undefined) setField('compliance_industry', data.compliance_industry || '');
+  if (data.compliance_rule_ids !== undefined) setField('compliance_rule_ids', Array.isArray(data.compliance_rule_ids) ? JSON.stringify(data.compliance_rule_ids) : null);
+  if (data.is_active !== undefined) setField('is_active', data.is_active === false ? false : true);
+  if (fields.length === 0) return;
+  values.push(id);
+  await query(
+    `UPDATE auto_writing_task SET ${fields.join(', ')}, update_time = NOW() WHERE id = $${idx}`,
+    values
+  );
+}
+
+export async function deleteAutoWritingTask(id: number): Promise<void> {
+  await query('DELETE FROM auto_writing_task WHERE id = $1', [id]);
+}
+
+export async function toggleAutoWritingTask(id: number, isActive: boolean): Promise<void> {
+  await query('UPDATE auto_writing_task SET is_active = $2, update_time = NOW() WHERE id = $1', [id, isActive]);
+}
+
+function parseJsonField(v: any): any {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'string') {
+    try { return JSON.parse(v); } catch { return null; }
+  }
+  return v;
 }
 
 // 获取某品牌词下的蒸馏关键词（zlgjc，keyword_type=0）
@@ -3173,6 +3321,7 @@ export async function createRealCollectTask(params: {
   excludePrefixes?: string[];
   excludeCombos?: string[];
   queryMode?: string;
+  brandId?: number;
 }): Promise<number> {
   // cronExpr 可选：循环模式下不传，默认 '0 0 * * *' 保持兼容
   const cronExpr = params.cronExpr || '0 0 * * *';
@@ -3185,10 +3334,11 @@ export async function createRealCollectTask(params: {
     ? JSON.stringify(params.excludeCombos.filter(c => c && c.trim()))
     : null;
   const queryMode = params.queryMode || 'auto';
+  const brandId = params.brandId || null;
   const result = await query(
-    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status, shard_size, exclude_prefixes, exclude_combos, query_mode)
-     VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $9) RETURNING id`,
-    [params.userId, params.taskName, params.keywordType, params.platforms, cronExpr, params.shardSize || 50, excludePrefixesJson, excludeCombosJson, queryMode]
+    `INSERT INTO real_collect_task (user_id, task_name, keyword_type, platforms, cron_expr, status, shard_size, exclude_prefixes, exclude_combos, query_mode, brand_id)
+     VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8, $9, $10) RETURNING id`,
+    [params.userId, params.taskName, params.keywordType, params.platforms, cronExpr, params.shardSize || 50, excludePrefixesJson, excludeCombosJson, queryMode, brandId]
   );
   return result.rows[0].id;
 }
@@ -3204,6 +3354,7 @@ export async function updateRealCollectTask(id: number, params: {
   excludePrefixes?: string[];
   excludeCombos?: string[];
   queryMode?: string;
+  brandId?: number;
 }): Promise<void> {
   const sets: string[] = [];
   const values: any[] = [id];
@@ -3215,6 +3366,7 @@ export async function updateRealCollectTask(id: number, params: {
   if (params.status !== undefined) { sets.push(`status = $${paramIdx++}`); values.push(params.status); }
   if (params.shardSize !== undefined) { sets.push(`shard_size = $${paramIdx++}`); values.push(params.shardSize); }
   if (params.queryMode !== undefined) { sets.push(`query_mode = $${paramIdx++}`); values.push(params.queryMode); }
+  if (params.brandId !== undefined) { sets.push(`brand_id = $${paramIdx++}`); values.push(params.brandId || null); }
   if (params.excludePrefixes !== undefined) {
     // 仅蒸馏词库（keyword_type=0）保存前缀屏蔽，品牌词库清空
     const kp = params.keywordType !== undefined ? params.keywordType : 0;
@@ -3467,10 +3619,11 @@ export async function getDueRealCollectTasks(): Promise<any[]> {
  *
  * 使用场景：resultProcessor 品牌命中检测、AEO 报告分析
  */
-export async function getBrandKeywords(userId: string): Promise<string[]> {
+export async function getBrandKeywords(userId: string, brandId?: number): Promise<string[]> {
+  const brandFilter = brandId ? ' AND brand_id = $2' : '';
   const result = await query(
-    `SELECT pp FROM pp WHERE user_id = $1 AND pp != '' ORDER BY id`,
-    [userId]
+    `SELECT pp FROM pp WHERE user_id = $1 AND pp != ''${brandFilter} ORDER BY id`,
+    brandId ? [userId, brandId] : [userId]
   );
   return result.rows.map((r: any) => r.pp);
 }
@@ -3483,10 +3636,11 @@ export async function getBrandKeywords(userId: string): Promise<string[]> {
  *
  * 使用场景：scheduler startNewRoundForTask/enqueueTaskNow 分配关键词、realCollectTask 查询关键词数量
  */
-export async function getBrandQueryKeywords(userId: string): Promise<string[]> {
+export async function getBrandQueryKeywords(userId: string, brandId?: number): Promise<string[]> {
+  const brandFilter = brandId ? ' AND brand_id = $2' : '';
   const result = await query(
-    `SELECT DISTINCT value FROM zlgjc WHERE userid = $1 AND keyword_type = 1 AND value != ''`,
-    [userId]
+    `SELECT DISTINCT value FROM zlgjc WHERE userid = $1 AND keyword_type = 1 AND value != ''${brandFilter}`,
+    brandId ? [userId, brandId] : [userId]
   );
   return result.rows.map((r: any) => r.value);
 }
@@ -3539,10 +3693,11 @@ export async function getCoreKeywordsFromZlgjcByUserId(userId: string): Promise<
 }
 
 /** 获取用户的蒸馏词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */
-export async function getDistillateKeywords(userId: string): Promise<string[]> {
+export async function getDistillateKeywords(userId: string, brandId?: number): Promise<string[]> {
+  const brandFilter = brandId ? ' AND brand_id = $2' : '';
   const result = await query(
-    `SELECT DISTINCT value FROM zlgjc WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL) AND value != ''`,
-    [userId]
+    `SELECT DISTINCT value FROM zlgjc WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL) AND value != ''${brandFilter}`,
+    brandId ? [userId, brandId] : [userId]
   );
   return result.rows.map((r: any) => r.value);
 }
@@ -7032,6 +7187,20 @@ export async function getCustomerKeywordIds(customerId: number): Promise<{ ids: 
   const result = await query(
     `SELECT id, keyword_type FROM zlgjc WHERE userid = $1`,
     [String(customerId)]
+  );
+  const ids = result.rows.map((r: any) => r.id);
+  const distilledCount = result.rows.filter((r: any) => r.keyword_type === 0).length;
+  const brandCount = result.rows.filter((r: any) => r.keyword_type === 1).length;
+  return { ids, distilledCount, brandCount };
+}
+
+// v3.13：按品牌词获取该品牌下辖的重点优化关键词 ID（蒸馏关键词 keyword_type=0 + 品牌关键词 keyword_type=1）
+export async function getCustomerKeywordIdsByBrand(customerId: number, brandId: number): Promise<{
+  ids: number[]; distilledCount: number; brandCount: number;
+}> {
+  const result = await query(
+    `SELECT id, keyword_type FROM zlgjc WHERE userid = $1 AND brand_id = $2`,
+    [String(customerId), brandId]
   );
   const ids = result.rows.map((r: any) => r.id);
   const distilledCount = result.rows.filter((r: any) => r.keyword_type === 0).length;
