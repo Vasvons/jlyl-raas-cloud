@@ -210,10 +210,10 @@ app.get('/diagnose', async (req, res) => {
         (SELECT COUNT(*) FROM pp WHERE user_id = u.id AND brand_id IS NULL) AS pp_no_brand,
         (SELECT COUNT(*) FROM distillate_keyword WHERE user_id = u.id) AS dk_count,
         (SELECT COUNT(*) FROM distillate_keyword WHERE user_id = u.id AND brand_id IS NULL) AS dk_no_brand,
-        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id) AS zlgjc_count,
-        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id AND brand_id IS NULL) AS zlgjc_no_brand,
-        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id AND keyword_type = 0) AS zlgjc_type0,
-        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id AND keyword_type = 1) AS zlgjc_type1,
+        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id::text) AS zlgjc_count,
+        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id::text AND brand_id IS NULL) AS zlgjc_no_brand,
+        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id::text AND keyword_type = 0) AS zlgjc_type0,
+        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id::text AND keyword_type = 1) AS zlgjc_type1,
         (SELECT COUNT(*) FROM brand WHERE user_id = u.id) AS brand_count
       FROM users u ORDER BY u.id
     `);
