@@ -2830,6 +2830,33 @@ export async function migrate() {
     // 品牌词重构后，旧数据（品牌词产生前创建）没有 brand_id，会被品牌维度过滤隐藏。
     // 所有有存量关键词的用户都已有品牌词，无需自动创建，只需把 brand_id 为 NULL 的
     // 存量关键词（核心/蒸馏/品牌）归入该用户已有的第一个品牌即可恢复可见。
+    //
+    // 回填 brand 表：重构前用户已有品牌词（存放在 pp 品牌关键词表，如"川务财税"），
+    // 但 brand 表为空，导致 GEO 报告/关键词管理按品牌切换时无品牌可选。
+    // 按"每个品牌词一个品牌"原则，从 pp 表提取非空品牌词为无品牌的用户创建 brand 行。
+    await client.query(`
+      INSERT INTO brand (user_id, name)
+      SELECT src.user_id, src.name
+      FROM (
+        SELECT p.user_id, trim(p.pp) AS name
+        FROM pp p
+        WHERE p.pp IS NOT NULL AND trim(p.pp) != ''
+        GROUP BY p.user_id, trim(p.pp)
+      ) src
+      WHERE NOT EXISTS (
+        SELECT 1 FROM brand b WHERE b.user_id = src.user_id AND b.name = src.name
+      )
+    `).catch((e: any) => console.warn('[Migrate] 品牌词回填brand失败（可忽略）:', e.message));
+    // 将品牌关键词(pp)按名称精确归属到对应品牌（而非一律归入第一个品牌）
+    await client.query(`
+      UPDATE pp p
+      SET brand_id = (
+        SELECT b.id FROM brand b
+        WHERE b.user_id = p.user_id AND trim(b.name) = trim(p.pp)
+        ORDER BY b.id LIMIT 1
+      )
+      WHERE p.brand_id IS NULL
+    `).catch((e: any) => console.warn('[Migrate] 按名称归属品牌关键词失败（可忽略）:', e.message));
     await client.query(`
       UPDATE distillate_keyword d
       SET brand_id = (SELECT id FROM brand b WHERE b.user_id = d.user_id ORDER BY b.id LIMIT 1)
