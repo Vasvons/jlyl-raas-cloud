@@ -46,8 +46,8 @@ export const MEDICAL_BEAUTY_MERGED_RULE = {
 
 /**
  * 种子导入：医疗美容行业通用合规规则（幂等）
- * 仅当尚不存在 industry='medical_beauty' 且 platform='all' 的 manual 通用规则时才插入，
- * 已存在的规则不会被覆盖（用户手动编辑过的内容受保护）。
+ * 若已存在 industry='medical_beauty' 且 platform='all' 的 manual 通用规则，则用精简版内容覆盖它
+ * （避免旧版按平台拼接的冗长规则残留）；不存在则插入。
  */
 export async function seedMedicalBeautyRules(): Promise<{ imported: number; skipped: number }> {
   let imported = 0;
@@ -60,7 +60,14 @@ export async function seedMedicalBeautyRules(): Promise<{ imported: number; skip
        LIMIT 1`,
     );
     if (existing.rows.length > 0) {
-      skipped++;
+      // 已存在 → 用精简统一版内容覆盖，避免旧版按平台拼接的冗长规则残留
+      await query(
+        `UPDATE platform_compliance_rule
+         SET rule_title = $1, rule_content = $2, updated_at = NOW()
+         WHERE id = $3`,
+        [MEDICAL_BEAUTY_MERGED_RULE.rule_title, MEDICAL_BEAUTY_MERGED_RULE.rule_content, existing.rows[0].id],
+      );
+      imported++;
     } else {
       await createManualRule({
         rule_title: MEDICAL_BEAUTY_MERGED_RULE.rule_title,

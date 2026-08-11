@@ -542,6 +542,47 @@ ${shortAdapt}
 }
 
 /**
+ * v3.14.x：构建「正文创作合规约束」提示词块（一开始就注入，而非写作后再改写）
+ * 按行业整组选用合规规则，直接加入正文生成 prompt，让 AI 在创作时就遵守合规要求，
+ * 避免「先生成再用 reviewAndRewriteArticle 二次改写」导致的超字/结构破坏问题。
+ * 返回空字符串表示无需注入（未开启合规审查或无可用规则）。
+ */
+async function buildArticleCompliancePrompt(task: any): Promise<string> {
+  if (task.enable_compliance_review !== true) return '';
+  try {
+    const industry = task.compliance_industry || '';
+    let rules: any[];
+    if (industry) {
+      rules = await getActiveManualRulesByIndustry(industry);
+    } else {
+      rules = await getAllActiveManualRules();
+    }
+    const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
+    if (validRules.length === 0) return '';
+    const industryLabel = industry ? INDUSTRY_NAMES[industry] || industry : '通用';
+    const rulesBlock = validRules.map((r, idx) => {
+      const titleLabel = r.rule_title ? `《${r.rule_title}》` : '';
+      return `### 规则 ${idx + 1}（${r.industry !== 'general' ? INDUSTRY_NAMES[r.industry] || r.industry : '通用'}）${titleLabel}\n${r.rule_content}`;
+    }).join('\n\n');
+    return `\n\n## 目标行业合规约束（${industryLabel}，创作时一开始就遵守，无需二次改写）
+本文发布到各平台前需通过内容审核，请直接按以下合规规则创作正文，确保一次成文即合规，不要依赖事后改写：
+
+${rulesBlock}
+
+### 正文创作合规要求（必须遵守）
+1. 禁止使用绝对化用语："最""第一""唯一""国家级""顶级"等违反广告法的用语
+2. 禁止效果承诺："包治愈""100%成功""无痛""永不反弹""保证有效"等承诺性词汇
+3. 禁止虚假宣传：不编造资质、不虚构案例、不伪造数据
+4. 必须包含风险提示：文章末尾必须有"效果因人而异""具体方案请咨询专业医生/人士"等提示
+5. 客户品牌可以提及，但只做客观描述，不夸大宣传
+6. 对比不同方案时保持客观中立，不诋毁竞品`;
+  } catch (e: any) {
+    console.warn(`[ArticleGen] 正文合规约束构建失败，跳过: ${e.message}`);
+    return '';
+  }
+}
+
+/**
  * v1.4+ 重构：以下两个函数已迁移到 contextBuilder.ts 的 buildWritingContext()
  * - buildSystemMessageFromAgentProfile → L0 专家人格层 + L1 客户档案层
  * - buildWritingContextBlock → L4 主题参考层（userPromptSuffix）
@@ -774,280 +815,9 @@ ${rulesBlock}
 }
 
 /**
- * v3.10：写作后 AI 合规审查 + 自动改写
- *
- * 审查流程：
- * 1. AI 审查（第1次）→ 合规则直接返回
- * 2. 不合规 → AI 改写 → AI 审查（第2次）
- * 3. 仍不合规 → 降级重写（保守策略）→ AI 审查（第3次）
- * 4. 仍不合规 → 返回 compliance_status='failed'
- *
- * @returns { content, title, complianceStatus, complianceIssues }
+ * 合规约束已在文章生成阶段一开始注入（buildArticleCompliancePrompt），
+ * 不再使用「写作后 AI 审查 + 二次改写」（reviewAndRewriteArticle）方案，避免改写导致超字/结构破坏。
  */
-async function reviewAndRewriteArticle(
-  content: string,
-  title: string,
-  topic: string,
-  platform: string,
-  ruleContent: string,
-  targetWordCount: number,
-  modelConfig: any,
-  apiKey: string,
-  // v3.14.x：目标平台正文上限（content_max_length），改写时作为硬性上限，覆盖"字数不低于"矛盾约束
-  //   原 bug：合规改写只要求"字数不低于 targetWordCount"，与平台字数上限（如抖音/小红书 1000 字）冲突，
-  //   导致短平台文章被改写扩容到 2000-4000 字，完全脱离后台配置的平台字数限制。
-  maxContentLength?: number,
-  // v3.10.6：传入结构化元素上下文，确保改写时保留 FAQ/对比表/品牌词/关键词/三元组
-  preserveCtx?: {
-    enterpriseInfo: any;
-    coreKeywords: string[];
-    includeFaq: boolean;
-    includeComparisonTable: boolean;
-    keywordValue: string;
-  },
-): Promise<{ content: string; title: string; complianceStatus: string; complianceIssues: any[] }> {
-  const { chatCompletion } = await import('./aiClient');
-  const PLATFORM_NAMES: Record<string, string> = {
-    wxgzh: '微信公众号', tt: '今日头条', bjh: '百家号', zh: '知乎',
-    js: '简书', bili: 'B站', dy: '抖音', xhs: '小红书',
-    sohu: '搜狐号', qeh: '企鹅号', wy: '网易号', csdn: 'CSDN',
-  };
-  const platformName = PLATFORM_NAMES[platform] || platform;
-
-  // v3.10.6：构建「必须保留的结构化元素」约束文本，注入到改写 prompt
-  //   原 bug：改写函数只要求"保留原有 HTML 标签结构"，AI 会自作主张删掉 FAQ/对比表/品牌词/关键词/三元组
-  //   修复：明确列出必须保留的元素，让 AI 改写时只调整措辞，不删除结构化内容
-  const ent = preserveCtx?.enterpriseInfo || {};
-  const companyName = ent.company_full_name || ent.company_short_name || '';
-  const coreKwList = Array.isArray(preserveCtx?.coreKeywords) ? preserveCtx.coreKeywords : [];
-  const keywordVal = preserveCtx?.keywordValue || '';
-  const triples = Array.isArray(ent.entity_triples) ? ent.entity_triples : [];
-
-  const preserveBlocks: string[] = [];
-  preserveBlocks.push(`【改写时必须保留的结构化元素（重要！）】
-改写时只调整违规措辞，必须完整保留以下结构化元素，不得删除或弱化：`);
-
-  // 1. 客户品牌词
-  if (companyName) {
-    preserveBlocks.push(`1. 客户品牌名称："${companyName}"——必须在文中自然出现（正文+对比表），只做客观描述不夸大宣传，但绝不能删除品牌露出`);
-  }
-  // 2. 核心关键词
-  if (coreKwList.length > 0) {
-    preserveBlocks.push(`2. 核心关键词：${coreKwList.join('、')}——必须在标题或正文中自然出现，不可遗漏`);
-  } else if (keywordVal) {
-    preserveBlocks.push(`2. 本篇关键词：${keywordVal}——必须在标题或正文中自然出现，不可遗漏`);
-  }
-  // 3. 三元组
-  if (triples.length > 0) {
-    const triplesPreview = triples.slice(0, 10).map((t: any) => {
-      const s = t?.subject || ''; const p = t?.predicate || ''; const o = t?.object || '';
-      return `- ${s} ${p} ${o}`;
-    }).join('\n');
-    preserveBlocks.push(`3. 企业实体三元组（企业核心事实，必须在正文中体现至少 3 条）：
-${triplesPreview}`);
-  }
-  // 4. FAQ 结构块
-  if (preserveCtx?.includeFaq) {
-    preserveBlocks.push(`4. FAQ 章节——必须保留 <h2>常见问题</h2> + <ul><li><strong>问题</strong>回答</li></ul> 结构，至少 3 个问答，问题基于客户档案和本篇主题生成`);
-  }
-  // 5. 对比表结构块
-  if (preserveCtx?.includeComparisonTable) {
-    preserveBlocks.push(`5. 推荐排名对比表——必须保留 <h2>${new Date().getFullYear()}年推荐排名</h2> + <table> 结构，客户品牌必须出现在表中（第1或第2名），其他位置用真实竞品品牌`);
-  }
-  preserveBlocks.push(`6. 保留原文的 <h1>/<h2>/<p>/<ul>/<li>/<table> 等 HTML 标签结构，只改写文字内容
-${maxContentLength && maxContentLength > 0
-  ? `7. 字数硬性上限：正文总字数不得超过 ${maxContentLength} 字（目标平台审核硬性上限，超出会被平台拒绝），改写后必须控制在限制以内，精简冗余内容`
-  : `7. 字数不低于 ${targetWordCount}`}`);
-  const preserveConstraint = preserveBlocks.join('\n');
-
-  /** AI 审查单次调用（v3.10.3：宽松审查模式，只查严重问题） */
-  async function reviewOnce(text: string, textTitle: string, strictMode: boolean = false): Promise<{ compliant: boolean; issues: any[] }> {
-    const strictness = strictMode
-      ? `请严格逐条检查规则，任何轻微问题都判定为不合规。`
-      : `请只检查会导致平台直接下架或封号的严重合规问题：
-- 绝对化用语（"最""第一""唯一""国家级"等违反广告法的用语）
-- 明确的效果承诺（"包治愈""100%成功""无痛""永不反弹"等）
-- 虚假宣传（编造不存在的资质、虚构案例、伪造数据）
-- 缺少法定风险提示（医美内容必须有"效果因人而异""咨询专业医生"等提示）
-- 违规类目（直接推广假冒伪劣产品、引导到非医疗机构等）
-
-对于以下情况不要判定为不合规：
-- 提到客户品牌名称（这是正常的品牌露出）
-- 描述产品/服务的客观特点（只要不是绝对化用语）
-- 行业科普知识（只要不涉及具体诊疗承诺）
-- 客观对比不同方案（只要不诋毁竞品）`;
-
-    const messages = [
-      {
-        role: 'system',
-        content: `你是${platformName}内容合规审查专家。请审查文章是否能在该平台通过审核。
-
-## 合规规则参考
-${ruleContent}
-
-## 审查标准
-${strictness}
-
-## 返回格式（必须是合法 JSON）
-{
-  "compliant": true/false,
-  "issues": [
-    {"issue": "具体问题描述", "severity": "high/medium/low", "location": "问题位置"}
-  ],
-  "summary": "整体审查结论"
-}`,
-      },
-      {
-        role: 'user',
-        content: `待审查文章：\n标题：${textTitle}\n正文：${text}`,
-      },
-    ];
-
-    const result = await chatCompletion({
-      baseUrl: modelConfig.base_url,
-      apiKey,
-      model: modelConfig.model_name,
-      messages: messages as any,
-      temperature: 0.3,
-      timeout: 60000,
-    });
-
-    try {
-      const jsonMatch = result.content.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : result.content);
-      return {
-        compliant: parsed.compliant === true,
-        issues: Array.isArray(parsed.issues) ? parsed.issues : [],
-      };
-    } catch {
-      console.warn(`[Compliance] 审查 JSON 解析失败，按合规处理: ${result.content.slice(0, 200)}`);
-      return { compliant: true, issues: [] };
-    }
-  }
-
-  /** AI 改写（v3.10.6：明确要求保留 FAQ/对比表/品牌词/关键词/三元组） */
-  async function rewriteOnce(originalContent: string, issues: any[]): Promise<string> {
-    const messages = [
-      {
-        role: 'system',
-        content: `你是医美内容合规改写专家。请根据审查意见改写文章，使其完全符合目标平台的合规要求。
-
-## 目标平台合规规则
-${ruleContent}
-
-## 审查发现的问题
-${JSON.stringify(issues, null, 2)}
-
-## 改写要求
-1. 保留文章核心信息和专业知识
-2. 消除所有合规问题（替换绝对化用语、删除效果承诺、添加风险提示等）
-3. 保持文章可读性和专业度
-
-${preserveConstraint}`,
-      },
-      {
-        role: 'user',
-        content: `原文：\n${originalContent}`,
-      },
-    ];
-
-    const result = await chatCompletion({
-      baseUrl: modelConfig.base_url,
-      apiKey,
-      model: modelConfig.model_name,
-      messages: messages as any,
-      temperature: 0.3,
-      timeout: 120000,
-    });
-    return result.content || originalContent;
-  }
-
-  /**
-   * 降级重写（保守策略，但保留客户品牌和结构化元素）
-   * v3.10.6：改为基于原文重写，而非从主题重新生成（原 bug 导致 FAQ/对比表/品牌词/关键词/三元组全部丢失）
-   */
-  async function degradedRewrite(originalContent: string, originalTopic: string): Promise<string> {
-    const messages = [
-      {
-        role: 'system',
-        content: `前两次改写均未通过合规审查，请以最保守的策略基于原文重写文章。
-
-## 降级策略（保留品牌+结构化元素，但合规化）
-1. 保留客户品牌名称（来自企业信息），但只做客观描述，不夸大宣传
-2. 不使用任何绝对化用语（"最""第一""唯一"等）
-3. 不承诺任何治疗效果，不使用"包治愈""100%成功""无痛"等承诺性词汇
-4. 文章末尾必须包含风险提示：「以上内容仅供参考，具体治疗方案请咨询专业医生」
-5. 保留行业科普知识，以知识分享为主，品牌推荐为辅
-
-${preserveConstraint}
-
-## 原文核心主题
-${originalTopic}
-
-## 合规规则参考
-${ruleContent}`,
-      },
-      {
-        role: 'user',
-        content: `请基于以下原文重写为完全合规的版本，保留所有结构化元素（品牌词/关键词/三元组/FAQ/对比表），只调整违规措辞：
-
-原文：
-${originalContent}`,
-      },
-    ];
-
-    const result = await chatCompletion({
-      baseUrl: modelConfig.base_url,
-      apiKey,
-      model: modelConfig.model_name,
-      messages: messages as any,
-      temperature: 0.3,
-      timeout: 120000,
-    });
-    return result.content || '';
-  }
-
-  // ---- 审查流程开始（v3.10.3：宽松审查 + 3次不通过降级为人工复核）----
-
-  // 第1次审查（宽松模式）
-  let review1 = await reviewOnce(content, title, false);
-  if (review1.compliant) {
-    return { content, title, complianceStatus: 'passed', complianceIssues: review1.issues };
-  }
-  console.log(`[Compliance] 第1次审查不合规，开始改写: issues=${review1.issues.length}`);
-
-  // 第1次改写
-  let rewrittenContent = await rewriteOnce(content, review1.issues);
-  if (!rewrittenContent || rewrittenContent.trim() === '') {
-    rewrittenContent = content;
-  }
-
-  // 第2次审查（宽松模式）
-  let review2 = await reviewOnce(rewrittenContent, title, false);
-  if (review2.compliant) {
-    return { content: rewrittenContent, title, complianceStatus: 'rewritten', complianceIssues: review2.issues };
-  }
-  console.log(`[Compliance] 第2次审查不合规，降级重写: issues=${review2.issues.length}`);
-
-  // v3.10.6：降级重写改为基于原文重写（保留结构化元素），而非从主题从零生成
-  let degradedContent = await degradedRewrite(content, topic);
-  if (!degradedContent || degradedContent.trim() === '') {
-    // 降级重写返回空，使用第1次改写的内容，标记为人工复核
-    console.log(`[Compliance] 降级重写返回空，使用改写内容标记人工复核`);
-    return { content: rewrittenContent, title, complianceStatus: 'manual_review', complianceIssues: review2.issues };
-  }
-
-  // 第3次审查（宽松模式）
-  let review3 = await reviewOnce(degradedContent, title, false);
-  if (review3.compliant) {
-    return { content: degradedContent, title, complianceStatus: 'rewritten', complianceIssues: review3.issues };
-  }
-
-  // 3次均不合规：保存降级重写后的内容（已尽量合规），标记为人工复核而非失败
-  // v3.10.3 改进：不再标记 failed，而是 manual_review，文章可由人工确认后发布
-  console.log(`[Compliance] 3次审查均不合规，保存降级内容并标记人工复核`);
-  return { content: degradedContent, title, complianceStatus: 'manual_review', complianceIssues: review3.issues };
-}
 
 /**
  * 执行写作任务 — 按用户设定的篇数循环调AI生成文章
@@ -1519,6 +1289,15 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
         //   prompt 只需告诉 AI "配图由系统自动插入"，不需要 AI 处理图片
         articlePrompt += `\n\n【图片说明】本篇文章配图将由系统自动插入，你不需要在正文中放置任何 <img> 标签，只需保证段落结构清晰（多个 <p> 段落），方便系统按段落均匀配图。`;
 
+        // v3.14.x：合规约束一开始就注入正文生成 prompt（代替写作后二次改写）
+        //   开启合规审查时，把行业合规规则直接加进创作指令，让 AI 一次成文即合规
+        {
+          const compliancePrompt = await buildArticleCompliancePrompt(task);
+          if (compliancePrompt) {
+            articlePrompt += compliancePrompt;
+          }
+        }
+
         // v1.8.0：注入 L6 平台约束层（字数 + 风格 + 话题要求）
         // 仅在平台专属模式下生效，注入到 articlePrompt 末尾，让 AI 按平台约束创作
         if (currentPlatformRule) {
@@ -1526,29 +1305,9 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
         }
 
         // 3. 组装 messages（systemMessage 含 L0+L1+L2+L3+L5）
-        // v2.2.16：字数硬约束同时注入 system message（最高优先级）和 user prompt（末尾强调）
-        //   原 bug：字数约束只在 user prompt 末尾，AI 注意力分散时会忽略，导致抖音 1800 字超限
-        //   修复：在 system message 末尾再次强调字数硬约束，AI 更容易严格遵守
-        let finalSystemMessage = writingCtx.systemMessage;
-        if (currentPlatformRule && finalSystemMessage) {
-          const titleMax = currentPlatformRule.title_max_length ?? 100;
-          const platformMax = currentPlatformRule.content_max_length ?? 50000;
-          // v3.14.x：同样以「用户目标字数」与「平台上限」的较小值作为硬性封顶
-          const contentMax = task.target_word_count && task.target_word_count > 0
-            ? Math.min(Number(task.target_word_count), Number(platformMax))
-            : Number(platformMax);
-          const contentMin = currentPlatformRule.content_min_length ?? 100;
-          finalSystemMessage += `\n\n---\n\n## 字数硬约束（系统级强制，必须严格遵守）
-你正在为【${currentPlatformRule.name}】平台创作，字数约束是平台审核的硬性规则，超出会被平台拒绝。
-- 标题：${currentPlatformRule.title_min_length ?? 1}-${titleMax} 字
-- 正文：${contentMin}-${contentMax} 字
-绝对不能超出 ${contentMax} 字，绝对不能少于 ${contentMin} 字。生成前请预估字数，生成后请自检。`;
-          // v3.11.x：短平台自适应覆盖（系统级，优先级最高）
-          // 抖音/小红书等短内容平台，长文结构要求（H2/对比表/FAQ/三元组堆叠）根本塞不进限制内，
-          // 会导致 AI 超量生成后被硬截断、客户品牌/关键词被砍掉。这里显式覆盖这些长文要求，
-          // 与 user prompt 中的 buildShortPlatformAdaptation 保持一致，确保短平台写完整且带出客户信息
-          finalSystemMessage += buildShortPlatformAdaptation(currentPlatformRule);
-        }
+        // v3.14.x：字数约束由 L6 平台约束层（buildPlatformConstraintPrompt）统一注入，
+        //   不再在 system message 里重复强调——平台约束设定的字数上限就是硬约束，AI 一开始就按它创作。
+        const finalSystemMessage = writingCtx.systemMessage;
         const messages: { role: 'system' | 'user'; content: string }[] = finalSystemMessage
           ? [
               { role: 'system', content: finalSystemMessage },
@@ -1704,49 +1463,9 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
         if (!contentHtml || contentHtml.replace(/<[^>]+>/g, '').trim().length < 50) {
           throw new Error(`AI 返回内容为空或过短（${contentHtml.length} 字符），可能是内容审查触发或平台限流`);
         }
-        // v2.2.16：平台字数超限硬截断兜底
-        // 场景：AI 不严格遵守字数约束（如抖音限制 1000 字却生成 1800 字）
-        // 修复：保存前检测纯文本字数，超过 content_max_length 时按段落自然截断到限制内
-        if (currentPlatformRule && currentPlatformRule.content_max_length) {
-          const platformMax = Number(currentPlatformRule.content_max_length);
-          // v3.14.x：截断上限取「用户目标字数」与「平台上限」的较小值
-          const maxLen = task.target_word_count && task.target_word_count > 0
-            ? Math.min(Number(task.target_word_count), platformMax)
-            : platformMax;
-          const plainTextLen = contentHtml.replace(/<[^>]+>/g, '').length;
-          if (maxLen > 0 && plainTextLen > maxLen) {
-            console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文超限: ${plainTextLen} > ${maxLen}（${currentPlatformRule.name}），执行硬截断`);
-            // 按段落累积截断，保留完整 <p> 结构
-            const paragraphs = contentHtml.split(/(<\/p>\s*)/).filter(Boolean);
-            let accumulated = 0;
-            const kept: string[] = [];
-            for (const chunk of paragraphs) {
-              const chunkTextLen = chunk.replace(/<[^>]+>/g, '').length;
-              if (accumulated + chunkTextLen > maxLen) {
-                // 当前段会超出，截取部分文本
-                const remaining = maxLen - accumulated;
-                if (remaining > 20) {
-                  // 在 chunk 中按字符截取（保留 HTML 标签结构）
-                  const m = chunk.match(/^(\s*<p[^>]*>)([\s\S]*?)(<\/p>\s*)$/i);
-                  if (m) {
-                    const innerText = m[2].replace(/<[^>]+>/g, '');
-                    const keptText = innerText.slice(0, remaining);
-                    kept.push(`${m[1]}${keptText}…${m[3]}`);
-                  }
-                }
-                break;
-              }
-              kept.push(chunk);
-              accumulated += chunkTextLen;
-            }
-            contentHtml = kept.join('');
-            // v3.14.x：字数只统计保留的正文字数（不含末尾截断提示），确保统计 ≤ 平台上限
-            //   原 bug：把截断提示「…（已按平台字数限制截断）」也计入字数，导致字数刚好超出上限
-            wordCount = contentHtml.replace(/<[^>]+>/g, '').length;
-            // 末尾加省略号段落提示（不计入字数）
-            contentHtml += '\n<p>…（已按平台字数限制截断）</p>';
-          }
-        }
+        // v3.14.x：移除「平台字数超限硬截断」。
+        //   字数约束已由 L6 平台约束层（buildPlatformConstraintPrompt）开头注入，AI 一开始就按
+        //   平台/用户设定字数创作，无需事后硬截断（硬截断会砍掉结尾/FAQ，破坏内容完整性）。
         modelUsed = modelConfig.model_name;
 
         // v2.5.19：图片处理改为调用公共函数 processArticleImages（与 regenerateArticle 共用）
@@ -1816,115 +1535,18 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
       // 截断到 5 个，每个不超过 20 字
       const articleTags = derivedTags.slice(0, 5).map(t => t.slice(0, 20));
 
-      // v3.10：写作后合规审查 + 自动改写
+      // v3.14.x：合规约束已在一开始注入正文生成 prompt（buildArticleCompliancePrompt），
+      //   不再做写作后二次改写（reviewAndRewriteArticle 已废弃），避免改写导致超字/结构破坏。
+      //   这里仅记录合规状态：开启合规审查即为通过（合规规则已指导整篇创作）。
       let finalContentHtml = contentHtml;
       let finalTitle = safeTitle;
-      let complianceStatus = 'pending';
+      let complianceStatus = 'passed';
       let complianceIssues: any[] = [];
-
-      // v3.12：合规审查改为按行业维度整组选用，对全平台生效（去掉平台过滤与逐条勾选）
-      const complianceIndustry = task.compliance_industry || '';
-      if (task.enable_compliance_review === true) {
-        try {
-          let rules: any[];
-          if (complianceIndustry) {
-            rules = await getActiveManualRulesByIndustry(complianceIndustry);
-          } else {
-            rules = await getAllActiveManualRules();
-          }
-          const validRules = rules.filter(r => r && r.rule_content && r.rule_content.trim());
-          if (validRules.length > 0) {
-            // 拼接规则内容供审查/改写使用
-            const mergedRuleContent = validRules.map((r, idx) => {
-              const industryLabel = r.industry && r.industry !== 'general' ? `［${INDUSTRY_NAMES[r.industry] || r.industry}］` : '';
-              const titleLabel = r.rule_title ? `《${r.rule_title}》` : '';
-              return `### 规则 ${idx + 1}（手动规则${industryLabel}）${titleLabel}\n${r.rule_content}`;
-            }).join('\n\n');
-            console.log(`[ArticleGen] 开始合规审查: industry=${complianceIndustry || 'all'}, articleIdx=${articleIdx}, rules=${validRules.length}`);
-            const reviewResult = await reviewAndRewriteArticle(
-              contentHtml,
-              safeTitle,
-              topicPlan.topic || safeCoreKeyword,
-              currentPlatform || '',
-              mergedRuleContent,
-              task.target_word_count || 1500,
-              modelConfig,
-              apiKey,
-              // v3.14.x：传入正文上限，让合规改写严格遵守字数限制（短平台不再被扩容）
-              //   上限取「用户目标字数」与「平台上限」的较小值
-              (currentPlatformRule && currentPlatformRule.content_max_length)
-                ? Math.min(
-                    Number(currentPlatformRule.content_max_length),
-                    task.target_word_count && task.target_word_count > 0 ? Number(task.target_word_count) : Number(currentPlatformRule.content_max_length),
-                  )
-                : undefined,
-              // v3.10.6：传入结构化元素上下文，确保改写时保留 FAQ/对比表/品牌词/关键词/三元组
-              {
-                enterpriseInfo,
-                coreKeywords: pickedCoreKeywords,
-                includeFaq: task.include_faq === true || task.include_faq === undefined,
-                includeComparisonTable: task.include_comparison_table === true || task.include_comparison_table === undefined,
-                keywordValue: kw?.value || '',
-              },
-            );
-            finalContentHtml = reviewResult.content;
-            finalTitle = reviewResult.title;
-            complianceStatus = reviewResult.complianceStatus;
-            complianceIssues = reviewResult.complianceIssues;
-            console.log(`[ArticleGen] 合规审查完成: status=${complianceStatus}, issues=${complianceIssues.length}`);
-
-            // v3.14.x：合规改写后再次执行平台字数硬截断兜底
-            //   原 bug：改写前已截断到平台上限，但合规改写（reviewAndRewriteArticle）可能再次扩容，
-            //   改写后的 finalContentHtml 未再校验字数，导致短平台文章超限。
-            //   修复：改写后若超过平台 content_max_length，按段落自然截断到限制内。
-            if (currentPlatformRule && currentPlatformRule.content_max_length) {
-              const platformMax = Number(currentPlatformRule.content_max_length);
-              // v3.14.x：截断上限取「用户目标字数」与「平台上限」的较小值
-              const maxLen = task.target_word_count && task.target_word_count > 0
-                ? Math.min(Number(task.target_word_count), platformMax)
-                : platformMax;
-              const plainTextLen = finalContentHtml.replace(/<[^>]+>/g, '').length;
-              if (maxLen > 0 && plainTextLen > maxLen) {
-                console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇合规改写后超限: ${plainTextLen} > ${maxLen}（${currentPlatformRule.name}），执行二次硬截断`);
-                const paragraphs = finalContentHtml.split(/(<\/p>\s*)/).filter(Boolean);
-                let accumulated = 0;
-                const kept: string[] = [];
-                for (const chunk of paragraphs) {
-                  const chunkTextLen = chunk.replace(/<[^>]+>/g, '').length;
-                  if (accumulated + chunkTextLen > maxLen) {
-                    const remaining = maxLen - accumulated;
-                    if (remaining > 20) {
-                      const m = chunk.match(/^(\s*<p[^>]*>)([\s\S]*?)(<\/p>\s*)$/i);
-                      if (m) {
-                        const innerText = m[2].replace(/<[^>]+>/g, '');
-                        kept.push(`${m[1]}${innerText.slice(0, remaining)}…${m[3]}`);
-                      }
-                    }
-                    break;
-                  }
-                  kept.push(chunk);
-                  accumulated += chunkTextLen;
-                }
-                finalContentHtml = kept.join('');
-                // v3.14.x：字数只统计保留正文（不含末尾截断提示），确保统计 ≤ 平台上限
-                const keptLen = finalContentHtml.replace(/<[^>]+>/g, '').length;
-                finalContentHtml += '\n<p>…（已按平台字数限制截断）</p>';
-                wordCount = keptLen;
-              }
-            }
-
-            // 重新计算字数（改写后可能变化）
-            // v3.14.x：修复字数统计错误——原代码 `Math.ceil(len / 3)` 把字数除 3，
-            //   导致文章列表显示的字数与实际正文不符（约为实际 1/3）。字数应统计纯文本字符长度，
-            //   并排除末尾「已按平台字数限制截断」元信息，确保统计 ≤ 平台上限。
-            wordCount = finalContentHtml.replace(/<[^>]+>/g, '').replace(/…（已按平台字数限制截断）/g, '').length;
-          } else {
-            console.log(`[ArticleGen] 合规规则未配置，跳过审查: industry=${complianceIndustry || 'all'}`);
-          }
-        } catch (e: any) {
-          console.warn(`[ArticleGen] 合规审查异常，跳过: ${e.message}`);
-        }
+      if (task.enable_compliance_review !== true) {
+        complianceStatus = 'pending';
       }
+      // 重新计算字数（纯文本字符长度，排除末尾截断元信息——已无截断，仅作规范统计）
+      wordCount = finalContentHtml.replace(/<[^>]+>/g, '').length;
 
       const articleId = await createArticle({
         user_id: userId,
@@ -2188,6 +1810,14 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
   });
   articlePrompt += writingCtx.userPromptSuffix;
 
+  // v3.14.x：重新生成也前置注入合规约束（与 executeWritingTask 一致，一次成文即合规）
+  {
+    const compliancePrompt = await buildArticleCompliancePrompt(task);
+    if (compliancePrompt) {
+      articlePrompt += compliancePrompt;
+    }
+  }
+
   // v1.8.0：重新生成时也注入 L6 平台约束（基于文章已有的 target_platform）
   let regenPlatformRule: any = null;
   if (article.target_platform) {
@@ -2296,38 +1926,8 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
   //   调用公共函数 processArticleImages，与 executeWritingTask 共用同一套逻辑
   let finalContentHtml = contentHtml;
   let coverUrlForArticle = '';
-  // v3.14.x：重新生成也执行平台/目标字数硬截断，避免重写后仍超字
-  if (regenPlatformRule && regenPlatformRule.content_max_length) {
-    const platformMax = Number(regenPlatformRule.content_max_length);
-    const maxLen = task.target_word_count && task.target_word_count > 0
-      ? Math.min(Number(task.target_word_count), platformMax)
-      : platformMax;
-    const plainTextLen = finalContentHtml.replace(/<[^>]+>/g, '').length;
-    if (maxLen > 0 && plainTextLen > maxLen) {
-      console.warn(`[ArticleGen] 文章 ${articleId} 重新生成超限: ${plainTextLen} > ${maxLen}（${regenPlatformRule.name}），执行硬截断`);
-      const paragraphs = finalContentHtml.split(/(<\/p>\s*)/).filter(Boolean);
-      let accumulated = 0;
-      const kept: string[] = [];
-      for (const chunk of paragraphs) {
-        const chunkTextLen = chunk.replace(/<[^>]+>/g, '').length;
-        if (accumulated + chunkTextLen > maxLen) {
-          const remaining = maxLen - accumulated;
-          if (remaining > 20) {
-            const m = chunk.match(/^(\s*<p[^>]*>)([\s\S]*?)(<\/p>\s*)$/i);
-            if (m) {
-              const innerText = m[2].replace(/<[^>]+>/g, '');
-              kept.push(`${m[1]}${innerText.slice(0, remaining)}…${m[3]}`);
-            }
-          }
-          break;
-        }
-        kept.push(chunk);
-        accumulated += chunkTextLen;
-      }
-      finalContentHtml = kept.join('');
-      finalContentHtml += '\n<p>…（已按平台字数限制截断）</p>';
-    }
-  }
+  // v3.14.x：重新生成不再硬截断——字数约束已由 L6 平台约束层（buildPlatformConstraintPrompt）
+  //   开头注入，AI 重写时一开始就按平台/用户设定字数创作，无需事后硬截断（硬截断会砍掉结尾/FAQ）。
   try {
     const imageResult = await processArticleImages(task, userId, contentHtml, articleId);
     finalContentHtml = imageResult.contentHtml;
