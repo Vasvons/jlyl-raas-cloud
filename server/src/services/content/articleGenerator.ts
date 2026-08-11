@@ -114,20 +114,23 @@ function resolveTaskStyles(task: any): string[] {
  * 决策友好风格（痛点问答/对比评测/教程指南/产品种草）强约束；
  * 其余风格（行业科普/资讯动态/案例故事/信任背书/品牌曝光）弱化、允许带决策落点
  */
-function buildStyleAwareGeoTitleRule(styles: string[]): string {
+function buildStyleAwareGeoTitleRule(styles: string[], city: string = ''): string {
   const decisionIntentStyles = ['pain_point_qa', 'comparison_review', 'tutorial', 'product_seeding'];
   const strong = styles.some(s => decisionIntentStyles.includes(s));
+  // v3.14.x：把客户真实城市值直接注入标题规则，避免 AI 只在示例里看到"郑州/安阳"占位而漏带城市
+  const cityLine = city ? `本客户所在城市是【${city}】（标题必须带上【${city}】这个城市词，不要用"XX""某城市"占位，这对本地区搜索命中至关重要）。` : '';
   if (strong) {
     return `10. 【GEO 决策意图（v3.14.x · 强约束）】当前内容风格偏"决策友好型"，标题**必须**写成"用户原话式"选购问句，且固定套用以下格式之一：
-- **{城市}{业务}哪家做的好？**　例："郑州脂肪填充哪家做的好？"
-- **{城市}{业务}选哪家{行业}？**　例："安阳下巴吸脂选哪家医美？"
+- **${city}{业务}哪家做的好？**　例："${city}脂肪填充哪家做的好？"
+- **${city}{业务}选哪家？**　例："${city}下巴吸脂选哪家？"
+${cityLine}
 三个必备要素缺一不可：
-a. 【城市】必须带上客户所在城市（来自企业信息中的"所在城市"，如"郑州/安阳"），让标题对本地区搜索强相关；
+a. 【城市】必须带上客户所在城市【${city}】，让标题对本地区搜索强相关；
 b. 【业务】必须是用户会搜的具体业务/项目名（如"脂肪填充/下巴吸脂/鼻部整形"）；
 c. 【决策对象】必须是"哪家做的好 / 选哪家 / 哪家好 / 哪家便宜"这类明确选购意图。
-**禁止**单独使用"{业务}怎么选"这种标题——它缺少城市与"哪家"决策对象，语义残缺，用户根本不会这样搜，GEO 无法命中。要点：能写成"XX 选哪家/哪家做的好"就绝不用"怎么选"。`;
+**禁止**单独使用"{业务}怎么选"这种标题——它缺少城市与"哪家"决策对象，语义残缺，用户根本不会这样搜，GEO 无法命中。要点：能写成"${city}XX 选哪家/哪家做的好"就绝不用"怎么选"。`;
   }
-  return `10. 【GEO 决策意图（v3.11.x · 弱约束）】当前内容风格偏"知识/资讯/品牌"型，标题可侧重原有风格与专业表达，但**建议**在结尾带一个决策落点（如"2026年代理记账行业新政策解读，看完就知道怎么选"），避免写成纯泛泛而谈、无任何检索价值的标题。不必强套"怎么选/哪家好"，自然带出即可。`;
+  return `10. 【GEO 决策意图（v3.14.x）】当前内容风格偏"知识/资讯/品牌"型，标题可侧重原有风格与专业表达。${cityLine}只要标题涉及"选择/怎么选/如何选/哪家好"等决策语义，就必须带上城市【${city}】并落到"选哪家/哪家好/哪家做的好"这类明确决策对象上（如"${city}下巴吸脂选哪家好？"），**禁止**输出缺少城市、仅有"怎么选"的残缺标题。纯资讯/科普类（不涉及选购决策）可保持原有风格，但城市词尽量自然带出增强本地区检索。`;
 }
 
 /**
@@ -208,28 +211,32 @@ function cleanTitlePrefix(title: string): string {
 
 /**
  * v3.14.x：标题决策意图规范化（安全兜底）
- * 场景：AI 仍可能产出"下巴吸脂怎么选""鼻部整形怎么选"这类残缺标题——
+ * 场景：AI 仍可能产出"双下巴吸脂怎么选""鼻部整形怎么选"这类残缺标题——
  *   缺少城市、也未落在"哪家/选哪家"决策对象上，GEO 无法命中用户搜索。
- * 修复：检测到"XX怎么选/如何选"且未含"哪家/选哪家"时，规范为"{城市}{业务}选哪家{行业}？"
- *   例："下巴吸脂怎么选" → "安阳下巴吸脂选哪家医美？"
+ * 修复：
+ *   1) 已含决策对象（哪家/选哪家/哪家好）→ 只补城市前缀，保证本地区搜索命中；
+ *   2) 仍为"{业务}怎么选/如何选"→ 规范为"{城市}{业务}选哪家？"
+ *   例："双下巴吸脂怎么选" → "安阳双下巴吸脂选哪家？"
+ *   例："下巴吸脂怎么选？避坑指南" → "安阳下巴吸脂选哪家？"
  */
 function normalizeGeoDecisionTitle(title: string, enterpriseInfo: any): string {
   if (!title) return title;
-  const city = enterpriseInfo?.city || '';
-  const industry = enterpriseInfo?.industry || '';
-  // 已含明确决策对象（哪家/选哪家/哪家好）则不动，避免误改
-  if (/哪家|选哪家|哪家好|哪家做/.test(title)) return title;
-  // 匹配"{业务}怎么选/如何选"结尾（前半段为业务名，2-12 字）
-  const m = title.match(/^(.{2,12}?)\s*(怎么选|如何选|怎么挑|怎么找|怎么选好|如何挑)([？?。！!\s]*)$/);
+  const city = (enterpriseInfo?.city || '').trim();
+  // 已含明确决策对象（哪家/选哪家/哪家好/哪家做/哪家强/哪家便宜）→ 仅需补城市前缀
+  if (/哪家|选哪家|哪家做|哪家强|哪家便宜/.test(title)) {
+    if (city && title.indexOf(city) === -1) {
+      return `${city}${title}`;
+    }
+    return title;
+  }
+  // 匹配"{业务}怎么选/如何选/怎么挑/怎么找"（决策短语可在末尾，也可能后面还有补充内容，丢弃之）
+  const m = title.match(/^(.{2,14}?)\s*(怎么选|如何选|怎么挑|怎么找|怎么选好|如何挑)/);
   if (!m) return title;
   let business = m[1].trim();
-  // 业务名若已带城市前缀或行业后缀，剥离，避免重复（如"安阳下巴吸脂怎么选"）
+  // 业务名若已带城市前缀，剥离避免重复（如"安阳下巴吸脂怎么选"）
   if (city && business.startsWith(city)) business = business.slice(city.length).trim();
   const prefix = city ? city : '';
-  const decision = '选哪家';
-  const suffix = industry ? industry : '';
-  const q = '？';
-  return `${prefix}${business}${decision}${suffix}${q}`;
+  return `${prefix}${business}选哪家？`;
 }
 
 /**
@@ -1413,7 +1420,7 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词
 9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"
 10. 【标题问句优先（v3.11.x 通用）】标题优先采用"用户原话型"问句，直接复刻目标客户在搜索框里的输入（如"郑州脂肪填充哪家做的好？""XX 怎么样？"），提升 GEO/AI 检索命中率。若与下方"GEO 决策意图"风格规则冲突：对决策类风格（痛点问答/对比评测/教程指南/产品种草）强制问句；对知识/资讯/品牌型风格不强求问句形式，但标题应包含用户可能搜索的关键词。
-${buildStyleAwareGeoTitleRule(resolveTaskStyles(task))}`;
+${buildStyleAwareGeoTitleRule(resolveTaskStyles(task), task.city || '')}`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: titleSystemContent },
               { role: 'user', content: titlePrompt },
