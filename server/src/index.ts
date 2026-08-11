@@ -201,6 +201,32 @@ app.get('/diagnose', async (req, res) => {
   } catch (e: any) {
     result.checks.dataTimeLogic = { status: 'error', message: e.message };
   }
+  // 关键词数据诊断（品牌词层级）
+  try {
+    const { query } = require('./db');
+    const kw = await query(`
+      SELECT u.id AS user_id, u.username,
+        (SELECT COUNT(*) FROM pp WHERE user_id = u.id) AS pp_count,
+        (SELECT COUNT(*) FROM pp WHERE user_id = u.id AND brand_id IS NULL) AS pp_no_brand,
+        (SELECT COUNT(*) FROM distillate_keyword WHERE user_id = u.id) AS dk_count,
+        (SELECT COUNT(*) FROM distillate_keyword WHERE user_id = u.id AND brand_id IS NULL) AS dk_no_brand,
+        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id) AS zlgjc_count,
+        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id AND brand_id IS NULL) AS zlgjc_no_brand,
+        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id AND keyword_type = 0) AS zlgjc_type0,
+        (SELECT COUNT(*) FROM zlgjc WHERE userid = u.id AND keyword_type = 1) AS zlgjc_type1,
+        (SELECT COUNT(*) FROM brand WHERE user_id = u.id) AS brand_count
+      FROM users u ORDER BY u.id
+    `);
+    result.checks.keywordData = kw.rows.map((r: any) => ({
+      userId: r.user_id, username: r.username, pp: parseInt(r.pp_count), ppNoBrand: parseInt(r.pp_no_brand),
+      dk: parseInt(r.dk_count), dkNoBrand: parseInt(r.dk_no_brand),
+      zlgjc: parseInt(r.zlgjc_count), zlgjcNoBrand: parseInt(r.zlgjc_no_brand),
+      zlgjcType0: parseInt(r.zlgjc_type0), zlgjcType1: parseInt(r.zlgjc_type1),
+      brands: parseInt(r.brand_count),
+    }));
+  } catch (e: any) {
+    result.checks.keywordData = { status: 'error', message: e.message };
+  }
   // 调度器状态
   try {
     result.checks.scheduler = getSchedulerStatus();
