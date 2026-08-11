@@ -416,19 +416,14 @@ function filterUsedTriples(contentHtml: string, triples: any): any[] {
     if (!t || typeof t !== 'object') continue;
     const subj = String(t.subject || '').trim();
     const obj = String(t.object || '').trim();
-    // v3.8.14：subject 和 object 必须都命中（AND），提高过滤严格度
-    //   原 OR 逻辑：只要 subject 或 object 命中就保留 → 误匹配率高
-    //   新 AND 逻辑：两者都命中才保留 → 只保留真正被文章引用的三元组
-    //   例外：如果 subject 或 object 为空，则只看非空的那个
+    // v3.15.x：放宽为 subject 或 object 命中即保留（OR 逻辑）。
+    //   原 v3.8.14 的 AND 逻辑（主体+客体都必须命中）虽能降低误匹配，但 AI 一次生成的正文
+    //   往往只写出主体（品牌名）或客体（业务词）其一，或对客体做了同义改写（如"代理记账"→"记账报税"），
+    //   导致保存时大量有效三元组被过滤为空 → 前端显示"未引用任何三元组"。
+    //   现放宽为 OR：只要主体或客体任一命中即保留，仍保留 ≥3 字下限与词边界匹配，避免短词误匹配。
     const subjHit = subj ? isHit(subj) : false;
     const objHit = obj ? isHit(obj) : false;
-    if (subjHit && objHit) {
-      used.push(t);
-    } else if (subjHit && !obj) {
-      // object 为空时，只看 subject
-      used.push(t);
-    } else if (objHit && !subj) {
-      // subject 为空时，只看 object
+    if (subjHit || objHit) {
       used.push(t);
     }
   }
@@ -499,6 +494,42 @@ function buildWritingCraftRule(): string {
 3. 【知识库按需选用·不堆砌】上方企业知识库字段只取与本文 GEO 答案最相关的 3-5 个关键事实来支撑"推荐客户品牌/答案块"，其余内容不强制全部出现；判断标准是"这句话是否帮助 AI 采信这篇答案"，不相关就删。
 4. 【用语凝练】删掉"非常/极其/堪称/打造/业内领先"等修饰性冗余词，一个意思用一句话讲透；能用数字/事实说话就不用形容词堆砌。
 5. 【结构精简】能用合并/列表表达的就不拆段；正文主体 N 条标准控制在 3-4 条；术式表/排名表列数控制在必要的 3-5 列，避免表格臃肿。`;
+}
+
+/**
+ * v3.15.x：企业实体与关键词强制引用规则（系统强制）
+ * 背景：移除二次改写（reviewAndRewriteArticle）后，正文一次生成。若 AI 不主动按原文引用
+ *       企业三元组与核心关键词，会导致「关键词密度=0」「实体三元组完全未引用」。
+ * 修复：在生成 prompt 中显式列出企业核心事实（三元组）与必须出现的关键词，要求 AI 在正文中
+ *       按原文引用（主体+客体原文都出现），确保一次成文即具备 GEO 实体绑定与关键词覆盖。
+ * 注：短平台字数受限，仅要求至少 1 条；长平台要求至少 3 条。
+ */
+function buildEntityKeywordEnforcement(enterpriseInfo: any, coreKeywords: string[], shortPlatform: boolean): string {
+  const lines: string[] = [];
+  lines.push(`### 企业实体与关键词引用（系统强制，GEO 实体绑定）
+不要让这些企业核心事实与关键词"只出现在背景里"——必须把它们写进正文，让 AI 引擎能抽取出"实体+关系"以绑定客户品牌：`);
+  const triples = Array.isArray(enterpriseInfo?.entity_triples) ? enterpriseInfo.entity_triples : [];
+  if (triples.length > 0) {
+    const list = triples.slice(0, 8).map((t: any) => {
+      const s = String(t?.subject || '').trim();
+      const o = String(t?.object || '').trim();
+      const p = String(t?.predicate || '关联').trim();
+      return `- ${s}（${p}）${o}`;
+    }).join('\n');
+    const minRef = shortPlatform ? 1 : 3;
+    lines.push(`1. 【企业核心事实（实体三元组，至少引用 ${minRef} 条）】
+以下是企业真实的核心事实，正文必须自然引用 ${minRef} 条以上，且"主体原文 + 客体原文"都要出现在正文中（不要只写其一，也不要同义改写——例如"代理记账"就写"代理记账"，不要写成"记账报税"）：
+${list}`);
+  }
+  if (coreKeywords.length > 0) {
+    const kwStr = coreKeywords.slice(0, 10).join('、');
+    if (shortPlatform) {
+      lines.push(`2. 【核心关键词】以下关键词必须在标题或正文首段自然出现至少 1-2 次：${kwStr}`);
+    } else {
+      lines.push(`2. 【核心关键词密度】以下关键词必须在正文自然出现，整体密度控制在 2%-5%（每 100 字出现 2-5 次），既不堆砌也不完全不用：${kwStr}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /**
@@ -1212,6 +1243,13 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         // v3.13.x：写作手法总则（系统强制）——防啰嗦/防冗余/防堆砌，
         //   让 AI 信息去重、控制单段密度、按需选用知识库，避免超长被截断时关键答案块丢失。
         mandatoryBlocks.push(buildWritingCraftRule());
+        // v3.15.x：企业实体与关键词强制引用（防止密度=0 / 三元组未引用）
+        //   短平台（≤2000字）至少引用 1 条三元组、关键词自然 1-2 次；长平台至少 3 条、密度 2%-5%。
+        {
+          const platMaxLen = currentPlatformRule ? Number(currentPlatformRule.content_max_length) || 50000 : 50000;
+          const shortPlat = platMaxLen > 0 && platMaxLen <= 2000;
+          mandatoryBlocks.push(buildEntityKeywordEnforcement(enterpriseInfo, coreKeywordValues, shortPlat));
+        }
         if (includeFaq) {
           mandatoryBlocks.push(`【必须生成的结构块：FAQ】
 文章必须包含一个 FAQ 章节，放在正文末尾（结论之前）。格式要求：
@@ -1830,6 +1868,15 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
     } catch (err) {
       console.warn(`[ArticleGen] 文章 ${articleId} 重新生成时查询平台规则失败:`, err);
     }
+  }
+
+  // v3.15.x：企业实体与关键词强制引用（重写链路与主链路一致，防止密度=0 / 三元组未引用）
+  {
+    let regenMaxLen = 50000;
+    if (regenPlatformRule) regenMaxLen = Number(regenPlatformRule.content_max_length) || 50000;
+    const regenShort = regenMaxLen > 0 && regenMaxLen <= 2000;
+    const regenCore = (article.core_keyword || '').split(/[，,、|/;\s]+/).map((s: string) => s.trim()).filter(Boolean);
+    articlePrompt += '\n\n---\n\n' + buildEntityKeywordEnforcement(enterpriseInfo, regenCore, regenShort);
   }
 
   const systemContent = writingCtx.systemMessage;
