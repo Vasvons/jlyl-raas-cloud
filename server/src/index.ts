@@ -227,6 +227,23 @@ app.get('/diagnose', async (req, res) => {
   } catch (e: any) {
     result.checks.keywordData = { status: 'error', message: e.message };
   }
+  // 精确复现 API 查询（用户5）
+  try {
+    const { getDistillateKeywordsByPage, getZlgjcByPage, getPPByUserId } = require('./repository');
+    const uid = '5';
+    const pp = await getPPByUserId(uid);
+    const dk = await getDistillateKeywordsByPage(uid, 1, 5);
+    const z0 = await getZlgjcByPage(uid, 1, 5, 0);
+    const z1 = await getZlgjcByPage(uid, 1, 5, 1);
+    result.checks.keywordRepro = {
+      ppCount: pp.length, ppSample: pp.map((r: any) => ({ id: r.id, pp: r.pp, brandId: r.brand_id })),
+      dkTotal: dk.total, dkSample: dk.list.map((r: any) => ({ id: r.id, kw: r.distillateKeyword, brandId: r.brandId })),
+      z0Total: z0.total, z0Sample: z0.list.map((r: any) => ({ id: r.id, value: r.value, brandId: r.brandId })),
+      z1Total: z1.total, z1Sample: z1.list.map((r: any) => ({ id: r.id, value: r.value, brandId: r.brandId })),
+    };
+  } catch (e: any) {
+    result.checks.keywordRepro = { status: 'error', message: e.message };
+  }
   // 调度器状态
   try {
     result.checks.scheduler = getSchedulerStatus();
