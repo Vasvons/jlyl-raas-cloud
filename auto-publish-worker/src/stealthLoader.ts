@@ -93,6 +93,21 @@ export function getAntiDetectionArgs(): string[] {
     '--hide-scrollbars',
     '--mute-audio',
 
+    // v3.13.14：GPU 进程存活动三连（chrome日志实锤完整因果链）：
+    //   容器无显卡 → ANGLE 枚举 Vulkan 后端失败（--disable-vulkan 管不住 ANGLE 的后端
+    //   选择，日志实证加了仍报 Internal Vulkan error (-7)）→ 回退 SwANGLE 又报
+    //   EGL_NOT_INITIALIZED（新版 Chromium 默认封锁 SwiftShader，必须显式解锁）→
+    //   "Exiting GPU process due to errors during initialization" → loginpage 渲染进程
+    //   失去合成器崩溃（崩溃时刻与 GPU 进程退出精确重合）。
+    //   a. --use-angle=swiftshader：显式指定 ANGLE 后端为 SwiftShader，跳过 Vulkan 枚举
+    //   b. --enable-unsafe-swiftshader：解锁新版 Chromium 对 SwiftShader 的默认封锁
+    //      （对应日志 eglInitialize SwANGLE failed with EGL_NOT_INITIALIZED）
+    //   c. --in-process-gpu：兜底——GPU 初始化内联进浏览器进程，即使 GL 全失败也不再
+    //      出现独立 GPU 进程退出拖死渲染进程的连锁
+    '--use-angle=swiftshader',
+    '--enable-unsafe-swiftshader',
+    '--in-process-gpu',
+
     // === 启动行为（不显示"首次运行"等弹窗） ===
     '--no-first-run',
     '--no-default-browser-check',
