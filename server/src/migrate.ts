@@ -1425,6 +1425,9 @@ export async function migrate() {
     // 预设指令作为全局模板出现在每个客户的指令列表，通过「启用/停用」开关激活；
     // 启用后即可在文章写作/自动写作任务中选用。新增预设只需在此数组追加一条，部署时自动补种。
     // 幂等：按 name 判断「user_id IS NULL」下是否已存在，已存在则跳过。
+    // 【重要】原表定义 user_id INTEGER NOT NULL，全局预设模板 user_id 为 NULL，
+    //   必须先放开非空约束，否则 INSERT 失败 → migrate 崩溃 → server 无法启动（登录解析响应失败的根因）
+    await client.query(`ALTER TABLE writing_instruction ALTER COLUMN user_id DROP NOT NULL`);
     const presetInstructions = [
       {
         name: '品牌排名指令',
