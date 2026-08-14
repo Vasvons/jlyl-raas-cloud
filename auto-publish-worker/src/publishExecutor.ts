@@ -36,7 +36,7 @@ const REPORT_RETRY_BASE_MS = 1000;         // 回写重试基础间隔（指数�
 const platformLocks: Map<string, Promise<void>> = new Map();
 
 /**
- * v3.13.5：wxgzh 资源分级拦截器（独立函数——page.route 是页面级，context.newPage() 重建后必须重装）
+ * v3.13.6：wxgzh 资源分级拦截器（独立函数——page.route 是页面级，context.newPage() 重建后必须重装）
  *
  * 拦截规则（只按页面阶段拦副资源，绝不拦 document/xhr/fetch，不影响登录态与表单提交）：
  *  - home 页（/cgi-bin/home，仅用于从服务端 302 URL 提取 token，不需要渲染）：
@@ -44,8 +44,13 @@ const platformLocks: Map<string, Promise<void>> = new Map();
  *      v3.13.4 只拦图片仍 Page crashed（record #1137 34s 即崩，崩在预检阶段）；
  *      token 由服务端 302 Location 返回，拦截 script 不影响提取；失效路径跳转 loginpage
  *      不含 /cgi-bin/home 关键字，恢复流程（点 #jumpUrl）不受影响
- *  - 编辑器页：media/font 全拦（字体不影响发布）；image 仅拦 res.wx.qq.com
- *      （微信自有营销图/emoji；正文/封面用的 aliyuncs.com 等外链图不拦）
+ *  - 编辑器页（v3.13.6 图片改白名单制，#1147 实测崩在编辑器加载阶段）：
+ *      websocket 全拦（编辑器发布不需要长连接）；
+ *      media/font 全拦（字体不影响发布）；
+ *      图片白名单放行：blob:/data:（封面 setInputFiles 本地预览）+ aliyuncs.com
+ *      （正文外链图需在编辑器内真实加载，供微信转存/发布校验），其余图片全拦
+ *      （res.wx.qq.com 营销图/emoji、mmt.qpic.cn 图库缩略图等——图库选图按 DOM 坐标
+ *      点击，不依赖缩略图渲染）
  */
 async function installWxgzhResourceRoute(p: any): Promise<void> {
   await p.route('**/*', async (route: any) => {
@@ -58,8 +63,13 @@ async function installWxgzhResourceRoute(p: any): Promise<void> {
       if (onHome && (type === 'image' || type === 'media' || type === 'font' || type === 'stylesheet' || type === 'script' || type === 'websocket')) {
         return await route.abort();
       }
+      if (type === 'websocket') return await route.abort();
       if (type === 'media' || type === 'font') return await route.abort();
-      if (type === 'image' && resUrl.includes('res.wx.qq.com')) return await route.abort();
+      if (type === 'image') {
+        if (resUrl.startsWith('blob:') || resUrl.startsWith('data:')) return await route.continue();
+        if (resUrl.includes('aliyuncs.com')) return await route.continue();
+        return await route.abort();
+      }
       return await route.continue();
     } catch {
       try { await route.continue(); } catch { /* 路由已关闭，忽略 */ }
@@ -204,6 +214,14 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       launchArgs.push('--headless=new');
     }
 
+    // v3.13.6：wxgzh 专用——渲染进程 V8 堆上限 768m，强制尽早 GC
+    //   （编辑器 ProseMirror 重 SPA 会把 JS 堆一路撑到 cgroup 上限，触发内核 OOM kill 渲染进程
+    //     → 表现为 Page crashed（#1147 崩在编辑器加载阶段）；限堆后 V8 在接近上限时密集 GC
+    //     而非崩溃，配合图片白名单拦截降低总 RSS。其他平台不受影响）
+    if (platform === 'wxgzh') {
+      launchArgs.push('--js-flags=--max-old-space-size=768');
+    }
+
     const fingerprint = getStableFingerprint(record.platform || record.platform_auth_id || recordId);
     logger.info(`启动浏览器（launch + newContext + stealth + ${launchArgs.length} 个反检测参数 + headless: ${useHeadless ? 'new' : 'false'}）`);
 
@@ -265,7 +283,7 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     //   v3.13.4 只拦图片仍崩（#1137 崩在预检 home 阶段），home 升级为仅 HTML 级拦截
     if (platform === 'wxgzh') {
       await installWxgzhResourceRoute(page);
-      logger.info(`wxgzh 资源分级拦截已启用（home: 仅HTML，image/media/font/css/script/websocket 全拦；编辑器: media/font + res.wx.qq.com 图片）`);
+      logger.info(`wxgzh 资源分级拦截已启用（home: 仅HTML全拦；编辑器: websocket/media/font 全拦 + 图片白名单 blob/data/aliyuncs；V8堆限768m）`);
     }
 
     // 兜底：若原生 storageState 注入失败，用补丁式注入
