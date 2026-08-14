@@ -109,7 +109,14 @@ function captureCrashPostmortem(): string | null {
       // cgroup v1 兜底
       try {
         const usage = Number(fs.readFileSync('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'utf8').trim());
-        parts.push(`cgroup内存=${Math.round(usage / 1048576)}MB(v1)`);
+        try {
+          const limitRaw = fs.readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8').trim();
+          const limitMB = Math.round(Number(limitRaw) / 1048576);
+          if (limitMB > 0 && limitMB < 1000000) parts.push(`cgroup内存=${Math.round(usage / 1048576)}MB/上限=${limitMB}MB(v1)`);
+          else parts.push(`cgroup内存=${Math.round(usage / 1048576)}MB(v1)`);
+        } catch {
+          parts.push(`cgroup内存=${Math.round(usage / 1048576)}MB(v1)`);
+        }
         const oomCtl = fs.readFileSync('/sys/fs/cgroup/memory/memory.oom_control', 'utf8');
         const ok = oomCtl.match(/oom_kill\s+(\d+)/);
         if (ok) parts.push(`内核OOM击杀累计=${ok[1]}次`);
@@ -131,6 +138,68 @@ function captureCrashPostmortem(): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * v3.13.9：崩溃探针——chromium stderr 尾巴 + cgroup 内存峰值采样
+ *
+ * 验尸实证（v3.13.8 第一份报告）：容器 mem_limit=3g，崩溃时 cgroup 仅 523MB、
+ * 内核 OOM 击杀计数=0、最大进程 RSS 仅 215MB → 既非容器 OOM 也非内核击杀，
+ * 是渲染进程内部崩溃（V8/Blink/GPU 自杀）。这类崩溃会在 chromium stderr 打印
+ * 明确原因（如 "Allocation failed - JavaScript heap out of memory"、
+ * "Out of memory: ..."、"[ERROR:gpu_...]"），必须在进程存活时持续收集。
+ */
+const crashProbes = new Map<number, { stderrTail: string[]; peakCgroupMB: number; peakAt: number; sampler?: NodeJS.Timeout }>();
+
+function readCgroupUsageBytes(): number | null {
+  try { return Number(fs.readFileSync('/sys/fs/cgroup/memory.current', 'utf8').trim()); } catch {}
+  try { return Number(fs.readFileSync('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'utf8').trim()); } catch {}
+  return null;
+}
+
+function startCrashProbes(recordId: number, browser: Browser): void {
+  const probe = { stderrTail: [] as string[], peakCgroupMB: 0, peakAt: 0, sampler: undefined as NodeJS.Timeout | undefined };
+  try {
+    const proc = (browser as any).process?.() as { stderr?: NodeJS.ReadableStream } | undefined;
+    if (proc?.stderr) {
+      const stderr = proc.stderr as any;
+      stderr.setEncoding?.('utf8');
+      stderr.on('data', (chunk: string) => {
+        probe.stderrTail.push(chunk);
+        if (probe.stderrTail.length > 40) probe.stderrTail.shift();
+      });
+    }
+  } catch {}
+  probe.sampler = setInterval(() => {
+    const bytes = readCgroupUsageBytes();
+    if (bytes !== null) {
+      const mb = Math.round(bytes / 1048576);
+      if (mb > probe.peakCgroupMB) {
+        probe.peakCgroupMB = mb;
+        probe.peakAt = Date.now();
+      }
+    }
+  }, 2000);
+  probe.sampler.unref?.();
+  crashProbes.set(recordId, probe);
+}
+
+function stopCrashProbes(recordId: number): void {
+  const probe = crashProbes.get(recordId);
+  if (probe?.sampler) clearInterval(probe.sampler);
+  crashProbes.delete(recordId);
+}
+
+function getProbeEvidence(recordId: number): string {
+  const probe = crashProbes.get(recordId);
+  if (!probe) return '';
+  const parts: string[] = [];
+  parts.push(`cgroup运行峰值=${probe.peakCgroupMB}MB`);
+  if (probe.stderrTail.length > 0) {
+    const tail = probe.stderrTail.join('').replace(/\s+/g, ' ').trim();
+    if (tail) parts.push(`chromium stderr尾巴: ${tail.slice(-1200)}`);
+  }
+  return parts.join(' | ');
 }
 
 export interface PublishRecord {
@@ -330,6 +399,9 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       args: launchArgs,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
     }, recordId);
+
+    // v3.13.9：启动崩溃探针（chromium stderr 收集 + cgroup 内存峰值采样）
+    startCrashProbes(recordId, browser);
 
     context = await browser.newContext(contextOptions);
 
@@ -662,13 +734,16 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       }
     }
 
-    // v3.13.8：Page crashed 崩溃验尸——采集 cgroup OOM 计数器 + 容器内 top RSS 进程
-    //   （wxgzh 连续 4 轮崩溃且逐轮调参无效，需要实证：是内核 OOM 杀渲染进程还是 Chromium 自身崩溃）
+    // v3.13.8/9：Page crashed 崩溃验尸——cgroup OOM 计数器 + top RSS 进程 + stderr 尾巴 + 运行峰值
+    //   （v3.13.8 首份验尸：容器 3g 上限仅用 523MB、内核 OOM=0 → 渲染进程内部崩溃，
+    //     真实原因在 chromium stderr：V8/Blink/GPU 崩溃都会打印明确错误）
     if (/crashed|Target closed|out of memory|OOM/i.test(errorMsg)) {
       const postmortem = captureCrashPostmortem();
-      if (postmortem) {
-        pageDiagnostic += `\n[崩溃验尸] ${postmortem}`;
-        logger.error(`[record ${recordId}] Page crashed 验尸: ${postmortem}`);
+      const probeEvidence = getProbeEvidence(recordId);
+      const combined = [postmortem, probeEvidence].filter(Boolean).join(' | ');
+      if (combined) {
+        pageDiagnostic += `\n[崩溃验尸] ${combined}`;
+        logger.error(`[record ${recordId}] Page crashed 验尸: ${combined}`);
       }
     }
 
@@ -690,6 +765,8 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       screenshot_path: failScreenshotPath,
     }).catch(() => {});
   } finally {
+    // v3.13.9：停止崩溃探针（stderr 监听随进程退出自然失效，采样器必须显式清理）
+    stopCrashProbes(recordId);
     if (context) {
       try {
         const browser = context.browser();
