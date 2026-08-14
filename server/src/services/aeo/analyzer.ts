@@ -3059,17 +3059,17 @@ export async function autoCreateWritingTasksFromPeriod(
     [aeoContext, autoPublishEnabled, periodReportId, enableComplianceReview, taskId, complianceRuleIdsJson, complianceIndustry]
   );
 
-  // v2.5.33：不再调用 consumeWritingSuggestions 标记建议为已消费
-  //   原设计：每次写作任务创建后把用过的建议标记 consumed=true，导致下次查询返回空，回退到日报
-  //   新设计：周报/月报池的建议在整个周期内持续有效（已消费的也算"还在池子里"），
-  //          只有下一份新周报/月报生成时才切换到新建议池
-  //   注意：consumed 字段仍保留用于"已发布"标记（markSuggestionsPublishedByTask 在发布完成后调用），
-  //          但不再用于"是否可用"的判断
+  // v3.13.1：恢复建议消费标记（修复产出池状态显示 bug）
+  //   v2.5.33 曾移除"创建任务即标记 consumed"，本意是让周报/月报池整个周期持续驱动写作，
+  //   但取池子的 getLatestPeriodSuggestions 本就不过滤 consumed，移除标记并未带来额外收益，
+  //   反而导致建议行的 writing_task_id 永远不回写，前端产出池状态永远停留在「待消费」。
+  //   现恢复标记：建议被写作任务采用即标记 consumed=true + writing_task_id，
+  //   前端状态流转恢复为 待消费 → 已生成 → 已发布；池子仍整个周期持续可用。
   if (effectiveSuggestions !== writingSuggestions && effectiveSuggestions.length > 0) {
-    // 仅记录日志，不标记消费
     const suggestionIds = effectiveSuggestions.map((s: any) => s.id).filter((id: any) => typeof id === 'number');
     if (suggestionIds.length > 0) {
-      console.log(`[AEO-Period] 本次写作任务使用 ${suggestionIds.length} 条${effectiveSourceType === 'weekly' ? '周报' : effectiveSourceType === 'monthly' ? '月报' : '日报'}池建议（不标记消费，整个周期内持续可用）`);
+      const marked = await consumeWritingSuggestions(suggestionIds, taskId);
+      console.log(`[AEO-Period] 本次写作任务使用 ${suggestionIds.length} 条${effectiveSourceType === 'weekly' ? '周报' : effectiveSourceType === 'monthly' ? '月报' : '日报'}池建议，已标记消费 ${marked} 条（池子整个周期内持续可用）`);
     }
   }
 
@@ -3292,7 +3292,25 @@ async function createWritingTaskFromAutoTask(
     ]
   );
 
-  // 12. 异步触发写作任务执行
+  // 12. 标记建议池消费（v3.13.1 修复产出池状态显示：待消费 → 已生成）
+  //   自动写作任务路径此前完全绕过建议池标记逻辑，导致池子建议即使驱动了文章生成，
+  //   前端产出池状态也永远停留在「待消费」。现按客户配置的建议池（周报/月报/日报）
+  //   将未消费建议标记为 consumed + writing_task_id，池子仍整个周期持续可用。
+  try {
+    const poolSourceType = await getSuggestionPoolSourceType(userIdNum);
+    const poolSuggestions = await getLatestPeriodSuggestions(userIdNum, poolSourceType);
+    const poolIds = poolSuggestions.map((s: any) => s.id).filter((id: any) => typeof id === 'number');
+    if (poolIds.length > 0) {
+      const marked = await consumeWritingSuggestions(poolIds, taskId);
+      if (marked > 0) {
+        console.log(`[AutoTask] 任务「${task.task_name}」标记 ${marked} 条${poolSourceType === 'weekly' ? '周报' : poolSourceType === 'monthly' ? '月报' : '日报'}池建议为已消费（池子整个周期内持续可用）`);
+      }
+    }
+  } catch (e: any) {
+    console.warn(`[AutoTask] 标记建议池消费失败（不影响任务创建）:`, e.message);
+  }
+
+  // 13. 异步触发写作任务执行
   try {
     const { executeWritingTask } = await import('../content/articleGenerator');
     executeWritingTask(taskId, userIdNum).catch((e: any) => {
