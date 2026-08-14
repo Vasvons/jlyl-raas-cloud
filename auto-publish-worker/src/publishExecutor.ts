@@ -227,6 +227,37 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
 
     page = await context.newPage();
 
+    // v3.13.4：wxgzh 资源分级拦截（缓解主页/编辑器内存压力导致的 Page crashed）
+    //   背景：并发已降 1 + mem 3g + shm 1g 后仍连续崩溃，崩溃点均在「预检 home → 步骤再加载 home →
+    //         编辑器」的重页面加载阶段。微信 home 页满是营销 banner/图表图片，编辑器页加载
+    //         emoji/营销图等静态资源，都是发布流程完全不需要的内存开销。
+    //   规则（只拦 image/media/font，绝不拦 script/style/xhr/document，不影响登录态与表单提交）：
+    //     - home 页（仅用于提取 token）：全部 image/media/font 拦截
+    //     - 编辑器页：media 全拦；image 仅拦 res.wx.qq.com（微信自有静态营销图/emoji，
+    //       正文/封面用的 aliyuncs.com 等外链图不拦，保证内容渲染与封面上传预览）
+    if (platform === 'wxgzh') {
+      await page.route('**/*', async (route: any) => {
+        try {
+          const req = route.request();
+          const type = req.resourceType();
+          const resUrl = req.url();
+          const pageUrl = page.url() || '';
+          const onHome = pageUrl.includes('/cgi-bin/home');
+          if (onHome && (type === 'image' || type === 'media' || type === 'font')) {
+            return await route.abort();
+          }
+          if (type === 'media') return await route.abort();
+          if (type === 'image' && resUrl.includes('res.wx.qq.com')) return await route.abort();
+          return await route.continue();
+        } catch {
+          try { await route.continue(); } catch { /* 路由已关闭，忽略 */ }
+        }
+      }).catch((e: any) => {
+        logger.warn(`wxgzh 资源拦截安装失败（不影响发布，继续）: ${e.message}`);
+      });
+      logger.info(`wxgzh 资源分级拦截已启用（home: image/media/font；编辑器: media + res.wx.qq.com 图片）`);
+    }
+
     // 兜底：若原生 storageState 注入失败，用补丁式注入
     if (!normalizedStorageState) {
       const injected = await injectStorageState(context, page, storageStateRaw);

@@ -1,7 +1,7 @@
 {
   "platform": "wxgzh",
-  "version": "1.9.40",
-  "description": "微信公众号/服务号图文发布流程（v1.9.40：版本号大幅提升以覆盖 guardian 递增版本，强制 seed 刷新；v1.9.36：step_list 首步新增 navigate 到主页，解决登录预检被跳过时页面停在 about:blank 导致 token 提取失败的回归；v1.9.35：封面设置改用'从图片库选择'上传 cover_image_url，替代'从正文选择'，彻底避免'未授权使用切换账号能力'弹窗阻塞——该弹窗是微信平台对'从正文选择'功能的权限限制，非脚本 bug）",
+  "version": "1.9.41",
+  "description": "微信公众号/服务号图文发布流程（v1.9.41：条件导航——登录预检已加载主页时跳过重复导航，消除「预检 home + 步骤 home」双重重页面加载的内存压力（连续 Page crashed 根因之一）；v1.9.40：版本号大幅提升以覆盖 guardian 递增版本，强制 seed 刷新）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",
   "login_check_selector": "div.weui-desktop_name | .account_info",
@@ -9,9 +9,15 @@
   "logout_keywords": ["请登录", "请重新登录", "sign in"],
   "steps": [
     {
-      "type": "navigate",
-      "value": "https://mp.weixin.qq.com/cgi-bin/home",
-      "descript": "v1.9.36：导航到公众号后台主页（与 dy/bjh/zh 一致的自带导航，修复登录预检被跳过时页面停在 about:blank 导致 token 无法提取）",
+      "type": "evaluate_edit",
+      "value": "var href = location.href; if (href.indexOf('mp.weixin.qq.com') >= 0) { var tm = href.match(/token=(\\d+)/); if (tm) { return 'home_ready_with_token:' + tm[1]; } return 'home_ready_skip_reload'; } location.href = 'https://mp.weixin.qq.com/cgi-bin/home'; return 'navigating_home';",
+      "descript": "v1.9.41 条件导航：登录预检已把页面停在 mp.weixin 主页时跳过重复导航（此前预检 home + 步骤 home 双重重页面加载，内存压力大导致连续 Page crashed）；仅当页面不在微信域（如 about:blank，预检被跳过场景）才主动导航",
+      "timeout": 10000
+    },
+    {
+      "type": "wait_for_url",
+      "value": "mp.weixin.qq.com",
+      "descript": "v1.9.41 等待到达微信域（已在主页/带 token 页时立即通过，导航场景等待跳转完成）",
       "timeout": 30000
     },
     {
