@@ -61,12 +61,20 @@ async function installWxgzhResourceRoute(p: any): Promise<void> {
       const resUrl = req.url();
       const pageUrl = p.url() || '';
       const onHome = pageUrl.includes('/cgi-bin/home');
+      // v3.13.12：登录页（loginpage）单独放行——QR 码图（mp.weixin/open.weixin 域）被
+      //   图片白名单拦掉可能触发页面 JS 无限重试；崩溃打点实证 10s 崩在 loginpage
+      const onLogin = pageUrl.includes('loginpage');
       if (onHome && (type === 'image' || type === 'media' || type === 'font' || type === 'stylesheet' || type === 'script' || type === 'websocket')) {
         return await route.abort();
       }
       if (type === 'websocket') return await route.abort();
       if (type === 'media' || type === 'font') return await route.abort();
       if (type === 'image') {
+        if (onLogin) {
+          // 登录页：放行 QR 码与页面自有图，仅拦营销图/emoji
+          if (resUrl.includes('res.wx.qq.com')) return await route.abort();
+          return await route.continue();
+        }
         if (resUrl.startsWith('blob:') || resUrl.startsWith('data:')) return await route.continue();
         if (resUrl.includes('aliyuncs.com')) return await route.continue();
         return await route.abort();
@@ -153,7 +161,7 @@ function captureCrashPostmortem(): string | null {
  * 明确原因（如 "Allocation failed - JavaScript heap out of memory"、
  * "Out of memory: ..."、"[ERROR:gpu_...]"），必须在进程存活时持续收集。
  */
-const crashProbes = new Map<number, { stderrTail: string[]; peakCgroupMB: number; peakAt: number; sampler?: NodeJS.Timeout; stderrAttached: boolean; crashEvent?: { url: string; elapsedMs: number; rssAtCrash: string } }>();
+const crashProbes = new Map<number, { stderrTail: string[]; peakCgroupMB: number; peakAt: number; sampler?: NodeJS.Timeout; stderrAttached: boolean; chromeLogPath?: string; crashEvent?: { url: string; elapsedMs: number; rssAtCrash: string } }>();
 
 /**
  * v3.13.11：扫描 /proc 取 top RSS 进程快照（崩溃瞬间与验尸共用）
@@ -182,8 +190,8 @@ function readCgroupUsageBytes(): number | null {
   return null;
 }
 
-function startCrashProbes(recordId: number, browser: Browser): void {
-  const probe = { stderrTail: [] as string[], peakCgroupMB: 0, peakAt: 0, sampler: undefined as NodeJS.Timeout | undefined, stderrAttached: false };
+function startCrashProbes(recordId: number, browser: Browser, chromeLogPath?: string): void {
+  const probe = { stderrTail: [] as string[], peakCgroupMB: 0, peakAt: 0, sampler: undefined as NodeJS.Timeout | undefined, stderrAttached: false, chromeLogPath };
   try {
     const proc = (browser as any).process?.() as { stderr?: NodeJS.ReadableStream } | undefined;
     if (proc?.stderr) {
@@ -229,6 +237,17 @@ function getProbeEvidence(recordId: number): string {
   if (probe.stderrTail.length > 0) {
     const tail = probe.stderrTail.join('').replace(/\s+/g, ' ').trim();
     if (tail) parts.push(`chromium stderr尾巴: ${tail.slice(-1200)}`);
+  }
+  // v3.13.12：chromium 日志文件尾巴（崩溃原因的最终来源）
+  if (probe.chromeLogPath) {
+    try {
+      const log = fs.readFileSync(probe.chromeLogPath, 'utf8');
+      const tail = log.replace(/\s+/g, ' ').trim();
+      if (tail) parts.push(`chrome日志尾巴: ${tail.slice(-1500)}`);
+      else parts.push('chrome日志: 空文件');
+    } catch {
+      parts.push('chrome日志: 未生成');
+    }
   }
   return parts.join(' | ');
 }
@@ -390,12 +409,18 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       launchArgs.push('--headless=new');
     }
 
-    // v3.13.10：wxgzh 专用——开启 chromium stderr 日志
-    //   （验尸实证：渲染进程在 cgroup 仅 476MB 峰值时静默崩溃——chromium 默认不打印渲染进程
-    //     崩溃原因；--enable-logging=stderr 后 V8 Fatal/Blink CHECK/信号崩溃都会打印到浏览器进程
-    //     stderr，由 v3.13.9 探针收集，随验尸报告带出）
+    // v3.13.12：wxgzh 专用——chromium 日志写文件（CHROME_LOG_FILE 官方机制）
+    //   （v3.13.10 的 --enable-logging=stderr 实测管道附加失败：Playwright browser.process()
+    //     在当前版本拿不到可读 stderr（验尸报 stderr附加=否）；CHROME_LOG_FILE 由 chromium
+    //     自主写文件，浏览器进程与渲染子进程的崩溃原因（V8 Fatal/CHECK/信号）都写入，
+    //     由探针读尾部随验尸报告带出）
+    let chromeLogPath: string | undefined;
+    let launchEnv: any;
     if (platform === 'wxgzh') {
-      launchArgs.push('--enable-logging=stderr', '--log-level=0');
+      chromeLogPath = `/tmp/jlyl-chrome-${recordId}.log`;
+      try { fs.unlinkSync(chromeLogPath); } catch {}
+      launchEnv = { ...process.env, CHROME_LOG_FILE: chromeLogPath };
+      launchArgs.push('--enable-logging', '--log-level=0');
     }
 
     // v3.13.7：wxgzh 专用——渲染进程 V8 堆上限 1536m + 视口降为 1280x720
@@ -459,10 +484,11 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       headless: useHeadless,
       args: launchArgs,
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined,
+      env: launchEnv,
     }, recordId);
 
-    // v3.13.9：启动崩溃探针（chromium stderr 收集 + cgroup 内存峰值采样）
-    startCrashProbes(recordId, browser);
+    // v3.13.9：启动崩溃探针（chromium 日志文件 + cgroup 内存峰值采样）
+    startCrashProbes(recordId, browser, chromeLogPath);
 
     context = await browser.newContext(contextOptions);
 
@@ -1199,7 +1225,7 @@ function cleanupZombieChromium(recordId: number): void {
  *       重试前清理能释放被僵尸进程占用的内存，提高下次启动成功率。
  */
 async function launchBrowserWithRetry(
-  options: { headless: boolean; args: string[]; executablePath?: string },
+  options: { headless: boolean; args: string[]; executablePath?: string; env?: any },
   recordId: number,
 ): Promise<Browser> {
   const MAX_RETRIES = 3;
@@ -1212,6 +1238,7 @@ async function launchBrowserWithRetry(
         headless: options.headless,
         args: options.args,
         executablePath: options.executablePath,
+        env: options.env,
         // v3.8.10：显式设置 60s 启动超时（默认 30s 在内存受限容器中不够）
         //   3 次重试 × 60s + 2 × 3s 延迟 = ~186s，远低于 record 级 480s 超时
         timeout: 60000,
