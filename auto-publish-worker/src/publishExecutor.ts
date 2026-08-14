@@ -214,12 +214,15 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       launchArgs.push('--headless=new');
     }
 
-    // v3.13.6：wxgzh 专用——渲染进程 V8 堆上限 768m，强制尽早 GC
-    //   （编辑器 ProseMirror 重 SPA 会把 JS 堆一路撑到 cgroup 上限，触发内核 OOM kill 渲染进程
-    //     → 表现为 Page crashed（#1147 崩在编辑器加载阶段）；限堆后 V8 在接近上限时密集 GC
-    //     而非崩溃，配合图片白名单拦截降低总 RSS。其他平台不受影响）
+    // v3.13.7：wxgzh 专用——渲染进程 V8 堆上限 1536m + 视口降为 1280x720
+    //   v3.13.6 实测复盘：768m 堆上限下崩溃反而提前（52s→36s）——编辑器 ProseMirror 重 SPA
+    //   启动即需大堆，768m 触发 V8 Fatal OOM 直接崩渲染进程（比 GC 更快），改为 1536m：
+    //   仍能防止堆无限增长逼近 cgroup 3g 上限，又给编辑器留足启动空间。
+    //   视口 1280x720：光栅/合成内存按像素线性增长，指纹池最大 1920x1080 视口是隐性内存
+    //   大头（编辑器长文 + 多图层合成时尤甚）；1280x720 减少 ~53% 像素，且 screen≠window
+    //   本就符合真实用户环境，指纹一致性不受影响。
     if (platform === 'wxgzh') {
-      launchArgs.push('--js-flags=--max-old-space-size=768');
+      launchArgs.push('--js-flags=--max-old-space-size=1536');
     }
 
     const fingerprint = getStableFingerprint(record.platform || record.platform_auth_id || recordId);
@@ -247,6 +250,12 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       ...fingerprintToContextOptions(fingerprint),
       permissions: ['clipboard-read', 'clipboard-write'],
     };
+
+    // v3.13.7：wxgzh 视口固定 1280x720（降低光栅/合成内存，防编辑器阶段 Page crashed）
+    //   只覆盖 viewport，screen 保留指纹值——screen≠window 符合真实用户环境
+    if (platform === 'wxgzh') {
+      contextOptions.viewport = { width: 1280, height: 720 };
+    }
 
     // 使用原生 storageState 注入（首个请求即带登录态 cookie）
     if (normalizedStorageState) {
@@ -283,7 +292,7 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     //   v3.13.4 只拦图片仍崩（#1137 崩在预检 home 阶段），home 升级为仅 HTML 级拦截
     if (platform === 'wxgzh') {
       await installWxgzhResourceRoute(page);
-      logger.info(`wxgzh 资源分级拦截已启用（home: 仅HTML全拦；编辑器: websocket/media/font 全拦 + 图片白名单 blob/data/aliyuncs；V8堆限768m）`);
+      logger.info(`wxgzh 资源分级拦截已启用（home: 仅HTML全拦；编辑器: websocket/media/font 全拦 + 图片白名单 blob/data/aliyuncs；V8堆限1536m；视口1280x720）`);
     }
 
     // 兜底：若原生 storageState 注入失败，用补丁式注入
