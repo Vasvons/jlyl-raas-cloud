@@ -35,6 +35,40 @@ const REPORT_RETRY_BASE_MS = 1000;         // 回写重试基础间隔（指数�
 // 同平台串行锁（与桌面端一致，避免同一平台多个 record 共用资源导致 Chrome 崩溃）
 const platformLocks: Map<string, Promise<void>> = new Map();
 
+/**
+ * v3.13.5：wxgzh 资源分级拦截器（独立函数——page.route 是页面级，context.newPage() 重建后必须重装）
+ *
+ * 拦截规则（只按页面阶段拦副资源，绝不拦 document/xhr/fetch，不影响登录态与表单提交）：
+ *  - home 页（/cgi-bin/home，仅用于从服务端 302 URL 提取 token，不需要渲染）：
+ *      image/media/font/stylesheet/script/websocket 全拦——home 是重 SPA（图表+长连接），
+ *      v3.13.4 只拦图片仍 Page crashed（record #1137 34s 即崩，崩在预检阶段）；
+ *      token 由服务端 302 Location 返回，拦截 script 不影响提取；失效路径跳转 loginpage
+ *      不含 /cgi-bin/home 关键字，恢复流程（点 #jumpUrl）不受影响
+ *  - 编辑器页：media/font 全拦（字体不影响发布）；image 仅拦 res.wx.qq.com
+ *      （微信自有营销图/emoji；正文/封面用的 aliyuncs.com 等外链图不拦）
+ */
+async function installWxgzhResourceRoute(p: any): Promise<void> {
+  await p.route('**/*', async (route: any) => {
+    try {
+      const req = route.request();
+      const type = req.resourceType();
+      const resUrl = req.url();
+      const pageUrl = p.url() || '';
+      const onHome = pageUrl.includes('/cgi-bin/home');
+      if (onHome && (type === 'image' || type === 'media' || type === 'font' || type === 'stylesheet' || type === 'script' || type === 'websocket')) {
+        return await route.abort();
+      }
+      if (type === 'media' || type === 'font') return await route.abort();
+      if (type === 'image' && resUrl.includes('res.wx.qq.com')) return await route.abort();
+      return await route.continue();
+    } catch {
+      try { await route.continue(); } catch { /* 路由已关闭，忽略 */ }
+    }
+  }).catch((e: any) => {
+    logger.warn(`wxgzh 资源拦截安装失败（不影响发布，继续）: ${e.message}`);
+  });
+}
+
 export interface PublishRecord {
   record_id: number;
   task_id: number;
@@ -227,35 +261,11 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
 
     page = await context.newPage();
 
-    // v3.13.4：wxgzh 资源分级拦截（缓解主页/编辑器内存压力导致的 Page crashed）
-    //   背景：并发已降 1 + mem 3g + shm 1g 后仍连续崩溃，崩溃点均在「预检 home → 步骤再加载 home →
-    //         编辑器」的重页面加载阶段。微信 home 页满是营销 banner/图表图片，编辑器页加载
-    //         emoji/营销图等静态资源，都是发布流程完全不需要的内存开销。
-    //   规则（只拦 image/media/font，绝不拦 script/style/xhr/document，不影响登录态与表单提交）：
-    //     - home 页（仅用于提取 token）：全部 image/media/font 拦截
-    //     - 编辑器页：media 全拦；image 仅拦 res.wx.qq.com（微信自有静态营销图/emoji，
-    //       正文/封面用的 aliyuncs.com 等外链图不拦，保证内容渲染与封面上传预览）
+    // v3.13.5：wxgzh 资源分级拦截（详见 installWxgzhResourceRoute 注释）
+    //   v3.13.4 只拦图片仍崩（#1137 崩在预检 home 阶段），home 升级为仅 HTML 级拦截
     if (platform === 'wxgzh') {
-      await page.route('**/*', async (route: any) => {
-        try {
-          const req = route.request();
-          const type = req.resourceType();
-          const resUrl = req.url();
-          const pageUrl = page.url() || '';
-          const onHome = pageUrl.includes('/cgi-bin/home');
-          if (onHome && (type === 'image' || type === 'media' || type === 'font')) {
-            return await route.abort();
-          }
-          if (type === 'media') return await route.abort();
-          if (type === 'image' && resUrl.includes('res.wx.qq.com')) return await route.abort();
-          return await route.continue();
-        } catch {
-          try { await route.continue(); } catch { /* 路由已关闭，忽略 */ }
-        }
-      }).catch((e: any) => {
-        logger.warn(`wxgzh 资源拦截安装失败（不影响发布，继续）: ${e.message}`);
-      });
-      logger.info(`wxgzh 资源分级拦截已启用（home: image/media/font；编辑器: media + res.wx.qq.com 图片）`);
+      await installWxgzhResourceRoute(page);
+      logger.info(`wxgzh 资源分级拦截已启用（home: 仅HTML，image/media/font/css/script/websocket 全拦；编辑器: media/font + res.wx.qq.com 图片）`);
     }
 
     // 兜底：若原生 storageState 注入失败，用补丁式注入
@@ -340,6 +350,10 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
           try {
             await page.close().catch(() => {});
             page = await context.newPage();
+            // v3.13.5：刷新路径新建的 page 必须重装 wxgzh 拦截（page.route 是页面级，旧 page 关闭后失效）
+            if (platform === 'wxgzh') {
+              await installWxgzhResourceRoute(page);
+            }
             await page.goto(loginCheckConfig.login_check_url!, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch((e: any) => {
               logger.warn(`刷新登录态导航失败: ${e.message}`);
             });
