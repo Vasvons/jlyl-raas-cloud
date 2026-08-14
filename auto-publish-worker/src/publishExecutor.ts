@@ -13,6 +13,7 @@
 import { chromium, Browser, BrowserContext } from 'playwright';
 import axios from 'axios';
 import { exec } from 'child_process';
+import * as fs from 'fs';
 import { getStealthScript, getAntiDetectionArgs, shouldUseHeadless } from './stealthLoader';
 import { getStableFingerprint, fingerprintToContextOptions, getFingerprintInjectionScript } from './fingerprintManager';
 import { normalizeToPlaywrightStorageState, injectStorageState, captureStorageState } from './storageStateManager';
@@ -77,6 +78,59 @@ async function installWxgzhResourceRoute(p: any): Promise<void> {
   }).catch((e: any) => {
     logger.warn(`wxgzh 资源拦截安装失败（不影响发布，继续）: ${e.message}`);
   });
+}
+
+/**
+ * v3.13.8：Page crashed 崩溃验尸——纯 Node 读 /proc 与 cgroup（不依赖 shell 工具）
+ *
+ * 背景：wxgzh 连续 4 轮 Page crashed（52s/34s/36s/31s），堆上限/视口/资源拦截逐轮调整均无效，
+ *       崩溃时机高度一致（编辑器加载阶段）。不再盲猜，崩溃瞬间直接采集容器证据：
+ *  1. cgroup 内存用量与上限（v2: memory.current/max；v1: memory.usage_in_bytes）
+ *  2. cgroup OOM 击杀计数器（v2: memory.events 的 oom_kill；v1: memory.oom_control）
+ *     —— 区分「内核 OOM 杀了渲染进程」vs「Chromium 自身崩溃」
+ *  3. 容器内 top RSS 进程（读 /proc 下各 pid 的 status 取 VmRSS）—— 看是谁吃掉了内存
+ */
+function captureCrashPostmortem(): string | null {
+  try {
+    const parts: string[] = [];
+    // cgroup v2
+    try {
+      const cur = Number(fs.readFileSync('/sys/fs/cgroup/memory.current', 'utf8').trim());
+      const maxRaw = fs.readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim();
+      parts.push(`cgroup内存=${Math.round(cur / 1048576)}MB/上限=${maxRaw === 'max' ? '无限' : Math.round(Number(maxRaw) / 1048576) + 'MB'}`);
+      try {
+        const ev = fs.readFileSync('/sys/fs/cgroup/memory.events', 'utf8');
+        const oomKill = ev.match(/oom_kill\s+(\d+)/);
+        const oom = ev.match(/^\s*oom\s+(\d+)/m);
+        if (oomKill) parts.push(`内核OOM击杀累计=${oomKill[1]}次`);
+        if (oom) parts.push(`OOM触发累计=${oom[1]}次`);
+      } catch {}
+    } catch {
+      // cgroup v1 兜底
+      try {
+        const usage = Number(fs.readFileSync('/sys/fs/cgroup/memory/memory.usage_in_bytes', 'utf8').trim());
+        parts.push(`cgroup内存=${Math.round(usage / 1048576)}MB(v1)`);
+        const oomCtl = fs.readFileSync('/sys/fs/cgroup/memory/memory.oom_control', 'utf8');
+        const ok = oomCtl.match(/oom_kill\s+(\d+)/);
+        if (ok) parts.push(`内核OOM击杀累计=${ok[1]}次`);
+      } catch {}
+    }
+    // /proc top RSS 进程
+    const procs: { pid: string; name: string; rss: number }[] = [];
+    for (const pid of fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d))) {
+      try {
+        const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+        const name = status.match(/^Name:\s*(.+)$/m)?.[1]?.trim() || '?';
+        const rssKb = parseInt(status.match(/^VmRSS:\s*(\d+)/m)?.[1] || '0', 10);
+        if (rssKb > 0) procs.push({ pid, name, rss: Math.round(rssKb / 1024) });
+      } catch {}
+    }
+    procs.sort((a, b) => b.rss - a.rss);
+    parts.push('top进程RSS: ' + procs.slice(0, 6).map((p) => `${p.name}(${p.pid})=${p.rss}MB`).join(', '));
+    return parts.join(' | ');
+  } catch {
+    return null;
+  }
 }
 
 export interface PublishRecord {
@@ -605,6 +659,16 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
         }
       } catch (e: any) {
         logger.warn(`失败页面诊断抓取失败: ${e.message}`);
+      }
+    }
+
+    // v3.13.8：Page crashed 崩溃验尸——采集 cgroup OOM 计数器 + 容器内 top RSS 进程
+    //   （wxgzh 连续 4 轮崩溃且逐轮调参无效，需要实证：是内核 OOM 杀渲染进程还是 Chromium 自身崩溃）
+    if (/crashed|Target closed|out of memory|OOM/i.test(errorMsg)) {
+      const postmortem = captureCrashPostmortem();
+      if (postmortem) {
+        pageDiagnostic += `\n[崩溃验尸] ${postmortem}`;
+        logger.error(`[record ${recordId}] Page crashed 验尸: ${postmortem}`);
       }
     }
 
