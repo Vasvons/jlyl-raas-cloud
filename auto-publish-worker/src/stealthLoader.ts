@@ -95,13 +95,22 @@ export function getAntiDetectionArgs(): string[] {
 
     // === 启动行为（不显示"首次运行"等弹窗） ===
     '--no-first-run',
-    '--no-zygote',
     '--no-default-browser-check',
     '--disable-default-apps',
     '--disable-hang-monitor',
     '--disable-prompt-on-repost',
     '--password-store=basic',
     '--use-mock-keychain',
+
+    // v3.13.13：移除 --no-zygote（chrome日志实锤：GPU进程退出后，wxgzh loginpage 的
+    //   新渲染进程在无 zygote 的非常规派生路径上崩溃——日志两次警告
+    //   "process type 'renderer' should be created through the zygote"，第二个 renderer
+    //   即崩溃进程；zygote 是渲染进程的标准派生路径，容器 headless 下同样支持）
+    // v3.13.13：新增 --disable-vulkan（容器无 GPU/Vulkan 扩展，ANGLE Vulkan 初始化
+    //   必然失败且连锁导致 GPU 进程退出——日志：Internal Vulkan error (-7) →
+    //   "Exiting GPU process due to errors during initialization"；禁用 Vulkan 让
+    //   GPU 进程干净走软件路径而非崩溃退出）
+    '--disable-vulkan',
 
     // === 后台节流（避免 SPA 应用因后台节流导致状态丢失） ===
     '--disable-background-networking',
