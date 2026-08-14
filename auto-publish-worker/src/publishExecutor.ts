@@ -202,6 +202,19 @@ function getProbeEvidence(recordId: number): string {
   return parts.join(' | ');
 }
 
+/**
+ * v3.13.10：页面崩溃事件记录——崩溃瞬间打点 URL 与距开始耗时，把崩溃映射到具体发布步骤
+ */
+function attachPageCrashLogger(p: any, recordId: number, startedAt: number): void {
+  try {
+    p.on('crash', () => {
+      const elapsed = Math.round((Date.now() - startedAt) / 1000);
+      const url = (() => { try { return p.url(); } catch { return '(不可用)'; } })();
+      logger.error(`[record ${recordId}] ⚠️ 页面崩溃事件：耗时=${elapsed}s，URL=${url}`);
+    });
+  } catch {}
+}
+
 export interface PublishRecord {
   record_id: number;
   task_id: number;
@@ -337,6 +350,14 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
       launchArgs.push('--headless=new');
     }
 
+    // v3.13.10：wxgzh 专用——开启 chromium stderr 日志
+    //   （验尸实证：渲染进程在 cgroup 仅 476MB 峰值时静默崩溃——chromium 默认不打印渲染进程
+    //     崩溃原因；--enable-logging=stderr 后 V8 Fatal/Blink CHECK/信号崩溃都会打印到浏览器进程
+    //     stderr，由 v3.13.9 探针收集，随验尸报告带出）
+    if (platform === 'wxgzh') {
+      launchArgs.push('--enable-logging=stderr', '--log-level=0');
+    }
+
     // v3.13.7：wxgzh 专用——渲染进程 V8 堆上限 1536m + 视口降为 1280x720
     //   v3.13.6 实测复盘：768m 堆上限下崩溃反而提前（52s→36s）——编辑器 ProseMirror 重 SPA
     //   启动即需大堆，768m 触发 V8 Fatal OOM 直接崩渲染进程（比 GC 更快），改为 1536m：
@@ -413,9 +434,9 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     logger.info(`已注入 WebGL/Canvas 噪声指纹脚本（vendor=${fingerprint.webglVendor.slice(0, 20)}...）`);
 
     page = await context.newPage();
+    attachPageCrashLogger(page, recordId, Date.now());
 
     // v3.13.5：wxgzh 资源分级拦截（详见 installWxgzhResourceRoute 注释）
-    //   v3.13.4 只拦图片仍崩（#1137 崩在预检 home 阶段），home 升级为仅 HTML 级拦截
     if (platform === 'wxgzh') {
       await installWxgzhResourceRoute(page);
       logger.info(`wxgzh 资源分级拦截已启用（home: 仅HTML全拦；编辑器: websocket/media/font 全拦 + 图片白名单 blob/data/aliyuncs；V8堆限1536m；视口1280x720）`);
@@ -503,6 +524,7 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
           try {
             await page.close().catch(() => {});
             page = await context.newPage();
+            attachPageCrashLogger(page, recordId, Date.now());
             // v3.13.5：刷新路径新建的 page 必须重装 wxgzh 拦截（page.route 是页面级，旧 page 关闭后失效）
             if (platform === 'wxgzh') {
               await installWxgzhResourceRoute(page);
