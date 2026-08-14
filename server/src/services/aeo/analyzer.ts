@@ -2191,16 +2191,27 @@ export async function generatePeriodReport(
     console.log(`[AEO-Period] 用户 ${userId} ${periodType} 报告生成成功 reportId=${reportId}, 分片数=${shardReports.length}, 建议文章数=${suggestedArticleCount}`);
 
     // 12. 按配额自动创建写作任务（P3-5）
-    if (quota > 0) {
-      try {
+    // v3.13.2：修复自动写作任务停更 bug——原门禁 `if (quota > 0)` 中 quota 只来自旧
+    //   cloud_api_config 配置；v3.13 多任务改造后配额配置在 auto_writing_task.daily_quota，
+    //   若旧配置配额为 0（用户仅在任务列表配置配额），此处直接拦截，自动任务永远不创建。
+    //   修复：旧配额 > 0 或 存在启用的自动写作任务 任一满足即触发。
+    try {
+      let triggerable = quota > 0;
+      if (!triggerable) {
+        const autoTasks = await getAutoWritingTasks(userId);
+        triggerable = (autoTasks || []).some((t: any) => t.is_active !== false && Number(t.daily_quota) > 0);
+      }
+      if (triggerable) {
         const createdCount = await autoCreateWritingTasksFromPeriod(
           userId, reportId, quota, writingSuggestions, sourceWeights, periodType
         );
         await updatePeriodReportArticleCount(reportId, createdCount);
         console.log(`[AEO-Period] 用户 ${userId} ${periodType} 自动创建 ${createdCount}/${quota} 篇写作任务`);
-      } catch (e: any) {
-        console.warn(`[AEO-Period] 用户 ${userId} ${periodType} 自动创建写作任务失败:`, e.message);
+      } else {
+        console.warn(`[AEO-Period] 用户 ${userId} ${periodType} 跳过自动创建：旧配额=0 且无启用的自动写作任务（请在任务列表配置每日配额）`);
       }
+    } catch (e: any) {
+      console.warn(`[AEO-Period] 用户 ${userId} ${periodType} 自动创建写作任务失败:`, e.message);
     }
 
     return reportId;
@@ -2687,7 +2698,10 @@ export async function autoCreateWritingTasksFromPeriod(
   periodType: string
 ): Promise<number> {
   const userIdNum = Number(userId);
-  if (!userIdNum || quota <= 0) return 0;
+  if (!userIdNum) return 0;
+  // v3.13.2：原 `quota <= 0 return 0` 门禁在自动任务路径之前，quota 只来自旧 cloud_api_config，
+  //   旧配额为 0 时即使已配置 auto_writing_task（各自 daily_quota>0）也直接拦截。
+  //   修复：先走自动任务路径；quota 仅旧单配置路径需要。
 
   // v3.13：自动写作配置已改为「多条自动写作任务」。
   // 若该客户已配置启用的自动化写作任务，则按任务逐条创建写作任务（每任务独立品牌词/指令/关键词/平台/每日配额）。
@@ -2712,6 +2726,12 @@ export async function autoCreateWritingTasksFromPeriod(
     }
   } catch (e: any) {
     console.warn(`[AEO-Period] 读取自动化写作任务失败，回退到旧单配置逻辑:`, e.message);
+  }
+
+  // v3.13.2：旧单配置路径必须有旧配额（quota 仅此处使用），无配额且无自动任务时跳过
+  if (quota <= 0) {
+    console.warn(`[AEO-Period] 用户 ${userId} 旧配额为 0 且无启用的自动写作任务，跳过自动创建`);
+    return 0;
   }
 
   // 1. 获取用户的默认知识库（取第一个活跃的）

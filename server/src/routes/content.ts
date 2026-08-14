@@ -659,7 +659,50 @@ router.get('/auto-writing-tasks', async (req: Request, res: Response) => {
       ? String(Number(req.query.customer_id))
       : String(getUserId(req));
     const list = await getAutoWritingTasks(userId);
-    res.json({ code: 200, data: list });
+    // v3.13.2：附带自动写作触发链路诊断，前端据此提示"为什么没在自动创建"
+    //   链路：凌晨0点 cron → real_collect_task(active) → 日报 → 自动写作任务(daily_quota>0 且启用)
+    //   任一环节断裂都会静默跳过，此前仅写服务端日志，用户无感知
+    const userIdNum = Number(userId);
+    let diagnostics: any = null;
+    if (userIdNum) {
+      const [collectRes, modelRes, knowledgeRes, quotaRes, lastTaskRes] = await Promise.all([
+        query(`SELECT 1 FROM real_collect_task WHERE user_id = $1 AND status = 'active' LIMIT 1`, [userId]).catch(() => ({ rows: [] })),
+        query(
+          `SELECT 1 FROM ai_model_config
+           WHERE ((user_id = $1 AND is_active = true) OR user_id IS NULL)
+             AND use_for_writing = true AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+           LIMIT 1`,
+          [userIdNum]
+        ).catch(() => ({ rows: [] })),
+        query(`SELECT COUNT(*)::int AS cnt FROM enterprise_knowledge WHERE user_id = $1`, [userIdNum]).catch(() => ({ rows: [{ cnt: 0 }] })),
+        query(`SELECT COALESCE(daily_article_quota, 0) AS daily, COALESCE(article_quota, 0) AS legacy FROM cloud_api_config WHERE user_id = $1`, [userIdNum]).catch(() => ({ rows: [] })),
+        query(`SELECT MAX(create_time) AS last_at, COUNT(*)::int AS cnt FROM ai_writing_task WHERE user_id = $1 AND auto_generated = true`, [userIdNum]).catch(() => ({ rows: [{ last_at: null, cnt: 0 }] })),
+      ]);
+      const activeTasks = (list || []).filter((t: any) => t.is_active !== false && Number(t.daily_quota) > 0);
+      const collectActive = collectRes.rows.length > 0;
+      const modelOk = modelRes.rows.length > 0;
+      const knowledgeOk = (knowledgeRes.rows[0]?.cnt || 0) > 0;
+      const legacyQuota = Number(quotaRes.rows[0]?.daily) > 0 || Number(quotaRes.rows[0]?.legacy) > 0;
+      const hasActiveTask = activeTasks.length > 0;
+      const reasons: string[] = [];
+      if (!collectActive) reasons.push('无进行中的查询任务（real_collect_task 非 active），日报链路中断');
+      if (!hasActiveTask && !legacyQuota) reasons.push('未配置启用的自动写作任务（每日配额>0），旧配额也为 0');
+      if (!modelOk) reasons.push('无「用于写作」的生文模型（需启用且已配置 API-KEY）');
+      if (!knowledgeOk) reasons.push('无企业知识库');
+      diagnostics = {
+        triggerable: reasons.length === 0,
+        reasons,
+        collect_task_active: collectActive,
+        active_task_count: activeTasks.length,
+        active_daily_quota: activeTasks.reduce((s: number, t: any) => s + (Number(t.daily_quota) || 0), 0),
+        legacy_quota: legacyQuota,
+        writing_model_ok: modelOk,
+        knowledge_count: knowledgeRes.rows[0]?.cnt || 0,
+        last_auto_task_at: lastTaskRes.rows[0]?.last_at || null,
+        auto_task_total: lastTaskRes.rows[0]?.cnt || 0,
+      };
+    }
+    res.json({ code: 200, data: list, diagnostics });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: (err as Error).message });
   }
