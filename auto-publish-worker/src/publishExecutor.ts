@@ -105,6 +105,11 @@ function captureCrashPostmortem(): string | null {
         if (oomKill) parts.push(`内核OOM击杀累计=${oomKill[1]}次`);
         if (oom) parts.push(`OOM触发累计=${oom[1]}次`);
       } catch {}
+      // v3.13.11：内核记录的真实峰值（比 2s 采样更准，能捕捉采样间隙的尖峰）
+      try {
+        const peak = Number(fs.readFileSync('/sys/fs/cgroup/memory.peak', 'utf8').trim());
+        if (peak > 0) parts.push(`内核记录峰值=${Math.round(peak / 1048576)}MB`);
+      } catch {}
     } catch {
       // cgroup v1 兜底
       try {
@@ -120,20 +125,19 @@ function captureCrashPostmortem(): string | null {
         const oomCtl = fs.readFileSync('/sys/fs/cgroup/memory/memory.oom_control', 'utf8');
         const ok = oomCtl.match(/oom_kill\s+(\d+)/);
         if (ok) parts.push(`内核OOM击杀累计=${ok[1]}次`);
+        // v3.13.11：failcnt（cgroup 触达上限次数，即使没杀进程也计数）+ 内核真实峰值
+        try {
+          const failcnt = fs.readFileSync('/sys/fs/cgroup/memory/memory.failcnt', 'utf8').trim();
+          if (failcnt !== '0') parts.push(`cgroup触顶计数=${failcnt}次`);
+        } catch {}
+        try {
+          const peak = Number(fs.readFileSync('/sys/fs/cgroup/memory/memory.max_usage_in_bytes', 'utf8').trim());
+          if (peak > 0) parts.push(`内核记录峰值=${Math.round(peak / 1048576)}MB`);
+        } catch {}
       } catch {}
     }
-    // /proc top RSS 进程
-    const procs: { pid: string; name: string; rss: number }[] = [];
-    for (const pid of fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d))) {
-      try {
-        const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
-        const name = status.match(/^Name:\s*(.+)$/m)?.[1]?.trim() || '?';
-        const rssKb = parseInt(status.match(/^VmRSS:\s*(\d+)/m)?.[1] || '0', 10);
-        if (rssKb > 0) procs.push({ pid, name, rss: Math.round(rssKb / 1024) });
-      } catch {}
-    }
-    procs.sort((a, b) => b.rss - a.rss);
-    parts.push('top进程RSS: ' + procs.slice(0, 6).map((p) => `${p.name}(${p.pid})=${p.rss}MB`).join(', '));
+    // /proc top RSS 进程（v3.13.11 复用 snapshotTopRss）
+    parts.push('top进程RSS: ' + snapshotTopRss(6));
     return parts.join(' | ');
   } catch {
     return null;
@@ -149,7 +153,28 @@ function captureCrashPostmortem(): string | null {
  * 明确原因（如 "Allocation failed - JavaScript heap out of memory"、
  * "Out of memory: ..."、"[ERROR:gpu_...]"），必须在进程存活时持续收集。
  */
-const crashProbes = new Map<number, { stderrTail: string[]; peakCgroupMB: number; peakAt: number; sampler?: NodeJS.Timeout }>();
+const crashProbes = new Map<number, { stderrTail: string[]; peakCgroupMB: number; peakAt: number; sampler?: NodeJS.Timeout; stderrAttached: boolean; crashEvent?: { url: string; elapsedMs: number; rssAtCrash: string } }>();
+
+/**
+ * v3.13.11：扫描 /proc 取 top RSS 进程快照（崩溃瞬间与验尸共用）
+ */
+function snapshotTopRss(n: number): string {
+  try {
+    const procs: { pid: string; name: string; rss: number }[] = [];
+    for (const pid of fs.readdirSync('/proc').filter((d) => /^\d+$/.test(d))) {
+      try {
+        const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+        const name = status.match(/^Name:\s*(.+)$/m)?.[1]?.trim() || '?';
+        const rssKb = parseInt(status.match(/^VmRSS:\s*(\d+)/m)?.[1] || '0', 10);
+        if (rssKb > 0) procs.push({ pid, name, rss: Math.round(rssKb / 1024) });
+      } catch {}
+    }
+    procs.sort((a, b) => b.rss - a.rss);
+    return procs.slice(0, n).map((p) => `${p.name}(${p.pid})=${p.rss}MB`).join(', ');
+  } catch {
+    return '(不可用)';
+  }
+}
 
 function readCgroupUsageBytes(): number | null {
   try { return Number(fs.readFileSync('/sys/fs/cgroup/memory.current', 'utf8').trim()); } catch {}
@@ -158,7 +183,7 @@ function readCgroupUsageBytes(): number | null {
 }
 
 function startCrashProbes(recordId: number, browser: Browser): void {
-  const probe = { stderrTail: [] as string[], peakCgroupMB: 0, peakAt: 0, sampler: undefined as NodeJS.Timeout | undefined };
+  const probe = { stderrTail: [] as string[], peakCgroupMB: 0, peakAt: 0, sampler: undefined as NodeJS.Timeout | undefined, stderrAttached: false };
   try {
     const proc = (browser as any).process?.() as { stderr?: NodeJS.ReadableStream } | undefined;
     if (proc?.stderr) {
@@ -168,6 +193,7 @@ function startCrashProbes(recordId: number, browser: Browser): void {
         probe.stderrTail.push(chunk);
         if (probe.stderrTail.length > 40) probe.stderrTail.shift();
       });
+      probe.stderrAttached = true;
     }
   } catch {}
   probe.sampler = setInterval(() => {
@@ -195,6 +221,11 @@ function getProbeEvidence(recordId: number): string {
   if (!probe) return '';
   const parts: string[] = [];
   parts.push(`cgroup运行峰值=${probe.peakCgroupMB}MB`);
+  parts.push(`stderr附加=${probe.stderrAttached ? '是' : '否'}`);
+  if (probe.crashEvent) {
+    parts.push(`崩溃打点=${Math.round(probe.crashEvent.elapsedMs / 1000)}s@${probe.crashEvent.url.slice(0, 80)}`);
+    parts.push(`崩溃瞬间RSS=${probe.crashEvent.rssAtCrash}`);
+  }
   if (probe.stderrTail.length > 0) {
     const tail = probe.stderrTail.join('').replace(/\s+/g, ' ').trim();
     if (tail) parts.push(`chromium stderr尾巴: ${tail.slice(-1200)}`);
@@ -203,14 +234,23 @@ function getProbeEvidence(recordId: number): string {
 }
 
 /**
- * v3.13.10：页面崩溃事件记录——崩溃瞬间打点 URL 与距开始耗时，把崩溃映射到具体发布步骤
+ * v3.13.10/11：页面崩溃事件——崩溃瞬间打点 URL/耗时/RSS 快照，存入探针随验尸报告带出
+ *   （v3.13.10 只写 worker 日志，用户在桌面端看不到——现在并入 probe.crashEvent）
  */
-function attachPageCrashLogger(p: any, recordId: number, startedAt: number): void {
+function attachPageCrashLogger(p: any, recordId: number, startedAt: number, userId?: number): void {
   try {
     p.on('crash', () => {
-      const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      const url = (() => { try { return p.url(); } catch { return '(不可用)'; } })();
-      logger.error(`[record ${recordId}] ⚠️ 页面崩溃事件：耗时=${elapsed}s，URL=${url}`);
+      const elapsedMs = Date.now() - startedAt;
+      let url = '(不可用)';
+      try { url = p.url(); } catch {}
+      const rssAtCrash = snapshotTopRss(4);
+      const probe = crashProbes.get(recordId);
+      if (probe) {
+        probe.crashEvent = { url, elapsedMs, rssAtCrash };
+      }
+      const msg = `页面崩溃事件：耗时=${Math.round(elapsedMs / 1000)}s，URL=${url}，崩溃瞬间RSS=${rssAtCrash}`;
+      logger.error(`[record ${recordId}] ⚠️ ${msg}`);
+      void reportFlywheelEvent('publish_crash_detected', `[崩溃打点] ${msg}`, { record_id: recordId }, userId).catch(() => {});
     });
   } catch {}
 }
@@ -434,7 +474,7 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
     logger.info(`已注入 WebGL/Canvas 噪声指纹脚本（vendor=${fingerprint.webglVendor.slice(0, 20)}...）`);
 
     page = await context.newPage();
-    attachPageCrashLogger(page, recordId, Date.now());
+    attachPageCrashLogger(page, recordId, Date.now(), record.user_id);
 
     // v3.13.5：wxgzh 资源分级拦截（详见 installWxgzhResourceRoute 注释）
     if (platform === 'wxgzh') {
@@ -524,7 +564,7 @@ async function processRecordInner(record: PublishRecord, recordId: number, platf
           try {
             await page.close().catch(() => {});
             page = await context.newPage();
-            attachPageCrashLogger(page, recordId, Date.now());
+            attachPageCrashLogger(page, recordId, Date.now(), record.user_id);
             // v3.13.5：刷新路径新建的 page 必须重装 wxgzh 拦截（page.route 是页面级，旧 page 关闭后失效）
             if (platform === 'wxgzh') {
               await installWxgzhResourceRoute(page);
