@@ -1,7 +1,7 @@
 {
   "platform": "bjh",
-  "version": "1.7.11",
-  "description": "百家号图文发布流程（v1.7.11：增加处理'确定 (N)'弹窗步骤，修复发布后弹窗未处理导致URL不跳转）",
+  "version": "1.7.12",
+  "description": "百家号图文发布流程（v1.7.12：a.弹窗关闭提前到编辑操作前——诊断显示热点推荐/一键填写弹窗在编辑阶段已存在并遮挡编辑器，原流程到发布按钮前才关闭太晚，导致正文填入失败（字数0）+封面未添加；b.正文填入后立即验证，空则抛明确错误定位断点，不再走到最后报模糊的「未检测到成功提示」）",
   "is_placeholder": false,
   "login_check_url": "https://baijiahao.baidu.com/builder/rc/home",
   "login_check_selector": "//div[contains(@class,'avatar')] | //img[contains(@class,'portrait')]",
@@ -21,6 +21,23 @@
       "is_try": true,
       "force": true,
       "timeout": 5000
+    },
+    {
+      "type": "timing",
+      "ms": 1500,
+      "descript": "v1.7.12 等待页面与弹窗渲染完成（诊断显示热点推荐/一键填写弹窗在编辑阶段已出现并遮挡编辑器）"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var closed = []; var allCloseBtns = document.querySelectorAll('[class*=close], [class*=Close], [aria-label*=关闭], [title*=关闭], .modal-close, .icon-close, button[title*=关闭], .cheetah-modal-close, .cheetah-popconfirm-close'); for (var i = 0; i < allCloseBtns.length; i++) { try { var btn = allCloseBtns[i]; if (btn.offsetParent === null) continue; var ancestor = btn; var shouldClose = false; for (var j = 0; j < 10 && ancestor; j++) { var t = (ancestor.innerText || ''); if (t.indexOf('换一换') >= 0 || t.indexOf('热点推荐') >= 0 || t.indexOf('创作热点') >= 0 || t.indexOf('一键填写') >= 0 || t.indexOf('热点图库') >= 0) { shouldClose = true; break; } ancestor = ancestor.parentElement; } if (shouldClose) { btn.click(); closed.push(String(btn.className || '').slice(0, 40)); } } catch(e) {} } var hotItem = Array.from(document.querySelectorAll('div, section, aside')).find(function(el) { var t = el.innerText || ''; return (t.indexOf('换一换') >= 0 || t.indexOf('创作热点') >= 0) && el.offsetParent !== null && el.children.length < 50; }); if (hotItem) { var closeIcon = hotItem.querySelector('[class*=close], .icon-close, button[title*=关闭], [aria-label*=关闭], svg, [class*=Close]'); if (closeIcon) { closeIcon.click(); closed.push('hot-panel-icon'); } } var fillBtn = Array.from(document.querySelectorAll('div, button, span')).find(function(el) { return (el.innerText || '').trim() === '×' && el.offsetParent !== null && el.getBoundingClientRect().width < 50; }); if (fillBtn) { fillBtn.click(); closed.push('x-button'); } if (closed.length === 0) { document.body.style.overflow = ''; } return closed.length > 0 ? 'closed: ' + closed.join(',') : 'no popup';",
+      "descript": "v1.7.12 编辑前关闭热点推荐/一键填写/创作热点弹窗（原流程到发布按钮前才关闭，太晚——弹窗在编辑阶段已遮挡编辑器，导致正文填入失败字数0、封面未添加）",
+      "is_try": true,
+      "timeout": 3000
+    },
+    {
+      "type": "timing",
+      "ms": 800,
+      "descript": "v1.7.12 等待弹窗关闭动画"
     },
     {
       "type": "fill",
@@ -44,6 +61,17 @@
           "ai_fallback": true,
           "ai_intent": "在 ueditor 编辑器中输入正文",
           "timeout": 5000
+        },
+        {
+          "type": "timing",
+          "ms": 800,
+          "descript": "v1.7.12 等待 ueditor 内容渲染"
+        },
+        {
+          "type": "evaluate_edit",
+          "value": "var txt = (document.body.innerText || '').replace(/\\s+/g, ''); if (txt.length < 20) { throw new Error('百家号正文未填入：ueditor 内容为空（有效长度=' + txt.length + '），可能编辑器未初始化、被弹窗遮挡或 iframe 结构已改版'); } return 'content_len: ' + txt.length;",
+          "descript": "v1.7.12 正文填入验证：iframe 上下文内读取正文字数，空则抛明确错误定位断点（此前正文空会走到最后报模糊的「未检测到成功提示且URL未跳转」，无法定位）",
+          "timeout": 3000
         }
       ]
     },
@@ -89,6 +117,13 @@
       "type": "timing",
       "ms": 300,
       "descript": "等待封面弹窗关闭"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var coverArea = Array.from(document.querySelectorAll('div, section')).find(function(el) { var t = el.innerText || ''; return t.indexOf('设置封面') >= 0 && el.offsetParent !== null && el.innerText.length < 300; }); var hasImg = coverArea ? !!coverArea.querySelector('img') : !!document.querySelector('div[class*=\"cover\"] img, div[class*=\"Cover\"] img'); if (!hasImg) { return 'cover_missing: 封面区内未检测到缩略图（可能未添加封面，发布时可能被平台拦截）'; } return 'cover_ok';",
+      "descript": "v1.7.12 封面验证（仅警告不阻断：封面 DOM 不确定，避免误报中断发布；日志可定位封面流程是否断链）",
+      "is_try": true,
+      "timeout": 3000
     },
     {
       "type": "branch",

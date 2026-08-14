@@ -1,7 +1,7 @@
 {
   "platform": "dy",
-  "version": "1.9.60",
-  "description": "抖音图文发布流程（v1.9.60：登录预检改到 home 页，避免预检与 step_list 重复加载 upload 发布页触发抖音风控导致页面崩溃；v1.7.14：修复登录预检假阳性——home页匿名可访问且含avatar容器导致误判已登录；移除宽泛avatar选择器，新增扫码登录/验证码登录关键词）",
+  "version": "1.9.61",
+  "description": "抖音图文发布流程（v1.9.61：上传页登录态兜底检测——抖音登录页 URL 不变，SPA 同 URL 渲染登录界面，命中扫码登录/验证码登录特征词时抛登录错误标记账号 offline；v1.9.60：登录预检改到 home 页，避免预检与 step_list 重复加载 upload 发布页触发抖音风控导致页面崩溃）",
   "is_placeholder": false,
   "login_check_url": "https://creator.douyin.com/creator-micro/home",
   "login_check_selector": "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')]",
@@ -24,6 +24,12 @@
       "type": "timing",
       "ms": 3000,
       "descript": "等待上传组件加载完成"
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var t = (document.body.innerText || '').slice(0, 800); if (t.indexOf('扫码登录') >= 0 || t.indexOf('验证码登录') >= 0 || t.indexOf('密码登录') >= 0 || t.indexOf('我是创作者') >= 0) { throw new Error('抖音登录态已失效：上传页渲染了登录界面（扫码登录/验证码登录），需要重新登录'); } return 'login_ok';",
+      "descript": "v3.13.3 上传页登录态兜底检测：抖音登录页 URL 不变（SPA 同 URL 渲染登录界面），预检（home页）与发布（upload页）之间 cookie 可能失效；命中登录特征词时抛含「登录」的错误，云端据此标记账号 offline 并停止消耗，避免走到 input_files 报「文件输入元素未找到」的 unknown 错误反复消耗账号",
+      "timeout": 5000
     },
     {
       "type": "input_files",

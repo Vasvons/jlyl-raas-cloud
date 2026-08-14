@@ -16,11 +16,15 @@ export class DyAdapter extends BasePlatformAdapter {
 
   loginCheck = {
     // v3.8.9：登录预检改用创作者中心首页（轻量），避免加载 upload 重页面导致 Page crashed
+    // v3.13.3：同步 dy.json v1.7.14 修复——移除宽泛 avatar 选择器（home 页匿名可访问且含 avatar 容器，
+    //   导致预检假阳性误判已登录，后续发布走到 input_files 才报「文件输入元素未找到」）；
+    //   logoutKeywords 补充扫码登录/验证码登录/密码登录等抖音登录页特征词（抖音登录页 URL 不变，
+    //   SPA 在同 URL 渲染登录界面，仅靠 urlPattern 和「请登录」检测不到）
     url: 'https://creator.douyin.com/creator-micro/home',
     selector:
-      "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')] | //div[contains(@class,'avatar')]",
+      "//a[contains(text(),'内容管理')] | //a[contains(text(),'作品管理')] | //span[contains(text(),'发布图文')]",
     urlPattern: '^https://creator\\.douyin\\.com/.*login.*',
-    logoutKeywords: ['请登录', '请先登录', 'sign in'],
+    logoutKeywords: ['请登录', '请先登录', 'sign in', '扫码登录', '验证码登录', '密码登录', '登录即代表同意'],
   };
 
   login = {
