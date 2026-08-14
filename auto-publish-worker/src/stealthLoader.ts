@@ -93,20 +93,24 @@ export function getAntiDetectionArgs(): string[] {
     '--hide-scrollbars',
     '--mute-audio',
 
-    // v3.13.14：GPU 进程存活动三连（chrome日志实锤完整因果链）：
-    //   容器无显卡 → ANGLE 枚举 Vulkan 后端失败（--disable-vulkan 管不住 ANGLE 的后端
-    //   选择，日志实证加了仍报 Internal Vulkan error (-7)）→ 回退 SwANGLE 又报
-    //   EGL_NOT_INITIALIZED（新版 Chromium 默认封锁 SwiftShader，必须显式解锁）→
-    //   "Exiting GPU process due to errors during initialization" → loginpage 渲染进程
-    //   失去合成器崩溃（崩溃时刻与 GPU 进程退出精确重合）。
-    //   a. --use-angle=swiftshader：显式指定 ANGLE 后端为 SwiftShader，跳过 Vulkan 枚举
-    //   b. --enable-unsafe-swiftshader：解锁新版 Chromium 对 SwiftShader 的默认封锁
-    //      （对应日志 eglInitialize SwANGLE failed with EGL_NOT_INITIALIZED）
-    //   c. --in-process-gpu：兜底——GPU 初始化内联进浏览器进程，即使 GL 全失败也不再
-    //      出现独立 GPU 进程退出拖死渲染进程的连锁
-    '--use-angle=swiftshader',
-    '--enable-unsafe-swiftshader',
-    '--in-process-gpu',
+    // v3.13.15：撤回 v3.13.14 三连（chrome日志实锤其为毒药）：
+    //   镜像用 Alpine 系统 chromium（不带 SwiftShader，那是 Playwright 自带 chromium
+    //   才有的），SwANGLE EGL_NOT_INITIALIZED 是环境必然：
+    //   - --in-process-gpu：把 GPU 初始化搬进浏览器主进程 → GL 必然失败 → 主进程死 →
+    //     「browser.newContext: browser has been closed」所有平台浏览器启动即死
+    //     （比原来更糟：原来独立 GPU 进程模式下死的只是 GPU 进程，浏览器活着）
+    //   - --use-angle=swiftshader / --enable-unsafe-swiftshader：无 SwiftShader 库，
+    //     解锁也无济于事（日志实证加了两 flag 后 SwANGLE 仍 EGL_NOT_INITIALIZED）
+    //   独立 GPU 进程模式是该环境唯一可行形态：GPU 进程死 → viz 软件合成兜底 →
+    //   绝大多数页面正常（tt/bjh/zh 实证），仅 wxgzh loginpage 崩（见下方 WebGL 处置）
+
+    // v3.13.15：wxgzh loginpage 崩溃的针对性处置
+    //   崩点稳定在 loginpage@10s，低内存静默死。loginpage 与其他页的本质差异：
+    //   登录页跑 canvas/WebGL 指纹检测脚本（QR 码 + 浏览器指纹），在无 GPU 无
+    //   SwiftShader 的环境里 WebGL 上下文创建即崩 renderer。禁掉 WebGL/3D API，
+    //   检测脚本拿到 null 会跳过（不崩），反指纹损失可忽略（发布场景不依赖 WebGL 伪装）
+    '--disable-webgl',
+    '--disable-3d-apis',
 
     // === 启动行为（不显示"首次运行"等弹窗） ===
     '--no-first-run',
