@@ -103,8 +103,10 @@ jobs:
             df -h /
 
             # 预拉取基础镜像（带重试，失败不阻塞部署，docker compose build 会自动拉取）
+            # v3.13.19：新增 playwright 官方镜像（auto-publish-worker 新基座，约 2GB，
+            #   预拉取避免 build 时临时拉取超时；mcr.microsoft.com 走 Azure CDN 国内可达）
             echo ">>> 预拉取基础镜像..."
-            for img in node:18-alpine docker.m.daocloud.io/pgvector/pgvector:pg15 nginx:alpine; do
+            for img in node:18-alpine docker.m.daocloud.io/pgvector/pgvector:pg15 nginx:alpine mcr.microsoft.com/playwright:v1.61.0-noble; do
               # 检查镜像是否已存在（缓存），存在则跳过
               if docker images --format '{{.Repository}}:{{.Tag}}' | grep -q "^${img}$"; then
                 echo ">>> $img 已存在，跳过拉取"
@@ -124,6 +126,38 @@ jobs:
                 echo ">>> 警告：$img 拉取失败，将在 docker compose build 时自动拉取"
               fi
             done
+
+            # v3.13.19：构建提前到停止服务之前（防 build 失败导致全线停机）
+            #   原顺序「先 down 再 build」的结构性缺陷：build 失败（如包名错误/基础镜像
+            #   拉取失败）时旧容器已全部停止 → 云端整体宕机，只能靠下一次成功部署恢复
+            #   （8-15 包名事故的根因）。build 不依赖容器停止，提前构建：
+            #   build 成功 → down + up 无缝切换；build 失败 → 旧服务继续运行，零停机
+            echo ">>> 构建 Docker 镜像（带重试，构建期间旧服务继续运行）..."
+            build_success=false
+            for attempt in 1 2 3; do
+              echo ">>> 构建尝试 $attempt/3..."
+              # v3.8.12：worker 构建改为用缓存（去掉 --no-cache）
+              #   原因：--no-cache 每次重新安装 Chromium 包（~5min）， mirrors.aliyun.com 不稳定时易超时
+              #   worker Dockerfile 未改动时缓存层完全可用；Playwright 版本问题早已修复，无需强制重建
+              #   只在 build 失败时第 2+ 次尝试才加 --no-cache 兜底
+              BUILD_FLAGS=""
+              if [ "$attempt" -ge 2 ]; then
+                BUILD_FLAGS="--no-cache"
+                echo ">>> 第 $attempt 次尝试，使用 --no-cache 兜底"
+              fi
+              if $DC build $BUILD_FLAGS auto-collect-worker && $DC build $BUILD_FLAGS auto-publish-worker && $DC build $BUILD_FLAGS; then
+                echo ">>> 构建成功"
+                build_success=true
+                break
+              fi
+              echo ">>> 构建失败，清理 buildkit 状态后重试..."
+              docker builder prune -f 2>/dev/null || true
+              sleep 5
+            done
+            if [ "$build_success" = false ]; then
+              echo ">>> 错误：Docker 镜像构建连续 3 次失败（旧服务仍在运行，云端未受影响，修复代码后重新 push 即可）"
+              exit 1
+            fi
 
             echo ">>> 停止所有服务..."
             $DC down --remove-orphans 2>/dev/null || true
@@ -180,33 +214,6 @@ jobs:
 
             echo ">>> 数据库状态:"
             $DC ps db
-
-            echo ">>> 构建 Docker 镜像（带重试）..."
-            build_success=false
-            for attempt in 1 2 3; do
-              echo ">>> 构建尝试 $attempt/3..."
-              # v3.8.12：worker 构建改为用缓存（去掉 --no-cache）
-              #   原因：--no-cache 每次重新安装 Chromium 包（~5min）， mirrors.aliyun.com 不稳定时易超时
-              #   worker Dockerfile 未改动时缓存层完全可用；Playwright 版本问题早已修复，无需强制重建
-              #   只在 build 失败时第 2+ 次尝试才加 --no-cache 兜底
-              BUILD_FLAGS=""
-              if [ "$attempt" -ge 2 ]; then
-                BUILD_FLAGS="--no-cache"
-                echo ">>> 第 $attempt 次尝试，使用 --no-cache 兜底"
-              fi
-              if $DC build $BUILD_FLAGS auto-collect-worker && $DC build $BUILD_FLAGS auto-publish-worker && $DC build $BUILD_FLAGS; then
-                echo ">>> 构建成功"
-                build_success=true
-                break
-              fi
-              echo ">>> 构建失败，清理 buildkit 状态后重试..."
-              docker builder prune -f 2>/dev/null || true
-              sleep 5
-            done
-            if [ "$build_success" = false ]; then
-              echo ">>> 错误：Docker 镜像构建连续 3 次失败"
-              exit 1
-            fi
 
             echo ">>> 先启动 server 容器（单独启动，便于捕获启动日志）..."
             # v1.8.2：启动前强制删除可能残留的 server 容器并带重试

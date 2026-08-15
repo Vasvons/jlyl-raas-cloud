@@ -1,45 +1,24 @@
-FROM node:18-alpine
+# v3.13.19：切换到 Playwright 官方 Docker 镜像（终结 Alpine 系统 chromium 系列问题）
+#
+#   背景：wxgzh loginpage 渲染进程静默崩溃（9-13s，低内存，无 OOM，多轮参数/软件渲染
+#   方案均未根治）。Alpine chromium 是 musl libc 自编译版，与 Playwright 官方支持的
+#   glibc 构建存在差异（V8/Blink 引擎行为、SwiftShader 缺失、GL 初始化失败拖崩 GPU
+#   进程等）。官方镜像一次解决整类问题：
+#     - Ubuntu 24.04 (noble) + glibc：Playwright 唯一官方支持的一线环境
+#     - 预装与 playwright@1.61.0 精确匹配的 Chromium（/ms-playwright）
+#     - 内置 SwiftShader：WebGL/Canvas 软件渲染可用，GPU 进程可正常初始化
+#     - 预装全部浏览器依赖 + CJK 字体（wqy-zenhei 等，比 alpine 的 freefont 更好）
+#     - Node 24 + git
+#   注意：PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH 已移除——publishExecutor 的
+#   executablePath 走 env || undefined，不设则 Playwright 自动使用自带 Chromium
+FROM mcr.microsoft.com/playwright:v1.61.0-noble
 
-# v2.5.20：替换为阿里云 Alpine 镜像源（原 dl-cdn.alpinelinux.org 在服务器上被拒访问）
-RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
-
-# 设置时区为 Asia/Shanghai
-RUN apk add --no-cache tzdata && \
-    cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-    echo "Asia/Shanghai" > /etc/timezone && \
-    apk del tzdata
-
+# 设置时区为 Asia/Shanghai（Ubuntu 基础镜像自带 tzdata）
 ENV TZ=Asia/Shanghai
 
-# 安装 Chromium 及 Playwright 运行所需依赖
-# v3.13.18：修正 v3.13.17 的致命包名错误（mesa-dri-gallium-drivers 在 Alpine 3.21
-#   不存在，实为 mesa-dri-gallium；apk 报错导致镜像 build 失败 → 部署中断 → 云端
-#   全线停机）。修正后的最小正确方案：
-#   - chromium-swiftshader（v3.21 官方子包，已确认存在）：正是 chrome 日志里
-#     "eglInitialize SwANGLE failed with EGL_NOT_INITIALIZED" 缺失的 SwiftShader
-#     软件渲染库 → ANGLE 默认后端顺序（Vulkan 失败 → SwANGLE）走到 SwANGLE 即成功
-#     → GPU 进程存活 → loginpage renderer 不再被拖崩
-#   - swrast/mesa-gbm 无需显式安装：chromium 本身依赖 mesa-dri-gallium + mesa-gbm，
-#     apk 会自动带上
-#   - mesa-egl/mesa-gles（原生 GL 冗余路径）用容错安装：包名如与 3.21 不符则跳过，
-#     不影响 SwANGLE 主路径，且保证镜像 build 不再因包名问题失败
-RUN apk add --no-cache \
-    chromium \
-    chromium-swiftshader \
-    nss \
-    freetype \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont && \
-    (apk add --no-cache mesa-egl mesa-gles || \
-     echo "WARN: mesa-egl/mesa-gles 不可用，SwANGLE 主路径已由 chromium-swiftshader 覆盖")
-
-# 无显示环境下 EGL 走 surfaceless 平台（headless 标准姿势，对 SwANGLE 无害）
-ENV EGL_PLATFORM=surfaceless
-
-# 告知 Playwright 使用系统已安装的 Chromium，不再下载
+# 浏览器已在镜像内（/ms-playwright），跳过 npm 安装 playwright 时的浏览器下载
+# （下载走国际 CDN，国内服务器慢且易失败；镜像内版本与 package.json 精确匹配）
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
-ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 WORKDIR /app
 
@@ -48,7 +27,8 @@ RUN npm config set registry https://registry.npmmirror.com
 
 COPY package*.json ./
 COPY tsconfig.json ./
-RUN npm install --no-cache
+# 注：不用 --no-cache（非合法 npm 参数，旧版容忍、新版 npm 可能报错；镜像层内本无缓存）
+RUN npm install
 
 # 验证 Playwright 版本
 RUN npx playwright --version

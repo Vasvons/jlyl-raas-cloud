@@ -242,6 +242,13 @@ function getProbeEvidence(recordId: number): string {
   if (probe.chromeLogPath) {
     try {
       const log = fs.readFileSync(probe.chromeLogPath, 'utf8');
+      // v3.13.19：关键行过滤——原始尾巴常被崩溃后的 dbus 噪音淹没（初始化段
+      // GPU/SwANGLE/Vulkan 行被截掉），单独抽取关键行确保 GPU 进程状态可判读
+      const keyLines = log.split('\n')
+        .filter(l => /Exiting GPU process|SwANGLE|Vulkan error|EGL|Received signal|Renderer process|check failure|Fatal|out of memory/i.test(l))
+        .map(l => l.trim().slice(0, 160))
+        .slice(-8);
+      if (keyLines.length > 0) parts.push(`chrome关键行: ${keyLines.join(' | ')}`);
       const tail = log.replace(/\s+/g, ' ').trim();
       if (tail) parts.push(`chrome日志尾巴: ${tail.slice(-1500)}`);
       else parts.push('chrome日志: 空文件');

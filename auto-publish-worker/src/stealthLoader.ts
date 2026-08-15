@@ -104,23 +104,13 @@ export function getAntiDetectionArgs(): string[] {
     //   独立 GPU 进程模式是该环境唯一可行形态：GPU 进程死 → viz 软件合成兜底 →
     //   绝大多数页面正常（tt/bjh/zh 实证），仅 wxgzh loginpage 崩（见下方 WebGL 处置）
 
-    // v3.13.15：wxgzh loginpage 崩溃的针对性处置
-    //   崩点稳定在 loginpage@10s，低内存静默死。loginpage 与其他页的本质差异：
-    //   登录页跑 canvas/WebGL 指纹检测脚本（QR 码 + 浏览器指纹），在无 GPU 无
-    //   SwiftShader 的环境里 WebGL 上下文创建即崩 renderer。禁掉 WebGL/3D API，
-    //   检测脚本拿到 null 会跳过（不崩），反指纹损失可忽略（发布场景不依赖 WebGL 伪装）
-    '--disable-webgl',
-    '--disable-3d-apis',
-
-    // v3.13.18：GPU 进程存活的最终方案（v3.13.16/17 两轮参数路线失败后的修正）
-    //   因果实锤：GPU 进程 EGL 初始化失败退出时刻 = wxgzh loginpage renderer 崩溃
-    //   时刻（相差 <100ms，多轮复现）；--disable-gpu / --disable-gpu-compositing /
-    //   --disable-vulkan 均管不住 viz 的 GPU 进程（新版 chromium 无视这些 flag）。
-    //   解法（Dockerfile 侧）：安装 chromium-swiftshader（Alpine 官方子包），补上
-    //   "eglInitialize SwANGLE failed" 缺失的 SwiftShader 库 → ANGLE 默认后端顺序
-    //   （Vulkan 失败 → SwANGLE 成功）让 GPU 进程真正存活。
-    //   本文件侧：不再传 --use-angle=gl / --use-angle=swiftshader（强制单一后端会
-    //   跳过默认回退顺序），让 ANGLE 自己走完「Vulkan 报错 → SwANGLE 成功」链路。
+    // v3.13.19：移除 v3.13.15 的 --disable-webgl / --disable-3d-apis
+    //   （当时 Alpine chromium 无 SwiftShader，WebGL 创建即崩 renderer，只能禁掉）
+    //   已切换 Playwright 官方镜像（内置 SwiftShader），WebGL/Canvas 软件渲染正常可用：
+    //   - 恢复 WebGL 提升指纹真实性（微信登录页等安全脚本会探测 WebGL，返回 null 更像机器人）
+    //   - 指纹噪声注入脚本的 WebGL hook 恢复工作
+    // v3.13.18 结论存档：GPU 进程 EGL 初始化失败退出与 loginpage renderer 崩溃时刻
+    //   相差 <100ms（多轮实锤）——官方镜像 SwiftShader 让 GPU 进程正常初始化存活。
 
     // === 启动行为（不显示"首次运行"等弹窗） ===
     '--no-first-run',
