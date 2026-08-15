@@ -112,6 +112,16 @@ export function getAntiDetectionArgs(): string[] {
     '--disable-webgl',
     '--disable-3d-apis',
 
+    // v3.13.16：阻止 viz 起独立 GPU 进程（14:07 轮再次实锤因果：GPU 进程 EGL 初始化
+    //   失败退出时刻 = loginpage renderer 崩溃时刻，两者相差 <100ms，多轮复现）。
+    //   关键认知：--disable-gpu 管不住 viz——日志报错来自 viz_main_impl（viz 仍起
+    //   GPU 进程做 EGL 初始化，Alpine chromium 无 SwiftShader 必败退出）。
+    //   --disable-gpu-compositing 强制渲染进程内软件合成，viz 不再需要 GPU 进程，
+    //   从根上消除「GPU 进程退出拖崩同时刻初始化的 renderer」这条链。
+    //   （若本轮仍崩，下一步方案：换 Playwright 自带 chromium——内置 SwiftShader，
+    //     GL 可真正初始化成功，GPU 进程存活；代价是镜像 +170MB）
+    '--disable-gpu-compositing',
+
     // === 启动行为（不显示"首次运行"等弹窗） ===
     '--no-first-run',
     '--no-default-browser-check',
