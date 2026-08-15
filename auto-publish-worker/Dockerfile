@@ -12,13 +12,24 @@ RUN apk add --no-cache tzdata && \
 ENV TZ=Asia/Shanghai
 
 # 安装 Chromium 及 Playwright 运行所需依赖
+# v3.13.17：新增 mesa 软件渲染栈——GPU 进程 EGL 初始化此前必败退出（无显卡且无
+#   SwiftShader），与 wxgzh loginpage renderer 崩溃时刻精确重合（<100ms，多轮实锤）。
+#   mesa-dri-gallium-drivers 提供 swrast/llvmpipe 软件光栅化驱动，配合 surfaceless
+#   平台让 EGL 真正初始化成功 → GPU 进程存活 → 崩溃链从根上消除
 RUN apk add --no-cache \
     chromium \
     nss \
     freetype \
     harfbuzz \
     ca-certificates \
-    ttf-freefont
+    ttf-freefont \
+    mesa-dri-gallium-drivers \
+    mesa-egl \
+    mesa-gles \
+    mesa-gbm
+
+# v3.13.17：无显示环境下 EGL 走 surfaceless 平台（headless 标准姿势）
+ENV EGL_PLATFORM=surfaceless
 
 # 告知 Playwright 使用系统已安装的 Chromium，不再下载
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1

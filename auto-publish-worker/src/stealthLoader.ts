@@ -122,6 +122,14 @@ export function getAntiDetectionArgs(): string[] {
     //     GL 可真正初始化成功，GPU 进程存活；代价是镜像 +170MB）
     '--disable-gpu-compositing',
 
+    // v3.13.17：ANGLE 走原生 GL 后端（配合镜像新装的 mesa swrast 软件渲染栈）
+    //   19:43 轮实锤 --disable-gpu-compositing 无效（新版 chromium 已移除该 flag，
+    //   viz 照起 GPU 进程照死）。参数路线全部失效，改为让 GL 真正可用：
+    //   Dockerfile 已加 mesa-dri-gallium-drivers（swrast/llvmpipe）+ EGL_PLATFORM=
+    //   surfaceless。--use-angle=gl 让 ANGLE 跳过必败的 Vulkan 枚举直接走 EGL/GL
+    //   软件路径 → EGL 初始化成功 → GPU 进程存活 → 崩溃链根除
+    '--use-angle=gl',
+
     // === 启动行为（不显示"首次运行"等弹窗） ===
     '--no-first-run',
     '--no-default-browser-check',
