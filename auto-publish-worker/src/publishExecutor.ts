@@ -1250,6 +1250,17 @@ async function launchBrowserWithRetry(
         //   3 次重试 × 60s + 2 × 3s 延迟 = ~186s，远低于 record 级 480s 超时
         timeout: 60000,
       });
+      // v3.13.20：注册 disconnected 钩子——Chrome 崩溃瞬间打断 in-flight 的页面调用
+      //   实锤案例 record #1155：Chrome 崩成 zombie 后，页面级调用（waitForTimeout/evaluate
+      //   等 protocol 通道操作）永久挂起，连 record 级 8 分钟超时都未可靠触发，唯一并发槽
+      //   被占死、worker 停摆。disconnected 是 Playwright 在 websocket close 时派发的事件
+      //   （不依赖浏览器进程存活），在回调里主动抛错可立即终止当前 record 的执行链。
+      const disconnectErr = new Error('浏览器进程已崩溃或断开（browser disconnected），强制终止当前 record');
+      (browser as any).__jlyl_disconnect_err = disconnectErr;
+      browser.on('disconnected', () => {
+        try { (browser as any).__jlyl_disconnected = true; } catch {}
+        logger.error(`[record ${recordId}] ❌ 浏览器 disconnected（崩溃/被杀），标记断连`);
+      });
       if (attempt > 1) {
         logger.info(`[record ${recordId}] ✅ 浏览器启动成功（第 ${attempt} 次尝试）`);
       }

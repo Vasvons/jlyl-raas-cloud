@@ -1187,7 +1187,12 @@ async function execTags(step: Step, ctx: StepExecutionContext): Promise<boolean>
 
 async function execTiming(step: Step, ctx: StepExecutionContext): Promise<boolean> {
   const ms = step.ms || step.is_wait || 1000;
-  await ctx.page.waitForTimeout(ms);
+  // v3.13.20：改用原生 setTimeout（不再走 page.waitForTimeout）
+  //   实锤案例 record #1155：Chrome 崩溃成 zombie 后 page.waitForTimeout（Playwright 内部
+  //   走 protocol 通道调度）永久挂起，连 1.5s 的等待都过不去，后续步骤全部静默，
+  //   record 级 8 分钟超时也未触发，唯一并发槽被占死、worker 整体停摆 25 分钟+。
+  //   原生 setTimeout 在 Node 事件循环执行，与浏览器连接状态无关。
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
   return true;
 }
 

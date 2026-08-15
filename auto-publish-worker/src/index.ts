@@ -59,6 +59,8 @@ healthServer.listen(WORKER_PORT, () => {
 });
 
 let activeCount = 0;
+// v3.13.20：每个活跃 record 的开始时间（与 activeCount 同步维护，用于进程级看门狗）
+const activeStartedAt: number[] = [];
 let isShuttingDown = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let consecutiveFailures = 0;
@@ -115,8 +117,10 @@ async function pollAndExecute(): Promise<void> {
     logger.info(`拉取到 ${records.length} 条待发布记录`);
     for (const record of records) {
       activeCount++;
+      activeStartedAt.push(Date.now());
       processRecord(record as PublishRecord).finally(() => {
         activeCount--;
+        activeStartedAt.shift();
       });
     }
   } catch (e: any) {
@@ -147,6 +151,23 @@ async function pollAndExecute(): Promise<void> {
       logger.error(`轮询异常: ${e.message}`);
     });
   }, POLL_INTERVAL);
+
+  // v3.13.20：进程级看门狗——兜底一切「record 卡死但进程未退出」的场景
+  //   实锤案例 record #1155：Chrome 崩溃后 Playwright 页面调用永久挂起，
+  //   record 级 8 分钟 Promise.race 超时未触发，唯一并发槽被占死、worker 停摆 25 分钟+。
+  //   看门狗每 60s 检查活跃 record 的运行时长，超过 12 分钟（8 分钟超时 + 4 分钟余量）
+  //   强制 process.exit(1)，由 docker restart: always 自动拉起，server 端 10 分钟
+  //   processing 回收机制会把 record 重新投回 pending 队列。
+  const WATCHDOG_LIMIT_MS = 12 * 60 * 1000;
+  const watchdog = setInterval(() => {
+    const now = Date.now();
+    const stale = activeStartedAt.filter((t) => now - t > WATCHDOG_LIMIT_MS);
+    if (stale.length > 0) {
+      logger.error(`[Watchdog] 检测到 ${stale.length} 个 record 运行超过 ${WATCHDOG_LIMIT_MS / 60000} 分钟仍未结束（Playwright 挂死），强制退出进程由 Docker 拉起`);
+      process.exit(1);
+    }
+  }, 60000);
+  watchdog.unref?.();
 
   // 启动时立即执行一次
   pollAndExecute().catch(e => {
