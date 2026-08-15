@@ -1,6 +1,6 @@
 {
   "platform": "qeh",
-  "version": "1.9.10",
+  "version": "1.9.11",
   "description": "企鹅号图文发布流程（v1.9.9：自主声明设置与发布按钮全部改用 定位标记+Playwright真实点击——isTrusted=false 的 element.click() 无法触发 OmUI onClick，导致声明未生效、发布按钮30秒后仍可见）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
@@ -88,8 +88,8 @@
       "branch_steps": [
         {
           "type": "evaluate_edit",
-          "value": "var allElements = Array.from(document.querySelectorAll('*')); var hint = allElements.find(function(el) { var t = (el.innerText || '').trim(); return t === '请选择自主声明' && el.offsetParent !== null && el.children.length === 0; }); if (!hint) { hint = allElements.filter(function(el) { if (el.offsetParent === null) return false; var t = (el.innerText || '').trim(); return (t.indexOf('自主声明') >= 0 || t.indexOf('声明内容') >= 0) && t.length < 30 && el.children.length <= 2; })[0] || null; } if (!hint) throw new Error('未找到自主声明入口'); hint.scrollIntoView({ block: 'center' }); await new Promise(function(r) { setTimeout(r, 300); }); hint.setAttribute('data-jlyl-click', 'decl-open'); return 'marked: ' + (hint.innerText || '').trim();",
-          "descript": "v1.9.9 定位自主声明入口并打标记",
+          "value": "var allElements = Array.from(document.querySelectorAll('*')); var hint = null; var visible = function(el) { var r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; }; hint = allElements.find(function(el) { var t = (el.innerText || '').trim(); return t === '请选择自主声明' && visible(el) && el.children.length === 0; }); if (!hint) { var btns = allElements.filter(function(el) { return (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || el.tagName === 'A') && visible(el); }); hint = btns.find(function(el) { var t = (el.innerText || '').trim(); return t.indexOf('添加内容自主声明') >= 0 && t.length < 30; }) || btns.find(function(el) { var t = (el.innerText || '').trim(); return t.indexOf('自主声明') >= 0 && t.length < 20; }) || null; } if (!hint) throw new Error('未找到自主声明入口（无 请选择自主声明 占位符，也无 添加内容自主声明 按钮）'); hint.scrollIntoView({ block: 'center' }); await new Promise(function(r) { setTimeout(r, 300); }); hint.setAttribute('data-jlyl-click', 'decl-open'); return 'marked: ' + (hint.innerText || '').trim();",
+          "descript": "v1.9.10 定位自主声明入口并打标记（新版UI优先找「添加内容自主声明」按钮，旧UI找「请选择自主声明」占位符）",
           "timeout": 5000
         },
         {
@@ -106,7 +106,7 @@
         },
         {
           "type": "evaluate_edit",
-          "value": "var containers = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal], .omui-select-dropdown, [class*=dropdown], [class*=popover], [class*=options]')).filter(function(d) { return d.offsetParent !== null; }); var searchIn = document; var allEls = Array.from(searchIn.querySelectorAll('li, span, div, label, p, a, button, td, input')); var noLabel = null; for (var i = 0; i < allEls.length; i++) { var el = allEls[i]; var rect = el.getBoundingClientRect(); if (el.offsetParent === null && rect.width <= 0) continue; var t = (el.innerText || el.value || '').trim(); if (t === '无需标注' || (t.indexOf('无需标注') >= 0 && t.length < 20)) { if (!noLabel || el.querySelectorAll('*').length < noLabel.querySelectorAll('*').length) noLabel = el; } } if (!noLabel) { var ovDiag = containers.slice(0, 6).map(function(d) { return (d.className || '').toString().slice(0, 30) + ':' + (d.innerText || '').trim().slice(0, 100); }); var declDiag = allEls.filter(function(el2) { var rect2 = el2.getBoundingClientRect(); if (el2.offsetParent === null && rect2.width <= 0) return false; var t2 = (el2.innerText || '').trim(); return t2 && t2.length <= 25 && (t2.indexOf('声明') >= 0 || t2.indexOf('标注') >= 0 || t2.indexOf('AI') >= 0 || t2.indexOf('请选择') >= 0) && el2.children.length <= 2; }).slice(0, 15).map(function(el2) { return el2.tagName + '.' + (el2.className || '').toString().slice(0, 35) + ':' + (el2.innerText || '').trim().slice(0, 20); }); throw new Error('未找到无需标注选项(全文档搜索) 可见弹层:' + JSON.stringify(ovDiag) + ' 声明相关元素:' + JSON.stringify(declDiag)); } var clickTarget = noLabel; clickTarget.scrollIntoView({ block: 'center' }); await new Promise(function(r) { setTimeout(r, 300); }); clickTarget.setAttribute('data-jlyl-click', 'decl-nolabel'); return 'marked: ' + (clickTarget.innerText || '').trim();",
+          "value": "var containers = Array.from(document.querySelectorAll('.omui-dialog, [class*=dialog], [role=dialog], .omui-modal, [class*=modal], .omui-select-dropdown, [class*=dropdown], [class*=popover], [class*=options]')).filter(function(d) { return d.offsetParent !== null; }); var searchIn = document; var allEls = Array.from(searchIn.querySelectorAll('li, span, div, label, p, a, button, td, input')); var noLabel = null; for (var i = 0; i < allEls.length; i++) { var el = allEls[i]; var rect = el.getBoundingClientRect(); if (el.offsetParent === null && rect.width <= 0) continue; var t = (el.innerText || el.value || '').trim(); if (t === '无需标注' || (t.indexOf('无需标注') >= 0 && t.length < 20)) { if (!noLabel || el.querySelectorAll('*').length < noLabel.querySelectorAll('*').length) noLabel = el; } } if (!noLabel) { var ovDiag = containers.slice(0, 6).map(function(d) { return (d.className || '').toString().slice(0, 30) + ':' + (d.innerText || '').trim().slice(0, 100); }); var declDiag = allEls.filter(function(el2) { var rect2 = el2.getBoundingClientRect(); if (el2.offsetParent === null && rect2.width <= 0) return false; var t2 = (el2.innerText || '').trim(); return t2 && t2.length <= 25 && (t2.indexOf('声明') >= 0 || t2.indexOf('标注') >= 0 || t2.indexOf('AI') >= 0 || t2.indexOf('请选择') >= 0) && el2.children.length <= 2; }).slice(0, 15).map(function(el2) { return el2.tagName + '.' + (el2.className || '').toString().slice(0, 35) + ':' + (el2.innerText || '').trim().slice(0, 20); }); return 'no_nolabel_skip(诊断) 可见弹层:' + JSON.stringify(ovDiag) + ' 声明相关元素:' + JSON.stringify(declDiag); } var clickTarget = noLabel; clickTarget.scrollIntoView({ block: 'center' }); await new Promise(function(r) { setTimeout(r, 300); }); clickTarget.setAttribute('data-jlyl-click', 'decl-nolabel'); return 'marked: ' + (clickTarget.innerText || '').trim();",
           "descript": "v1.9.9 定位无需标注选项并打标记",
           "timeout": 5000
         },
@@ -114,7 +114,8 @@
           "type": "click",
           "selector": "[data-jlyl-click='decl-nolabel']",
           "force": true,
-          "descript": "v1.9.9 Playwright 真实点击选择无需标注",
+          "is_try": true,
+          "descript": "v1.9.10 Playwright 真实点击选择无需标注（上一步跳过时无标记元素，is_try 容错）",
           "timeout": 5000
         },
         {
