@@ -1,6 +1,6 @@
 {
   "platform": "wxgzh",
-  "version": "1.9.41",
+  "version": "1.9.42",
   "description": "微信公众号/服务号图文发布流程（v1.9.41：条件导航——登录预检已加载主页时跳过重复导航，消除「预检 home + 步骤 home」双重重页面加载的内存压力（连续 Page crashed 根因之一）；v1.9.40：版本号大幅提升以覆盖 guardian 递增版本，强制 seed 刷新）",
   "is_placeholder": false,
   "login_check_url": "https://mp.weixin.qq.com/cgi-bin/home",

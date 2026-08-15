@@ -1,6 +1,6 @@
 {
   "platform": "qeh",
-  "version": "1.9.9",
+  "version": "1.9.10",
   "description": "企鹅号图文发布流程（v1.9.9：自主声明设置与发布按钮全部改用 定位标记+Playwright真实点击——isTrusted=false 的 element.click() 无法触发 OmUI onClick，导致声明未生效、发布按钮30秒后仍可见）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
