@@ -47,8 +47,9 @@ jobs:
             echo "===== 6c. publish_step_list 当前版本(核查 seed 刷新) ====="
             docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT DISTINCT ON (platform) platform, version, modified_by FROM publish_step_list WHERE platform IN ('qeh','wxgzh') ORDER BY platform, id DESC;" || true
             echo ""
-            echo "===== 6d. 今晚新 record 状态(zh/tt/bjh/qeh/wxgzh) ====="
-            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT id,platform,status,retry_count,created_at AT TIME ZONE 'Asia/Shanghai' AS ts FROM publish_record WHERE id >= 1152 ORDER BY id;" || true
+            echo "===== 6d. 最近发布任务状态 + 各平台 record 明细 ====="
+            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT pt.id, pt.status AS task_status, pt.total_count, pt.completed_count, pt.failed_count FROM publish_task pt WHERE pt.id IN (SELECT DISTINCT task_id FROM publish_record WHERE id >= 1093) ORDER BY pt.id;" || true
+            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT pr.task_id, pr.id AS rec_id, pr.platform, pr.status, pr.retry_count, left(COALESCE(pr.error_msg,''),80) AS err FROM publish_record pr WHERE pr.task_id IN (SELECT DISTINCT task_id FROM publish_record WHERE id >= 1093) ORDER BY pr.task_id, pr.id;" || true
             echo ""
             echo "===== 7. worker 容器内进程 ====="
             docker exec jlyl-cloud-publish-worker ps aux 2>/dev/null | head -20 || echo "exec 失败"
