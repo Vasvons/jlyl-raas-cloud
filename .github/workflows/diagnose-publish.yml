@@ -1,0 +1,45 @@
+name: Diagnose Publish Worker
+
+# 手动触发的只读诊断：不重启任何服务，只采集状态
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH Diagnose
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 15m
+          script: |
+            echo "===== 1. 容器状态 ====="
+            cd /opt/jlyl-cloud
+            docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.RunningFor}}" | grep -E "publish|server|db|worker|NAMES"
+            echo ""
+            echo "===== 2. publish-worker 容器状态详情 ====="
+            docker inspect jlyl-cloud-publish-worker --format 'RestartCount={{.RestartCount}} OOMKilled={{.State.OOMKilled}} Status={{.State.Status}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}'
+            echo ""
+            echo "===== 3. publish-worker 最近日志(200行,含时间戳) ====="
+            docker logs jlyl-cloud-publish-worker --tail 200 --timestamps 2>&1 | tail -200
+            echo ""
+            echo "===== 4. record #1147 状态 ====="
+            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -x -c "SELECT id,platform,status,retry_count,platform_auth_id,started_at,published_at,left(COALESCE(error_msg,''),400) AS error_msg FROM publish_record WHERE id=1147;" || true
+            echo ""
+            echo "===== 5. wxgzh 账号池状态 ====="
+            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT id,name,status,health_status,publish_fail_count,publish_used_today,publish_daily_limit FROM platform_auth WHERE platform='wxgzh';" || true
+            echo ""
+            echo "===== 6. 今晚 wxgzh 相关飞轮事件(最近30条) ====="
+            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT created_at AT TIME ZONE 'Asia/Shanghai' AS ts, event_type, left(message,180) AS msg FROM flywheel_event_log WHERE (message LIKE '%1147%' OR message LIKE '%wxgzh%') AND created_at > NOW() - INTERVAL '3 hours' ORDER BY created_at DESC LIMIT 30;" || true
+            echo ""
+            echo "===== 7. worker 容器内进程 ====="
+            docker exec jlyl-cloud-publish-worker ps aux 2>/dev/null | head -20 || echo "exec 失败"
+            echo ""
+            echo "===== 8. 服务器内存 ====="
+            free -h
+            echo ""
+            echo "===== 9. server 日志尾部(50行,看 dequeue 诊断) ====="
+            docker logs jlyl-cloud-server --tail 300 --timestamps 2>&1 | grep -E "dequeue|publish|Guardian" | tail -50 || true
