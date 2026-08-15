@@ -112,23 +112,15 @@ export function getAntiDetectionArgs(): string[] {
     '--disable-webgl',
     '--disable-3d-apis',
 
-    // v3.13.16：阻止 viz 起独立 GPU 进程（14:07 轮再次实锤因果：GPU 进程 EGL 初始化
-    //   失败退出时刻 = loginpage renderer 崩溃时刻，两者相差 <100ms，多轮复现）。
-    //   关键认知：--disable-gpu 管不住 viz——日志报错来自 viz_main_impl（viz 仍起
-    //   GPU 进程做 EGL 初始化，Alpine chromium 无 SwiftShader 必败退出）。
-    //   --disable-gpu-compositing 强制渲染进程内软件合成，viz 不再需要 GPU 进程，
-    //   从根上消除「GPU 进程退出拖崩同时刻初始化的 renderer」这条链。
-    //   （若本轮仍崩，下一步方案：换 Playwright 自带 chromium——内置 SwiftShader，
-    //     GL 可真正初始化成功，GPU 进程存活；代价是镜像 +170MB）
-    '--disable-gpu-compositing',
-
-    // v3.13.17：ANGLE 走原生 GL 后端（配合镜像新装的 mesa swrast 软件渲染栈）
-    //   19:43 轮实锤 --disable-gpu-compositing 无效（新版 chromium 已移除该 flag，
-    //   viz 照起 GPU 进程照死）。参数路线全部失效，改为让 GL 真正可用：
-    //   Dockerfile 已加 mesa-dri-gallium-drivers（swrast/llvmpipe）+ EGL_PLATFORM=
-    //   surfaceless。--use-angle=gl 让 ANGLE 跳过必败的 Vulkan 枚举直接走 EGL/GL
-    //   软件路径 → EGL 初始化成功 → GPU 进程存活 → 崩溃链根除
-    '--use-angle=gl',
+    // v3.13.18：GPU 进程存活的最终方案（v3.13.16/17 两轮参数路线失败后的修正）
+    //   因果实锤：GPU 进程 EGL 初始化失败退出时刻 = wxgzh loginpage renderer 崩溃
+    //   时刻（相差 <100ms，多轮复现）；--disable-gpu / --disable-gpu-compositing /
+    //   --disable-vulkan 均管不住 viz 的 GPU 进程（新版 chromium 无视这些 flag）。
+    //   解法（Dockerfile 侧）：安装 chromium-swiftshader（Alpine 官方子包），补上
+    //   "eglInitialize SwANGLE failed" 缺失的 SwiftShader 库 → ANGLE 默认后端顺序
+    //   （Vulkan 失败 → SwANGLE 成功）让 GPU 进程真正存活。
+    //   本文件侧：不再传 --use-angle=gl / --use-angle=swiftshader（强制单一后端会
+    //   跳过默认回退顺序），让 ANGLE 自己走完「Vulkan 报错 → SwANGLE 成功」链路。
 
     // === 启动行为（不显示"首次运行"等弹窗） ===
     '--no-first-run',
