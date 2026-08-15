@@ -23,17 +23,14 @@ jobs:
             echo "===== 2. publish-worker 容器状态详情 ====="
             docker inspect jlyl-cloud-publish-worker --format 'RestartCount={{.RestartCount}} OOMKilled={{.State.OOMKilled}} Status={{.State.Status}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}} ExitCode={{.State.ExitCode}} Error={{.State.Error}}'
             echo ""
-            echo "===== 3a. wxgzh record 1147 今晚运行的完整 step 日志 ====="
-            docker logs jlyl-cloud-publish-worker --timestamps --since 2026-08-15T15:24:00Z 2>&1 | grep -A2 -B2 "1147" | head -120
+            echo "===== 3a. wxgzh record 1157 最新运行的完整 step 日志 ====="
+            docker logs jlyl-cloud-publish-worker --timestamps --since 2026-08-15T17:45:00Z 2>&1 | grep -A2 -B2 "1157" | head -120
             echo ""
-            echo "===== 3b. wxgzh input_files 上传细节(file input 清单/下载/setInputFiles) ====="
-            docker logs jlyl-cloud-publish-worker --timestamps --since 2026-08-15T15:24:00Z 2>&1 | grep -E "\[step\]|file input|下载|setInputFiles|cover" | head -80
+            echo "===== 3b. qeh record 1155 完整执行日志 ====="
+            docker logs jlyl-cloud-publish-worker --timestamps --since 2026-08-15T17:45:00Z 2>&1 | grep -A3 -B3 "1155" | head -150
             echo ""
-            echo "===== 3c. qeh record 1093/1145 自主声明分支执行日志 ====="
-            docker logs jlyl-cloud-publish-worker --timestamps --since 2026-08-15T15:19:00Z 2>&1 | grep -B3 -A8 "自主声明" | head -150
-            echo ""
-            echo "===== 3d. publish-worker 最近日志(150行,含时间戳) ====="
-            docker logs jlyl-cloud-publish-worker --tail 150 --timestamps 2>&1 | tail -150
+            echo "===== 3c. publish-worker 最近日志(200行,含时间戳) ====="
+            docker logs jlyl-cloud-publish-worker --tail 200 --timestamps 2>&1 | tail -200
             echo ""
             echo "===== 4. record #1147 状态 ====="
             docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -x -c "SELECT id,platform,status,retry_count,platform_auth_id,started_at,published_at,left(COALESCE(error_msg,''),400) AS error_msg FROM publish_record WHERE id=1147;" || true
