@@ -44,6 +44,15 @@ jobs:
             echo "===== 6. 今晚 wxgzh 相关飞轮事件(最近30条) ====="
             docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT created_at AT TIME ZONE 'Asia/Shanghai' AS ts, event_type, left(message,180) AS msg FROM flywheel_event_log WHERE (message LIKE '%1147%' OR message LIKE '%wxgzh%') AND created_at > NOW() - INTERVAL '3 hours' ORDER BY created_at DESC LIMIT 30;" || true
             echo ""
+            echo "===== 6b. 今晚全部 publish_* 事件(核查 zh/tt/bjh 成功事件是否上报) ====="
+            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT created_at AT TIME ZONE 'Asia/Shanghai' AS ts, event_type, left(message,150) AS msg FROM flywheel_event_log WHERE event_type LIKE 'publish%' AND created_at > NOW() - INTERVAL '4 hours' ORDER BY created_at DESC LIMIT 40;" || true
+            echo ""
+            echo "===== 6c. publish_step_list 当前版本(核查 seed 刷新) ====="
+            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT DISTINCT ON (platform) platform, version, modified_by FROM publish_step_list WHERE platform IN ('qeh','wxgzh') ORDER BY platform, id DESC;" || true
+            echo ""
+            echo "===== 6d. 今晚新 record 状态(zh/tt/bjh/qeh/wxgzh) ====="
+            docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "SELECT id,platform,status,retry_count,created_at AT TIME ZONE 'Asia/Shanghai' AS ts FROM publish_record WHERE id >= 1152 ORDER BY id;" || true
+            echo ""
             echo "===== 7. worker 容器内进程 ====="
             docker exec jlyl-cloud-publish-worker ps aux 2>/dev/null | head -20 || echo "exec 失败"
             echo ""
