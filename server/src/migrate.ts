@@ -2610,6 +2610,42 @@ export async function migrate() {
       console.warn('[Migrate] v2.5.34 修正 publish_task 终态失败（不阻断）:', e.message);
     }
 
+    // v3.13.21：修复 publish_task 计数残留导致「实际全部成功却显示部分完成」
+    // 根因：record「失败(计数+1) → 换号/手动重试成功(计数+1)」后 failed_count 不回退，
+    //       completed+failed >= total 且两者均 >0 → 错标 'partial'。
+    //       实锤：task 1021（qeh #1155 成功）与 task 1023（wxgzh #1157 成功）均显示部分完成。
+    // 修复：按 publish_record 实际状态全量重算计数与终态（幂等，每次启动执行）。
+    try {
+      const fixPartialResult = await client.query(
+        `UPDATE publish_task pt
+         SET completed_count = agg.completed,
+             failed_count = agg.failed,
+             status = CASE
+               WHEN agg.completed + agg.failed >= pt.total_count THEN
+                 CASE WHEN agg.failed = 0 THEN 'completed'
+                      WHEN agg.completed = 0 THEN 'failed'
+                      ELSE 'partial' END
+               WHEN agg.completed + agg.failed > 0 THEN 'processing'
+               ELSE pt.status
+             END
+         FROM (
+           SELECT task_id,
+                  COUNT(*) FILTER (WHERE status = 'success') AS completed,
+                  COUNT(*) FILTER (WHERE status = 'failed') AS failed
+           FROM publish_record
+           GROUP BY task_id
+         ) agg
+         WHERE pt.id = agg.task_id
+           AND (pt.completed_count != agg.completed OR pt.failed_count != agg.failed
+                OR (pt.status = 'partial' AND agg.failed = 0 AND agg.completed >= pt.total_count))`
+      );
+      if (fixPartialResult.rowCount && fixPartialResult.rowCount > 0) {
+        console.log(`[Migrate] v3.13.21 已按 record 实际状态重算 ${fixPartialResult.rowCount} 个 publish_task 的计数/状态`);
+      }
+    } catch (e: any) {
+      console.warn('[Migrate] v3.13.21 重算 publish_task 计数失败（不阻断）:', e.message);
+    }
+
     // ============ v2.5.36 阶段六：混合模式 Worker 分布式架构 ============
     // 1. 云端 worker 配额表（记录每个代理购买的并发配额，云端增强包 + 私有部署共用）
     await client.query(`

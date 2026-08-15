@@ -7420,31 +7420,40 @@ export async function getPublishTaskById(id: number): Promise<any | null> {
 export async function updatePublishTaskStatus(
   id: number,
   status: string,
-  completedDelta = 0,
-  failedDelta = 0
+  completedDelta = 0, // v3.13.21 起废弃，保留参数兼容旧调用
+  failedDelta = 0     // v3.13.21 起废弃，保留参数兼容旧调用
 ): Promise<void> {
-  // v2.5.34：原子地更新进度 + 自动判断终态，修复竞态条件导致的"进度条跑完但状态仍为 pending/processing"
-  //   原 bug：直接 SET status = $2，依赖 routes/content.ts 二次查询设置终态，
-  //   两个 worker 并发回写时二次查询可能漏掉终态设置。
-  //   现改为：在同一个 UPDATE 中用 CASE 根据 completed_count+failed_count vs total_count 自动判断。
+  // v3.13.21：改用 publish_record 实际状态全量重算（替代 v2.5.34 的增量 delta 方案）
+  //   原 bug：同一条 record「失败(failed_count+1) → 换号/手动重试成功(completed_count+1)」后，
+  //   failed_count 残留不清零 → completed+failed >= total 且两者都 >0 → 任务被错标
+  //   'partial'（部分完成），但实际所有 record 终态都是 success（实锤：task 1021/1023，
+  //   qeh #1155 与 wxgzh #1157 均成功却显示部分完成）。
+  //   全量重算按 record 当前状态聚合，重试成功后 failed 自动归位，同时天然消除并发竞态。
+  //   （v2.5.34 的注释历史：原子 CASE 判断终态，修复进度条跑完状态仍 pending 的竞态——该特性保留）
   await query(
-    `UPDATE publish_task
-     SET completed_count = completed_count + $3,
-         failed_count = failed_count + $4,
+    `UPDATE publish_task pt
+     SET completed_count = agg.completed,
+         failed_count = agg.failed,
          status = CASE
-           WHEN completed_count + $3 + failed_count + $4 >= total_count THEN
-             CASE WHEN failed_count + $4 = 0 THEN 'completed'
-                  WHEN completed_count + $3 = 0 THEN 'failed'
+           WHEN agg.completed + agg.failed >= pt.total_count THEN
+             CASE WHEN agg.failed = 0 THEN 'completed'
+                  WHEN agg.completed = 0 THEN 'failed'
                   ELSE 'partial' END
-           WHEN completed_count + $3 + failed_count + $4 > 0 THEN 'processing'
+           WHEN agg.completed + agg.failed > 0 THEN 'processing'
            ELSE $2
          END,
-         started_at = CASE WHEN started_at IS NULL AND (completed_count + $3 + failed_count + $4) > 0 THEN NOW() ELSE started_at END,
+         started_at = CASE WHEN started_at IS NULL AND agg.completed + agg.failed > 0 THEN NOW() ELSE started_at END,
          finished_at = CASE
-           WHEN completed_count + $3 + failed_count + $4 >= total_count THEN NOW()
+           WHEN agg.completed + agg.failed >= pt.total_count THEN NOW()
            ELSE finished_at END
-     WHERE id = $1`,
-    [id, status, completedDelta, failedDelta]
+     FROM (
+       SELECT COUNT(*) FILTER (WHERE status = 'success') AS completed,
+              COUNT(*) FILTER (WHERE status = 'failed') AS failed
+       FROM publish_record
+       WHERE task_id = $1
+     ) agg
+     WHERE pt.id = $1`,
+    [id, status]
   );
 }
 
