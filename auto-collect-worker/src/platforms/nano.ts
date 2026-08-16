@@ -125,13 +125,16 @@ export class NanoAdapter extends BasePlatformAdapter {
         logger.warn(`[纳米] 发送按钮选择器全部失败，遍历周边可点击元素（${candidates.length}个）: ${clickedSel}`);
         for (const cand of candidates) {
           const [tag, cls, aria] = cand.split('|');
-          const selector = tag === 'button' ? `button.${cls}` : `[class="${cls}"]`;
+          // v1.9.6: cls 可能含空格（多 class），取第一个无空格 token 构造选择器，
+          // 否则 [class="a b c"] 是无效选择器永远匹配不到。
+          const firstToken = (cls || '').split(' ')[0];
           try {
-            const el = await page.$(`button:has-text(""), [class*="${cls.slice(0, 20)}"]`).catch(() => null);
+            const el = await page.$(`button[class*="${firstToken}"], [class*="${firstToken}"]`).catch(() => null);
             if (el) {
               const visible = await el.isVisible().catch(() => false);
-              const enabled = await el.isEnabled().catch(() => true);
-              if (visible && enabled) {
+              // v1.9.6: 不强制 enabled——纳米发送按钮在输入后可能仍显示 disabled 样式，
+              // 但点击实际生效（实测 cursor-not-allowed 按钮点击成功发送）。
+              if (visible) {
                 await el.click({ timeout: 2000 }).catch(() => {});
                 await page.waitForTimeout(2500);
                 v = await this.readInputValue(page, activeSelector);

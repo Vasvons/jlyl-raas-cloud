@@ -85,31 +85,32 @@ export class DoubaoAdapter extends BasePlatformAdapter {
    *   阶段2: 轮询等待文本稳定（连续 2 次不变 = 生成完成），60 秒上限
    */
   async waitForResponse(page: Page): Promise<void> {
-    // v1.9.6: 豆包回答可能渲染在 iframe 中（诊断日志 iframes=1，主文档 main 只有侧边栏），
-    // 快照必须遍历所有 frame 的 body 文本，否则永远检测不到回答变化。
-    const snapshot = (): Promise<string> =>
-      page
-        .evaluate(() => {
-          const collectText = (): string => {
-            const parts: string[] = [];
-            // 主文档：优先取对话区域（排除侧边栏/工具栏），兜底 body
-            const main = document.querySelector('main') || document.body;
-            if (main) {
-              parts.push(((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim());
+    // v1.9.6: 豆包回答可能渲染在 iframe 中（诊断日志 iframes=1，主文档 main 只有侧边栏）。
+    // 用 page.frames() 遍历（可访问跨域 iframe，比 contentDocument 可靠）。
+    const snapshot = (): Promise<string> => {
+      const parts: string[] = [];
+      // 主文档
+      return page.evaluate(() => {
+        const main = document.querySelector('main') || document.body;
+        if (main) {
+          return ((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim().slice(0, 20000);
+        }
+        return '';
+      }).catch(() => '').then(async (mainText) => {
+        if (mainText) parts.push(mainText);
+        // 所有子 frame（含跨域）
+        const frames = page.frames().filter(f => f !== page.mainFrame());
+        for (const f of frames) {
+          try {
+            const bodyText = await f.evaluate(() => document.body?.innerText || '').catch(() => '');
+            if (bodyText && bodyText.trim()) {
+              parts.push(bodyText.replace(/\s+/g, ' ').trim().slice(0, 20000));
             }
-            // iframe 内容（豆包聊天区常渲染在 iframe 中）
-            const frames = document.querySelectorAll('iframe');
-            for (let i = 0; i < frames.length; i++) {
-              const doc = frames[i].contentDocument;
-              if (doc && doc.body) {
-                parts.push((doc.body.innerText || '').replace(/\s+/g, ' ').trim());
-              }
-            }
-            return parts.filter(Boolean).join(' | ').slice(0, 30000);
-          };
-          return collectText();
-        })
-        .catch(() => '');
+          } catch { /* 跨域限制忽略 */ }
+        }
+        return parts.filter(Boolean).join(' | ').slice(0, 30000);
+      });
+    };
     const baseline = await snapshot();
     // 阶段1: 等待回答开始生成（文本变化）
     const deadline1 = Date.now() + 30000;
@@ -161,11 +162,10 @@ export class DoubaoAdapter extends BasePlatformAdapter {
    * 重写：优先从 iframe 内按 responseSelector 提取，失败再回退主文档。
    */
   async extractContent(page: Page): Promise<{ text: string; html: string }> {
-    // 先尝试从 iframe 中提取
+    // 先尝试从 iframe 中提取（page.frames() 可访问跨域 iframe）
     try {
-      const frames = page.frames();
+      const frames = page.frames().filter(f => f !== page.mainFrame());
       for (const frame of frames) {
-        if (frame === page.mainFrame()) continue;
         try {
           const hasContent = await frame.$(this.responseSelector).catch(() => null);
           if (hasContent) {
