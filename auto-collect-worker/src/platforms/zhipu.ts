@@ -97,8 +97,11 @@ export class ZhipuAdapter extends BasePlatformAdapter {
       }
     }
 
-    // 步骤3: 如果按钮点击成功，检查拦截到的 URL
+    // 步骤3: 如果按钮点击成功，先二次点击弹出菜单中的「复制链接」项
+    // v1.9.4: share-icon 点击后弹出下拉菜单，必须二次点击「复制对话链接/复制链接」才写剪贴板
+    // （实地日志 2026-08-17：点击 share-icon 成功但剪贴板始终无捕获，即缺此步骤）
     if (clickedBtn) {
+      await this.clickShareMenuItem(page);
       const capturedUrl = await this.getCapturedShareUrl(page, '/share/');
       if (capturedUrl) {
         console.log(`[智谱AI] 从 clipboard 拦截到分享链接: ${capturedUrl}`);

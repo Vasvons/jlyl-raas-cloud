@@ -85,6 +85,16 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       return null;
     }
 
+    // 步骤3.4: v1.9.4 分享按钮点击后先尝试二次点击弹出菜单中的「复制链接」项
+    // （实地日志 2026-08-17：点击 [aria-label*="分享"] 成功但剪贴板无捕获，
+    //   弹出的是下拉菜单而非 Tab 面板时，必须二次点击菜单项才复制链接）
+    await this.clickShareMenuItem(page);
+    const earlyCaptured = await this.getCapturedShareUrl(page, '/s/');
+    if (earlyCaptured) {
+      console.log(`[腾讯元宝] 二次点击菜单后捕获分享链接: ${earlyCaptured}`);
+      return earlyCaptured;
+    }
+
     // 步骤3.5: 元宝分享弹窗可能是"长图/链接"Tab 式，先尝试切换到"链接"Tab
     // （默认可能停在长图模式，直接点"复制"会复制图片而非链接）
     // v1.9.4: 扩展 Tab 选择器（实地反馈 2026-08-17 切 Tab 未命中，弹窗结构已变化）

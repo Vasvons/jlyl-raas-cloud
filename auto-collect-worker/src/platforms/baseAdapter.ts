@@ -154,6 +154,70 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     return false;
   }
 
+  /**
+   * 快速扫描页面 DOM 中是否存在任何分享相关元素（v1.9.4）
+   * 含隐藏元素（querySelector 不受 display:none 影响）。
+   * 用于分享提取前提前短路：DOM 中完全不存在分享入口时（平台改版移除分享），
+   * 不再执行多轮 hover 扫描（通义千问实测每次浪费 30+ 秒），直接走静态页兜底。
+   * 扫描异常时返回 true（不短路，保守执行完整提取流程）。
+   */
+  protected async hasAnyShareElement(page: Page): Promise<boolean> {
+    try {
+      return await page.evaluate(() => {
+        const direct = document.querySelectorAll(
+          '[class*="share"]:not([class*="shared"]):not([class*="sharing"]), [aria-label*="分享"], [aria-label*="share" i], [title*="分享"], [title*="share" i], [data-testid*="share"], [data-id*="share"]'
+        );
+        if (direct.length > 0) return true;
+        const btns = document.querySelectorAll('button, a, [role="button"]');
+        for (let i = 0; i < btns.length; i++) {
+          const b = btns[i];
+          const t = (b.textContent || '').trim();
+          if (t === '分享' || t === 'Share' || t.includes('复制链接') || t.includes('复制对话链接')) return true;
+        }
+        return false;
+      }).catch(() => true);
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * 点击分享按钮后，查找并点击新弹出菜单/浮层中的「复制链接」类菜单项（v1.9.4）
+   * 智谱/元宝等平台点击分享图标后会弹出下拉菜单或分享面板，
+   * 必须二次点击菜单中的「复制链接/复制对话链接」才会写入剪贴板。
+   * 仅点击新出现的可见元素，选择器从精确到宽泛排列。
+   */
+  protected async clickShareMenuItem(page: Page): Promise<boolean> {
+    await page.waitForTimeout(1000);
+    const menuSelectors = [
+      'button:has-text("复制对话链接")',
+      ':text-is("复制对话链接")',
+      'button:has-text("复制链接")',
+      ':text-is("复制链接")',
+      '[class*="menu"] :text-is("复制链接")',
+      '[class*="dropdown"] :text-is("复制链接")',
+      '[class*="popover"] :text-is("复制链接")',
+      '[class*="modal"] :text-is("复制链接")',
+      '[role="menuitem"]:has-text("复制")',
+      '[class*="dialog"] button:has-text("复制")',
+      '[class*="modal"] button:has-text("复制")',
+    ];
+    for (const sel of menuSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          const visible = await el.isVisible().catch(() => false);
+          if (!visible) continue;
+          await el.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(1500);
+          console.log(`[${this.platformName}] 二次点击分享菜单项成功: ${sel}`);
+          return true;
+        }
+      } catch { /* 继续 */ }
+    }
+    return false;
+  }
+
   async query(page: Page, keyword: string): Promise<QueryResult> {
     // 导航到聊天页（新对话）
     // 使用 networkidle 等待 SPA 页面 JS 渲染完成（比 domcontentloaded 更可靠）

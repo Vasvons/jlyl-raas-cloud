@@ -46,14 +46,85 @@ export class DoubaoAdapter extends BasePlatformAdapter {
           const enabled = await btn.isEnabled().catch(() => true);
           if (visible && enabled) {
             await btn.click({ timeout: 3000 });
+            console.log(`[豆包] 点击发送按钮: ${sel}`);
             return;
           }
         }
       } catch { /* 继续尝试下一个选择器 */ }
     }
+    // 未找到已知发送按钮：转储输入区周边按钮结构，便于下轮精确定位
+    try {
+      const dump = await page.evaluate(() => {
+        const editor = document.querySelector('div[aria="doc_editor"]') || document.querySelector('textarea');
+        let container: HTMLElement | null = editor ? (editor as HTMLElement).parentElement : null;
+        for (let i = 0; i < 4 && container; i++) {
+          const btns = container.querySelectorAll('button, [role="button"]');
+          if (btns.length > 0) {
+            return Array.from(btns).slice(0, 8).map((b) => {
+              const r = (b as HTMLElement).getBoundingClientRect();
+              return `<${b.tagName.toLowerCase()} class="${((b as HTMLElement).className || '').toString().slice(0, 60)}" aria="${b.getAttribute('aria-label') || ''}" tid="${b.getAttribute('data-testid') || ''}" pos=(${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}x${Math.round(r.height)})`;
+            }).join(' | ');
+          }
+          container = container.parentElement;
+        }
+        return '';
+      }).catch(() => '');
+      if (dump) console.log(`[豆包] 未找到发送按钮，输入区周边按钮转储: ${dump}`);
+    } catch { /* 忽略 */ }
     // 兜底：所有发送按钮选择器失败时回退 Enter
     console.log('[豆包] 未找到可点击的发送按钮，回退 Enter 提交');
     await page.keyboard.press('Enter');
+  }
+
+  /**
+   * v1.9.4 重写：停止按钮等待不可靠（[class*="stop"] 误匹配无关 class，等待立即通过），
+   * 导致 AI 回答还没生成就开始提取、抓到侧边栏文本被污染拦截。
+   * 改为「文本变化检测」：
+   *   阶段1: 轮询等待主区域文本相对基线变化（回答开始生成），30 秒超时
+   *   阶段2: 轮询等待文本稳定（连续 2 次不变 = 生成完成），60 秒上限
+   */
+  async waitForResponse(page: Page): Promise<void> {
+    const snapshot = (): Promise<string> =>
+      page
+        .evaluate(() => {
+          const main = document.querySelector('main') || document.body;
+          return ((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim().slice(0, 20000);
+        })
+        .catch(() => '');
+    const baseline = await snapshot();
+    // 阶段1: 等待回答开始生成（文本变化）
+    const deadline1 = Date.now() + 30000;
+    let changed = false;
+    while (Date.now() < deadline1) {
+      await page.waitForTimeout(3000);
+      const cur = await snapshot();
+      if (cur && cur !== baseline && Math.abs(cur.length - baseline.length) > 30) {
+        changed = true;
+        break;
+      }
+    }
+    if (!changed) {
+      console.log('[豆包] 30秒内未检测到回答文本变化（可能未真正发送），继续走内容校验');
+      return;
+    }
+    // 阶段2: 等待流式生成完成（文本稳定）
+    const deadline2 = Date.now() + 60000;
+    let last = '';
+    let stable = 0;
+    while (Date.now() < deadline2) {
+      await page.waitForTimeout(4000);
+      const cur = await snapshot();
+      if (cur === last) {
+        stable++;
+        if (stable >= 2) {
+          console.log('[豆包] 回答文本已稳定，生成完成');
+          return;
+        }
+      } else {
+        stable = 0;
+      }
+      last = cur;
+    }
   }
 
   async extractShareLink(page: Page): Promise<string | null> {

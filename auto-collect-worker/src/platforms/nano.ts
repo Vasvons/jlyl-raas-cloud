@@ -33,6 +33,83 @@ export class NanoAdapter extends BasePlatformAdapter {
   protected sidebarMarkers = ['人聊过', '首页', '大模型', '智能体', '知识库', 'AI写作', 'AI修图', '新对话'];
 
   /**
+   * v1.9.4: 纳米发送修复
+   * 实地日志（2026-08-17）：Enter 提交后输入框文本未清空——纳米的 contenteditable
+   * 输入框 Enter 不发送（历史 1756 条记录全是广场文本，说明从未真正发送过）。
+   * 策略：Enter → 常见发送按钮 → Ctrl+Enter，每步后检查输入框是否清空；
+   * 全部失败时转储输入框周边按钮结构到日志，便于下轮精确定位发送按钮。
+   */
+  protected async submitInput(page: Page, activeSelector: string): Promise<void> {
+    // 尝试1: Enter
+    await page.press(activeSelector, 'Enter');
+    await page.waitForTimeout(2500);
+    let v = await this.readInputValue(page, activeSelector);
+    if (!v || !v.trim()) return;
+
+    // 尝试2: 常见发送按钮选择器
+    const sendSelectors = [
+      'button[class*="send"]',
+      '[class*="send-btn"]',
+      '[class*="sendBtn"]',
+      '[data-testid*="send"]',
+      'button[aria-label*="发送"]',
+      'button[title*="发送"]',
+      'button[type="submit"]',
+    ];
+    for (const sel of sendSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          const visible = await btn.isVisible().catch(() => false);
+          const enabled = await btn.isEnabled().catch(() => true);
+          if (visible && enabled) {
+            await btn.click({ timeout: 3000 });
+            await page.waitForTimeout(2500);
+            v = await this.readInputValue(page, activeSelector);
+            if (!v || !v.trim()) {
+              console.log(`[纳米] 点击发送按钮成功: ${sel}`);
+              return;
+            }
+          }
+        }
+      } catch { /* 继续尝试下一个选择器 */ }
+    }
+
+    // 尝试3: Ctrl+Enter（部分平台快捷键发送）
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(2500);
+    v = await this.readInputValue(page, activeSelector);
+    if (!v || !v.trim()) {
+      console.log('[纳米] Ctrl+Enter 发送成功');
+      return;
+    }
+
+    // 全部失败：转储输入框周边按钮，便于下轮定位发送按钮
+    try {
+      const dump = await page.evaluate((sel: string) => {
+        const input = document.querySelector(sel);
+        if (!input) return '';
+        let container: HTMLElement | null = input.parentElement;
+        for (let i = 0; i < 4 && container; i++) {
+          const btns = container.querySelectorAll('button, [role="button"]');
+          if (btns.length > 0) {
+            return Array.from(btns).slice(0, 8).map((b) => {
+              const r = (b as HTMLElement).getBoundingClientRect();
+              return `<${b.tagName.toLowerCase()} class="${((b as HTMLElement).className || '').toString().slice(0, 60)}" aria="${b.getAttribute('aria-label') || ''}" title="${b.getAttribute('title') || ''}" tid="${b.getAttribute('data-testid') || ''}" txt="${(b.textContent || '').trim().slice(0, 10)}" pos=(${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}x${Math.round(r.height)})`;
+            }).join(' | ');
+          }
+          container = container.parentElement;
+        }
+        return '';
+      }, activeSelector).catch(() => '');
+      if (dump) console.log(`[纳米] 发送失败，输入框周边按钮转储: ${dump}`);
+    } catch { /* 忽略 */ }
+
+    // 最终兜底：再按一次 Enter（由 base 的 verifySubmission 做最终校验并报错）
+    await page.press(activeSelector, 'Enter');
+  }
+
+  /**
    * v1.9: 纳米分享链接提取
    *
    * 流程：hover AI 总结区域 → 操作栏/顶部出现"分享"按钮 → 点击 → 复制链接到剪贴板 或 弹窗显示链接

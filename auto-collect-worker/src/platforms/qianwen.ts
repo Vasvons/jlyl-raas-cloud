@@ -25,6 +25,14 @@ export class QianwenAdapter extends BasePlatformAdapter {
    *   - Toast 提示："对话链接已复制至粘贴板"
    */
   async extractShareLink(page: Page): Promise<string | null> {
+    // v1.9.4 提前短路：实地日志（2026-08-17）确认新版千问页面 DOM 中完全不存在
+    // 任何分享元素（含隐藏元素），多轮 hover 扫描每次浪费 30+ 秒且必然失败。
+    // 无分享入口时直接返回 null，由云端生成静态页兜底。
+    if (!(await this.hasAnyShareElement(page))) {
+      console.log('[通义千问] 页面 DOM 中无任何分享元素（新版可能已移除分享入口），跳过分享提取');
+      return null;
+    }
+
     // 步骤1: 注入 clipboard + execCommand 拦截
     await this.injectClipboardInterceptor(page, ['/share/']);
 
