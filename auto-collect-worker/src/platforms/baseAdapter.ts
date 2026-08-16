@@ -351,28 +351,36 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
     // v1.9.7: 分享面板结构诊断升级——找不到复制链接时，转储「页面所有可见可点击元素」，
     // 暴露真实分享面板按钮（智谱/元宝分享面板可能是自绘覆盖层，class 不含 menu/modal/dialog）
+    // v1.9.8: 按 z-index 排序 + 过滤屏幕中部元素，跳过侧边栏/导航噪音（上一版被侧边栏图标占满）
     try {
       const allBtnDump = await page.evaluate(() => {
-        const results: string[] = [];
-        const els = document.querySelectorAll('button, a[href], [role="button"], [class*="btn"], [class*="icon"], [class*="action"], [class*="item"], [class*="link"], [class*="copy"], [class*="share"]');
-        for (let i = 0; i < els.length && results.length < 25; i++) {
+        const results: Array<{ z: number; desc: string }> = [];
+        const els = document.querySelectorAll('button, a[href], [role="button"], [class*="btn"], [class*="icon"], [class*="action"], [class*="item"], [class*="link"], [class*="copy"], [class*="share"], [class*="modal"], [class*="dialog"], [class*="popup"], [class*="overlay"]');
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        for (let i = 0; i < els.length; i++) {
           const el = els[i] as HTMLElement;
           const rect = el.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0) continue;
           if (rect.width < 16 || rect.height < 16) continue;
           const style = window.getComputedStyle(el);
           if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-          const text = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 16);
+          // 排除完全在视口外的元素
+          if (rect.left > vw || rect.top > vh || rect.right < 0 || rect.bottom < 0) continue;
+          const z = Number(style.zIndex) || 0;
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 14);
           const cls = (el.className || '').toString().slice(0, 40);
           const aria = el.getAttribute('aria-label') || '';
           const title = el.getAttribute('title') || '';
           const tid = el.getAttribute('data-testid') || '';
-          results.push(`<${el.tagName.toLowerCase()} class="${cls}" aria="${aria.slice(0, 20)}" title="${title.slice(0, 20)}" tid="${tid.slice(0, 20)}" text="${text}" pos=(${Math.round(rect.left)},${Math.round(rect.top)})>`);
+          results.push({ z, desc: `<${el.tagName.toLowerCase()} z=${z} class="${cls}" aria="${aria.slice(0, 18)}" title="${title.slice(0, 18)}" tid="${tid.slice(0, 18)}" text="${text}" pos=(${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)})` });
         }
-        return results.join(' | ');
+        // 按 z-index 降序，取前 30
+        results.sort((a, b) => b.z - a.z);
+        return results.slice(0, 30).map(r => r.desc).join(' | ');
       }).catch(() => '');
       if (allBtnDump) {
-        logger.warn(`[${this.platformName}] 页面可见可点击元素全量转储(前25): ${allBtnDump}`);
+        logger.warn(`[${this.platformName}] 页面可点击元素按z-index转储(前30): ${allBtnDump}`);
       }
     } catch { /* 忽略 */ }
 
