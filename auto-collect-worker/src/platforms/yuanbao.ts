@@ -87,7 +87,16 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
 
     // 步骤3.5: 元宝分享弹窗可能是"长图/链接"Tab 式，先尝试切换到"链接"Tab
     // （默认可能停在长图模式，直接点"复制"会复制图片而非链接）
-    for (const tabSel of ['[class*="tab"]:has-text("链接")', 'div:has-text("链接分享")', '[role="tab"]:has-text("链接")']) {
+    // v1.9.4: 扩展 Tab 选择器（实地反馈 2026-08-17 切 Tab 未命中，弹窗结构已变化）
+    for (const tabSel of [
+      '[class*="tab"]:has-text("链接")',
+      '[role="tab"]:has-text("链接")',
+      '[class*="tab-item"]:has-text("链接")',
+      '[class*="Tab"]:has-text("链接")',
+      'div[class*="share"] :text("链接分享")',
+      'div:has-text("链接分享")',
+      'span:has-text("链接")',
+    ]) {
       try {
         const tab = await page.$(tabSel);
         if (tab) {
@@ -102,11 +111,16 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
     }
 
     // 步骤4: 查找并点击"复制链接"按钮
+    // v1.9.4: 扩展选择器（button 之外补充 div/span/role=button，弹窗按钮不一定是 <button>）
     const copyBtnSelectors = [
       'button:has-text("复制链接")',
       'button:has-text("复制")',
       'button:has-text("Copy")',
       '[class*="copy-link"]',
+      '[role="button"]:has-text("复制")',
+      'div[class*="btn"]:has-text("复制")',
+      'span[class*="btn"]:has-text("复制")',
+      'div[class*="button"]:has-text("复制")',
       '[class*="copy"]',
     ];
     for (const sel of copyBtnSelectors) {
@@ -133,6 +147,22 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
     // 步骤6: 兜底 — 从弹窗中提取
     const dialogUrl = await this.extractShareUrlFromDialog(page, '/s/');
     if (dialogUrl) return dialogUrl;
+
+    // v1.9.4: 提取失败时转储当前弹窗/浮层文本，便于下轮定位弹窗结构
+    try {
+      const layerText = await page.evaluate(() => {
+        const texts: string[] = [];
+        for (const el of Array.from(document.querySelectorAll('[class*="modal"], [class*="dialog"], [class*="popover"], [class*="popup"], [class*="share"]'))) {
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) {
+            const t = (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 200);
+            if (t) texts.push(t);
+          }
+        }
+        return texts.join(' || ').slice(0, 500);
+      }).catch(() => '');
+      if (layerText) console.log(`[腾讯元宝] 分享弹窗内容转储: ${layerText}`);
+    } catch { /* 忽略 */ }
 
     await page.keyboard.press('Escape').catch(() => {});
     console.log('[腾讯元宝] 未能提取到分享链接');

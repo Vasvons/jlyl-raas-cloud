@@ -27,6 +27,10 @@ export class NanoAdapter extends BasePlatformAdapter {
   protected responseSelector = 'li.js-message-item, [data-testid^="msg-"], .answer-content, .ai-summary, [class*="ai-summary"], [class*="answer-content"]';
   protected stopButtonSelector = '[class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
+  // v1.9.4: 纳米侧边栏/广场污染标记——实地诊断（2026-08-17）登录后停留智能体广场，
+  // 抓到"像素化你的人生...1474人聊过..."等广场文本入库（609字符，能绕过长度检查）
+  // 命中 2 个以上广场/框架标记即判定污染，抛错不入库
+  protected sidebarMarkers = ['人聊过', '首页', '大模型', '智能体', '知识库', 'AI写作', 'AI修图', '新对话'];
 
   /**
    * v1.9: 纳米分享链接提取

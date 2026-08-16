@@ -93,6 +93,49 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     await page.press(activeSelector, 'Enter');
   }
 
+  /** 读取输入框当前文本（textarea/input 用 value，contenteditable 用 innerText） */
+  protected async readInputValue(page: Page, selector: string): Promise<string> {
+    try {
+      return await page.$eval(selector, (el: any) => {
+        if (el && (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT')) return el.value || '';
+        return (el && (el.innerText || el.textContent)) || '';
+      }).catch(() => '');
+    } catch {
+      return '';
+    }
+  }
+
+  /**
+   * 提交结果验证（v1.9.4）
+   *
+   * 实地诊断（2026-08-17 豆包）：点击发送按钮后查询可能仍未真正发送
+   * （发送按钮选择器误匹配其他按钮），随后 waitForResponse 超时、extractContent
+   * 抓到侧边栏文本，被污染拦截连续失败 5 次触发熔断。
+   *
+   * 绝大多数聊天平台提交成功后会清空输入框。本方法在提交后检查输入框：
+   * - 输入框已清空 → 提交成功，直接返回
+   * - 输入框仍保留完整关键词 → 疑似未发送，用 Enter 兜底重发一次
+   * - 重发后仍未清空 → 抛"提交失败"（普通失败，不标记账号 offline）
+   */
+  protected async verifySubmission(page: Page, activeSelector: string, keyword: string): Promise<void> {
+    const kw = keyword.trim();
+    if (!kw) return;
+    await page.waitForTimeout(3000);
+    let value = await this.readInputValue(page, activeSelector);
+    if (!value || !value.includes(kw)) return; // 输入框已清空 → 提交成功
+    console.warn(`[${this.platformName}] 提交后输入框未清空，疑似未真正发送，尝试 Enter 兜底重发`);
+    try {
+      await page.press(activeSelector, 'Enter');
+    } catch {
+      /* 输入框可能已失焦，忽略 */
+    }
+    await page.waitForTimeout(3000);
+    value = await this.readInputValue(page, activeSelector);
+    if (value && value.includes(kw)) {
+      throw new Error(`提交失败: 发送后输入框文本未清空，查询未真正发送（关键词=${kw.substring(0, 20)}）`);
+    }
+  }
+
   /** 检测当前页面是否为游客模式首页（命中任一可见特征元素即返回 true） */
   protected async detectGuestMode(page: Page): Promise<boolean> {
     if (this.guestIndicators.length === 0) return false;
@@ -371,11 +414,30 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // 提交（v1.9.3：改为钩子方法，豆包等平台需要点击发送按钮而非按 Enter）
     await this.submitInput(page, activeSelector);
 
+    // v1.9.4: 提交结果验证——输入框未清空说明查询未真正发送，Enter 兜底重发/抛错
+    await this.verifySubmission(page, activeSelector, keyword);
+
     // 等待 AI 回答完成
     await this.waitForResponse(page);
 
     // 提取内容
-    const { text, html } = await this.extractContent(page);
+    let { text, html } = await this.extractContent(page);
+
+    // v1.9.4: 内容过短（<200字符）可能是回答仍在流式生成或提取时机过早，
+    // 等待 15 秒后重新提取一次，取更长的结果（智谱实测 162 字符即问题复现）
+    if (text.trim().length < 200) {
+      console.warn(`[${this.platformName}] 首次提取内容过短(${text.trim().length}字符)，等待15秒后重试提取...`);
+      await page.waitForTimeout(15000);
+      try {
+        const retry = await this.extractContent(page);
+        if (retry.text.trim().length > text.trim().length) {
+          text = retry.text;
+          html = retry.html;
+        }
+      } catch {
+        /* 重试失败保留首次结果 */
+      }
+    }
 
     // ============ 侧边栏文本污染校验（v1.9.3 重要）============
     // 实地诊断（2026-08-16 豆包）：提交失败（如豆包需点发送按钮而非 Enter）时

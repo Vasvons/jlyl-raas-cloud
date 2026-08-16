@@ -19,7 +19,7 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   // 历史问题：[data-testid="message_text_content"] 偶发匹配不到，走兜底被截断到 10000
   // 改进：覆盖更多选择器，加上 [class*="flow-markdown"] 和 div[data-testid] 的通用匹配
   // 如果都匹配不到，baseAdapter 的兜底会用 smartFindLongestContent 找最长文本
-  protected responseSelector = '[class*="receive-message"], [class*="message-content"], [class*="message_text"], [data-testid="message_text_content"], [class*="answer"], [class*="bubble-content"], [class*="chat-content"], [class*="flow-markdown"], [class*="markdown-body"], [class*="render-content"], div[class*="content-wrapper"]';
+  protected responseSelector = '[data-testid="receive_message"], [class*="receive-message"], [class*="message-content"], [class*="message_text"], [data-testid="message_text_content"], [class*="answer"], [class*="bubble-content"], [class*="chat-content"], [class*="flow-markdown"], [class*="markdown-body"], [class*="render-content"], div[class*="content-wrapper"]';
   // 停止按钮：参考 auth helper 的 div[class*="break-btn"]
   protected stopButtonSelector = '[class*="break-btn"], [data-testid="stop_button"], .stop-btn, [class*="stop"], [class*="Stop"]';
   protected loginUrlPattern = 'login';

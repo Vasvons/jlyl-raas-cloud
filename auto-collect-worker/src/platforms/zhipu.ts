@@ -30,7 +30,7 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   supportsShare = true;
   // 简单选择器（24-25 号可工作的配置）
   protected inputSelector = 'textarea';
-  protected responseSelector = '.markdown-body, [class*="message"], [class*="answer"]';
+  protected responseSelector = '.markdown-body, [class*="markdown"], [class*="message"], [class*="answer"], [class*="msg-content"], [class*="msg_content"]';
   protected stopButtonSelector = '[class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
 
