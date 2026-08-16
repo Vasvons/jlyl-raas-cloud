@@ -3269,7 +3269,13 @@ async function createWritingTaskFromAutoTask(
   });
 
   // 10. 创建写作任务
-  const taskName = task.task_name || `[AEO自动] 品牌#${task.brand_id || 0} 写作任务 ${new Date().toISOString().slice(0, 10)}`;
+  // v3.13.22：命名恢复 v3.13 重构前的信息量（[AEO自动] + 信源类型 + 日期）
+  //   原 v3.13 直接用 auto_writing_task.task_name：老客户任务由 cloud_api_config 迁移而来，
+  //   名为「历史自动写作配置」，逐日创建的写作任务全部同名且丢失 [AEO自动]/信源/日期上下文，
+  //   写作任务列表无法区分（用户实锤反馈）。现命名为：[AEO自动] 周报驱动·任务名 2026-08-16。
+  const sourceLabel = periodType === 'daily' ? '日报' : periodType === 'weekly' ? '周报' : '月报';
+  const autoTaskLabel = (String(task.task_name || '').trim()) || `品牌#${task.brand_id || 0}`;
+  const taskName = `[AEO自动] ${sourceLabel}驱动·${autoTaskLabel} ${new Date().toISOString().slice(0, 10)}`;
   const taskId = await createWritingTask({
     user_id: userIdNum,
     task_name: taskName,
