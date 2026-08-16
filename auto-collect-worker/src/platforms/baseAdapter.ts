@@ -260,7 +260,9 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           await this.waitForResponse(page);
           // 提取内容
           const { text, html } = await this.extractContent(page);
-          const shareUrl = await this.extractShareLink(page);
+          const rawShareUrl = await this.extractShareLink(page);
+          // v1.9: 分享链接公开性验证——无登录访客看不到内容的链接判定为私有，降级静态页
+          const shareUrl = rawShareUrl ? await this.verifyShareLinkPublic(page, rawShareUrl, text) : null;
           return {
             content: text,
             shareUrl,
@@ -315,7 +317,9 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
     // 提取内容
     const { text, html } = await this.extractContent(page);
-    const shareUrl = await this.extractShareLink(page);
+    const rawShareUrl = await this.extractShareLink(page);
+    // v1.9: 分享链接公开性验证——无登录访客看不到内容的链接判定为私有，降级静态页
+    const shareUrl = rawShareUrl ? await this.verifyShareLinkPublic(page, rawShareUrl, text) : null;
 
     // ============ 账号异常检测（v1.8+ 重要）============
     // 查询成功但内容异常短，通常意味着账号登录态失效或 token 过期
@@ -514,18 +518,89 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   }
 
   /**
-   * 检查当前页面URL是否本身就是可分享的对话URL
-   * 部分平台发送消息后URL会变为包含对话ID的链接，该链接即为分享链接
+   * v1.9: 分享链接公开可见性验证
    *
-   * 8个平台的对话/分享URL格式：
-   * - DeepSeek:  https://chat.deepseek.com/c/{id}  或 /chat/{id}
-   * - 豆包:      https://www.doubao.com/chat/{数字ID}（对话URL即分享URL）
-   * - 通义千问:  私有对话URL不可直接分享，需点击分享按钮获取 share?shareId={UUID}（见 QianwenAdapter.extractShareLink）
-   * - 文心一言:  https://yiyan.baidu.com/chat/{id} 或 /artifactShare/{短码}
-   * - Kimi:      https://kimi.moonshot.cn/chats/{chatId} 或 /share/{shareId}
-   * - 智谱清言:  https://chatglm.cn/share/{8位短码}
-   * - 腾讯元宝:  https://yuanbao.tencent.com/chat/{id}
-   * - 纳米:      https://www.n.cn/share/{type}?id={shareId}
+   * 背景：豆包/腾讯元宝等平台的分享链接策略收紧——分享页需要登录才能查看内容，
+   * 未登录访客打开只看到页面框架（菜单栏/工具栏/UI元素），看不到 AI 回答。
+   * Worker 用登录态捕获到的链接对客户（未登录）无效。
+   *
+   * 策略：用无登录态的干净 BrowserContext 打开分享链接（模拟客户视角），
+   * 检查页面是否包含回答内容的验证片段：
+   * - 包含 → 链接公开有效，返回链接
+   * 不包含（重试1次后仍失败）→ 判定为私有链接，返回 null（云端自动生成静态页兜底）
+   * - 验证流程自身异常 → 信任链接（不阻塞主流程）
+   *
+   * 子类可通过 verifyShareLink = false 关闭（如已知分享必然公开的平台）
+   */
+  protected verifyShareLink = true;
+
+  protected async verifyShareLinkPublic(page: Page, shareUrl: string, content: string): Promise<string | null> {
+    if (!this.verifyShareLink) return shareUrl;
+
+    const snippet = this.extractVerifySnippet(content);
+    if (!snippet) {
+      // 内容太短无法提取验证片段，信任链接
+      return shareUrl;
+    }
+
+    let ctx: any = null;
+    try {
+      const browser = page.context().browser();
+      if (!browser) return shareUrl;
+
+      // 无 storageState 的干净 context = 未登录访客视角
+      ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+      // 拦截图片/字体/媒体资源，降低内存与流量开销
+      await ctx.route(
+        '**/*.{png,jpg,jpeg,gif,webp,svg,ico,woff,woff2,ttf,mp4,webm}',
+        (route: any) => route.abort().catch(() => {})
+      );
+      const p = await ctx.newPage();
+
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await p.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
+          await p.waitForTimeout(3000); // 等待 SPA 渲染
+          const bodyText = await p.evaluate(() =>
+            (document.body?.innerText || '').replace(/\s+/g, '')
+          ).catch(() => '');
+          if (bodyText.includes(snippet)) {
+            logger.info(`[${this.platformName}] 分享链接验证通过(公开可见): ${shareUrl}`);
+            return shareUrl;
+          }
+          // 分享链接可能延迟生效，第一次失败后等待重试
+          if (attempt === 0) await p.waitForTimeout(3000);
+        } catch (e: any) {
+          if (attempt === 1) logger.warn(`[${this.platformName}] 分享链接验证访问失败: ${e.message}`);
+        }
+      }
+
+      logger.warn(`[${this.platformName}] 分享链接验证失败(未登录访客看不到内容，判定私有链接，降级静态页): ${shareUrl}`);
+      return null;
+    } catch (e: any) {
+      // 验证流程自身异常（无法创建 context 等），信任链接不阻塞主流程
+      logger.warn(`[${this.platformName}] 分享链接验证流程异常(信任链接): ${e.message}`);
+      return shareUrl;
+    } finally {
+      await ctx?.close().catch(() => {});
+    }
+  }
+
+  /** 从回答内容提取验证片段：取中段 40 字符纯文本（去空白和 markdown 符号） */
+  private extractVerifySnippet(content: string): string | null {
+    const clean = content.replace(/\s+/g, '').replace(/[#*`>\[\]()~|]/g, '');
+    if (clean.length < 60) return null;
+    const start = Math.floor(clean.length * 0.3);
+    return clean.substring(start, start + 40);
+  }
+
+  /**
+   * 检查当前页面URL是否本身就是分享URL
+   *
+   * v1.9 重要修正：移除了所有「私有对话URL」模式（/chat/{id}、/c/{id}、/chats/{id}、
+   * conversationId/chatId/sessionId 查询参数等）。这些对话URL只有登录账号本人可见，
+   * 未登录访客打开只显示页面框架（菜单栏/工具栏），历史上导致了大量坏链。
+   * 仅保留显式分享操作的 URL 模式（/share/、/artifactShare/、shareId=）。
    */
   protected async getCurrentPageShareUrl(page: Page): Promise<string | null> {
     try {
@@ -535,33 +610,20 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         return null;
       }
 
-      // 各平台的对话/分享 URL 模式
-      const conversationPatterns = [
-        // DeepSeek: /c/{id} 或 /chat/{id} 或 /a/chat/s/{uuid}（新格式）
-        /\/c\/[a-zA-Z0-9_-]{8,}/,
-        /\/chat\/[a-zA-Z0-9_-]{8,}/,
-        /\/a\/chat\/s\/[a-zA-Z0-9_-]{8,}/,
-        // 豆包: /chat/{数字ID}（对话URL即分享URL）
-        /\/chat\/\d{6,}/,
-        // 通义千问: /qianwen/{id} 或 /share?shareId={UUID}
-        /\/qianwen\/[a-zA-Z0-9_-]{8,}/,
+      // 仅匹配显式分享 URL 模式（对未登录访客公开）
+      const sharePatterns = [
+        // 通义千问: /share/chat/{id} 或 ?shareId={UUID}
+        /\/share\/chat\/[a-zA-Z0-9_-]{8,}/,
         /[?&]shareId=[a-zA-Z0-9-]{8,}/,
-        // 文心一言: /chat/{id} 或 /artifactShare/{短码}
+        // 文心一言: /artifactShare/{短码}
         /\/artifactShare\/[a-zA-Z0-9_-]{4,}/,
-        // Kimi: /chats/{chatId} 或 /share/{shareId}
-        /\/chats\/[a-zA-Z0-9_-]{8,}/,
-        /\/share\/[a-zA-Z0-9_-]{8,}/,
-        // 智谱清言: /share/{8位短码}
-        /\/share\/[a-zA-Z0-9_-]{4,}/,
-        // 腾讯元宝: /chat/{id}
-        // 已被上面的 /chat/{id} 覆盖
         // 纳米: /share/{type}?id={shareId}
         /\/share\/[a-zA-Z0-9_-]+\?id=[a-zA-Z0-9_-]{4,}/,
-        // 通用查询参数模式
-        /[?&](?:conversationId|sessionId|chatId)=[a-zA-Z0-9_-]{8,}/,
+        // 通用显式分享: /share/{token}（DeepSeek/Kimi/智谱/豆包，点击分享按钮后生成）
+        /\/share\/[a-zA-Z0-9_-]{8,}/,
       ];
 
-      for (const pattern of conversationPatterns) {
+      for (const pattern of sharePatterns) {
         if (pattern.test(url)) {
           return url;
         }

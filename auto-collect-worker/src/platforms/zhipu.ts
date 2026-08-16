@@ -47,22 +47,55 @@ export class ZhipuAdapter extends BasePlatformAdapter {
    */
   async extractShareLink(page: Page): Promise<string | null> {
     // 步骤1: 注入 clipboard.writeText 拦截脚本
-    await this.injectClipboardInterceptor(page, ['/share/', 'chatglm.cn', 'http']);
+    // v1.9: 只匹配 /share/ 分享路径（之前还匹配 'http'，任何 URL 复制都会被误捕获）
+    await this.injectClipboardInterceptor(page, ['/share/']);
 
     // 步骤2: 健壮地查找并点击"复制对话链接"按钮
-    const clickedBtn = await this.findAndClickShareButton(page, [
+    let clickedBtn = await this.findAndClickShareButton(page, [
       'button:has-text("复制对话链接")',
       'button:has-text("复制链接")',
       '[class*="share"]:has-text("复制")',
-      '[aria-label*="复制"]',
+      '[aria-label*="复制对话"]',
+      '[aria-label*="复制链接"]',
       '[aria-label*="分享"]',
-      '[aria-label*="链接"]',
+      '[title*="分享"]',
+      '[title*="复制链接"]',
       '[class*="share"]:not([class*="shared"])',
       '[class*="copy-link"]',
       '[class*="copyLink"]',
       '[data-testid*="share"]',
       '[data-testid*="copy"]',
     ], ['复制对话链接', '复制链接', '分享', 'share', 'copy']);
+
+    // 步骤2.5: 首次未找到时，hover 消息区域触发操作栏后重试（v1.9）
+    // 智谱消息操作栏（含分享图标）hover 回答区域才显示
+    if (!clickedBtn) {
+      console.log('[智谱AI] 顶部未找到分享按钮，尝试 hover 消息区域后重试...');
+      const answerSelectors = ['.markdown-body', '[class*="message-content"]', '[class*="answer"]', '[class*="assistant"]'];
+      let hoveredAny = false;
+      for (const sel of answerSelectors) {
+        if (hoveredAny) break;
+        try {
+          const elements = await page.$$(sel);
+          for (let i = elements.length - 1; i >= 0; i--) {
+            const visible = await elements[i].isVisible().catch(() => false);
+            if (visible) {
+              await elements[i].hover({ timeout: 2000 }).catch(() => {});
+              await page.waitForTimeout(1200);
+              hoveredAny = true;
+              break;
+            }
+          }
+        } catch { /* 继续 */ }
+      }
+      if (hoveredAny) {
+        clickedBtn = await this.findAndClickShareButton(page, [
+          '[class*="share"]:not([class*="shared"])',
+          '[aria-label*="分享"]',
+          '[title*="分享"]',
+        ], ['分享', 'share']);
+      }
+    }
 
     // 步骤3: 如果按钮点击成功，检查拦截到的 URL
     if (clickedBtn) {
@@ -76,7 +109,8 @@ export class ZhipuAdapter extends BasePlatformAdapter {
       if (dialogUrl) return dialogUrl;
     }
 
-    // 步骤4: 兜底从当前页面 URL 提取 /share/{短码}
+    // 步骤4: 兜底从当前页面 URL 提取显式分享 URL（/share/{短码}）
+    // v1.9: getCurrentPageShareUrl 已移除私有对话URL模式，仅匹配显式分享链接，安全
     const currentUrl = await this.getCurrentPageShareUrl(page);
     if (currentUrl) {
       console.log(`[智谱AI] 从当前 URL 提取到分享链接: ${currentUrl}`);

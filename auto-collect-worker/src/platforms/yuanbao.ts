@@ -21,9 +21,12 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
     // 流程：hover 回答 → 点击分享按钮 → 分享菜单弹窗 → 复制链接
 
     // 步骤1: 注入 clipboard + execCommand 拦截
-    await this.injectClipboardInterceptor(page, ['/s/', 'yuanbao.tencent.com']);
+    // v1.9: 只匹配 /s/ 分享路径（之前还匹配域名，任何含域名的复制文本都会被误捕获）
+    await this.injectClipboardInterceptor(page, ['/s/']);
 
     // 步骤2: hover 在 AI 回答区域上，触发操作栏显示
+    // v1.9 修复：hover 成功一个元素后立即停止——之前会继续 hover 兜底选择器（main 等），
+    // 鼠标被移走导致已显示的操作栏消失，分享按钮永远找不到
     const answerSelectors = [
       '.agent-chat__msg__content',
       '[class*="chat-content"]',
@@ -34,7 +37,9 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       'main', '[class*="chat"]', '[class*="conversation"]',
     ];
 
+    let hoveredAny = false;
     for (const sel of answerSelectors) {
+      if (hoveredAny) break;
       try {
         const elements = await page.$$(sel);
         for (let i = elements.length - 1; i >= 0; i--) {
@@ -42,6 +47,7 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
           if (visible) {
             await elements[i].hover({ timeout: 2000 }).catch(() => {});
             await page.waitForTimeout(1500);
+            hoveredAny = true;
             break;
           }
         }
@@ -77,6 +83,22 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       if (captured) return captured;
       await page.keyboard.press('Escape').catch(() => {});
       return null;
+    }
+
+    // 步骤3.5: 元宝分享弹窗可能是"长图/链接"Tab 式，先尝试切换到"链接"Tab
+    // （默认可能停在长图模式，直接点"复制"会复制图片而非链接）
+    for (const tabSel of ['[class*="tab"]:has-text("链接")', 'div:has-text("链接分享")', '[role="tab"]:has-text("链接")']) {
+      try {
+        const tab = await page.$(tabSel);
+        if (tab) {
+          const visible = await tab.isVisible().catch(() => false);
+          if (!visible) continue;
+          await tab.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(1000);
+          console.log(`[腾讯元宝] 切换到链接分享 Tab: ${tabSel}`);
+          break;
+        }
+      } catch { /* 继续 */ }
     }
 
     // 步骤4: 查找并点击"复制链接"按钮

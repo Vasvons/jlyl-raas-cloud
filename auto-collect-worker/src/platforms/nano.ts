@@ -12,18 +12,111 @@ import { BasePlatformAdapter } from './baseAdapter';
  *   2. 兜底用 smartFindLongestContent 找最长文本块
  *   3. 限制最少 200 字符，过短则继续等待或走兜底
  *
- * 纳米不支持分享，shareUrl 返回 null，由云端生成静态页
+ * v1.9: 支持分享链接提取（supportsShare=true），提取失败时由云端生成静态页
  */
 export class NanoAdapter extends BasePlatformAdapter {
   platformName = '纳米';
   loginUrl = 'https://www.n.cn/';
   chatUrl = 'https://www.n.cn/chat';
-  supportsShare = false;
+  // v1.9: n.cn 支持分享（分享链接格式 https://www.n.cn/share/{type}?id={shareId}）
+  // 之前 supportsShare=false 导致从未尝试提取分享链接，一直走静态页
+  supportsShare = true;
   protected inputSelector = 'textarea, input[type="text"]';
   // 保留选择器用于 waitForSelector，实际提取在 extractContent 中重写
   protected responseSelector = '.answer-content, .ai-summary, .result-content, .summary-content, .ai-answer, .bot-answer, .reply-content, [class*="ai-summary"], [class*="answer-content"], [class*="summary-content"], [class*="ai-answer"], [class*="bot-answer"], [class*="answer"]';
   protected stopButtonSelector = '[class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
+
+  /**
+   * v1.9: 纳米分享链接提取
+   *
+   * 流程：hover AI 总结区域 → 操作栏/顶部出现"分享"按钮 → 点击 → 复制链接到剪贴板 或 弹窗显示链接
+   * 拦截 pattern 只匹配 /share/（n.cn 分享路径）
+   */
+  async extractShareLink(page: Page): Promise<string | null> {
+    // 步骤1: 注入 clipboard + execCommand 拦截
+    await this.injectClipboardInterceptor(page, ['/share/']);
+
+    // 步骤2: hover AI 总结区域，触发操作栏显示
+    const answerSelectors = [
+      '.answer-content',
+      '.ai-summary',
+      '[class*="ai-summary"]',
+      '[class*="answer-content"]',
+      '[class*="answer"]',
+      // 兜底
+      'main', '[class*="chat"]',
+    ];
+    let hoveredAny = false;
+    for (const sel of answerSelectors) {
+      if (hoveredAny) break;
+      try {
+        const elements = await page.$$(sel);
+        for (let i = elements.length - 1; i >= 0; i--) {
+          const visible = await elements[i].isVisible().catch(() => false);
+          if (visible) {
+            await elements[i].hover({ timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(1200);
+            hoveredAny = true;
+            break;
+          }
+        }
+      } catch { /* 继续 */ }
+    }
+
+    // 步骤3: 查找并点击分享按钮
+    const shareBtnClicked = await this.findAndClickShareButton(page, [
+      'button:has-text("分享")',
+      '[aria-label*="分享"]',
+      '[title*="分享"]',
+      '[class*="share"]:not([class*="shared"])',
+      '[data-testid*="share"]',
+    ], ['分享', 'Share', 'share']);
+
+    // 即使按钮没找到，也检查是否有剪贴板捕获（部分页面点其他元素也会触发分享）
+    if (!shareBtnClicked) {
+      const preCaptured = await this.getCapturedShareUrl(page, '/share/');
+      if (preCaptured) return preCaptured;
+      console.log('[纳米] 未找到分享按钮');
+      return null;
+    }
+
+    // 步骤4: 分享面板出现后，点击"复制链接"按钮（如果有）
+    await page.waitForTimeout(1000);
+    const copyBtnSelectors = [
+      'button:has-text("复制链接")',
+      'button:has-text("复制")',
+      '[class*="copy-link"]',
+    ];
+    for (const sel of copyBtnSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          const visible = await btn.isVisible().catch(() => false);
+          if (!visible) continue;
+          await btn.click({ timeout: 3000 }).catch(() => {});
+          await page.waitForTimeout(2000);
+          console.log(`[纳米] 点击复制链接按钮成功: ${sel}`);
+          break;
+        }
+      } catch { /* 继续 */ }
+    }
+
+    // 步骤5: 从拦截到的剪贴板内容提取 URL
+    const capturedUrl = await this.getCapturedShareUrl(page, '/share/');
+    if (capturedUrl) {
+      console.log(`[纳米] 从剪贴板拦截到分享链接: ${capturedUrl}`);
+      return capturedUrl;
+    }
+
+    // 步骤6: 兜底 — 从弹窗中提取
+    const dialogUrl = await this.extractShareUrlFromDialog(page, '/share/');
+    if (dialogUrl) return dialogUrl;
+
+    await page.keyboard.press('Escape').catch(() => {});
+    console.log('[纳米] 未能提取到分享链接');
+    return null;
+  }
 
   /**
    * 重写 extractContent：精确提取纳米 AI 总结正文

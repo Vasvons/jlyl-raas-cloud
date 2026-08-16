@@ -23,9 +23,11 @@ export class QianwenAdapter extends BasePlatformAdapter {
    */
   async extractShareLink(page: Page): Promise<string | null> {
     // 步骤1: 注入 clipboard + execCommand 拦截
-    await this.injectClipboardInterceptor(page, ['/share/', 'qianwen.com']);
+    await this.injectClipboardInterceptor(page, ['/share/']);
 
     // 步骤2: hover 在 AI 回答区域上，触发 share-selection 按钮显示
+    // v1.9 修复：hover 成功一个元素后立即停止——之前会继续 hover 兜底选择器（main 等），
+    // 鼠标被移走导致已显示的操作栏消失，分享按钮永远找不到
     const answerSelectors = [
       '.answer-area',
       '.markdown-body',
@@ -36,7 +38,9 @@ export class QianwenAdapter extends BasePlatformAdapter {
       'main', '[class*="chat"]', '[class*="conversation"]',
     ];
 
+    let hoveredAny = false;
     for (const sel of answerSelectors) {
+      if (hoveredAny) break;
       try {
         const elements = await page.$$(sel);
         for (let i = elements.length - 1; i >= 0; i--) {
@@ -44,6 +48,7 @@ export class QianwenAdapter extends BasePlatformAdapter {
           if (visible) {
             await elements[i].hover({ timeout: 2000 }).catch(() => {});
             await page.waitForTimeout(1500);
+            hoveredAny = true;
             break;
           }
         }
@@ -51,10 +56,12 @@ export class QianwenAdapter extends BasePlatformAdapter {
     }
 
     // 步骤3: 健壮地查找并点击分享按钮
+    // v1.9: 补充 hover 后新式操作栏的图标按钮匹配（title/aria-label 含"分享"的 SVG 图标按钮）
     const shareBtnClicked = await this.findAndClickShareButton(page, [
       '[class*="share-selection"]',
       'button:has-text("分享")',
       '[aria-label*="分享"]',
+      '[title*="分享"]',
       '[data-testid*="share"]',
       '[class*="icon-share"]',
       '[class*="share"]:not([class*="shared"])',
@@ -81,12 +88,14 @@ export class QianwenAdapter extends BasePlatformAdapter {
     }
 
     // 步骤4: 如果进入了多选模式，查找底部"分享"按钮
+    // v1.9: 先等待可能的选择面板出现，再确认
+    await page.waitForTimeout(1000);
     const confirmBtnSelectors = [
-      'button:has-text("分享")',
       'button:has-text("确认分享")',
       'button:has-text("生成链接")',
       'button:has-text("复制链接")',
       '[class*="share-confirm"]',
+      'button:has-text("分享")',
     ];
     for (const sel of confirmBtnSelectors) {
       try {

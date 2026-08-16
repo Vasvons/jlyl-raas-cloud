@@ -33,6 +33,8 @@ export class DoubaoAdapter extends BasePlatformAdapter {
     await this.injectClipboardInterceptor(page, ['/share/', 'doubao.com']);
 
     // 步骤2: hover 在 AI 回答区域上，触发操作栏显示
+    // v1.9 修复：hover 成功一个元素后立即停止——之前会继续 hover 兜底选择器（main 等），
+    // 鼠标被移走导致已显示的操作栏消失，分享按钮永远找不到
     const answerSelectors = [
       '[class*="receive-message"]',
       '[class*="message-content"]',
@@ -43,7 +45,9 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       'main', '[class*="chat"]', '[class*="conversation"]',
     ];
 
+    let hoveredAny = false;
     for (const sel of answerSelectors) {
+      if (hoveredAny) break;
       try {
         const elements = await page.$$(sel);
         for (let i = elements.length - 1; i >= 0; i--) {
@@ -51,6 +55,7 @@ export class DoubaoAdapter extends BasePlatformAdapter {
           if (visible) {
             await elements[i].hover({ timeout: 2000 }).catch(() => {});
             await page.waitForTimeout(1500);
+            hoveredAny = true;
             break;
           }
         }

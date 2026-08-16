@@ -62,6 +62,8 @@ export class KimiAdapter extends BasePlatformAdapter {
       'button:has-text("分享对话")',
       '[aria-label*="分享"]',
       '[aria-label*="share"]',
+      '[title*="分享"]',
+      '[title*="share" i]',
       '[class*="share"]:not([class*="share-text"]):not([class*="shared"])',
       '[data-testid*="share"]',
       // Kimi 的 toolbar 中的分享按钮
@@ -88,6 +90,30 @@ export class KimiAdapter extends BasePlatformAdapter {
       if (captured) return captured;
       await page.keyboard.press('Escape').catch(() => {});
       return null;
+    }
+
+    // 步骤3.5: v1.9 — 点击分享按钮后，Kimi 可能弹出分享面板，需再点击"复制链接"按钮
+    // （之前缺少此步骤：弹窗式分享必须显式点"复制链接"才会写入剪贴板）
+    await page.waitForTimeout(1200);
+    const copyBtnSelectors = [
+      'button:has-text("复制链接")',
+      'button:has-text("复制")',
+      'button:has-text("Copy link")',
+      'button:has-text("Copy")',
+      '[class*="copy-link"]',
+    ];
+    for (const sel of copyBtnSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          const visible = await btn.isVisible().catch(() => false);
+          if (!visible) continue;
+          await btn.click({ timeout: 3000 }).catch(() => {});
+          await page.waitForTimeout(2000);
+          console.log(`[Kimi] 点击复制链接按钮成功: ${sel}`);
+          break;
+        }
+      } catch { /* 继续 */ }
     }
 
     // 步骤4: 从拦截到的剪贴板内容提取 URL

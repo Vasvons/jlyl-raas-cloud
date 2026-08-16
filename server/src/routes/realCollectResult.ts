@@ -121,6 +121,14 @@ router.post('/cleanup-invalid', async (req, res) => {
         AND share_url NOT LIKE '%shareId=%'
         AND share_url NOT LIKE '%/artifactShare/%'`;
       description = '清理私有对话URL（非真正分享链接）的记录';
+    } else if (mode === 'login_wall_share') {
+      // v1.9: 清理豆包/腾讯元宝的"登录墙"分享链接记录
+      // 背景：两平台分享策略收紧——分享页需登录才能查看内容，
+      // 未登录访客打开只显示页面框架（菜单栏/工具栏/UI元素），看不到 AI 回答。
+      // Worker v1.9 已增加分享链接公开性验证（验证失败降级静态页），
+      // 此模式清理验证机制上线前已入库的坏链接记录，删除后新一轮巡检自动补齐。
+      whereClause = `platform IN ('豆包', '腾讯元宝') AND share_url IS NOT NULL`;
+      description = '清理豆包/腾讯元宝需登录查看的分享链接记录（Worker 已降级静态页）';
     } else if (mode === 'aggressive') {
       // 激进模式：额外清理
       // 1. content > 5000 字符（真实 AI 回答一般不超过 5000，超过说明是整页文本）
