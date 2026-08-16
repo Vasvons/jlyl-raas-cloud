@@ -1,4 +1,5 @@
 import { Page } from 'playwright';
+import * as logger from '../logger';
 import { BasePlatformAdapter } from './baseAdapter';
 
 /** Kimi 适配器 */
@@ -80,6 +81,7 @@ export class KimiAdapter extends BasePlatformAdapter {
       // 兜底：尝试 hover 所有 message 元素后重新扫描
       console.log('[Kimi] 首次扫描未找到分享按钮，尝试 hover 所有消息元素后重新扫描...');
       const allMessages = await page.$$('[class*="message"], [class*="chat-content"], [class*="conversation-turn"]');
+      let shareClicked = false;
       for (let i = allMessages.length - 1; i >= 0; i--) {
         try {
           const visible = await allMessages[i].isVisible().catch(() => false);
@@ -87,7 +89,55 @@ export class KimiAdapter extends BasePlatformAdapter {
           await allMessages[i].hover({ timeout: 1000 }).catch(() => {});
           await page.waitForTimeout(800);
           const clicked = await this.findAndClickShareButton(page, [], ['分享', 'Share', 'share']);
-          if (clicked) break;
+          if (clicked) { shareClicked = true; break; }
+
+          // v1.9.6: Kimi 新版（K3）操作栏是纯图标按钮（无文字/aria），
+          // 标准选择器匹配不到。hover 后扫描消息下方/附近出现的图标按钮，
+          // 逐个点击试探（点击分享类图标会弹出分享面板或复制链接）。
+          if (!shareClicked) {
+            const iconBtn = await page.evaluate(() => {
+              const candidates = document.querySelectorAll(
+                'button, [role="button"], [class*="icon"], [class*="toolbar"] *, [class*="action"] *, [class*="btn"]'
+              );
+              // 只看可见且尺寸小的按钮（图标按钮通常 < 40px）
+              for (let j = 0; j < candidates.length; j++) {
+                const el = candidates[j] as HTMLElement;
+                const rect = el.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) continue;
+                if (rect.width > 48 || rect.height > 48) continue;
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                // 排除输入框相关
+                if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') continue;
+                // 排除已有明确文字的按钮（如"发送"）
+                const txt = (el.innerText || '').trim();
+                if (txt && txt.length > 0 && txt.length < 6) continue;
+                return `${el.tagName.toLowerCase()}|${(el.className || '').toString().slice(0, 40)}|${el.getAttribute('aria-label') || ''}|${el.getAttribute('title') || ''}`;
+              }
+              return '';
+            }).catch(() => '');
+            if (iconBtn) {
+              const [tag, cls, aria, title] = iconBtn.split('|');
+              logger.warn(`[Kimi] 尝试点击操作栏图标: class="${cls}" aria="${aria}" title="${title}"`);
+              // 优先用 class 定位并点击
+              const btn = await page.$(`[class*="${cls.split(' ')[0]}"]`).catch(() => null);
+              if (btn) {
+                const bVisible = await btn.isVisible().catch(() => false);
+                if (bVisible) {
+                  await btn.click({ timeout: 2000 }).catch(() => {});
+                  await page.waitForTimeout(1500);
+                  // 点击后检查：剪贴板捕获 / 分享面板出现
+                  const cap = await this.getCapturedShareUrl(page, '/share/');
+                  if (cap) return cap;
+                  const dl = await this.extractShareUrlFromDialog(page, '/share/');
+                  if (dl) return dl;
+                  // 没触发分享则关闭可能的浮层
+                  await page.keyboard.press('Escape').catch(() => {});
+                  await page.waitForTimeout(500);
+                }
+              }
+            }
+          }
         } catch { /* 继续 */ }
       }
       // 最终检查 clipboard

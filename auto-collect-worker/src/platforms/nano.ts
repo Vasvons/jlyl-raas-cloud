@@ -85,6 +85,67 @@ export class NanoAdapter extends BasePlatformAdapter {
       return;
     }
 
+    // 尝试4 (v1.9.6): 遍历输入框周边的所有可点击元素（button/a/[role]/div 图标），
+    // 逐个点击并检查输入框是否清空——纳米发送按钮可能不是标准 button（图标 div 或 SVG 按钮）
+    try {
+      const clickedSel = await page.evaluate((sel: string) => {
+        const input = document.querySelector(sel);
+        if (!input) return '';
+        // 从输入框向上找容器，收集周边可点击元素
+        let container: HTMLElement | null = input.parentElement;
+        const clickables: HTMLElement[] = [];
+        for (let i = 0; i < 5 && container; i++) {
+          const els = Array.from(container.querySelectorAll<HTMLElement>(
+            'button, a[href], [role="button"], [class*="btn"], [class*="send"], [class*="send-btn"], [class*="submit"], svg[class*="icon"], [data-testid*="send"], [data-testid*="submit"]'
+          ));
+          for (const el of els) {
+            if (!clickables.includes(el)) clickables.push(el);
+          }
+          container = container.parentElement;
+        }
+        // 排除输入框自身
+        const filtered = clickables.filter(el => el !== input && !el.contains(input) && !(el as HTMLElement).isContentEditable);
+        // 按离输入框距离排序（近的优先）
+        const inputRect = input.getBoundingClientRect();
+        filtered.sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          const da = Math.abs(ra.left - inputRect.left) + Math.abs(ra.top - inputRect.top);
+          const db = Math.abs(rb.left - inputRect.left) + Math.abs(rb.top - inputRect.top);
+          return da - db;
+        });
+        // 返回前 5 个可见元素的描述（供外层逐个点击）
+        return filtered.slice(0, 5).map(el => {
+          const r = el.getBoundingClientRect();
+          return `${el.tagName.toLowerCase()}|${(el.className || '').toString().slice(0, 40)}|${el.getAttribute('aria-label') || ''}|${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}x${Math.round(r.height)}`;
+        }).join('||');
+      }, activeSelector).catch(() => '');
+      if (clickedSel) {
+        const candidates = clickedSel.split('||').filter(Boolean);
+        logger.warn(`[纳米] 发送按钮选择器全部失败，遍历周边可点击元素（${candidates.length}个）: ${clickedSel}`);
+        for (const cand of candidates) {
+          const [tag, cls, aria] = cand.split('|');
+          const selector = tag === 'button' ? `button.${cls}` : `[class="${cls}"]`;
+          try {
+            const el = await page.$(`button:has-text(""), [class*="${cls.slice(0, 20)}"]`).catch(() => null);
+            if (el) {
+              const visible = await el.isVisible().catch(() => false);
+              const enabled = await el.isEnabled().catch(() => true);
+              if (visible && enabled) {
+                await el.click({ timeout: 2000 }).catch(() => {});
+                await page.waitForTimeout(2500);
+                v = await this.readInputValue(page, activeSelector);
+                if (!v || !v.trim()) {
+                  logger.info(`[纳米] 遍历点击成功: ${cls || aria || tag}`);
+                  return;
+                }
+              }
+            }
+          } catch { /* 继续 */ }
+        }
+      }
+    } catch { /* 忽略 */ }
+
     // 全部失败：转储输入框周边按钮，便于下轮定位发送按钮
     try {
       const dump = await page.evaluate((sel: string) => {

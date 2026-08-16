@@ -254,6 +254,101 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         }
       } catch { /* 继续 */ }
     }
+
+    // v1.9.6: 智谱/元宝等平台的分享面板是自绘弹层（class 不含 menu/dropdown/popover/modal），
+    // 上方选择器匹配不到。改为扫描页面当前「所有可见按钮」，匹配含 复制/链接/link/copy 文本的，
+    // 同时兼容图标按钮（aria-label/title 含 复制/分享链接）。
+    try {
+      const scanResult = await page.evaluate(() => {
+        const keywords = ['复制', '链接', 'copy', 'link', 'Copy', 'Link', '分享链接', '复制链接', '复制对话链接'];
+        const btns = document.querySelectorAll('button, a[href], [role="button"], [class*="btn"], [class*="button"], [class*="item"], [class*="action"]');
+        const results: string[] = [];
+        for (let i = 0; i < btns.length && results.length < 12; i++) {
+          const el = btns[i] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+          const aria = el.getAttribute('aria-label') || '';
+          const title = el.getAttribute('title') || '';
+          const cls = (el.className || '').toString();
+          const combined = text + ' ' + aria + ' ' + title;
+          // 只匹配"明确是分享/复制"的元素，避免误点「复制文本内容」等普通按钮
+          const isShareCopy = /复制链接|复制对话链接|分享链接|复制链接|copy link|copylink|copy conversation|分享对话|生成分享链接/i.test(combined) ||
+            (keywords.some(k => combined.includes(k)) && /分享|share/i.test(combined));
+          if (!isShareCopy) continue;
+          // 排除文案过长的普通按钮
+          if (text.length > 15 && !/复制链接|分享链接|复制对话链接/.test(text)) continue;
+          results.push(`<${el.tagName.toLowerCase()} class="${cls.slice(0, 40)}" aria="${aria.slice(0, 30)}" title="${title.slice(0, 30)}" text="${text.slice(0, 20)}" pos=(${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)})`);
+        }
+        return results;
+      }).catch(() => []);
+      if (scanResult.length > 0) {
+        logger.warn(`[${this.platformName}] 分享面板按钮扫描找到 ${scanResult.length} 个候选，尝试逐个点击...`);
+        for (const desc of scanResult.slice(0, 6)) {
+          try {
+            // 解析描述中的 class，构造选择器
+            const clsMatch = desc.match(/class="([^"]*)"/);
+            const txtMatch = desc.match(/text="([^"]*)"/);
+            let target: any = null;
+            if (clsMatch && clsMatch[1]) {
+              const cls = clsMatch[1];
+              // class 可能含特殊字符，用属性选择器
+              target = await page.$(`[class*="${cls.split(' ')[0]}"]`).catch(() => null);
+            }
+            if (!target && txtMatch && txtMatch[1]) {
+              target = await page.$(`button:has-text("${txtMatch[1]}")`).catch(() => null);
+            }
+            if (target) {
+              const visible = await target.isVisible().catch(() => false);
+              if (!visible) continue;
+              await target.click({ timeout: 2000 }).catch(() => {});
+              await page.waitForTimeout(1500);
+              logger.info(`[${this.platformName}] 分享面板按钮点击成功: ${desc}`);
+              return true;
+            }
+          } catch { /* 继续 */ }
+        }
+      }
+    } catch { /* 忽略 */ }
+
+    // v1.9.6: 分享面板若直接展示链接 input（readonly），直接从面板中读值
+    try {
+      const linkVal = await page.evaluate(() => {
+        const inputs = document.querySelectorAll('input[readonly], input[class*="link"], input[class*="url"], [class*="share-link"], [class*="link-input"], [class*="copy-link-input"]');
+        for (let i = 0; i < inputs.length; i++) {
+          const el = inputs[i] as HTMLInputElement;
+          const val = el.value || '';
+          if (val && val.startsWith('http')) return val;
+          const text = (el.textContent || '').trim();
+          if (text.startsWith('http')) return text;
+        }
+        return '';
+      }).catch(() => '');
+      if (linkVal) {
+        logger.info(`[${this.platformName}] 从分享面板链接输入框直接读取到: ${linkVal}`);
+        // 尝试触发复制（点击链接 input 选中后 Ctrl+C 或直接返回链接）
+        try {
+          await page.evaluate(() => {
+            const inputs = document.querySelectorAll('input[readonly], input[class*="link"], input[class*="url"], [class*="share-link"]');
+            for (let i = 0; i < inputs.length; i++) {
+              const el = inputs[i] as HTMLInputElement;
+              if (el.value && el.value.startsWith('http')) {
+                el.focus();
+                el.select();
+                break;
+              }
+            }
+          }).catch(() => {});
+          await page.keyboard.press('Control+C').catch(() => {});
+          await page.waitForTimeout(1000);
+        } catch { /* 忽略 */ }
+        // 返回读到的链接（上层会做 URL 匹配校验）
+        return true;
+      }
+    } catch { /* 忽略 */ }
+
     // v1.9.5: 未找到菜单项时转储页面上新出现的浮层/菜单元素，辅助定位各平台分享面板结构
     try {
       const dump = await page.evaluate(() => {
@@ -949,6 +1044,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    * @returns 匹配到的 URL 或 null
    */
   protected async getCapturedShareUrl(page: Page, urlPattern: string): Promise<string | null> {
+    // 1. 从剪贴板拦截捕获
     const captured = await page.evaluate(() => (window as any).__capturedShareUrl__ as string | null).catch(() => null);
     if (captured) {
       const urlMatch = captured.match(/https?:\/\/[^\s<>"']+/);
@@ -956,6 +1052,28 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         return urlMatch[0];
       }
     }
+    // 2. v1.9.6: 分享面板直接展示链接 input（readonly/class 含 link）时，从 DOM 读值
+    try {
+      const panelUrl = await page.evaluate((pattern: string) => {
+        const inputs = document.querySelectorAll(
+          'input[readonly], input[class*="link"], input[class*="url"], [class*="share-link"], [class*="link-input"], [class*="copy-link-input"], [class*="shareUrl"], textarea[readonly]'
+        );
+        for (let i = 0; i < inputs.length; i++) {
+          const el = inputs[i] as HTMLInputElement;
+          const val = el.value || (el as any).innerText || '';
+          if (val && val.startsWith('http') && val.includes(pattern)) return val;
+        }
+        // 兜底：扫描浮层/面板中的文本含 http 链接
+        const panels = document.querySelectorAll('[class*="dialog"], [class*="modal"], [class*="popover"], [class*="panel"], [class*="share"]');
+        for (let i = 0; i < panels.length; i++) {
+          const text = (panels[i] as HTMLElement).innerText || '';
+          const m = text.match(/https?:\/\/[^\s<>"']+/);
+          if (m && m[0].includes(pattern)) return m[0];
+        }
+        return '';
+      }, urlPattern).catch(() => '');
+      if (panelUrl) return panelUrl;
+    } catch { /* 忽略 */ }
     return null;
   }
 

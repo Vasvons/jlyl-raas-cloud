@@ -17,6 +17,41 @@ export class QianwenAdapter extends BasePlatformAdapter {
   protected guestIndicators = ['.guest-home-action-text'];
 
   /**
+   * v1.9.6: 千问回答为流式生成，stop 按钮检测在部分会话中不可靠
+   * （回答未完成就提取 → 抓到侧边栏/部分文本被污染拦截）。
+   * 增加「文本稳定」等待：主内容区域文本连续两次不变视为生成完成。
+   */
+  async waitForResponse(page: Page): Promise<void> {
+    // 先尝试基类的 stop 按钮等待（快速路径）
+    try {
+      await super.waitForResponse(page);
+    } catch { /* 忽略 */ }
+    // 再做文本稳定检测（兜底）
+    try {
+      const snapshot = (): Promise<string> =>
+        page.evaluate(() => {
+          const main = document.querySelector('.answer-area, [class*="answer"], [class*="response"], main') || document.body;
+          return ((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim().slice(-8000);
+        }).catch(() => '');
+      const deadline = Date.now() + 30000;
+      let last = await snapshot();
+      let stable = 0;
+      while (Date.now() < deadline) {
+        await page.waitForTimeout(3000);
+        const cur = await snapshot();
+        if (cur === last) {
+          stable++;
+          if (stable >= 2) break;
+        } else {
+          stable = 0;
+        }
+        last = cur;
+      }
+      logger.info('[通义千问] 回答文本稳定，生成完成');
+    } catch { /* 忽略 */ }
+  }
+
+  /**
    * 通义千问分享链接提取
    *
    * 实地探查（2026-07-12）：

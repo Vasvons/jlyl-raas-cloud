@@ -85,11 +85,29 @@ export class DoubaoAdapter extends BasePlatformAdapter {
    *   阶段2: 轮询等待文本稳定（连续 2 次不变 = 生成完成），60 秒上限
    */
   async waitForResponse(page: Page): Promise<void> {
+    // v1.9.6: 豆包回答可能渲染在 iframe 中（诊断日志 iframes=1，主文档 main 只有侧边栏），
+    // 快照必须遍历所有 frame 的 body 文本，否则永远检测不到回答变化。
     const snapshot = (): Promise<string> =>
       page
         .evaluate(() => {
-          const main = document.querySelector('main') || document.body;
-          return ((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim().slice(0, 20000);
+          const collectText = (): string => {
+            const parts: string[] = [];
+            // 主文档：优先取对话区域（排除侧边栏/工具栏），兜底 body
+            const main = document.querySelector('main') || document.body;
+            if (main) {
+              parts.push(((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim());
+            }
+            // iframe 内容（豆包聊天区常渲染在 iframe 中）
+            const frames = document.querySelectorAll('iframe');
+            for (let i = 0; i < frames.length; i++) {
+              const doc = frames[i].contentDocument;
+              if (doc && doc.body) {
+                parts.push((doc.body.innerText || '').replace(/\s+/g, ' ').trim());
+              }
+            }
+            return parts.filter(Boolean).join(' | ').slice(0, 30000);
+          };
+          return collectText();
         })
         .catch(() => '');
     const baseline = await snapshot();
@@ -135,6 +153,35 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       }
       last = cur;
     }
+  }
+
+  /**
+   * v1.9.6: 豆包回答渲染在 iframe 中（诊断日志 iframes=1），baseAdapter 的 extractContent
+   * 只用 page.$$ 查主文档 frame，抓不到 iframe 内的回答 → 抓到侧边栏文本被污染拦截。
+   * 重写：优先从 iframe 内按 responseSelector 提取，失败再回退主文档。
+   */
+  async extractContent(page: Page): Promise<{ text: string; html: string }> {
+    // 先尝试从 iframe 中提取
+    try {
+      const frames = page.frames();
+      for (const frame of frames) {
+        if (frame === page.mainFrame()) continue;
+        try {
+          const hasContent = await frame.$(this.responseSelector).catch(() => null);
+          if (hasContent) {
+            const el = await frame.$(this.responseSelector);
+            const text = el ? await el.textContent().catch(() => '') : '';
+            if (text && text.trim().length > 100 && el) {
+              const html = await el.evaluate((node: HTMLElement) => node.innerHTML).catch(() => '');
+              logger.info(`[豆包] 从 iframe 提取到回答: ${text.trim().length} 字符`);
+              return { text: text.trim(), html: html || `<div>${text.trim()}</div>` };
+            }
+          }
+        } catch { /* 继续下一个 frame */ }
+      }
+    } catch { /* 忽略 */ }
+    // iframe 提取失败，回退基类
+    return await super.extractContent(page);
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
