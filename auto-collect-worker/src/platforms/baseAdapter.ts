@@ -123,7 +123,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     await page.waitForTimeout(3000);
     let value = await this.readInputValue(page, activeSelector);
     if (!value || !value.includes(kw)) return; // 输入框已清空 → 提交成功
-    console.warn(`[${this.platformName}] 提交后输入框未清空，疑似未真正发送，尝试 Enter 兜底重发`);
+    logger.warn(`[${this.platformName}] 提交后输入框未清空，疑似未真正发送，尝试 Enter 兜底重发`);
     try {
       await page.press(activeSelector, 'Enter');
     } catch {
@@ -132,6 +132,27 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     await page.waitForTimeout(3000);
     value = await this.readInputValue(page, activeSelector);
     if (value && value.includes(kw)) {
+      // v1.9.4: 抛错前检测页面是否为游客/登录页——Kimi 等平台游客首页也有输入框，
+      // 能输入能回车但查询不会真正执行（guestIndicators 选择器改版失配时兜底）。
+      // 命中登录特征则抛"登录态失效"让上层标记账号 offline，避免普通失败空转到熔断
+      try {
+        const pageText = await page.evaluate(() => document.body?.innerText?.substring(0, 3000) || '').catch(() => '');
+        // v1.9.5: 风控验证码检测——纳米等平台查询频率过高触发拼图验证，输入框同样不清空，
+        // 报"触发风控验证码"比"提交失败"更准确（提示降频而非排查发送按钮）
+        const captchaTexts = ['拼图验证', '请完成下方拼图验证', '频繁使用，需要验证', '请完成安全验证', '拖动滑块', '人机验证'];
+        const captchaHit = captchaTexts.find(t => pageText.includes(t));
+        if (captchaHit) {
+          throw new Error(`触发风控验证码: 检测到"${captchaHit}"，查询被平台拦截 (URL=${page.url()})`);
+        }
+        const guestTexts = ['登录后创建新会话', '微信扫码登录', '请登录后继续', '登录/注册', '立即登录'];
+        const hit = guestTexts.find(t => pageText.includes(t));
+        if (hit) {
+          throw new Error(`登录态失效: 页面含游客特征"${hit}"且查询无法发送 (URL=${page.url()})`);
+        }
+      } catch (e: any) {
+        if (String(e.message).startsWith('登录态失效') || String(e.message).startsWith('触发风控验证码')) throw e;
+        /* 检测异常则继续抛普通提交失败 */
+      }
       throw new Error(`提交失败: 发送后输入框文本未清空，查询未真正发送（关键词=${kw.substring(0, 20)}）`);
     }
   }
@@ -155,24 +176,42 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   }
 
   /**
-   * 快速扫描页面 DOM 中是否存在任何分享相关元素（v1.9.4）
-   * 含隐藏元素（querySelector 不受 display:none 影响）。
-   * 用于分享提取前提前短路：DOM 中完全不存在分享入口时（平台改版移除分享），
+   * 快速扫描页面 DOM 中是否存在任何分享相关的「可点击元素」（v1.9.4）
+   * 扫描范围与 findAndClickShareButton 的诊断扫描一致：button/a/[role="button"]。
+   * 注意：不能扫描所有 DOM 元素的 class——侧边栏/样式容器常有 class 含 "share"
+   * 的非可点击元素（如 share-border 装饰类），会导致短路永不触发（实测踩坑）。
+   * 用于分享提取前提前短路：无可点击分享入口时（平台改版移除分享），
    * 不再执行多轮 hover 扫描（通义千问实测每次浪费 30+ 秒），直接走静态页兜底。
    * 扫描异常时返回 true（不短路，保守执行完整提取流程）。
    */
   protected async hasAnyShareElement(page: Page): Promise<boolean> {
     try {
       return await page.evaluate(() => {
-        const direct = document.querySelectorAll(
-          '[class*="share"]:not([class*="shared"]):not([class*="sharing"]), [aria-label*="分享"], [aria-label*="share" i], [title*="分享"], [title*="share" i], [data-testid*="share"], [data-id*="share"]'
-        );
-        if (direct.length > 0) return true;
-        const btns = document.querySelectorAll('button, a, [role="button"]');
-        for (let i = 0; i < btns.length; i++) {
-          const b = btns[i];
-          const t = (b.textContent || '').trim();
-          if (t === '分享' || t === 'Share' || t.includes('复制链接') || t.includes('复制对话链接')) return true;
+        const clickables = document.querySelectorAll('button, a, [role="button"]');
+        for (let i = 0; i < clickables.length; i++) {
+          const el = clickables[i] as HTMLElement;
+          // v1.9.5: 可见性检查——隐藏元素（display:none / 零尺寸模板）不算可用分享入口。
+          // 实测踩坑（2026-08-17 千问）：页面存在隐藏的 share class 装饰元素/预渲染模板，
+          // 导致短路永不触发，兜底 hover 循环对每条消息重复扫描浪费 2.5 分钟
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          const cls = (el.className || '').toString().toLowerCase();
+          const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+          const title = (el.getAttribute('title') || '').toLowerCase();
+          const tid = (el.getAttribute('data-testid') || '').toLowerCase();
+          const did = (el.getAttribute('data-id') || '').toLowerCase();
+          const text = (el.textContent || '').trim();
+          if (
+            cls.includes('share') && !cls.includes('shared') && !cls.includes('sharing') ||
+            aria.includes('分享') || aria.includes('share') ||
+            title.includes('分享') || title.includes('share') ||
+            tid.includes('share') || did.includes('share') ||
+            text === '分享' || text === 'Share' || text.includes('复制链接') || text.includes('复制对话链接')
+          ) {
+            return true;
+          }
         }
         return false;
       }).catch(() => true);
@@ -210,11 +249,35 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           if (!visible) continue;
           await el.click({ timeout: 2000 }).catch(() => {});
           await page.waitForTimeout(1500);
-          console.log(`[${this.platformName}] 二次点击分享菜单项成功: ${sel}`);
+          logger.info(`[${this.platformName}] 二次点击分享菜单项成功: ${sel}`);
           return true;
         }
       } catch { /* 继续 */ }
     }
+    // v1.9.5: 未找到菜单项时转储页面上新出现的浮层/菜单元素，辅助定位各平台分享面板结构
+    try {
+      const dump = await page.evaluate(() => {
+        const results: string[] = [];
+        const floatings = document.querySelectorAll(
+          '[class*="menu"], [class*="dropdown"], [class*="popover"], [class*="modal"], [class*="dialog"], [role="menu"], [role="dialog"]'
+        );
+        for (let i = 0; i < floatings.length && results.length < 6; i++) {
+          const el = floatings[i] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') continue;
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+          results.push(`<${el.tagName.toLowerCase()} class="${(el.className || '').toString().slice(0, 50)}" text="${text}">`);
+        }
+        return results.join(' | ');
+      }).catch(() => '');
+      if (dump) {
+        logger.warn(`[${this.platformName}] 未找到"复制链接"菜单项，当前可见浮层/菜单: ${dump}`);
+      } else {
+        logger.warn(`[${this.platformName}] 未找到"复制链接"菜单项，且无可见浮层/菜单（分享按钮可能未弹出面板）`);
+      }
+    } catch { /* 忽略 */ }
     return false;
   }
 

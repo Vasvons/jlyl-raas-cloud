@@ -1,4 +1,5 @@
 import { Page } from 'playwright';
+import * as logger from '../logger';
 import { BasePlatformAdapter } from './baseAdapter';
 
 /** 豆包适配器
@@ -46,7 +47,7 @@ export class DoubaoAdapter extends BasePlatformAdapter {
           const enabled = await btn.isEnabled().catch(() => true);
           if (visible && enabled) {
             await btn.click({ timeout: 3000 });
-            console.log(`[豆包] 点击发送按钮: ${sel}`);
+            logger.info(`[豆包] 点击发送按钮: ${sel}`);
             return;
           }
         }
@@ -69,10 +70,10 @@ export class DoubaoAdapter extends BasePlatformAdapter {
         }
         return '';
       }).catch(() => '');
-      if (dump) console.log(`[豆包] 未找到发送按钮，输入区周边按钮转储: ${dump}`);
+      if (dump) logger.warn(`[豆包] 未找到发送按钮，输入区周边按钮转储: ${dump}`);
     } catch { /* 忽略 */ }
     // 兜底：所有发送按钮选择器失败时回退 Enter
-    console.log('[豆包] 未找到可点击的发送按钮，回退 Enter 提交');
+    logger.warn('[豆包] 未找到可点击的发送按钮，回退 Enter 提交');
     await page.keyboard.press('Enter');
   }
 
@@ -104,7 +105,16 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       }
     }
     if (!changed) {
-      console.log('[豆包] 30秒内未检测到回答文本变化（可能未真正发送），继续走内容校验');
+      // 30 秒无回答文本变化：转储 main 区域文本开头 + iframe 数量，辅助定位回答渲染位置
+      try {
+        const diag = await page.evaluate(() => {
+          const main = document.querySelector('main') || document.body;
+          const iframes = document.querySelectorAll('iframe').length;
+          const shadowHosts = document.querySelectorAll('*').length;
+          return `mainTextHead="${((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').slice(0, 150)}" iframes=${iframes} domNodes=${shadowHosts}`;
+        }).catch(() => '');
+        logger.warn(`[豆包] 30秒内未检测到回答文本变化（可能未真正发送或回答在特殊容器），诊断: ${diag}`);
+      } catch { /* 忽略 */ }
       return;
     }
     // 阶段2: 等待流式生成完成（文本稳定）
@@ -117,7 +127,7 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       if (cur === last) {
         stable++;
         if (stable >= 2) {
-          console.log('[豆包] 回答文本已稳定，生成完成');
+          logger.info('[豆包] 回答文本已稳定，生成完成');
           return;
         }
       } else {
@@ -175,13 +185,15 @@ export class DoubaoAdapter extends BasePlatformAdapter {
     ], ['分享', 'Share', 'share']);
 
     if (!shareBtnClicked) {
-      // 兜底：hover 所有消息后重新扫描
-      console.log('[豆包] 首次扫描未找到分享按钮，尝试 hover 所有消息后重新扫描...');
+      // 兜底：hover 消息后重新扫描（v1.9.5: 最多尝试 5 条，避免遍历全部消息浪费数分钟）
+      logger.info('[豆包] 首次扫描未找到分享按钮，尝试 hover 消息区域后重新扫描（最多5条）...');
       const allMessages = await page.$$('[class*="message"], [class*="receive"], [class*="bubble"]');
-      for (let i = allMessages.length - 1; i >= 0; i--) {
+      let attempts = 0;
+      for (let i = allMessages.length - 1; i >= 0 && attempts < 5; i--) {
         try {
           const visible = await allMessages[i].isVisible().catch(() => false);
           if (!visible) continue;
+          attempts++;
           await allMessages[i].hover({ timeout: 1000 }).catch(() => {});
           await page.waitForTimeout(800);
           const clicked = await this.findAndClickShareButton(page, [], ['分享', 'Share', 'share']);

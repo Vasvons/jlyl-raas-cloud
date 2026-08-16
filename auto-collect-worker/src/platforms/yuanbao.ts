@@ -1,4 +1,5 @@
 import { Page } from 'playwright';
+import * as logger from '../logger';
 import { BasePlatformAdapter } from './baseAdapter';
 
 /** 腾讯元宝适配器 */
@@ -171,7 +172,7 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
         }
         return texts.join(' || ').slice(0, 500);
       }).catch(() => '');
-      if (layerText) console.log(`[腾讯元宝] 分享弹窗内容转储: ${layerText}`);
+      if (layerText) logger.warn(`[腾讯元宝] 分享弹窗内容转储: ${layerText}`);
     } catch { /* 忽略 */ }
 
     await page.keyboard.press('Escape').catch(() => {});

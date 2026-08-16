@@ -1,4 +1,5 @@
 import { Page } from 'playwright';
+import * as logger from '../logger';
 import { BasePlatformAdapter } from './baseAdapter';
 
 /**
@@ -70,7 +71,7 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     // 步骤2.5: 首次未找到时，hover 消息区域触发操作栏后重试（v1.9）
     // 智谱消息操作栏（含分享图标）hover 回答区域才显示
     if (!clickedBtn) {
-      console.log('[智谱AI] 顶部未找到分享按钮，尝试 hover 消息区域后重试...');
+      logger.warn('[智谱AI] 顶部未找到分享按钮，尝试 hover 消息区域后重试...');
       const answerSelectors = ['.markdown-body', '[class*="message-content"]', '[class*="answer"]', '[class*="assistant"]'];
       let hoveredAny = false;
       for (const sel of answerSelectors) {

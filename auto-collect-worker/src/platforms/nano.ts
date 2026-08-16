@@ -1,4 +1,5 @@
 import { Page } from 'playwright';
+import * as logger from '../logger';
 import { BasePlatformAdapter } from './baseAdapter';
 
 /** 纳米搜索适配器
@@ -67,7 +68,7 @@ export class NanoAdapter extends BasePlatformAdapter {
             await page.waitForTimeout(2500);
             v = await this.readInputValue(page, activeSelector);
             if (!v || !v.trim()) {
-              console.log(`[纳米] 点击发送按钮成功: ${sel}`);
+              logger.info(`[纳米] 点击发送按钮成功: ${sel}`);
               return;
             }
           }
@@ -80,7 +81,7 @@ export class NanoAdapter extends BasePlatformAdapter {
     await page.waitForTimeout(2500);
     v = await this.readInputValue(page, activeSelector);
     if (!v || !v.trim()) {
-      console.log('[纳米] Ctrl+Enter 发送成功');
+      logger.info('[纳米] Ctrl+Enter 发送成功');
       return;
     }
 
@@ -102,7 +103,7 @@ export class NanoAdapter extends BasePlatformAdapter {
         }
         return '';
       }, activeSelector).catch(() => '');
-      if (dump) console.log(`[纳米] 发送失败，输入框周边按钮转储: ${dump}`);
+      if (dump) logger.warn(`[纳米] 发送失败，输入框周边按钮转储: ${dump}`);
     } catch { /* 忽略 */ }
 
     // 最终兜底：再按一次 Enter（由 base 的 verifySubmission 做最终校验并报错）

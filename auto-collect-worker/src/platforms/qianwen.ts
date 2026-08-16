@@ -1,4 +1,5 @@
 import { Page } from 'playwright';
+import * as logger from '../logger';
 import { BasePlatformAdapter } from './baseAdapter';
 
 /** 通义千问适配器 */
@@ -29,7 +30,7 @@ export class QianwenAdapter extends BasePlatformAdapter {
     // 任何分享元素（含隐藏元素），多轮 hover 扫描每次浪费 30+ 秒且必然失败。
     // 无分享入口时直接返回 null，由云端生成静态页兜底。
     if (!(await this.hasAnyShareElement(page))) {
-      console.log('[通义千问] 页面 DOM 中无任何分享元素（新版可能已移除分享入口），跳过分享提取');
+      logger.info('[通义千问] 页面无可点击分享元素（新版可能已移除分享入口），跳过分享提取');
       return null;
     }
 
@@ -79,13 +80,16 @@ export class QianwenAdapter extends BasePlatformAdapter {
     ], ['分享', 'Share', 'share']);
 
     if (!shareBtnClicked) {
-      // 兜底：hover 所有消息后重新扫描
-      console.log('[通义千问] 首次扫描未找到分享按钮，尝试 hover 所有消息后重新扫描...');
+      // 兜底：hover 消息后重新扫描（v1.9.5: 最多尝试 5 条——历史版本遍历全部消息，
+      // 每条内部又跑两轮策略+诊断扫描，20 条消息浪费 2.5 分钟）
+      logger.info('[通义千问] 首次扫描未找到分享按钮，尝试 hover 消息区域后重新扫描（最多5条）...');
       const allMessages = await page.$$('[class*="message"], [class*="answer"], [class*="response"]');
-      for (let i = allMessages.length - 1; i >= 0; i--) {
+      let attempts = 0;
+      for (let i = allMessages.length - 1; i >= 0 && attempts < 5; i--) {
         try {
           const visible = await allMessages[i].isVisible().catch(() => false);
           if (!visible) continue;
+          attempts++;
           await allMessages[i].hover({ timeout: 1000 }).catch(() => {});
           await page.waitForTimeout(800);
           const clicked = await this.findAndClickShareButton(page, [], ['分享', 'Share', 'share']);
