@@ -9,11 +9,16 @@ export class KimiAdapter extends BasePlatformAdapter {
   // 旧域名会被重定向到新域名根路径，导致重定向检测误判
   chatUrl = 'https://www.kimi.com/chat';
   supportsShare = true;
-  protected inputSelector = 'textarea';
+  // v1.9.2: Kimi 改版后输入框为 contenteditable div（实地诊断 textarea=0, contenteditable=1）
+  protected inputSelector = 'div[contenteditable="true"], textarea';
   // Kimi 的回答容器：message-content 是回答正文，toolbar 是操作栏
   protected responseSelector = '.chat-content-item-assistant, [class*="message-content"], [class*="assistant"]';
   protected stopButtonSelector = '[class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
+  // v1.9.1 实地诊断（2026-08-16）：Kimi 改版（K3 英文界面），登录态失效后不跳登录页，
+  // 而是渲染游客首页（/ 重定向，有输入框但查询不执行）。
+  // .next-sidebar-history-list__login 为"Log in to sync"按钮，已登录不显示
+  protected guestIndicators = ['.next-sidebar-history-list__login'];
 
   async extractShareLink(page: Page): Promise<string | null> {
     // Kimi 分享链接格式：https://www.kimi.com/share/{shareId}

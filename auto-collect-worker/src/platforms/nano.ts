@@ -21,9 +21,10 @@ export class NanoAdapter extends BasePlatformAdapter {
   // v1.9: n.cn 支持分享（分享链接格式 https://www.n.cn/share/{type}?id={shareId}）
   // 之前 supportsShare=false 导致从未尝试提取分享链接，一直走静态页
   supportsShare = true;
-  protected inputSelector = 'textarea, input[type="text"]';
-  // 保留选择器用于 waitForSelector，实际提取在 extractContent 中重写
-  protected responseSelector = '.answer-content, .ai-summary, .result-content, .summary-content, .ai-answer, .bot-answer, .reply-content, [class*="ai-summary"], [class*="answer-content"], [class*="summary-content"], [class*="ai-answer"], [class*="bot-answer"], [class*="answer"]';
+  protected inputSelector = 'div[contenteditable="true"], textarea, input[type="text"]';
+  // v1.9.2 实地诊断（2026-08-16）：n.cn 消息列表为 li.js-message-item（data-testid="msg-xxx"）
+  // 旧选择器（.answer-content/.ai-summary）全部失效，导致抓智能体广场/框架文本入库
+  protected responseSelector = 'li.js-message-item, [data-testid^="msg-"], .answer-content, .ai-summary, [class*="ai-summary"], [class*="answer-content"]';
   protected stopButtonSelector = '[class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
 

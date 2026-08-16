@@ -11,6 +11,9 @@ export class QianwenAdapter extends BasePlatformAdapter {
   protected responseSelector = '.answer-area, .markdown-body, [class*="answer"], [class*="response"], [class*="message-content"]';
   protected stopButtonSelector = '[class*="stop"], .stop-btn, [class*="Stop"]';
   protected loginUrlPattern = 'login';
+  // v1.9.1 实地诊断（2026-08-16）：登录态失效后 /chat URL 不变，渲染游客首页
+  // （.guest-home-action-text 为游客首页"API 服务/下载电脑端"按钮特征，已登录不显示）
+  protected guestIndicators = ['.guest-home-action-text'];
 
   /**
    * 通义千问分享链接提取

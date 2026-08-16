@@ -60,6 +60,39 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // 默认无操作
   }
 
+  /**
+   * 游客模式特征选择器（v1.9.1）
+   *
+   * 背景：部分平台登录态失效后不会重定向到登录页（URL 不变、不报错），
+   * 而是渲染"游客首页"——游客首页也有输入框（能输入、能回车），
+   * 但查询不会真正执行，最终把首页/侧边栏文本当"AI 回答"入库，产生垃圾记录。
+   *
+   * 特征选择器来自实地诊断（2026-08-16）：
+   *   - 通义千问: .guest-home-action-text（游客首页"API 服务/下载电脑端"按钮）
+   *   - Kimi: .next-sidebar-history-list__login（"Log in to sync"按钮，已登录不显示）
+   *
+   * 命中任一可见特征 → 判定登录态失效 → 抛异常 → 云端标记 offline → 人工重新登录
+   */
+  protected guestIndicators: string[] = [];
+
+  /** 检测当前页面是否为游客模式首页（命中任一可见特征元素即返回 true） */
+  protected async detectGuestMode(page: Page): Promise<boolean> {
+    if (this.guestIndicators.length === 0) return false;
+    for (const sel of this.guestIndicators) {
+      try {
+        const el = await page.$(sel).catch(() => null);
+        if (el) {
+          const visible = await el.isVisible().catch(() => false);
+          if (visible) {
+            console.warn(`[${this.platformName}] 检测到游客模式特征: ${sel}`);
+            return true;
+          }
+        }
+      } catch { /* 继续 */ }
+    }
+    return false;
+  }
+
   async query(page: Page, keyword: string): Promise<QueryResult> {
     // 导航到聊天页（新对话）
     // 使用 networkidle 等待 SPA 页面 JS 渲染完成（比 domcontentloaded 更可靠）
@@ -91,6 +124,14 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // afterNavigate 后重新获取 URL 和标题（可能已经从首页跳转到 /chat）
     currentUrl = page.url();
     pageTitle = await page.title().catch(() => '');
+
+    // 检查1.6: 游客模式检测（v1.9.1 阻塞式）
+    // 千问/Kimi 等平台登录态失效后 URL 不变、不重定向，而是渲染游客首页
+    // （游客首页也有输入框，能输入能回车，但查询不会真正执行）
+    // 游客首页特征元素已登录时不显示，命中即判定登录态失效，防止抓首页文本产生垃圾记录
+    if (await this.detectGuestMode(page)) {
+      throw new Error(`登录态失效: 页面为游客模式首页（检测到未登录特征元素，URL=${currentUrl}）`);
+    }
 
     // 检查1.5: 重定向检测——非阻塞式警告
     // 如果 chatUrl 含特定路径（如 /chat）但导航后 URL 路径为根 / 或空，
@@ -351,6 +392,21 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    */
   protected async detectAccountAnomaly(page: Page, content: string): Promise<string | null> {
     const contentLen = content.trim().length;
+
+    // ===== 0. 风控验证码检测（v1.9.2，与内容长度无关）=====
+    // 实地诊断（2026-08-16 纳米）：查询频率过高触发拼图验证，AI 回答被拦截，
+    // 此时页面文本是智能体广场/框架文本（400+ 字符），能通过原有长度检查混入正常记录
+    try {
+      const pageText0 = await page.evaluate(() => document.body?.innerText?.substring(0, 3000) || '').catch(() => '');
+      const captchaKeywords = ['拼图验证', '请完成下方拼图验证', '频繁使用，需要验证', '请完成安全验证', '拖动滑块', '人机验证'];
+      for (const kw of captchaKeywords) {
+        if (pageText0.includes(kw)) {
+          const msg = `触发风控验证码: 检测到"${kw}"，查询被平台拦截`;
+          console.warn(`[${this.platformName}] ⚠️ ${msg}`);
+          return msg;
+        }
+      }
+    } catch { /* 忽略 evaluate 失败 */ }
 
     // 正常内容长度（> 200 字符）直接放行
     if (contentLen >= 200) return null;
