@@ -3753,8 +3753,8 @@ export async function savePlatformAuth(params: {
     return existing.rows[0].id;
   }
   const result = await query(
-    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, expires_at, status, avatar_url)
-     VALUES ($1, $2, $3, $4, $5, 'active', $6) RETURNING id`,
+    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, expires_at, status, health_status, avatar_url)
+     VALUES ($1, $2, $3, $4, $5, 'active', 'normal', $6) RETURNING id`,
     [params.userId || null, params.platform, params.accountName || null, params.storageState, params.expiresAt || null, params.avatarUrl || null]
   );
   return result.rows[0].id;
