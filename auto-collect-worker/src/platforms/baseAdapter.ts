@@ -349,6 +349,33 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       }
     } catch { /* 忽略 */ }
 
+    // v1.9.7: 分享面板结构诊断升级——找不到复制链接时，转储「页面所有可见可点击元素」，
+    // 暴露真实分享面板按钮（智谱/元宝分享面板可能是自绘覆盖层，class 不含 menu/modal/dialog）
+    try {
+      const allBtnDump = await page.evaluate(() => {
+        const results: string[] = [];
+        const els = document.querySelectorAll('button, a[href], [role="button"], [class*="btn"], [class*="icon"], [class*="action"], [class*="item"], [class*="link"], [class*="copy"], [class*="share"]');
+        for (let i = 0; i < els.length && results.length < 25; i++) {
+          const el = els[i] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          if (rect.width < 16 || rect.height < 16) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 16);
+          const cls = (el.className || '').toString().slice(0, 40);
+          const aria = el.getAttribute('aria-label') || '';
+          const title = el.getAttribute('title') || '';
+          const tid = el.getAttribute('data-testid') || '';
+          results.push(`<${el.tagName.toLowerCase()} class="${cls}" aria="${aria.slice(0, 20)}" title="${title.slice(0, 20)}" tid="${tid.slice(0, 20)}" text="${text}" pos=(${Math.round(rect.left)},${Math.round(rect.top)})>`);
+        }
+        return results.join(' | ');
+      }).catch(() => '');
+      if (allBtnDump) {
+        logger.warn(`[${this.platformName}] 页面可见可点击元素全量转储(前25): ${allBtnDump}`);
+      }
+    } catch { /* 忽略 */ }
+
     // v1.9.5: 未找到菜单项时转储页面上新出现的浮层/菜单元素，辅助定位各平台分享面板结构
     try {
       const dump = await page.evaluate(() => {
