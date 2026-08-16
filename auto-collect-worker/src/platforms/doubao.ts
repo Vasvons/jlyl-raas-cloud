@@ -24,6 +24,38 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   protected stopButtonSelector = '[class*="break-btn"], [data-testid="stop_button"], .stop-btn, [class*="stop"], [class*="Stop"]';
   protected loginUrlPattern = 'login';
 
+  /**
+   * v1.9.3 实地诊断（2026-08-16）：豆包按 Enter 不发送查询（实测 45 秒后聊天区只有
+   * 用户问题、无 AI 回答，body 全是侧边栏文本），必须点击发送按钮。
+   * 参考 auth helper 实测：发送按钮为 div.send-btn-wrapper button
+   */
+  protected async submitInput(page: Page, _activeSelector: string): Promise<void> {
+    const sendSelectors = [
+      'div.send-btn-wrapper button',
+      '[data-testid="chat_input_send_button"]',
+      '[data-testid="send_button"]',
+      'button[aria-label*="发送"]',
+      '[class*="send-btn"] button',
+      '[class*="sendBtn"]',
+    ];
+    for (const sel of sendSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          const visible = await btn.isVisible().catch(() => false);
+          const enabled = await btn.isEnabled().catch(() => true);
+          if (visible && enabled) {
+            await btn.click({ timeout: 3000 });
+            return;
+          }
+        }
+      } catch { /* 继续尝试下一个选择器 */ }
+    }
+    // 兜底：所有发送按钮选择器失败时回退 Enter
+    console.log('[豆包] 未找到可点击的发送按钮，回退 Enter 提交');
+    await page.keyboard.press('Enter');
+  }
+
   async extractShareLink(page: Page): Promise<string | null> {
     // 豆包分享链接格式：https://www.doubao.com/share/{token}
     // 实地探查（2026-07-12）：分享是会话级别（非单条消息），在回答操作栏或会话菜单中

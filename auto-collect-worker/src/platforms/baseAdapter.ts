@@ -75,6 +75,24 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    */
   protected guestIndicators: string[] = [];
 
+  /**
+   * 页面框架/侧边栏文本标记（v1.9.3）
+   *
+   * 提取的"AI 回答"中命中 2 个以上标记 → 判定为抓到了侧边栏/框架文本而非真实回答，
+   * 抛"内容提取异常"防止垃圾数据入库（子类可按平台扩展）
+   */
+  protected sidebarMarkers: string[] = ['新对话', '新建对话', '创建新项目', '云盘', '云空间', '定时任务', '最近对话', 'New Chat', 'My Kimi', 'Log in to sync'];
+
+  /**
+   * 提交查询（v1.9.3 钩子方法）
+   *
+   * 默认按 Enter 提交。豆包等平台 Enter 不发送（需点击发送按钮），子类可重写。
+   * 参考 auth helper 实测：豆包发送按钮为 div.send-btn-wrapper button
+   */
+  protected async submitInput(page: Page, activeSelector: string): Promise<void> {
+    await page.press(activeSelector, 'Enter');
+  }
+
   /** 检测当前页面是否为游客模式首页（命中任一可见特征元素即返回 true） */
   protected async detectGuestMode(page: Page): Promise<boolean> {
     if (this.guestIndicators.length === 0) return false;
@@ -350,14 +368,24 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // 提交前随机停顿（模拟人类思考）
     await humanDelay('medium');
 
-    // 提交
-    await page.press(activeSelector, 'Enter');
+    // 提交（v1.9.3：改为钩子方法，豆包等平台需要点击发送按钮而非按 Enter）
+    await this.submitInput(page, activeSelector);
 
     // 等待 AI 回答完成
     await this.waitForResponse(page);
 
     // 提取内容
     const { text, html } = await this.extractContent(page);
+
+    // ============ 侧边栏文本污染校验（v1.9.3 重要）============
+    // 实地诊断（2026-08-16 豆包）：提交失败（如豆包需点发送按钮而非 Enter）时
+    // AI 回答从未生成，extractContent 兜底抓到侧边栏+历史会话列表文本入库，
+    // 历史标题含品牌词导致大量假命中。命中 2 个以上框架标记即判定为污染，抛错不入库
+    const markerHits = this.sidebarMarkers.filter(m => text.includes(m)).length;
+    if (markerHits >= 2) {
+      throw new Error(`内容提取异常: 抓取到页面框架/侧边栏文本（命中${markerHits}个标记），AI 回答可能未生成 (内容长度=${text.trim().length})`);
+    }
+
     const rawShareUrl = await this.extractShareLink(page);
     // v1.9: 分享链接公开性验证——无登录访客看不到内容的链接判定为私有，降级静态页
     const shareUrl = rawShareUrl ? await this.verifyShareLinkPublic(page, rawShareUrl, text) : null;
