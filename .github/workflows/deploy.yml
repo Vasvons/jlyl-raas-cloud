@@ -339,6 +339,10 @@ jobs:
 
             # 检查并修复 nginx 反向代理
             echo ">>> 检查 nginx 反向代理状态..."
+            # v3.16.x：nginx 是部署后的可选维护步骤，失败不应导致整个部署被判失败
+            #   （实测 2026-08-17：服务全部健康但该步 mv 报错，set -e 使工作流 exit 1）
+            #   故此处临时关闭 errexit，块内各子命令自带容错/告警，块结束后恢复
+            set +e
             if command -v nginx > /dev/null 2>&1; then
               echo ">>> nginx 已安装，检查状态..."
               if ! pgrep -x nginx > /dev/null 2>&1; then
@@ -433,7 +437,14 @@ jobs:
                     next
                   }
                   { print }
-                ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
+                ' "$conf_file" > "$conf_file.tmp"
+                # v3.16.x：awk 无输出/出错时不回写配置，也不让 mv 失败中断部署
+                if [ -s "$conf_file.tmp" ]; then
+                  mv "$conf_file.tmp" "$conf_file"
+                else
+                  echo ">>> [warn] awk 处理 $conf_file 未产生输出，跳过删除旧 /ws 块"
+                  rm -f "$conf_file.tmp"
+                fi
 
                 # 2. 在每个 server_name 行之后都插入 WS_BLOCK（确保每个 server 块都有 /ws 配置）
                 if grep -q -E 'server_name\s' "$conf_file"; then
@@ -444,9 +455,16 @@ jobs:
                       next
                     }
                     { print }
-                  ' "$conf_file" > "$conf_file.tmp" && mv "$conf_file.tmp" "$conf_file"
-                  SERVER_COUNT=$(grep -c -E 'server_name\s+[^;]+;' "$conf_file")
-                  echo ">>> [modified] $conf_file (删除旧 /ws 块 + 在 $SERVER_COUNT 个 server_name 后插入新 /ws)"
+                  ' "$conf_file" > "$conf_file.tmp"
+                  # v3.16.x：awk 无输出/出错时不回写配置，也不让 mv 失败中断部署
+                  if [ -s "$conf_file.tmp" ]; then
+                    mv "$conf_file.tmp" "$conf_file"
+                    SERVER_COUNT=$(grep -c -E 'server_name\s+[^;]+;' "$conf_file")
+                    echo ">>> [modified] $conf_file (删除旧 /ws 块 + 在 $SERVER_COUNT 个 server_name 后插入新 /ws)"
+                  else
+                    echo ">>> [warn] awk 处理 $conf_file 未产生输出，跳过插入 /ws 块"
+                    rm -f "$conf_file.tmp"
+                  fi
                 else
                   echo ">>> [warn] $conf_file 未找到 server_name，跳过插入"
                 fi
@@ -511,6 +529,7 @@ jobs:
               echo ">>> nginx 未安装，检查其他反向代理..."
               ps aux | grep -E "caddy|haproxy|traefik" | grep -v grep || echo "未发现其他反向代理"
             fi
+            set -e
 
             echo "===== 部署完成 ====="
             echo ">>> 服务访问地址:"
