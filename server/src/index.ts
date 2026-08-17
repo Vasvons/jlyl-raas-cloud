@@ -281,6 +281,23 @@ app.get('/diagnose', async (req, res) => {
     result.checks.failedWritingByUser = failedRecent.rows;
     result.checks.writingModels = modelCfg.rows;
     result.checks.autoWritingConfig = autoTaskCfg.rows;
+    // 解密自测：尝试用候选密钥解开模型 API-KEY（不返回明文，仅验证密钥回退是否生效）
+    try {
+      const { decrypt } = require('./utils/crypto');
+      const testModel = await query(
+        `SELECT id, model_name, api_key_encrypted FROM ai_model_config
+         WHERE api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+         ORDER BY id LIMIT 5`
+      );
+      result.checks.decryptSelfTest = testModel.rows.map((r: any) => {
+        let decryptOk = false;
+        let err = '';
+        try { decrypt(r.api_key_encrypted); decryptOk = true; } catch (e: any) { err = e.message; }
+        return { id: r.id, model_name: r.model_name, decryptOk, err };
+      });
+    } catch (e: any) {
+      result.checks.decryptSelfTest = { status: 'error', message: e.message };
+    }
   } catch (e: any) {
     result.checks.writingTasks = { status: 'error', message: e.message };
   }
