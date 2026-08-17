@@ -6587,11 +6587,20 @@ export async function resetWritingTaskForRetry(taskId: number): Promise<any | nu
   if (!['failed', 'partial'].includes(task.status)) {
     throw new Error(`任务状态为 ${task.status}，只有 failed/partial 状态的任务才能重试`);
   }
-  if (!task.failed_count || task.failed_count <= 0) {
+  // v3.16.x：修复"任务级失败无法重试"问题
+  //   原逻辑：failed_count <= 0 直接抛错，导致模型未配置/API-KEY解密失败/base_url 为空等
+  //           前置失败（生成循环开始前就标记 failed，failed_count=0 但 total_count>0）无法重试
+  //   新逻辑：failed_count > 0 → 只重生成失败的篇数；
+  //           failed_count = 0 → 重生成未完成的篇数（total_count - completed_count），
+  //           前置失败时 completed_count=0 → 即重新生成全部篇数
+  if ((!task.failed_count || task.failed_count <= 0) && (!task.total_count || task.total_count <= 0)) {
     throw new Error('任务没有失败的文章，无需重试');
   }
+  const newTotalCount = task.failed_count > 0
+    ? task.failed_count
+    : Math.max(1, (task.total_count || 0) - (task.completed_count || 0));
 
-  // 重置任务：total_count = 原 failed_count，其他计数清零，状态回 pending
+  // 重置任务：total_count = 需重生成的篇数，其他计数清零，状态回 pending
   await query(
     `UPDATE ai_writing_task
      SET status = 'pending',
@@ -6602,7 +6611,7 @@ export async function resetWritingTaskForRetry(taskId: number): Promise<any | nu
          started_at = NULL,
          finished_at = NULL
      WHERE id = $1`,
-    [taskId, task.failed_count]
+    [taskId, newTotalCount]
   );
 
   // 返回重置后的任务（用于调用方决定是否触发执行）

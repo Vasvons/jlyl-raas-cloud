@@ -1378,7 +1378,7 @@ router.post('/writing-tasks/:id/retry-failed', async (req: Request, res: Respons
     executeWritingTask(taskId, userId).catch(err => {
       console.error(`Retry writing task ${taskId} failed:`, err);
     });
-    res.json({ code: 200, message: `已提交重试请求，将重新生成 ${resetTask.total_count} 篇失败的文章` });
+    res.json({ code: 200, message: `已提交重试请求，将重新生成 ${resetTask.total_count} 篇文章` });
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message });
   }
