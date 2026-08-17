@@ -1420,15 +1420,17 @@ export async function deleteZlgjc(id: number): Promise<void> {
 export async function generateZlgjcKeywords(userId: string, wordGroups: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[] }, keywordType: number = 0, brandId?: number) {
   const { A, B, C, D, E, F, G } = wordGroups;
 
-  // v3.16.x：为每个短语建立编码映射（A1/B2/C3/D1...，按组内顺序从1开始）
-  //   用途：删词同步删库时按编码精确匹配（如删除D1=工厂，只删包含D1的关键词，
-  //   不会因为"工厂"是"源头工厂(D2)"的子串而连带删除包含D2的关键词）
+  // v3.16.x：为每个短语建立内容稳定编码（组别+短语本身，如 D:工厂 / D:源头工厂）
+  //   内容稳定：不依赖词在组内的顺序，删词同步删库时按精确字符串匹配——
+  //   删除"工厂"只删编码含 D:工厂 的关键词，"源头工厂"编码为 D:源头工厂，不会被连带删除；
+  //   词本身作编码可读性好、零冲突，与内容哈希等价（顺序无关、稳定）。
   const groupMap: Record<string, string[]> = { A, B, C, D, E, F };
   const codeMap: Record<string, Map<string, string>> = {};
   for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
     const m = new Map<string, string>();
-    groupMap[letter].forEach((w, idx) => {
-      if (w && w.trim() && !m.has(w)) m.set(w, letter + (idx + 1));
+    groupMap[letter].forEach((w) => {
+      const tw = (w || '').trim();
+      if (tw && !m.has(tw)) m.set(tw, `${letter}:${tw}`);
     });
     codeMap[letter] = m;
   }
@@ -1464,7 +1466,7 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
     for (const c of cartesian) {
       const keyword = c.join('');
       // v3.16.x：记录本关键词用到的短语编码（每个位置按 parts[i] 字母取对应词码）
-      const codes = c.map((w, i) => codeMap[parts[i]]?.get(w) || '').filter(Boolean);
+      const codes = c.map((w, i) => codeMap[parts[i]]?.get((w || '').trim()) || '').filter(Boolean);
       // 确定核心词（hxgjc）：
       // - 蒸馏关键词（keywordType=0）：用C主词
       // - 品牌关键词（keywordType=1）：优先用B核心词，组合不含B时用A品牌词
@@ -1485,15 +1487,29 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
     }
   }
 
-  // 查询已存在的关键词（同类型内去重）
-  const existingResult = await query('SELECT value FROM zlgjc WHERE userid = $1 AND keyword_type = $2', [userId, keywordType]);
-  const existing = new Set(existingResult.rows.map((r: any) => r.value));
+  // 查询已存在的关键词（同类型内去重，同时读取现有编码用于"重新生成"时刷新）
+  const existingResult = await query('SELECT value, generation_codes FROM zlgjc WHERE userid = $1 AND keyword_type = $2', [userId, keywordType]);
+  const existing = new Map<string, string[]>();
+  for (const r of existingResult.rows) {
+    existing.set(r.value, Array.isArray(r.generation_codes) ? r.generation_codes.filter(Boolean) : []);
+  }
 
   let inserted = 0;
   let duplicated = 0;
 
   for (const { keyword, hxgjc, codes } of combinations) {
     if (existing.has(keyword)) {
+      // v3.16.x：已存在时刷新为当前内容稳定编码——用户"重新生成"后旧关键词也能带上新编码，
+      //   仅在编码缺失或与当前不一致时才 UPDATE，避免大量无意义写库
+      const oldCodes = existing.get(keyword) || [];
+      const needUpdate = codes.length > 0 && (oldCodes.length !== codes.length || codes.some(c => !oldCodes.includes(c)));
+      if (needUpdate) {
+        await query(
+          `UPDATE zlgjc SET generation_codes = $3 WHERE userid = $1 AND keyword_type = $2 AND value = $4`,
+          [userId, keywordType, codes, keyword]
+        );
+        existing.set(keyword, codes);
+      }
       duplicated++;
     } else {
       // ON CONFLICT 双保险：即使应用层去重失败，数据库层也会拒绝重复
@@ -1507,7 +1523,7 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
              ON CONFLICT (userid, value, keyword_type) DO NOTHING`,
         brandId ? [keyword, hxgjc, userId, '', keywordType, codes, brandId] : [keyword, hxgjc, userId, '', keywordType, codes]
       );
-      existing.add(keyword);
+      existing.set(keyword, codes);
       inserted++;
     }
   }
@@ -1565,16 +1581,17 @@ export async function syncDeletedDistillateWords(userId: string, configType: str
     return [];
   }
 
-  // 找出被删除的词汇，并记录其在旧配置中的位置编码（D1/D2/C3...）
+  // 找出被删除的词汇，并计算其内容稳定编码（组别+短语本身，如 D:工厂）
+  // 内容稳定：与词在组内的顺序无关，删除"工厂"只匹配编码 D:工厂，不匹配 D:源头工厂
   const deletedWords: { group: string; word: string; code: string }[] = [];
   for (const group of groupsToCheck) {
     const oldWords = parseWords(oldConfig[group]);
     const newWords = new Set(parseWords(newConfig[group]));
-    oldWords.forEach((word, idx) => {
+    for (const word of oldWords) {
       if (word && !newWords.has(word)) {
-        deletedWords.push({ group, word, code: group + (idx + 1) });
+        deletedWords.push({ group, word, code: `${group}:${word}` });
       }
-    });
+    }
   }
 
   if (deletedWords.length === 0) {
