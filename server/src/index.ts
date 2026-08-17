@@ -250,6 +250,40 @@ app.get('/diagnose', async (req, res) => {
   } catch (e: any) {
     result.checks.scheduler = { status: 'error', message: e.message };
   }
+  // 写作任务诊断（排查自动写作任务失败）
+  try {
+    const { query } = require('./db');
+    const recent = await query(
+      `SELECT t.id, t.user_id, u.username, t.task_name, t.auto_generated, t.status,
+              t.completed_count, t.failed_count, t.error_msg, t.create_time, t.started_at, t.finished_at
+       FROM ai_writing_task t LEFT JOIN users u ON t.user_id = u.id
+       ORDER BY t.create_time DESC LIMIT 20`
+    );
+    const failedRecent = await query(
+      `SELECT t.user_id, u.username, t.status, COUNT(*)::int AS cnt
+       FROM ai_writing_task t LEFT JOIN users u ON t.user_id = u.id
+       WHERE t.status = 'failed' AND t.create_time > NOW() - INTERVAL '3 days'
+       GROUP BY t.user_id, u.username, t.status ORDER BY cnt DESC`
+    );
+    const modelCfg = await query(
+      `SELECT id, user_id, model_name, is_active, use_for_writing, use_for_publish,
+              CASE WHEN api_key_encrypted IS NULL OR api_key_encrypted = '' THEN 'NO_KEY' ELSE 'HAS_KEY' END AS key_state
+       FROM ai_model_config ORDER BY user_id NULLS FIRST, id`
+    );
+    const autoTaskCfg = await query(
+      `SELECT aw.id, aw.user_id, u.username, aw.task_name, aw.brand_id, b.pp AS brand_pp,
+              aw.instruction_id, aw.knowledge_id, aw.daily_quota, aw.is_active
+       FROM auto_writing_task aw LEFT JOIN users u ON aw.user_id = u.id
+       LEFT JOIN brand b ON aw.brand_id = b.id
+       ORDER BY aw.user_id, aw.id`
+    );
+    result.checks.writingTasks = recent.rows;
+    result.checks.failedWritingByUser = failedRecent.rows;
+    result.checks.writingModels = modelCfg.rows;
+    result.checks.autoWritingConfig = autoTaskCfg.rows;
+  } catch (e: any) {
+    result.checks.writingTasks = { status: 'error', message: e.message };
+  }
   res.json(result);
 });
 
