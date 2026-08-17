@@ -27,7 +27,8 @@ export class KimiAdapter extends BasePlatformAdapter {
     // 流程：hover 回答 → 操作栏出现 → 点击分享按钮 → 链接复制到剪贴板 或 弹窗显示
 
     // 步骤1: 注入 clipboard + execCommand 拦截
-    await this.injectClipboardInterceptor(page, ['/share/', 'kimi.com']);
+    // v1.9.12: 模式放宽为 'kimi'（兼容 kimi.com / kimi.moonshot.cn 等域名）
+    await this.injectClipboardInterceptor(page, ['/share/', 'kimi']);
 
     // 步骤2: hover 在 AI 回答区域上，触发操作栏显示
     // Kimi 的操作栏（toolbar）默认 display:none，需要 hover 回答区域才显示

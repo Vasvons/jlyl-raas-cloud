@@ -172,6 +172,49 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       } catch { /* 继续 */ }
     }
 
+    // v1.9.12: 兜底——全页面扫描含 链接/生成/复制 文本的叶子级可点击元素，逐个点击检查剪贴板
+    // （元宝分享面板的复制/生成按钮可能是 div/span，且文案可能与标准"复制链接"不同）
+    try {
+      const linkLike = await page.evaluate(() => {
+        const candidates = document.querySelectorAll('button, a[href], [role="button"], div, span, [class*="btn"], [class*="button"], [class*="item"], [class*="action"]');
+        const results: string[] = [];
+        for (let i = 0; i < candidates.length && results.length < 8; i++) {
+          const el = candidates[i] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          if (rect.width < 30 || rect.height < 20) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+          if (!t || t.length > 12) continue;
+          if (!/链接|生成|复制|link|copy/i.test(t)) continue;
+          const cls = (el.getAttribute('class') || '').toString().split(' ')[0];
+          results.push(cls || t);
+        }
+        return results;
+      }).catch(() => []);
+      for (const cls of linkLike.slice(0, 5)) {
+        try {
+          let el: any = await page.$(`[class*="${cls}"]`).catch(() => null);
+          if (!el) el = await page.$(`:text-is("${cls}")`).catch(() => null);
+          if (el) {
+            const visible = await el.isVisible().catch(() => false);
+            if (visible) {
+              await el.click({ timeout: 2000 }).catch(() => {});
+              await page.waitForTimeout(1800);
+              const cap = await this.getCapturedShareUrl(page, '/s/');
+              if (cap) {
+                console.log(`[腾讯元宝] 兜底点击链接按钮捕获: ${cap}`);
+                return cap;
+              }
+              await page.keyboard.press('Escape').catch(() => {});
+              await page.waitForTimeout(400);
+            }
+          }
+        } catch { /* 继续 */ }
+      }
+    } catch { /* 忽略 */ }
+
     // 步骤5: 从拦截到的剪贴板内容提取 URL
     const capturedUrl = await this.getCapturedShareUrl(page, '/s/');
     if (capturedUrl) {

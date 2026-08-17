@@ -265,11 +265,9 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         '[class*="selectAll"]',
         'label:has-text("全选")',
         '[class*="checkbox"]:has-text("全选")',
-        'span:has-text("全选")',
-        'div:has-text("全选")',
       ];
-      // 注意：不用 :has-text("点击全选以下消息") 这类宽泛选择器——可能点到整个聊天容器
-      // （agent-dialogue 的 innerText 含该文案），导致误关闭分享模式。精确定位走下方 evaluate 兜底。
+      // 注意：不用 div/span:has-text("全选") 这类宽泛选择器——可能点到含"全选"文本的整个容器
+      // （如"点击全选以下消息"所在的分享面板容器），误关分享模式。精确定位走下方 evaluate 兜底。
       let selAllClicked = false;
       for (const sel of selectAllSelectors) {
         try {
@@ -1254,8 +1252,11 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   protected async injectClipboardInterceptor(page: Page, urlPatterns: string[]): Promise<void> {
     await page.evaluate((patterns: string[]) => {
       (window as any).__capturedShareUrl__ = null;
+      (window as any).__lastClipboardText__ = null;
       const origWrite = navigator.clipboard.writeText.bind(navigator.clipboard);
       navigator.clipboard.writeText = (text: string) => {
+        // v1.9.12: 始终记录最后一次复制文本（诊断用），匹配模式才标记为分享链接
+        if (typeof text === 'string') (window as any).__lastClipboardText__ = text;
         if (text && patterns.some(p => text.includes(p))) {
           (window as any).__capturedShareUrl__ = text;
         }
@@ -1266,6 +1267,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         if (cmd === 'copy') {
           const selection = window.getSelection();
           const selText = selection ? selection.toString() : '';
+          if (selText) (window as any).__lastClipboardText__ = selText;
           if (patterns.some(p => selText.includes(p))) {
             (window as any).__capturedShareUrl__ = selText;
           }
@@ -1287,6 +1289,18 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       const urlMatch = captured.match(/https?:\/\/[^\s<>"']+/);
       if (urlMatch && urlMatch[0].includes(urlPattern)) {
         return urlMatch[0];
+      }
+      // v1.9.12: 捕获到了 URL 但不符合当前平台模式——记录实际复制的 URL 便于定位平台分享格式
+      const anyUrl = captured.match(/https?:\/\/[^\s<>"']+/);
+      if (anyUrl) {
+        logger.warn(`[${this.platformName}] 剪贴板捕获到 URL 但不含模式"${urlPattern}": ${anyUrl[0].slice(0, 120)}`);
+      }
+    } else {
+      // v1.9.12: 未按模式捕获时，检查是否有任何复制动作发生（诊断各平台实际复制了什么）
+      const lastText = await page.evaluate(() => (window as any).__lastClipboardText__ as string | null).catch(() => null);
+      if (lastText) {
+        const clipped = lastText.length > 160 ? lastText.slice(0, 160) + '...' : lastText;
+        logger.warn(`[${this.platformName}] 剪贴板有复制动作但无"${urlPattern}"模式链接，复制的文本: "${clipped}"`);
       }
     }
     // 2. v1.9.6: 分享面板直接展示链接 input（readonly/class 含 link）时，从 DOM 读值
