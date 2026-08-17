@@ -1509,6 +1509,84 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
   };
 }
 
+/**
+ * v3.16.x：删词同步删除蒸馏关键词库
+ * 场景：用户在关键词生成器里删除了某些环节的词汇（如D同义词删除了"工厂""厂家"），
+ *       则蒸馏关键词库里用到了这些词汇的关键词同步被删除。
+ * 流程：保存配置时，对比新旧配置找出被删除的词汇，删除 zlgjc 中 value 包含这些词的关键词。
+ */
+export async function syncDeletedDistillateWords(userId: string, configType: string, newConfigJson: string): Promise<{ deleted: number; groups: { group: string; words: string[]; deleted: number }[] }> {
+  // 确定 keyword_type
+  const keywordType = configType === 'brand' ? 1 : 0;
+
+  // 获取旧配置
+  const oldConfigJson = await getKwConfig(userId, configType);
+  if (!oldConfigJson) {
+    return { deleted: 0, groups: [] };
+  }
+
+  let oldConfig: any;
+  let newConfig: any;
+  try {
+    oldConfig = JSON.parse(oldConfigJson);
+    newConfig = JSON.parse(newConfigJson);
+  } catch {
+    return { deleted: 0, groups: [] };
+  }
+
+  // 要检查的词汇组（A/B/C/D/E/F），蒸馏关键词用这些，品牌关键词只用 C/D
+  const groupsToCheck = configType === 'brand' ? ['C', 'D'] : ['A', 'B', 'C', 'D', 'E', 'F'];
+
+  // 解析词汇列表（兼容字符串和数组两种格式）
+  function parseWords(v: any): string[] {
+    if (Array.isArray(v)) return v.filter((w: any) => typeof w === 'string' && w.trim()).map((w: string) => w.trim());
+    if (typeof v === 'string') return v.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean);
+    return [];
+  }
+
+  // 找出被删除的词汇
+  const deletedWords: { group: string; word: string }[] = [];
+  for (const group of groupsToCheck) {
+    const oldWords = new Set(parseWords(oldConfig[group]));
+    const newWords = new Set(parseWords(newConfig[group]));
+    for (const word of oldWords) {
+      if (!newWords.has(word)) {
+        deletedWords.push({ group, word });
+      }
+    }
+  }
+
+  if (deletedWords.length === 0) {
+    return { deleted: 0, groups: [] };
+  }
+
+  // 按组分批删除
+  const groupResults: { group: string; words: string[]; deleted: number }[] = [];
+  let totalDeleted = 0;
+
+  for (const { group, word } of deletedWords) {
+    // 转义 LIKE 特殊字符（% 和 _）
+    const escaped = word.replace(/[%_\\]/g, '\\$&');
+    const result = await query(
+      `DELETE FROM zlgjc WHERE userid = $1 AND keyword_type = $2 AND value LIKE $3`,
+      [userId, keywordType, `%${escaped}%`]
+    );
+    const count = result.rowCount || 0;
+    totalDeleted += count;
+
+    // 合并到同组结果
+    const existing = groupResults.find(g => g.group === group);
+    if (existing) {
+      existing.words.push(word);
+      existing.deleted += count;
+    } else {
+      groupResults.push({ group, words: [word], deleted: count });
+    }
+  }
+
+  return { deleted: totalDeleted, groups: groupResults };
+}
+
 // ============ 关键词生成器配置 ============
 
 // 保存关键词生成器配置

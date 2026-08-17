@@ -96,7 +96,7 @@ export default function KeywordsPage() {
   const [genF, setGenF] = useState(DEFAULT_WORDS.F.join('\n'));
   const [genCombos, setGenCombos] = useState<string[]>(['C+D', 'A+C+D', 'B+C+D']);
   const [genSubmitting, setGenSubmitting] = useState(false);
-  const [genResult, setGenResult] = useState<{ inserted: number; duplicated: number; total: number } | null>(null);
+  const [genResult, setGenResult] = useState<{ inserted: number; duplicated: number; total: number; syncedDeleted?: { deleted: number } } | null>(null);
 
   // 品牌关键词生成器
   const [brandGenB, setBrandGenB] = useState(''); // B核心词，自动从核心关键词填入
@@ -104,7 +104,7 @@ export default function KeywordsPage() {
   const [brandGenD, setBrandGenD] = useState(DEFAULT_BRAND_WORDS.D.join('\n')); // D疑问词
   const [brandGenCombos, setBrandGenCombos] = useState<string[]>(['A+B', 'A+B+C']);
   const [brandGenSubmitting, setBrandGenSubmitting] = useState(false);
-  const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; total: number; debug?: any } | null>(null);
+  const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; total: number; syncedDeleted?: { deleted: number }; debug?: any } | null>(null);
 
   // 词汇配置的保存/加载（持久化到后端数据库，按用户ID存储）
   // 保存蒸馏关键词生成器配置
@@ -115,12 +115,19 @@ export default function KeywordsPage() {
     }
     const config = { A: genA, B: genB, D: genD, E: genE, F: genF, combos: genCombos };
     try {
-      await api.post('/keywordsearchrank/saveKwConfig', {
+      const res = await api.post('/keywordsearchrank/saveKwConfig', {
         userId: selectedUserId,
         configType: 'distillate',
         configJson: config,
       });
-      message.success('蒸馏关键词词汇配置已保存');
+      // v3.16.x：保存配置时后端会同步删除词库里使用已删除词汇的关键词
+      const synced = res.data?.data?.syncedDeleted;
+      if (synced?.deleted > 0) {
+        message.success(`蒸馏关键词词汇配置已保存，并同步删除词库关键词 ${synced.deleted} 条`);
+      } else {
+        message.success('蒸馏关键词词汇配置已保存');
+      }
+      fetchZlgjc(selectedUserId);
     } catch {
       message.error('保存配置失败');
     }
@@ -154,12 +161,19 @@ export default function KeywordsPage() {
     }
     const config = { C: brandGenC, D: brandGenD, combos: brandGenCombos };
     try {
-      await api.post('/keywordsearchrank/saveKwConfig', {
+      const res = await api.post('/keywordsearchrank/saveKwConfig', {
         userId: selectedUserId,
         configType: 'brand',
         configJson: config,
       });
-      message.success('品牌关键词词汇配置已保存');
+      // v3.16.x：保存配置时后端会同步删除词库里使用已删除词汇的关键词
+      const synced = res.data?.data?.syncedDeleted;
+      if (synced?.deleted > 0) {
+        message.success(`品牌关键词词汇配置已保存，并同步删除词库关键词 ${synced.deleted} 条`);
+      } else {
+        message.success('品牌关键词词汇配置已保存');
+      }
+      fetchBrand(selectedUserId);
     } catch {
       message.error('保存配置失败');
     }
@@ -510,7 +524,13 @@ export default function KeywordsPage() {
       if (res.data?.code === 200) {
         const result = res.data.data;
         setGenResult(result);
-        message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条`);
+        // v3.16.x：生成时后端会同步删除词库里使用已删除词汇的关键词
+        const synced = result?.syncedDeleted;
+        if (synced?.deleted > 0) {
+          message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条；同步删除词库关键词 ${synced.deleted} 条`);
+        } else {
+          message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条`);
+        }
         fetchZlgjc(selectedUserId);
       } else {
         message.error(res.data?.message || '生成失败');
@@ -562,7 +582,13 @@ export default function KeywordsPage() {
       if (res.data?.code === 200) {
         const result = res.data.data;
         setBrandGenResult(result);
-        message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条`);
+        // v3.16.x：生成时后端会同步删除词库里使用已删除词汇的关键词
+        const synced = result?.syncedDeleted;
+        if (synced?.deleted > 0) {
+          message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条；同步删除词库关键词 ${synced.deleted} 条`);
+        } else {
+          message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条`);
+        }
         fetchBrand(selectedUserId);
       } else {
         message.error(res.data?.message || '生成失败');
@@ -771,6 +797,9 @@ export default function KeywordsPage() {
                         <Tag color="green">新增 {genResult.inserted} 条</Tag>
                         <Tag color="orange">重复 {genResult.duplicated} 条</Tag>
                         <Tag color="blue">总计组合 {genResult.total} 条</Tag>
+                        {genResult.syncedDeleted?.deleted !== undefined && genResult.syncedDeleted.deleted > 0 && (
+                          <Tag color="red">同步删除 {genResult.syncedDeleted.deleted} 条</Tag>
+                        )}
                       </Space>
                     </div>
                   )}
@@ -824,6 +853,9 @@ export default function KeywordsPage() {
                         <Tag color="green">新增 {brandGenResult.inserted} 条</Tag>
                         <Tag color="orange">重复 {brandGenResult.duplicated} 条</Tag>
                         <Tag color="blue">总计组合 {brandGenResult.total} 条</Tag>
+                        {brandGenResult.syncedDeleted?.deleted !== undefined && brandGenResult.syncedDeleted.deleted > 0 && (
+                          <Tag color="red">同步删除 {brandGenResult.syncedDeleted.deleted} 条</Tag>
+                        )}
                       </Space>
                       {brandGenResult.debug && (
                         <div style={{ marginTop: 8, fontSize: 12, color: '#666' }}>

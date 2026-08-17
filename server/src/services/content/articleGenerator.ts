@@ -240,6 +240,61 @@ function normalizeGeoDecisionTitle(title: string, enterpriseInfo: any): string {
 }
 
 /**
+ * v3.16.x：用蒸馏关键词库的关键词改写成标题（兜底重建用）
+ * 场景：AI 标题生成失败、标题只是品牌名、或出现"品牌：品牌"占位符时，
+ *       用词库关键词（优先 hxgjc 核心词，而非长组合词 value）直接改写成可搜索标题，
+ *       避免旧逻辑拼接"kw.value：首句"产生"聚量引力：聚量引力"这类垃圾标题。
+ */
+function buildFallbackTitle(kw: any, contentHtml: string, enterpriseInfo: any): string {
+  const firstP = contentHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
+  const firstText = firstP ? firstP[1].replace(/<[^>]+>/g, '').trim() : '';
+  const hxgjc = (kw?.hxgjc || '').trim();
+  const value = (kw?.value || '').trim();
+  // 优先干净的核心词（hxgjc，如"GEO优化"），其次用组合词 value，去掉常见尾缀词
+  const seed = ((hxgjc && hxgjc !== value) ? hxgjc : value).replace(/(品牌|公司|工厂|厂家|厂商)$/g, '').trim();
+  if (!seed) {
+    return firstText ? firstText.slice(0, 20) : '未命名文章';
+  }
+  // 决策问句类关键词直接成标题（如"绵阳GEO优化哪家好"→"绵阳GEO优化哪家好？"）
+  if (/哪家|怎么样|好不好|靠谱|怎么|如何|推荐|报价|价格|排名/.test(seed)) {
+    const t = seed.length > 40 ? seed.slice(0, 40) : seed;
+    return t.replace(/[？?。，]+$/g, '') + '？';
+  }
+  return `${seed}怎么选？`;
+}
+
+/**
+ * v3.16.x：判定标题是否为"品牌：品牌"/"品牌："这类占位符标题
+ */
+function isDuplicateBrandTitle(title: string): boolean {
+  const t = (title || '').trim();
+  if (!t) return false;
+  if (t.endsWith('：') || t.endsWith(':')) return t.replace(/[:：]+$/g, '').length >= 2; // "品牌："
+  const idx = t.search(/[:：]/);
+  if (idx <= 0) return false;
+  const left = t.slice(0, idx).trim();
+  const right = t.slice(idx + 1).trim();
+  return left.length >= 2 && left === right; // "聚量引力：聚量引力"
+}
+
+/**
+ * v3.16.x：判定标题是否几乎只是品牌名（含品牌名简写子串）
+ */
+function isBrandOnlyTitle(title: string, enterpriseInfo: any): boolean {
+  const cleaned = (title || '').replace(/[\s：:、,，。\-—|]+/g, '');
+  if (!cleaned || cleaned.length < 2) return true;
+  const brandParts = [
+    enterpriseInfo.company_full_name,
+    enterpriseInfo.company_short_name,
+  ].filter((n): n is string => !!n && n.length >= 2);
+  if (brandParts.length === 0) return false;
+  return brandParts.some(b => {
+    const bc = String(b).replace(/[\s：:、,，。\-—|]+/g, '');
+    return bc.includes(cleaned);
+  });
+}
+
+/**
  * 从AI响应中提取标题和正文HTML
  *
  * 约定AI返回格式：
@@ -325,10 +380,17 @@ function parseArticleContent(rawContent: string): { title: string; contentHtml: 
     }
   }
 
-  // 标题长度保护（最长 50 字符，超过截取到第一个标点）
+  // 标题长度保护（v3.16.x：最长 50 字符，超过截取到最后一个标点，避免从词中切断）
   if (title.length > 50) {
-    const punctPos = title.slice(0, 50).search(/[。，！？；,!?;]/);
-    title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 50);
+    const truncated = title.slice(0, 50);
+    const punctPos = Math.max(
+      truncated.lastIndexOf('。'), truncated.lastIndexOf('？'),
+      truncated.lastIndexOf('！'), truncated.lastIndexOf('，'),
+      truncated.lastIndexOf('；'), truncated.lastIndexOf('、'),
+      truncated.lastIndexOf(','), truncated.lastIndexOf('?'),
+      truncated.lastIndexOf(';'), truncated.lastIndexOf('!'),
+    );
+    title = punctPos > 10 ? truncated.slice(0, punctPos + 1) : truncated;
   }
 
   const wordCount = contentHtml.replace(/<[^>]+>/g, '').length;
@@ -1389,6 +1451,11 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
               enterprise: enterpriseInfo,
               wordCount: task.target_word_count,
             });
+            // v3.16.x：注入【本篇关键词】用于标题基于关键词改写（强制规则11使用）
+            const specificKeyword = kw?.value?.trim() || '';
+            if (specificKeyword) {
+              titlePrompt = `【本篇关键词】${specificKeyword}\n\n` + titlePrompt;
+            }
             titlePrompt += writingCtx.userPromptSuffix;
             // v1.8.0：标题生成也注入平台字数约束（标题是平台最严格的字段）
             if (currentPlatformRule) {
@@ -1420,6 +1487,7 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词
 9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"
 10. 【标题问句优先（v3.11.x 通用）】标题优先采用"用户原话型"问句，直接复刻目标客户在搜索框里的输入（如"郑州脂肪填充哪家做的好？""XX 怎么样？"），提升 GEO/AI 检索命中率。若与下方"GEO 决策意图"风格规则冲突：对决策类风格（痛点问答/对比评测/教程指南/产品种草）强制问句；对知识/资讯/品牌型风格不强求问句形式，但标题应包含用户可能搜索的关键词。
+11. 【标题基于关键词改写（v3.16.x 强制）】标题必须直接基于蒸馏关键词库中的关键词改写，不能凭空创作。请优先使用【本篇关键词】中指定的关键词作为标题核心，在其基础上改写为通顺的自然标题。示例：关键词"绵阳GEO优化哪家好"→标题"绵阳GEO优化哪家好？2026年本地服务商对比"；关键词"GEO优化公司推荐"→标题"GEO优化公司推荐：选对服务商才是关键"。如果【本篇关键词】为空，则从上方关键词列表中自行选择。
 ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task), task.city || '')}`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: titleSystemContent },
@@ -1441,10 +1509,17 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task), task.city || '')}`;
               .trim();
             // v2.2.19：统一清洗前缀（# / 【标题】 / 标题：/ 引号等）
             title = cleanTitlePrefix(title);
-            // 标题长度保护
+            // 标题长度保护（v3.16.x：修复截断位置——找最后一个标点而非第一个）
             if (title.length > 50) {
-              const punctPos = title.slice(0, 50).search(/[。，！？；,!?;]/);
-              title = punctPos > 10 ? title.slice(0, punctPos) : title.slice(0, 50);
+              const truncated = title.slice(0, 50);
+              const punctPos = Math.max(
+                truncated.lastIndexOf('。'), truncated.lastIndexOf('？'),
+                truncated.lastIndexOf('！'), truncated.lastIndexOf('，'),
+                truncated.lastIndexOf('；'), truncated.lastIndexOf('、'),
+                truncated.lastIndexOf(','), truncated.lastIndexOf('?'),
+                truncated.lastIndexOf(';'), truncated.lastIndexOf('!'),
+              );
+              title = punctPos > 10 ? truncated.slice(0, punctPos + 1) : truncated;
             }
             // 如果剥离思考后标题为空或仍然像思考过程，降级使用正文标题
             if (!title || title.length < 5 || isThinkingProcess(title)) {
@@ -1462,16 +1537,11 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task), task.city || '')}`;
         if (!title) {
           title = parsed.title;
         }
-        // 最终兜底：如果 parsed.title 也是思考过程，用关键词 + 首段纯文本生成标题
+        // 最终兜底：如果 parsed.title 也是思考过程，用词库关键词 + 首段纯文本生成标题
+        // v3.16.x：改用 buildFallbackTitle，避免旧逻辑"kw.value：首句"拼接产生"聚量引力：聚量引力"垃圾标题
         if (!title || isThinkingProcess(title)) {
-          const firstP = contentHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-          const firstText = firstP ? firstP[1].replace(/<[^>]+>/g, '').trim() : '';
-          if (firstText && !isThinkingProcess(firstText)) {
-            title = (kw?.value ? kw.value + '：' : '') + firstText.slice(0, 25);
-          } else {
-            title = kw?.value || '未命名文章';
-          }
-          console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文标题也是思考过程/提示词污染，用关键词+首段生成标题:`, title);
+          title = buildFallbackTitle(kw, contentHtml, enterpriseInfo);
+          console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇正文标题也是思考过程/提示词污染，用词库关键词重建标题:`, title);
         }
         // v3.10.7：标题去品牌统一兜底（覆盖所有标题来源：title_prompt生成/正文title解析/关键词+首段兜底）
         //   AI 可能无视 prompt 约束仍把品牌名写入标题，这里硬性剥离确保标题纯净
@@ -1490,9 +1560,12 @@ ${buildStyleAwareGeoTitleRule(resolveTaskStyles(task), task.city || '')}`;
               }
             }
           }
-          // 剥离后标题过短则用关键词补前缀
-          if (title.length < 8 && kw?.value) {
-            title = `${kw.value}：${title}`.slice(0, 50);
+          // v3.16.x：剥离品牌后标题过短 / 仍是"品牌：品牌"占位 / 几乎只是品牌名 → 用词库关键词重建
+          //   旧逻辑"title.length < 8 则补 kw.value 前缀"会生成"聚量引力：聚量引力"这类垃圾标题
+          if (title.length < 8 || isDuplicateBrandTitle(title) || isBrandOnlyTitle(title, enterpriseInfo)) {
+            const before = title;
+            title = buildFallbackTitle(kw, contentHtml, enterpriseInfo);
+            console.warn(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇标题为占位/品牌重复，用词库关键词重建: "${before}" → "${title}"`);
           }
         }
         // v3.14.x：标题 GEO 决策意图规范化兜底
