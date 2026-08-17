@@ -1528,9 +1528,33 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
     }
   }
 
+  // v3.16.x：覆盖语义——清理"不再生成"的旧自动生成词
+  // 判断标准：generation_codes 非空 = 生成器自动生成的关键词（含本次与历史生成）；
+  // 手动添加的关键词 generation_codes 为空，保留不动。
+  // 效果：词库最终 = 当前生成结果 ∪ 手动添加词，与生成器当前短语严格一致。
+  let overwritten = 0;
+  if (combinations.length > 0) {
+    const generatedValues = combinations.map(c => c.keyword);
+    const staleRes = await query(
+      `DELETE FROM zlgjc
+       WHERE userid = $1 AND keyword_type = $2
+         AND generation_codes IS NOT NULL AND array_length(generation_codes, 1) > 0
+         AND value <> ALL($3::text[])
+       RETURNING id`,
+      [userId, keywordType, generatedValues]
+    );
+    overwritten = staleRes.rowCount || 0;
+    if (overwritten > 0) {
+      const staleIds = staleRes.rows.map(r => r.id);
+      // 先清理关联的跳转链接（zlgjcurl），再删除蒸馏词本身，保证引用完整
+      await query('DELETE FROM zlgjcurl WHERE zlgjcid = ANY($1::int[])', [staleIds]);
+    }
+  }
+
   return {
     inserted,
     duplicated,
+    overwritten,
     total: combinations.length,
     debug: {
       combos: G,

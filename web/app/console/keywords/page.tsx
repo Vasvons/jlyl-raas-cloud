@@ -97,7 +97,7 @@ export default function KeywordsPage() {
   const [genF, setGenF] = useState(DEFAULT_WORDS.F.join('\n'));
   const [genCombos, setGenCombos] = useState<string[]>(['C+D', 'A+C+D', 'B+C+D']);
   const [genSubmitting, setGenSubmitting] = useState(false);
-  const [genResult, setGenResult] = useState<{ inserted: number; duplicated: number; total: number; syncedDeleted?: { deleted: number } } | null>(null);
+  const [genResult, setGenResult] = useState<{ inserted: number; duplicated: number; overwritten?: number; total: number; syncedDeleted?: { deleted: number } } | null>(null);
 
   // 品牌关键词生成器
   const [brandGenB, setBrandGenB] = useState(''); // B核心词，自动从核心关键词填入
@@ -105,7 +105,7 @@ export default function KeywordsPage() {
   const [brandGenD, setBrandGenD] = useState(DEFAULT_BRAND_WORDS.D.join('\n')); // D疑问词
   const [brandGenCombos, setBrandGenCombos] = useState<string[]>(['A+B', 'A+B+C']);
   const [brandGenSubmitting, setBrandGenSubmitting] = useState(false);
-  const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; total: number; syncedDeleted?: { deleted: number }; debug?: any } | null>(null);
+  const [brandGenResult, setBrandGenResult] = useState<{ inserted: number; duplicated: number; overwritten?: number; total: number; syncedDeleted?: { deleted: number }; debug?: any } | null>(null);
 
   // 词汇配置的保存/加载（持久化到后端数据库，按用户ID存储）
   // 保存蒸馏关键词生成器配置
@@ -527,11 +527,10 @@ export default function KeywordsPage() {
         setGenResult(result);
         // v3.16.x：生成时后端会同步删除词库里使用已删除词汇的关键词
         const synced = result?.syncedDeleted;
-        if (synced?.deleted > 0) {
-          message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条；同步删除词库关键词 ${synced.deleted} 条`);
-        } else {
-          message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条`);
-        }
+        const parts = [`新增 ${result.inserted} 条`, `重复 ${result.duplicated} 条`];
+        if (result.overwritten > 0) parts.push(`清理旧词 ${result.overwritten} 条`);
+        if (synced?.deleted > 0) parts.push(`同步删除 ${synced.deleted} 条`);
+        message.success(`生成完成：${parts.join('，')}`);
         fetchZlgjc(selectedUserId);
       } else {
         message.error(res.data?.message || '生成失败');
@@ -585,11 +584,10 @@ export default function KeywordsPage() {
         setBrandGenResult(result);
         // v3.16.x：生成时后端会同步删除词库里使用已删除词汇的关键词
         const synced = result?.syncedDeleted;
-        if (synced?.deleted > 0) {
-          message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条；同步删除词库关键词 ${synced.deleted} 条`);
-        } else {
-          message.success(`生成完成：新增 ${result.inserted} 条，重复 ${result.duplicated} 条`);
-        }
+        const parts = [`新增 ${result.inserted} 条`, `重复 ${result.duplicated} 条`];
+        if (result.overwritten > 0) parts.push(`清理旧词 ${result.overwritten} 条`);
+        if (synced?.deleted > 0) parts.push(`同步删除 ${synced.deleted} 条`);
+        message.success(`生成完成：${parts.join('，')}`);
         fetchBrand(selectedUserId);
       } else {
         message.error(res.data?.message || '生成失败');
@@ -812,6 +810,9 @@ export default function KeywordsPage() {
                         <Tag color="green">新增 {genResult.inserted} 条</Tag>
                         <Tag color="orange">重复 {genResult.duplicated} 条</Tag>
                         <Tag color="blue">总计组合 {genResult.total} 条</Tag>
+                        {genResult.overwritten !== undefined && genResult.overwritten > 0 && (
+                          <Tag color="red">清理旧词 {genResult.overwritten} 条</Tag>
+                        )}
                         {genResult.syncedDeleted?.deleted !== undefined && genResult.syncedDeleted.deleted > 0 && (
                           <Tag color="red">同步删除 {genResult.syncedDeleted.deleted} 条</Tag>
                         )}
@@ -868,6 +869,9 @@ export default function KeywordsPage() {
                         <Tag color="green">新增 {brandGenResult.inserted} 条</Tag>
                         <Tag color="orange">重复 {brandGenResult.duplicated} 条</Tag>
                         <Tag color="blue">总计组合 {brandGenResult.total} 条</Tag>
+                        {brandGenResult.overwritten !== undefined && brandGenResult.overwritten > 0 && (
+                          <Tag color="red">清理旧词 {brandGenResult.overwritten} 条</Tag>
+                        )}
                         {brandGenResult.syncedDeleted?.deleted !== undefined && brandGenResult.syncedDeleted.deleted > 0 && (
                           <Tag color="red">同步删除 {brandGenResult.syncedDeleted.deleted} 条</Tag>
                         )}
