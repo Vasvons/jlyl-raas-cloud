@@ -88,9 +88,34 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   async waitForResponse(page: Page): Promise<void> {
     // v1.9.6: 豆包回答可能渲染在 iframe 中（诊断日志 iframes=1，主文档 main 只有侧边栏）。
     // 用 page.frames() 遍历（可访问跨域 iframe，比 contentDocument 可靠）。
+    // v1.9.10: 豆包使用 semi 设计系统，回答可能渲染在 shadow root 内（domNodes=821 很低，
+    // innerText 读不到 shadow 内文本）。改为深度遍历 shadow DOM 提取文本。
+    const deepText = (): Promise<string> =>
+      page.evaluate(() => {
+        const texts: string[] = [];
+        const walk = (root: Document | ShadowRoot | Element) => {
+          const all = (root as Document).querySelectorAll ? Array.from((root as Document).querySelectorAll('*')) : [];
+          for (let i = 0; i < all.length; i++) {
+            const el = all[i] as HTMLElement;
+            // 文本节点
+            if (el.childNodes) {
+              for (let k = 0; k < el.childNodes.length; k++) {
+                const cn = el.childNodes[k];
+                if (cn.nodeType === 3 && cn.textContent && cn.textContent.trim()) {
+                  texts.push(cn.textContent.trim());
+                }
+              }
+            }
+            // 穿透 open shadow root
+            if ((el as any).shadowRoot) walk((el as any).shadowRoot as ShadowRoot);
+          }
+        };
+        walk(document);
+        return texts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 30000);
+      }).catch(() => '');
+
     const snapshot = (): Promise<string> => {
       const parts: string[] = [];
-      // 主文档
       return page.evaluate(() => {
         const main = document.querySelector('main') || document.body;
         if (main) {
@@ -113,6 +138,8 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       });
     };
     const baseline = await snapshot();
+    // v1.9.10: 深度文本（含 shadow DOM）也加入基线/比较，捕获渲染在 shadow 内的回答
+    const baselineDeep = await deepText();
     // 阶段1: 等待回答开始生成（文本变化）
     // v1.9.9: 30s → 45s（豆包回答队列可能较长，30s 内未开始生成就提取会抓到侧边栏）
     const deadline1 = Date.now() + 45000;
@@ -122,6 +149,13 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       const cur = await snapshot();
       if (cur && cur !== baseline && Math.abs(cur.length - baseline.length) > 30) {
         changed = true;
+        break;
+      }
+      // v1.9.10: 主文档/iframe innerText 无变化时，检查深度文本（shadow DOM）是否出现新内容
+      const curDeep = await deepText();
+      if (baselineDeep && curDeep && curDeep.length > baselineDeep.length + 100) {
+        changed = true;
+        logger.info('[豆包] 深度文本检测到回答变化（shadow DOM 内）');
         break;
       }
     }
@@ -186,6 +220,30 @@ export class DoubaoAdapter extends BasePlatformAdapter {
           if (smart && smart.text && smart.text.trim().length > 150) {
             logger.info(`[豆包] 从 iframe smartFindLongestContent 提取到回答: ${smart.text.trim().length} 字符`);
             return { text: smart.text.trim(), html: smart.html || `<div>${smart.text.trim()}</div>` };
+          }
+          // v1.9.10: shadow DOM 深度提取——豆包回答可能在 semi 组件的 shadow root 内，
+          // smartFindLongestContent 用 querySelectorAll 也读不到。递归穿透 shadow root 找最长文本块。
+          const deepSmart = await frame.evaluate(() => {
+            let best = '';
+            let bestHtml = '';
+            const walk = (root: any) => {
+              const all = root.querySelectorAll ? Array.from(root.querySelectorAll('div, section, article, [class*="answer"], [class*="message"], [class*="markdown"], [class*="content"]')) : [];
+              for (let i = 0; i < all.length; i++) {
+                const el = all[i] as HTMLElement;
+                const t = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+                if (t.length > best.length && t.length > 150) {
+                  best = t;
+                  bestHtml = el.innerHTML || '';
+                }
+                if ((el as any).shadowRoot) walk((el as any).shadowRoot);
+              }
+            };
+            walk(document);
+            return { text: best, html: bestHtml };
+          }).catch(() => ({ text: '', html: '' }));
+          if (deepSmart && deepSmart.text && deepSmart.text.length > 150) {
+            logger.info(`[豆包] 从 iframe shadow DOM 深度提取到回答: ${deepSmart.text.length} 字符`);
+            return { text: deepSmart.text, html: deepSmart.html || `<div>${deepSmart.text}</div>` };
           }
         } catch { /* 继续下一个 frame */ }
       }

@@ -96,6 +96,30 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       return earlyCaptured;
     }
 
+    // v1.9.10: 元宝分享弹窗勾选消息后需先点击「生成链接/创建链接」才会出现可复制的分享链接
+    for (const genSel of [
+      'button:has-text("生成链接")',
+      'button:has-text("创建链接")',
+      'button:has-text("生成分享链接")',
+      ':text-is("生成链接")',
+      ':text-is("创建链接")',
+      'button:has-text("下一步")',
+    ]) {
+      try {
+        const genBtn = await page.$(genSel);
+        if (genBtn) {
+          const visible = await genBtn.isVisible().catch(() => false);
+          if (!visible) continue;
+          await genBtn.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(1500);
+          console.log(`[腾讯元宝] 点击生成链接按钮: ${genSel}`);
+          const genCaptured = await this.getCapturedShareUrl(page, '/s/');
+          if (genCaptured) return genCaptured;
+          break;
+        }
+      } catch { /* 继续 */ }
+    }
+
     // 步骤3.5: 元宝分享弹窗可能是"长图/链接"Tab 式，先尝试切换到"链接"Tab
     // （默认可能停在长图模式，直接点"复制"会复制图片而非链接）
     // v1.9.4: 扩展 Tab 选择器（实地反馈 2026-08-17 切 Tab 未命中，弹窗结构已变化）

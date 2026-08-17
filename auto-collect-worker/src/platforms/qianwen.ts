@@ -115,6 +115,19 @@ export class QianwenAdapter extends BasePlatformAdapter {
     ], ['分享', 'Share', 'share']);
 
     if (!shareBtnClicked) {
+      // v1.9.10: 兜底——千问新版分享可能是消息操作行中的图标（无 class/aria 含 share），
+      // findAndClickShareButton 匹配不到。先直接尝试 clickShareMenuItem 的叶子级扫描
+      // （可识别"编辑 复制 分享"式操作行并点到具体的"分享"项）。
+      const menuClicked = await this.clickShareMenuItem(page);
+      if (menuClicked) {
+        const cap = await this.getCapturedShareUrl(page, '/share/');
+        if (cap) {
+          logger.info(`[通义千问] 分享菜单项点击后捕获到分享链接: ${cap}`);
+          return cap;
+        }
+        const dlg = await this.extractShareUrlFromDialog(page, '/share/');
+        if (dlg) return dlg;
+      }
       // 兜底：hover 消息后重新扫描（v1.9.5: 最多尝试 5 条——历史版本遍历全部消息，
       // 每条内部又跑两轮策略+诊断扫描，20 条消息浪费 2.5 分钟）
       logger.info('[通义千问] 首次扫描未找到分享按钮，尝试 hover 消息区域后重新扫描（最多5条）...');
@@ -128,7 +141,14 @@ export class QianwenAdapter extends BasePlatformAdapter {
           await allMessages[i].hover({ timeout: 1000 }).catch(() => {});
           await page.waitForTimeout(800);
           const clicked = await this.findAndClickShareButton(page, [], ['分享', 'Share', 'share']);
-          if (clicked) break;
+          if (clicked) {
+            await this.clickShareMenuItem(page);
+            const c2 = await this.getCapturedShareUrl(page, '/share/');
+            if (c2) return c2;
+            const d2 = await this.extractShareUrlFromDialog(page, '/share/');
+            if (d2) return d2;
+            break;
+          }
         } catch { /* 继续 */ }
       }
       const captured = await this.getCapturedShareUrl(page, '/share/');

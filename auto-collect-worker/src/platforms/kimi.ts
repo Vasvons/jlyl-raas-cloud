@@ -115,6 +115,8 @@ export class KimiAdapter extends BasePlatformAdapter {
                 // 排除已有明确文字的按钮（如"发送"）
                 const txt = (el.innerText || '').trim();
                 if (txt && txt.length > 0 && txt.length < 6) continue;
+                // v1.9.9: 用 getAttribute('class') 提取 class（SVG 元素的 className 序列化后是 [object SVGAnimatedString]）
+                const cls = (el.getAttribute('class') || '').trim().slice(0, 40);
                 // 排除左侧边栏区域
                 if (r.left < 260) continue;
                 // 若知道消息区域，只收集消息附近的操作栏图标
@@ -123,7 +125,7 @@ export class KimiAdapter extends BasePlatformAdapter {
                   const nearY = (r.top > rect.y - 20) && (r.top < rect.y + rect.height + 120);
                   if (!(nearX && nearY)) continue;
                 }
-                results.push(`${el.tagName.toLowerCase()}|${(el.className || '').toString().slice(0, 40)}|${el.getAttribute('aria-label') || ''}|${el.getAttribute('title') || ''}`);
+                results.push(`${el.tagName.toLowerCase()}|${cls}|${el.getAttribute('aria-label') || ''}|${el.getAttribute('title') || ''}`);
               }
               return results;
             }, msgRect ? { x: msgRect.x, y: msgRect.y, height: msgRect.height } : null).catch(() => []);

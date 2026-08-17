@@ -253,6 +253,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
     // v1.9.9: 部分平台（元宝）分享弹窗需先勾选消息（"点击全选以下消息"）才激活"复制链接"。
     // 先尝试点击"全选/选择全部"复选框，再找复制按钮。
+    // v1.9.10: 元宝弹窗文案是"点击全选以下消息"，旧选择器只匹配"全选"精确文本导致漏匹配；
+    // 补充文本包含匹配 + 弹窗内文本扫描兜底。
     try {
       const selectAllSelectors = [
         'button:has-text("全选")',
@@ -263,7 +265,12 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         '[class*="selectAll"]',
         'label:has-text("全选")',
         '[class*="checkbox"]:has-text("全选")',
+        ':text("点击全选以下消息")',
+        ':has-text("点击全选以下消息")',
+        'span:has-text("全选")',
+        'div:has-text("全选")',
       ];
+      let selAllClicked = false;
       for (const sel of selectAllSelectors) {
         try {
           const el = await page.$(sel);
@@ -273,9 +280,44 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
             await el.click({ timeout: 2000 }).catch(() => {});
             await page.waitForTimeout(800);
             logger.info(`[${this.platformName}] 分享弹窗勾选全选: ${sel}`);
+            selAllClicked = true;
             break;
           }
         } catch { /* 继续 */ }
+      }
+      // v1.9.10: 选择器兜底失败时，用 evaluate 扫描含"全选"文本的可见可点击元素并点击
+      if (!selAllClicked) {
+        const selAllText = await page.evaluate(() => {
+          const candidates = document.querySelectorAll('button, a, [role="button"], label, div, span, [class*="checkbox"], [class*="check"]');
+          for (let i = 0; i < candidates.length; i++) {
+            const el = candidates[i] as HTMLElement;
+            const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+            if (!t || (t !== '全选' && t !== '选择全部' && !t.includes('点击全选以下消息') && !t.includes('全部选中'))) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) continue;
+            const s = window.getComputedStyle(el);
+            if (s.display === 'none' || s.visibility === 'hidden') continue;
+            // 只取叶子级（自身文本短），避免点到容器
+            if (t.length > 20 && !t.includes('点击全选以下消息')) continue;
+            const cls = (el.getAttribute('class') || '').toString().split(' ')[0];
+            return cls || t;
+          }
+          return '';
+        }).catch(() => '');
+        if (selAllText) {
+          try {
+            let el: any = await page.$(`[class*="${selAllText}"]`).catch(() => null);
+            if (!el) el = await page.$(`:text-is("${selAllText}")`).catch(() => null);
+            if (el) {
+              const visible = await el.isVisible().catch(() => false);
+              if (visible) {
+                await el.click({ timeout: 2000 }).catch(() => {});
+                await page.waitForTimeout(800);
+                logger.info(`[${this.platformName}] 分享弹窗全选文本兜底点击: ${selAllText}`);
+              }
+            }
+          } catch { /* 忽略 */ }
+        }
       }
     } catch { /* 忽略 */ }
 
@@ -309,6 +351,9 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // v1.9.6: 智谱/元宝等平台的分享面板是自绘弹层（class 不含 menu/dropdown/popover/modal），
     // 上方选择器匹配不到。改为扫描页面当前「所有可见按钮」，匹配含 复制/链接/link/copy 文本的，
     // 同时兼容图标按钮（aria-label/title 含 复制/分享链接）。
+    // v1.9.10: 候选可能是含多个动作的整行容器（Kimi 实测 "编辑 复制 分享" 在同一个
+    // segment-user-action-row 内），点整行会点到"编辑/复制"。优先返回行内文本恰为
+    // "分享/Share/复制链接/复制" 的叶子子元素，确保点到正确的分享项。
     try {
       const scanResult = await page.evaluate(() => {
         const keywords = ['复制', '链接', 'copy', 'link', 'Copy', 'Link', '分享链接', '复制链接', '复制对话链接'];
@@ -331,7 +376,22 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           if (!isShareCopy) continue;
           // 排除文案过长的普通按钮
           if (text.length > 15 && !/复制链接|分享链接|复制对话链接/.test(text)) continue;
-          results.push(`<${el.tagName.toLowerCase()} class="${cls.slice(0, 40)}" aria="${aria.slice(0, 30)}" title="${title.slice(0, 30)}" text="${text.slice(0, 20)}" pos=(${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)})`);
+          // v1.9.10: 若容器内有子元素文本恰为 分享/Share/复制链接/复制/Copy，优先返回子元素
+          const leafTexts = ['分享', 'Share', '复制链接', '复制对话链接', '复制', 'Copy link', 'Copy'];
+          let leaf: HTMLElement | null = null;
+          const children = Array.from(el.querySelectorAll('*')) as HTMLElement[];
+          for (let c = children.length - 1; c >= 0; c--) {
+            const childText = (children[c].innerText || '').replace(/\s+/g, ' ').trim();
+            if (leafTexts.includes(childText)) {
+              const cr = children[c].getBoundingClientRect();
+              if (cr.width > 0 && cr.height > 0) { leaf = children[c]; break; }
+            }
+          }
+          const target = leaf || el;
+          const tCls = (target.getAttribute('class') || target.className || '').toString();
+          const tText = (target.innerText || '').replace(/\s+/g, ' ').trim();
+          const tRect = target.getBoundingClientRect();
+          results.push(`<${target.tagName.toLowerCase()} class="${tCls.slice(0, 40)}" aria="${target.getAttribute('aria-label') || ''}" text="${tText.slice(0, 20)}" pos=(${Math.round(tRect.left)},${Math.round(tRect.top)},${Math.round(tRect.width)}x${Math.round(tRect.height)})`);
         }
         return results;
       }).catch(() => []);
@@ -347,6 +407,10 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
               const cls = clsMatch[1];
               // class 可能含特殊字符，用属性选择器
               target = await page.$(`[class*="${cls.split(' ')[0]}"]`).catch(() => null);
+            }
+            if (!target && txtMatch && txtMatch[1]) {
+              // v1.9.10: 优先精确文本匹配（叶子元素），其次包含匹配
+              target = await page.$(`:text-is("${txtMatch[1]}")`).catch(() => null);
             }
             if (!target && txtMatch && txtMatch[1]) {
               target = await page.$(`button:has-text("${txtMatch[1]}")`).catch(() => null);
@@ -367,6 +431,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // v1.9.9: 弹窗作用域扫描——先定位当前最大可见弹层（modal/dialog/popover/share/menu 中面积最大者），
     // 只在弹层内部找含 复制/链接/Copy 文案的按钮（含纯"复制"），避免误点页面其他地方的同名按钮。
     // 元宝/智谱的分享面板是自绘覆盖层，按钮可能是 div/span，且文案可能只有"复制"。
+    // v1.9.10: 排除工具栏/全局的复制按钮（class 含 ToolbarCopy/toolbar-copy 的误点——元宝 ToolbarCopy_icon 是工具栏复制内容按钮，不是分享链接复制按钮）。
     try {
       const dialogBtn = await page.evaluate(() => {
         const floatings = document.querySelectorAll(
@@ -398,6 +463,9 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           if (rect.width <= 0 || rect.height <= 0) continue;
           const style = window.getComputedStyle(el);
           if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          // v1.9.10: 排除 toolbar/全局的复制按钮（class 含 ToolbarCopy/toolbar-copy 或其他全局复制按钮）
+          const cls = (el.getAttribute('class') || el.className || '').toString();
+          if (/ToolbarCopy|toolbar-?copy|toolbar_?copy/i.test(cls)) continue;
           const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
           const aria = el.getAttribute('aria-label') || '';
           const title = el.getAttribute('title') || '';
@@ -408,8 +476,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
             (/^(复制|Copy)$/i.test(combined) && rect.width < 200 && rect.height < 60);
           if (!isCopy) continue;
           // 只返回可定位的最小元素（叶子级：无子元素或子元素都不可见）
-          const cls = (el.className || '').toString().slice(0, 40);
-          return `${el.tagName.toLowerCase()}|${cls.split(' ')[0]}|${text.slice(0, 15)}|${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)}`;
+          const c = (el.getAttribute('class') || el.className || '').toString().slice(0, 40);
+          return `${el.tagName.toLowerCase()}|${c.split(' ')[0]}|${text.slice(0, 15)}|${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)}`;
         }
         return '';
       }).catch(() => '');

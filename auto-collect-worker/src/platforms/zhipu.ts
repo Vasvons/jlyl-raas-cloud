@@ -114,13 +114,41 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     }
 
     // v1.9.9: 分享图标（share-icon）点击后常无任何面板弹出（实地日志 2026-08-17）。
-    // 用户实测智谱真实分享按钮在「右上角」操作栏（operation-btn），文案"复制对话链接"，
-    // 可能是纯图标按钮（无文本，title 选择器之前漏匹配"复制对话链接"）。
-    // 逐个点击顶部操作栏按钮，每次点击后检查剪贴板捕获 / 弹窗出现。
+    // 用户实测智谱真实分享按钮在「右上角」操作栏（agent-share-container → agent-share → share-icon），
+    // disabled 状态在 hover 消息后才激活。当前版本新增：专门扫描 `agent-share-container` 并点击。
     try {
+      const shareBtnFound = await page.evaluate(() => {
+        const container = document.querySelector('[class*="agent-share-container"], [class*="agent-share"]');
+        if (!container) return '';
+        const shareIcon = container.querySelector('[class*="share-icon"], button[aria-label*="分享"]');
+        if (!shareIcon) return '';
+        const cls = (shareIcon.className || '').toString().split(' ')[0];
+        return cls;
+      }).catch(() => '');
+      if (shareBtnFound) {
+        const shareBtn = await page.$(`[class*="${shareBtnFound}"]`).catch(() => null);
+        if (shareBtn) {
+          const visible = await shareBtn.isVisible().catch(() => false);
+          if (visible) {
+            await shareBtn.click({ timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+            logger.info(`[智谱AI] 点击右上角分享容器图标成功: ${shareBtnFound}`);
+            // 点击容器图标后会弹出分享面板，此时再找复制链接按钮
+            const menuClicked = await this.clickShareMenuItem(page);
+            const cap = await this.getCapturedShareUrl(page, '/share/');
+            if (cap) {
+              logger.info(`[智谱AI] 点击右上角分享图标后捕获到分享链接: ${cap}`);
+              return cap;
+            }
+            const dlg = await this.extractShareUrlFromDialog(page, '/share/');
+            if (dlg) return dlg;
+          }
+        }
+      }
+      //  fallback: 逐个点击顶部操作栏按钮（operation-btn）
       const headerBtns = await page.evaluate(() => {
         const btns = document.querySelectorAll(
-          '[class*="operation-btn"], [class*="operationBtn"], header [class*="btn"], [class*="toolbar"] [class*="btn"], [class*="header"] [class*="icon"]'
+          '[class*="operation-btn"], [class*="operationBtn"], header [class*="btn"], [class*="toolbar"] [class*="btn"], [class*="header"] [class*="icon"], [class*="agent-share"]'
         );
         const results: string[] = [];
         for (let i = 0; i < btns.length; i++) {
@@ -129,25 +157,25 @@ export class ZhipuAdapter extends BasePlatformAdapter {
           if (rect.width <= 0 || rect.height <= 0) continue;
           const style = window.getComputedStyle(el);
           if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
-          const cls = (el.className || '').toString().slice(0, 40);
+          const cls = (el.className || '').toString().split(' ')[0];
           // 跳过明显的搜索按钮
           if (/search/i.test(cls) || /搜索/.test(el.getAttribute('aria-label') || '')) continue;
-          results.push(`${cls}|${el.getAttribute('title') || ''}|${el.getAttribute('aria-label') || ''}`);
+          results.push(cls);
         }
         return results;
       }).catch(() => []);
       if (headerBtns.length > 0) {
         logger.warn(`[智谱AI] 顶部操作栏按钮转储: ${headerBtns.join(' || ')}`);
-        for (const desc of headerBtns.slice(0, 6)) {
-          const [cls] = desc.split('|');
+        for (const cls of headerBtns.slice(0, 6)) {
           if (!cls) continue;
           try {
-            const btn = await page.$(`[class*="${cls.split(' ')[0]}"]`).catch(() => null);
+            const btn = await page.$(`[class*="${cls}"]`).catch(() => null);
             if (btn) {
               const visible = await btn.isVisible().catch(() => false);
               if (!visible) continue;
               await btn.click({ timeout: 2000 }).catch(() => {});
               await page.waitForTimeout(1500);
+              await this.clickShareMenuItem(page);
               const cap = await this.getCapturedShareUrl(page, '/share/');
               if (cap) {
                 logger.info(`[智谱AI] 点击操作栏按钮捕获到分享链接: ${cap}`);
