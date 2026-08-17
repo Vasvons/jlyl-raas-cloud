@@ -250,21 +250,27 @@ jobs:
             # v3.16.x：同步数据库密码——确保 server 连接密码与 .env 实际生效值一致
             #   根因：PostgreSQL 数据卷首次初始化后 POSTGRES_PASSWORD 不再生效，
             #        若 .env 密码与数据卷初始化时密码不一致，server 报 password authentication failed
-            #   修复：临时将 pg_hba.conf 改为 trust 认证 → 重置 jlyl 用户密码 → 恢复 scram-sha-256
-            #   （注意：容器超级用户是 jlyl 而非 postgres，不能用 docker exec -u postgres psql）
-            echo ">>> 同步数据库密码（临时 trust 认证重置 jlyl 密码）..."
+            #   修复：在 pg_hba.conf 头部插入 trust 规则 → 重置 jlyl 密码 → 恢复原 pg_hba.conf
+            #   （容器默认用户是 postgres，超级用户是 jlyl，不能用 -u postgres 连接）
+            echo ">>> 同步数据库密码..."
             ENV_DB_PASSWORD=$(grep -E '^DB_PASSWORD=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true)
             ENV_DB_PASSWORD=${ENV_DB_PASSWORD:-$DB_PASSWORD}
-            if [ -n "$ENV_DB_PASSWORD" ]; then
-              # 备份 pg_hba.conf 并改为 trust（以 root 执行，数据目录权限属 postgres 但 root 可读写）
-              docker exec -u 0 jlyl-cloud-db bash -c "cp /var/lib/postgresql/data/pg_hba.conf /var/lib/postgresql/data/pg_hba.conf.bak && sed -i 's|^host.*all.*all.*scram-sha-256|host all all all trust|' /var/lib/postgresql/data/pg_hba.conf" 2>&1 | tail -3 || echo ">>> 警告：pg_hba 修改失败"
-              docker exec jlyl-cloud-db pg_ctl reload 2>&1 | tail -2 || true
+            if [ -z "$ENV_DB_PASSWORD" ]; then
+              echo ">>> 警告：无法获取 DB_PASSWORD，跳过密码同步"
+            else
+              # 1) 在 pg_hba.conf 头部插入 trust 行，覆盖所有 host 连接
+              docker exec -u 0 jlyl-cloud-db bash -c 'echo "host all all 0.0.0.0/0 trust" > /tmp/pg_hba_new && cat /var/lib/postgresql/data/pg_hba.conf >> /tmp/pg_hba_new && cp /var/lib/postgresql/data/pg_hba.conf /var/lib/postgresql/data/pg_hba.conf.bak && mv /tmp/pg_hba_new /var/lib/postgresql/data/pg_hba.conf'
+              echo ">>>  pg_hba.conf 已插入 trust 规则，重新加载配置..."
+              # 2) 重新加载配置（pg_ctl reload 或 kill -HUP）
+              docker exec jlyl-cloud-db pg_ctl reload 2>&1 | tail -3
               sleep 2
-              # 重置 jlyl 密码（trust 模式下无需密码）
-              docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "ALTER USER jlyl WITH PASSWORD '$ENV_DB_PASSWORD';" 2>&1 | tail -3 || echo ">>> 警告：ALTER USER 失败"
-              # 恢复原 pg_hba.conf 并 reload
-              docker exec -u 0 jlyl-cloud-db bash -c "mv /var/lib/postgresql/data/pg_hba.conf.bak /var/lib/postgresql/data/pg_hba.conf" 2>&1 | tail -3 || true
-              docker exec jlyl-cloud-db pg_ctl reload 2>&1 | tail -2 || true
+              # 3) trust 模式下无密码重置 jlyl 密码
+              echo ">>>  重置 jlyl 用户密码为 .env 配置值..."
+              docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "ALTER USER jlyl WITH PASSWORD '${ENV_DB_PASSWORD}';" 2>&1
+              echo ">>>  密码重置完成，恢复 pg_hba.conf..."
+              # 4) 恢复原 pg_hba.conf
+              docker exec -u 0 jlyl-cloud-db bash -c 'mv /var/lib/postgresql/data/pg_hba.conf.bak /var/lib/postgresql/data/pg_hba.conf'
+              docker exec jlyl-cloud-db pg_ctl reload 2>&1 | tail -3
               echo ">>> 数据库密码已同步"
             fi
 
