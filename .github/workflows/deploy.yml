@@ -14,11 +14,18 @@ jobs:
 
       - name: Deploy to server via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          WORKER_SECRET: ${{ secrets.WORKER_SECRET }}
+          REF_NAME: ${{ github.ref_name }}
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           command_timeout: 60m
+          envs: DB_PASSWORD,JWT_SECRET,ADMIN_PASSWORD,WORKER_SECRET,REF_NAME
           script: |
             set -e
             echo "===== 开始部署 jlyl-cloud ====="
@@ -36,16 +43,16 @@ jobs:
             echo "  StrictHostKeyChecking no" >> ~/.ssh/config
             git remote set-url origin git@github.com:Vasvons/jlyl-raas-cloud.git
             git fetch --all
-            git reset --hard origin/${{ github.ref_name }}
+            git reset --hard origin/$REF_NAME
 
             # 创建 .env 文件（如果不存在）
             if [ ! -f .env ]; then
               echo ">>> 创建 .env 文件..."
               cat > .env << EOF
-            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-            JWT_SECRET=${{ secrets.JWT_SECRET }}
-            ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
-            WORKER_SECRET=${{ secrets.WORKER_SECRET }}
+            DB_PASSWORD=$DB_PASSWORD
+            JWT_SECRET=$JWT_SECRET
+            ADMIN_PASSWORD=$ADMIN_PASSWORD
+            WORKER_SECRET=$WORKER_SECRET
             EOF
             else
               echo ">>> .env 文件已存在，跳过创建"
@@ -339,9 +346,7 @@ jobs:
 
             # 检查并修复 nginx 反向代理
             echo ">>> 检查 nginx 反向代理状态..."
-            # v3.16.x：nginx 是部署后的可选维护步骤，失败不应导致整个部署被判失败
-            #   （实测 2026-08-17：服务全部健康但该步 mv 报错，set -e 使工作流 exit 1）
-            #   故此处临时关闭 errexit，块内各子命令自带容错/告警，块结束后恢复
+            # 3.16.x: 可选维护步，失败不应中断部署（2026-08-17 服务全健康但 mv 报错被 set -e 放大）
             set +e
             if command -v nginx > /dev/null 2>&1; then
               echo ">>> nginx 已安装，检查状态..."
@@ -352,15 +357,8 @@ jobs:
                 sleep 3
               fi
 
-              # v2.4.0：自动配置 WebSocket 转发
-              #   原因：Nginx 默认不转发 WS 的 Upgrade/Connection 头，导致桌面端 WS 握手失败
-              #   策略：查找处理 jlyl 域名的 server 块，在 server_name 行之后插入 location /ws
-              #   幂等：已有 /ws 配置则跳过，不重复添加
-              #   实现用纯 bash（awk + printf），避免多行字符串破坏 YAML 缩进
+              # v2.4.0：自动配置 WebSocket 转发（遍历 server 块，在 server_name 后插入 /ws）
               echo ">>> 检查并配置 WebSocket 转发..."
-
-              # WS 配置块写入临时文件（用 printf 逐行拼接，避免多行字符串在 YAML 中的缩进问题）
-              #   单引号内 $ 不展开，$http_upgrade / $host 保持字面量传给 nginx
               printf '%s\n' \
                 '    # v2.4.0 WebSocket 转发（自动添加，请勿删除）' \
                 '    location /ws {' \
