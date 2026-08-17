@@ -271,7 +271,7 @@ app.get('/diagnose', async (req, res) => {
        FROM ai_model_config ORDER BY user_id NULLS FIRST, id`
     );
     const autoTaskCfg = await query(
-      `SELECT aw.id, aw.user_id, u.username, aw.task_name, aw.brand_id, b.pp AS brand_pp,
+      `SELECT aw.id, aw.user_id, u.username, aw.task_name, aw.brand_id, b.name AS brand_name,
               aw.instruction_id, aw.knowledge_id, aw.daily_quota, aw.is_active
        FROM auto_writing_task aw LEFT JOIN users u ON aw.user_id = u.id
        LEFT JOIN brand b ON aw.brand_id = b.id
