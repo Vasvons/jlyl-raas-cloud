@@ -1356,7 +1356,7 @@ export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: 
   // LIMIT/OFFSET 占位符索引随 brandId 是否出现而变化
   const limitIdx = hasBrand ? 4 : 3;
   const result = await query(
-    `SELECT id, value, hxgjc, userid, brand_id, lxfs, create_time FROM zlgjc WHERE userid = $1 AND keyword_type = $2${brandFilter} ORDER BY id LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
+    `SELECT id, value, hxgjc, userid, brand_id, lxfs, generation_codes, create_time FROM zlgjc WHERE userid = $1 AND keyword_type = $2${brandFilter} ORDER BY id LIMIT $${limitIdx} OFFSET $${limitIdx + 1}`,
     hasBrand ? [userId, keywordType, brandId, pageSize, offset] : [userId, keywordType, pageSize, offset]
   );
   const list = result.rows.map((r: any) => ({
@@ -1366,6 +1366,7 @@ export async function getZlgjcByPage(userId: string, pageNum: number, pageSize: 
     brandId: r.brand_id,
     hxgjc: r.hxgjc,
     lxfs: r.lxfs,
+    generationCodes: Array.isArray(r.generation_codes) ? r.generation_codes : [],
     createTime: r.create_time,
   }));
   return { list, total };
@@ -1419,8 +1420,21 @@ export async function deleteZlgjc(id: number): Promise<void> {
 export async function generateZlgjcKeywords(userId: string, wordGroups: { A: string[]; B: string[]; C: string[]; D: string[]; E: string[]; F: string[]; G: string[] }, keywordType: number = 0, brandId?: number) {
   const { A, B, C, D, E, F, G } = wordGroups;
 
+  // v3.16.x：为每个短语建立编码映射（A1/B2/C3/D1...，按组内顺序从1开始）
+  //   用途：删词同步删库时按编码精确匹配（如删除D1=工厂，只删包含D1的关键词，
+  //   不会因为"工厂"是"源头工厂(D2)"的子串而连带删除包含D2的关键词）
+  const groupMap: Record<string, string[]> = { A, B, C, D, E, F };
+  const codeMap: Record<string, Map<string, string>> = {};
+  for (const letter of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    const m = new Map<string, string>();
+    groupMap[letter].forEach((w, idx) => {
+      if (w && w.trim() && !m.has(w)) m.set(w, letter + (idx + 1));
+    });
+    codeMap[letter] = m;
+  }
+
   // 根据组合规则生成所有组合
-  const combinations: { keyword: string; hxgjc: string }[] = [];
+  const combinations: { keyword: string; hxgjc: string; codes: string[] }[] = [];
   for (const combo of G) {
     const parts = combo.split('+');
     const arrays: string[][] = parts.map(p => {
@@ -1449,6 +1463,8 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
 
     for (const c of cartesian) {
       const keyword = c.join('');
+      // v3.16.x：记录本关键词用到的短语编码（每个位置按 parts[i] 字母取对应词码）
+      const codes = c.map((w, i) => codeMap[parts[i]]?.get(w) || '').filter(Boolean);
       // 确定核心词（hxgjc）：
       // - 蒸馏关键词（keywordType=0）：用C主词
       // - 品牌关键词（keywordType=1）：优先用B核心词，组合不含B时用A品牌词
@@ -1465,7 +1481,7 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
         const cIdx = parts.indexOf('C');
         hxgjc = cIdx >= 0 ? (c[cIdx] || '') : '';
       }
-      combinations.push({ keyword, hxgjc });
+      combinations.push({ keyword, hxgjc, codes });
     }
   }
 
@@ -1476,20 +1492,20 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
   let inserted = 0;
   let duplicated = 0;
 
-  for (const { keyword, hxgjc } of combinations) {
+  for (const { keyword, hxgjc, codes } of combinations) {
     if (existing.has(keyword)) {
       duplicated++;
     } else {
       // ON CONFLICT 双保险：即使应用层去重失败，数据库层也会拒绝重复
       await query(
         brandId
-          ? `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type, brand_id)
-             VALUES ($1, $2, $3, $4, $5, $6)
+          ? `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type, generation_codes, brand_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (userid, value, keyword_type) DO NOTHING`
-          : `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type)
-             VALUES ($1, $2, $3, $4, $5)
+          : `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type, generation_codes)
+             VALUES ($1, $2, $3, $4, $5, $6)
              ON CONFLICT (userid, value, keyword_type) DO NOTHING`,
-        brandId ? [keyword, hxgjc, userId, '', keywordType, brandId] : [keyword, hxgjc, userId, '', keywordType]
+        brandId ? [keyword, hxgjc, userId, '', keywordType, codes, brandId] : [keyword, hxgjc, userId, '', keywordType, codes]
       );
       existing.add(keyword);
       inserted++;
@@ -1504,16 +1520,20 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
       combos: G,
       wordCounts: { A: A.length, B: B.length, C: C.length, D: D.length, E: E.length, F: F.length },
       keywordType,
-      sample: combinations.slice(0, 20).map(c => ({ keyword: c.keyword, hxgjc: c.hxgjc })),
+      sample: combinations.slice(0, 20).map(c => ({ keyword: c.keyword, hxgjc: c.hxgjc, codes: c.codes })),
     },
   };
 }
 
 /**
- * v3.16.x：删词同步删除蒸馏关键词库
- * 场景：用户在关键词生成器里删除了某些环节的词汇（如D同义词删除了"工厂""厂家"），
- *       则蒸馏关键词库里用到了这些词汇的关键词同步被删除。
- * 流程：保存配置时，对比新旧配置找出被删除的词汇，删除 zlgjc 中 value 包含这些词的关键词。
+ * v3.16.x：删词同步删除关键词库（按短语编码精确匹配）
+ * 场景：用户在关键词生成器里删除了某些环节的词汇（如D同义词删除了"工厂"），
+ *       则词库里用到该词汇（编码 D1）的关键词同步被删除；
+ *       不会因为"工厂"是"源头工厂(D2)"的子串而连带删除包含D2的关键词。
+ * 删除策略：
+ *   1) 新生成的关键词带 generation_codes，按编码精确删除（D1 不影响 D2）；
+ *   2) 旧数据（无编码）按文本包含兜底删除，但跳过"仍在使用且包含该词的更长词"，
+ *      使旧数据也能近似满足"编码隔离"的意图。
  */
 export async function syncDeletedDistillateWords(userId: string, configType: string, newConfigJson: string): Promise<{ deleted: number; groups: { group: string; words: string[]; deleted: number }[] }> {
   // 确定 keyword_type
@@ -1538,40 +1558,74 @@ export async function syncDeletedDistillateWords(userId: string, configType: str
   const groupsToCheck = configType === 'brand' ? ['C', 'D'] : ['A', 'B', 'C', 'D', 'E', 'F'];
 
   // 解析词汇列表（兼容字符串和数组两种格式）
+  // 切分规则与前端生成一致（逗号/顿号/换行），保证编码 D1/D2 与生成时对齐
   function parseWords(v: any): string[] {
     if (Array.isArray(v)) return v.filter((w: any) => typeof w === 'string' && w.trim()).map((w: string) => w.trim());
-    if (typeof v === 'string') return v.split(/\r?\n/).map((s: string) => s.trim()).filter(Boolean);
+    if (typeof v === 'string') return v.split(/[,，\r\n]/).map((s: string) => s.trim()).filter(Boolean);
     return [];
   }
 
-  // 找出被删除的词汇
-  const deletedWords: { group: string; word: string }[] = [];
+  // 找出被删除的词汇，并记录其在旧配置中的位置编码（D1/D2/C3...）
+  const deletedWords: { group: string; word: string; code: string }[] = [];
   for (const group of groupsToCheck) {
-    const oldWords = new Set(parseWords(oldConfig[group]));
+    const oldWords = parseWords(oldConfig[group]);
     const newWords = new Set(parseWords(newConfig[group]));
-    for (const word of oldWords) {
-      if (!newWords.has(word)) {
-        deletedWords.push({ group, word });
+    oldWords.forEach((word, idx) => {
+      if (word && !newWords.has(word)) {
+        deletedWords.push({ group, word, code: group + (idx + 1) });
       }
-    }
+    });
   }
 
   if (deletedWords.length === 0) {
     return { deleted: 0, groups: [] };
   }
 
-  // 按组分批删除
+  // 当前（新配置）各组的保留词，用于旧数据兜底删除时跳过"仍在使用且包含被删词"的关键词
+  const stillUsedByGroup: Record<string, string[]> = {};
+  for (const group of groupsToCheck) {
+    stillUsedByGroup[group] = parseWords(newConfig[group]);
+  }
+
   const groupResults: { group: string; words: string[]; deleted: number }[] = [];
   let totalDeleted = 0;
 
-  for (const { group, word } of deletedWords) {
-    // 转义 LIKE 特殊字符（% 和 _）
-    const escaped = word.replace(/[%_\\]/g, '\\$&');
-    const result = await query(
-      `DELETE FROM zlgjc WHERE userid = $1 AND keyword_type = $2 AND value LIKE $3`,
-      [userId, keywordType, `%${escaped}%`]
+  for (const { group, word, code } of deletedWords) {
+    let count = 0;
+
+    // 1) 精确删除：带 generation_codes 的关键词按编码匹配
+    //    （D1=工厂 与 D2=源头工厂 互不干扰，删 D1 不影响 D2）
+    const codeRes = await query(
+      `DELETE FROM zlgjc WHERE userid = $1 AND keyword_type = $2 AND generation_codes @> ARRAY[$3::text]`,
+      [userId, keywordType, code]
     );
-    const count = result.rowCount || 0;
+    count += codeRes.rowCount || 0;
+
+    // 2) 兜底删除：旧数据（未记录编码）按文本包含匹配，但跳过"仍在使用且包含该词的更长词"
+    const escapedWord = word.replace(/[%_\\]/g, '\\$&');
+    const stillUsed = stillUsedByGroup[group] || [];
+    const longerContains = stillUsed.filter(w => w !== word && w.includes(word));
+    let legacyRes;
+    if (longerContains.length > 0) {
+      const skipClause = longerContains.map((_, i) => `value NOT LIKE $${4 + i}`).join(' AND ');
+      const params = [userId, keywordType, `%${escapedWord}%`, ...longerContains.map(w => `%${w.replace(/[%_\\]/g, '\\$&')}%`)];
+      legacyRes = await query(
+        `DELETE FROM zlgjc
+         WHERE userid = $1 AND keyword_type = $2
+           AND (generation_codes IS NULL OR COALESCE(array_length(generation_codes, 1), 0) = 0)
+           AND value LIKE $3 AND ${skipClause}`,
+        params
+      );
+    } else {
+      legacyRes = await query(
+        `DELETE FROM zlgjc
+         WHERE userid = $1 AND keyword_type = $2
+           AND (generation_codes IS NULL OR COALESCE(array_length(generation_codes, 1), 0) = 0)
+           AND value LIKE $3`,
+        [userId, keywordType, `%${escapedWord}%`]
+      );
+    }
+    count += legacyRes.rowCount || 0;
     totalDeleted += count;
 
     // 合并到同组结果

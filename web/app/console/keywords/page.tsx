@@ -23,6 +23,7 @@ interface ZlgjcItem {
   value: string;
   hxgjc: string;
   lxfs: string;
+  generationCodes?: string[];
 }
 
 interface UserOption {
@@ -631,6 +632,13 @@ export default function KeywordsPage() {
     { title: '蒸馏关键词', dataIndex: 'value', width: 280 },
     { title: '核心词', dataIndex: 'hxgjc', width: 200 },
     {
+      title: '编码', dataIndex: 'generationCodes', width: 130,
+      render: (codes: string[] | undefined) =>
+        codes && codes.length > 0
+          ? codes.map((c) => <Tag key={c} color="geekblue" style={{ marginRight: 4 }}>{c}</Tag>)
+          : <Tag>旧数据</Tag>,
+    },
+    {
       title: '联系方式', dataIndex: 'lxfs', width: 130,
       render: (v: string) => v ? <Tag color="green">{v}</Tag> : <Tag>无</Tag>,
     },
@@ -648,6 +656,13 @@ export default function KeywordsPage() {
     { title: 'ID', dataIndex: 'id', width: 70 },
     { title: '品牌关键词', dataIndex: 'value', width: 280 },
     { title: '核心词', dataIndex: 'hxgjc', width: 200 },
+    {
+      title: '编码', dataIndex: 'generationCodes', width: 130,
+      render: (codes: string[] | undefined) =>
+        codes && codes.length > 0
+          ? codes.map((c) => <Tag key={c} color="geekblue" style={{ marginRight: 4 }}>{c}</Tag>)
+          : <Tag>旧数据</Tag>,
+    },
     {
       title: '联系方式', dataIndex: 'lxfs', width: 130,
       render: (v: string) => v ? <Tag color="green">{v}</Tag> : <Tag>无</Tag>,

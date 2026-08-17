@@ -484,6 +484,17 @@ export async function migrate() {
       console.log('[Migrate] zlgjc UNIQUE 约束创建跳过:', e.message);
     }
 
+    // 增量迁移：为 zlgjc 表添加 generation_codes 列（v3.16.x）
+    // 记录该关键词生成时用到的短语编码（如 D1/C2/A3），用于"删词同步删库"时精确匹配：
+    // 删除某个短语（如 D1=工厂）时，只删除 generation_codes 包含 D1 的关键词，
+    // 不会因为"工厂"是"源头工厂(D2)"的子串而连带删除。
+    try {
+      await client.query(`ALTER TABLE zlgjc ADD COLUMN IF NOT EXISTS generation_codes TEXT[] DEFAULT '{}'`);
+      console.log('[Migrate] zlgjc generation_codes 列已添加');
+    } catch (e: any) {
+      console.log('[Migrate] zlgjc generation_codes 列添加跳过:', e.message);
+    }
+
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_zlgjcid_pt ON zlgjcurl(zlgjcid, pt)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_zlgjcurl_has_lxfs ON zlgjcurl(has_lxfs)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pp_user ON pp(user_id)`);
