@@ -36,6 +36,43 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'login';
 
   /**
+   * v1.9.11: 智谱回答为流式生成，基类 stop 按钮等待不可靠（[class*="stop"] 常不匹配）。
+   * 若在回答未生成完时就提取分享，右上角分享按钮处于 disabled 状态，点击无效导致拿不到链接
+   * （实地日志 2026-08-17 16:08：对话仍"搜索中"时 share-icon-box 为 disabled，16:08 查询失败；
+   * 而 15:52 回答完成后 share-icon-box 启用，成功捕获 chatglm.cn/share/ 链接）。
+   * 增加「文本稳定」等待：对话区域文本连续两次不变视为生成完成。
+   */
+  async waitForResponse(page: Page): Promise<void> {
+    // 先尝试基类的 stop 按钮等待（快速路径）
+    try {
+      await super.waitForResponse(page);
+    } catch { /* 忽略 */ }
+    // 再做文本稳定检测（兜底，确保回答完整生成后再提取）
+    try {
+      const snapshot = (): Promise<string> =>
+        page.evaluate(() => {
+          const el = document.querySelector('.conversation-inner, [class*="conversation"], main, [class*="dialogue"]') || document.body;
+          return ((el as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim().slice(-8000);
+        }).catch(() => '');
+      const deadline = Date.now() + 45000;
+      let last = await snapshot();
+      let stable = 0;
+      while (Date.now() < deadline) {
+        await page.waitForTimeout(3000);
+        const cur = await snapshot();
+        if (cur === last) {
+          stable++;
+          if (stable >= 2) break;
+        } else {
+          stable = 0;
+        }
+        last = cur;
+      }
+      logger.info('[智谱AI] 回答文本稳定，生成完成');
+    } catch { /* 忽略 */ }
+  }
+
+  /**
    * 智谱分享链接提取（v2）
    *
    * 用户实测：右上角有"复制对话链接"按钮，点击后链接复制到剪贴板。

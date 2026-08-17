@@ -149,8 +149,17 @@ export class KimiAdapter extends BasePlatformAdapter {
                   // 分享面板可能需要二次点"复制链接"
                   const menuClicked = await this.clickShareMenuItem(page);
                   if (menuClicked) {
-                    const cap2 = await this.getCapturedShareUrl(page, '/share/');
+                    let cap2 = await this.getCapturedShareUrl(page, '/share/');
                     if (cap2) return cap2;
+                    // v1.9.11: 分享按钮点击后弹窗可能刚打开，等待后再扫一次"复制链接/生成链接"并捕获
+                    await page.waitForTimeout(1500);
+                    const menu2 = await this.clickShareMenuItem(page);
+                    if (menu2) {
+                      cap2 = await this.getCapturedShareUrl(page, '/share/');
+                      if (cap2) return cap2;
+                      const d2 = await this.extractShareUrlFromDialog(page, '/share/');
+                      if (d2) return d2;
+                    }
                   }
                   // 没触发分享则关闭可能的浮层
                   await page.keyboard.press('Escape').catch(() => {});

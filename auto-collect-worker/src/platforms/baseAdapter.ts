@@ -265,11 +265,11 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         '[class*="selectAll"]',
         'label:has-text("全选")',
         '[class*="checkbox"]:has-text("全选")',
-        ':text("点击全选以下消息")',
-        ':has-text("点击全选以下消息")',
         'span:has-text("全选")',
         'div:has-text("全选")',
       ];
+      // 注意：不用 :has-text("点击全选以下消息") 这类宽泛选择器——可能点到整个聊天容器
+      // （agent-dialogue 的 innerText 含该文案），导致误关闭分享模式。精确定位走下方 evaluate 兜底。
       let selAllClicked = false;
       for (const sel of selectAllSelectors) {
         try {
@@ -1133,7 +1133,9 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     if (!this.verifyShareLink) return shareUrl;
 
     const snippet = this.extractVerifySnippet(content);
-    if (!snippet) {
+    // v1.9.11: 同时提取回答开头片段作兜底校验（部分分享页 markdown 渲染差异导致中段片段不匹配）
+    const headSnippet = this.extractVerifySnippet(content, 'head');
+    if (!snippet && !headSnippet) {
       // 内容太短无法提取验证片段，信任链接
       return shareUrl;
     }
@@ -1152,25 +1154,30 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       );
       const p = await ctx.newPage();
 
-      for (let attempt = 0; attempt < 2; attempt++) {
+      let pageTextHead = '';
+      // v1.9.11: 3 次尝试，每次等待 5 秒（SPA 渲染 + 分享链接延迟生效）
+      for (let attempt = 0; attempt < 3; attempt++) {
         try {
           await p.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-          await p.waitForTimeout(3000); // 等待 SPA 渲染
+          await p.waitForTimeout(5000); // 等待 SPA 渲染
           const bodyText = await p.evaluate(() =>
             (document.body?.innerText || '').replace(/\s+/g, '')
           ).catch(() => '');
-          if (bodyText.includes(snippet)) {
+          if (snippet && bodyText.includes(snippet)) {
             logger.info(`[${this.platformName}] 分享链接验证通过(公开可见): ${shareUrl}`);
             return shareUrl;
           }
-          // 分享链接可能延迟生效，第一次失败后等待重试
-          if (attempt === 0) await p.waitForTimeout(3000);
+          if (headSnippet && bodyText.includes(headSnippet)) {
+            logger.info(`[${this.platformName}] 分享链接验证通过(开头片段,公开可见): ${shareUrl}`);
+            return shareUrl;
+          }
+          if (attempt === 0) pageTextHead = bodyText.replace(/\s+/g, ' ').slice(0, 120);
         } catch (e: any) {
-          if (attempt === 1) logger.warn(`[${this.platformName}] 分享链接验证访问失败: ${e.message}`);
+          if (attempt === 2) logger.warn(`[${this.platformName}] 分享链接验证访问失败: ${e.message}`);
         }
       }
 
-      logger.warn(`[${this.platformName}] 分享链接验证失败(未登录访客看不到内容，判定私有链接，降级静态页): ${shareUrl}`);
+      logger.warn(`[${this.platformName}] 分享链接验证失败(未登录访客看不到内容，判定私有链接，降级静态页): ${shareUrl}${pageTextHead ? ` | 页面文本开头="${pageTextHead}"` : ''}`);
       return null;
     } catch (e: any) {
       // 验证流程自身异常（无法创建 context 等），信任链接不阻塞主流程
@@ -1181,10 +1188,13 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     }
   }
 
-  /** 从回答内容提取验证片段：取中段 40 字符纯文本（去空白和 markdown 符号） */
-  private extractVerifySnippet(content: string): string | null {
+  /** 从回答内容提取验证片段：默认取中段 40 字符，mode=head 取开头 40 字符（去空白和 markdown 符号） */
+  private extractVerifySnippet(content: string, mode: 'middle' | 'head' = 'middle'): string | null {
     const clean = content.replace(/\s+/g, '').replace(/[#*`>\[\]()~|]/g, '');
     if (clean.length < 60) return null;
+    if (mode === 'head') {
+      return clean.substring(0, 40);
+    }
     const start = Math.floor(clean.length * 0.3);
     return clean.substring(start, start + 40);
   }

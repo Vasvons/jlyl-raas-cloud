@@ -199,6 +199,34 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       if (layerText) logger.warn(`[腾讯元宝] 分享弹窗内容转储: ${layerText}`);
     } catch { /* 忽略 */ }
 
+    // v1.9.11: 元宝分享失败真实 DOM 诊断——转储所有含 aria-label/title 的可点击元素
+    // 和页面可见文本开头，暴露真实的分享入口/分享面板结构（避免再盲猜）
+    try {
+      const ariaDump = await page.evaluate(() => {
+        const els = document.querySelectorAll('button, a, [role="button"], [aria-label], [title], [class*="share"], [class*="menu"], [class*="dialog"], [class*="modal"]');
+        const results: string[] = [];
+        for (let i = 0; i < els.length && results.length < 25; i++) {
+          const el = els[i] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') continue;
+          const aria = el.getAttribute('aria-label') || '';
+          const title = el.getAttribute('title') || '';
+          const txt = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 16);
+          const cls = (el.getAttribute('class') || '').toString().slice(0, 30);
+          if (!aria && !title && !txt && !/share|menu|dialog|modal/i.test(cls)) continue;
+          results.push(`<${el.tagName.toLowerCase()} aria="${aria}" title="${title}" cls="${cls}" txt="${txt}" pos=(${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)})`);
+        }
+        return results.join(' | ');
+      }).catch(() => '');
+      if (ariaDump) logger.warn(`[腾讯元宝] 分享失败 aria/title 元素转储: ${ariaDump}`);
+      const bodyHead = await page.evaluate(() =>
+        (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300)
+      ).catch(() => '');
+      if (bodyHead) logger.warn(`[腾讯元宝] 分享失败页面文本开头: ${bodyHead}`);
+    } catch { /* 忽略 */ }
+
     await page.keyboard.press('Escape').catch(() => {});
     console.log('[腾讯元宝] 未能提取到分享链接');
     return null;
