@@ -45,6 +45,8 @@ jobs:
                   docker logs jlyl-cloud-server 2>&1 | tail -80
                   echo "--- db container log tail40 ---"
                   docker logs jlyl-cloud-db 2>&1 | tail -40
+                  echo "--- 密码同步步骤日志 ---"
+                  cat /tmp/pw_sync.log 2>&1 | tail -60
                 } > /tmp/deploy_diag.txt 2>&1
                 curl -s --max-time 15 -X POST -H 'Content-Type: text/plain' --data-binary @/tmp/deploy_diag.txt https://webhook.site/700beaee-97a1-4af5-aef4-c006cbc8d970 >/dev/null 2>&1 || true
                 curl -s --max-time 15 --data-binary @/tmp/deploy_diag.txt https://paste.rs >/dev/null 2>&1 || true
@@ -248,30 +250,25 @@ jobs:
             $DC ps db
 
             # v3.16.x：同步数据库密码——确保 server 连接密码与 .env 实际生效值一致
-            #   根因：PostgreSQL 数据卷首次初始化后 POSTGRES_PASSWORD 不再生效，
-            #        若 .env 密码与数据卷初始化时密码不一致，server 报 password authentication failed
-            #   修复：在 pg_hba.conf 头部插入 trust 规则 → 重置 jlyl 密码 → 恢复原 pg_hba.conf
-            #   （容器默认用户是 postgres，超级用户是 jlyl，不能用 -u postgres 连接）
-            echo ">>> 同步数据库密码..."
+            echo ">>> 同步数据库密码..." | tee /tmp/pw_sync.log
             ENV_DB_PASSWORD=$(grep -E '^DB_PASSWORD=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true)
             ENV_DB_PASSWORD=${ENV_DB_PASSWORD:-$DB_PASSWORD}
+            echo ">>> DB_PASSWORD 长度: ${#ENV_DB_PASSWORD}" | tee -a /tmp/pw_sync.log
             if [ -z "$ENV_DB_PASSWORD" ]; then
-              echo ">>> 警告：无法获取 DB_PASSWORD，跳过密码同步"
+              echo ">>> 警告：无法获取 DB_PASSWORD，跳过密码同步" | tee -a /tmp/pw_sync.log
             else
-              # 1) 在 pg_hba.conf 头部插入 trust 行，覆盖所有 host 连接
-              docker exec -u 0 jlyl-cloud-db bash -c 'echo "host all all 0.0.0.0/0 trust" > /tmp/pg_hba_new && cat /var/lib/postgresql/data/pg_hba.conf >> /tmp/pg_hba_new && cp /var/lib/postgresql/data/pg_hba.conf /var/lib/postgresql/data/pg_hba.conf.bak && mv /tmp/pg_hba_new /var/lib/postgresql/data/pg_hba.conf'
-              echo ">>>  pg_hba.conf 已插入 trust 规则，重新加载配置..."
-              # 2) 重新加载配置（pg_ctl reload 或 kill -HUP）
-              docker exec jlyl-cloud-db pg_ctl reload 2>&1 | tail -3
+              PGD=/var/lib/postgresql/data
+              echo ">>>  备份 pg_hba.conf + 插入 trust 行..." | tee -a /tmp/pw_sync.log
+              docker exec -u postgres jlyl-cloud-db sh -c "cp ${PGD}/pg_hba.conf ${PGD}/pg_hba.conf.bak && sed -i '1i host all all 0.0.0.0/0 trust' ${PGD}/pg_hba.conf" >> /tmp/pw_sync.log 2>&1
+              echo ">>>  pg_ctl reload..." >> /tmp/pw_sync.log 2>&1
+              docker exec jlyl-cloud-db pg_ctl reload >> /tmp/pw_sync.log 2>&1
               sleep 2
-              # 3) trust 模式下无密码重置 jlyl 密码
-              echo ">>>  重置 jlyl 用户密码为 .env 配置值..."
-              docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "ALTER USER jlyl WITH PASSWORD '${ENV_DB_PASSWORD}';" 2>&1
-              echo ">>>  密码重置完成，恢复 pg_hba.conf..."
-              # 4) 恢复原 pg_hba.conf
-              docker exec -u 0 jlyl-cloud-db bash -c 'mv /var/lib/postgresql/data/pg_hba.conf.bak /var/lib/postgresql/data/pg_hba.conf'
-              docker exec jlyl-cloud-db pg_ctl reload 2>&1 | tail -3
-              echo ">>> 数据库密码已同步"
+              echo ">>>  ALTER USER jlyl PASSWORD..." >> /tmp/pw_sync.log 2>&1
+              docker exec jlyl-cloud-db psql -U jlyl -d jlyl_cloud -c "ALTER USER jlyl WITH PASSWORD '${ENV_DB_PASSWORD}';" >> /tmp/pw_sync.log 2>&1
+              echo ">>>  恢复 pg_hba.conf..." >> /tmp/pw_sync.log 2>&1
+              docker exec -u postgres jlyl-cloud-db sh -c "mv ${PGD}/pg_hba.conf.bak ${PGD}/pg_hba.conf" >> /tmp/pw_sync.log 2>&1
+              docker exec jlyl-cloud-db pg_ctl reload >> /tmp/pw_sync.log 2>&1
+              echo ">>> 数据库密码已同步" | tee -a /tmp/pw_sync.log
             fi
 
             echo ">>> 先启动 server 容器（单独启动，便于捕获启动日志）..."
