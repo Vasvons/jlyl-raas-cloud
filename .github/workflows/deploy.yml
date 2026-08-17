@@ -216,6 +216,7 @@ jobs:
               $DC logs --tail 100 db
               echo ">>> 数据库容器状态："
               $DC ps -a db
+              echo "::error::[DEPLOY] 数据库健康检查失败。日志: $($DC logs --tail 50 db 2>&1 | tail -50 | tr '\n' '|')"
               exit 1
             fi
 
@@ -242,6 +243,7 @@ jobs:
             done
             if [ "$server_started" = false ]; then
               echo ">>> 错误：server 容器启动失败（3 次尝试均失败）"
+              echo "::error::[DEPLOY] server 容器启动失败（3 次尝试均失败）。日志: $($DC logs --tail 100 server 2>&1 | tail -100 | tr '\n' '|')"
               exit 1
             fi
 
@@ -260,6 +262,7 @@ jobs:
               if [ -n "$container_state" ]; then
                 echo ">>> server 容器已退出（崩溃），输出完整日志："
                 $DC logs --tail 200 server
+                echo "::error::[DEPLOY] server 容器已退出（崩溃）。日志: $($DC logs --tail 100 server 2>&1 | tail -100 | tr '\n' '|')"
                 exit 1
               fi
               echo "等待 server 启动... ($i/24)"
@@ -271,6 +274,7 @@ jobs:
               $DC logs --tail 200 server
               echo ">>> server 容器状态："
               $DC ps -a server
+              echo "::error::[DEPLOY] server 健康检查失败（120s 内未变 healthy）。日志: $($DC logs --tail 100 server 2>&1 | tail -100 | tr '\n' '|')"
               exit 1
             fi
 
@@ -302,6 +306,7 @@ jobs:
               $DC logs --tail 300 server
               echo ">>> 检查 OOM..."
               docker inspect jlyl-cloud-server 2>/dev/null | grep -i oomkilled || echo "无 OOM 信息"
+              echo "::error::[DEPLOY] server 容器未在运行（状态: $server_state）。OOM: $(docker inspect jlyl-cloud-server 2>/dev/null | grep -io oomkilled || echo none)。日志: $($DC logs --tail 100 server 2>&1 | tail -100 | tr '\n' '|')"
               exit 1
             fi
 
@@ -320,6 +325,7 @@ jobs:
               $DC logs --tail 300 server
               echo ">>> server 容器状态："
               $DC ps -a server
+              echo "::error::[DEPLOY] 最终健康检查失败。health_response=$health_response。日志: $($DC logs --tail 150 server 2>&1 | tail -150 | tr '\n' '|')"
               echo ">>> 部署失败！"
               exit 1
             fi
