@@ -175,6 +175,41 @@ export class NanoAdapter extends BasePlatformAdapter {
   }
 
   /**
+   * v1.9.9: 纳米回答为流式生成，基类 stop 按钮等待不可靠（[class*="stop"] 常不匹配）。
+   * 增加「文本稳定」等待：消息列表区域文本连续两次不变视为生成完成。
+   */
+  async waitForResponse(page: Page): Promise<void> {
+    // 先尝试基类的 stop 按钮等待（快速路径）
+    try {
+      await super.waitForResponse(page);
+    } catch { /* 忽略 */ }
+    // 再做文本稳定检测（兜底，确保回答完整生成后再提取）
+    try {
+      const snapshot = (): Promise<string> =>
+        page.evaluate(() => {
+          const sel = 'li.js-message-item, [data-testid^="msg-"], main, [class*="chat"]';
+          const el = document.querySelector(sel) || document.body;
+          return ((el as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim().slice(-8000);
+        }).catch(() => '');
+      const deadline = Date.now() + 40000;
+      let last = await snapshot();
+      let stable = 0;
+      while (Date.now() < deadline) {
+        await page.waitForTimeout(3000);
+        const cur = await snapshot();
+        if (cur === last) {
+          stable++;
+          if (stable >= 2) break;
+        } else {
+          stable = 0;
+        }
+        last = cur;
+      }
+      logger.info('[纳米] 回答文本稳定，生成完成');
+    } catch { /* 忽略 */ }
+  }
+
+  /**
    * v1.9: 纳米分享链接提取
    *
    * 流程：hover AI 总结区域 → 操作栏/顶部出现"分享"按钮 → 点击 → 复制链接到剪贴板 或 弹窗显示链接

@@ -113,6 +113,57 @@ export class ZhipuAdapter extends BasePlatformAdapter {
       if (dialogUrl) return dialogUrl;
     }
 
+    // v1.9.9: 分享图标（share-icon）点击后常无任何面板弹出（实地日志 2026-08-17）。
+    // 用户实测智谱真实分享按钮在「右上角」操作栏（operation-btn），文案"复制对话链接"，
+    // 可能是纯图标按钮（无文本，title 选择器之前漏匹配"复制对话链接"）。
+    // 逐个点击顶部操作栏按钮，每次点击后检查剪贴板捕获 / 弹窗出现。
+    try {
+      const headerBtns = await page.evaluate(() => {
+        const btns = document.querySelectorAll(
+          '[class*="operation-btn"], [class*="operationBtn"], header [class*="btn"], [class*="toolbar"] [class*="btn"], [class*="header"] [class*="icon"]'
+        );
+        const results: string[] = [];
+        for (let i = 0; i < btns.length; i++) {
+          const el = btns[i] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          const cls = (el.className || '').toString().slice(0, 40);
+          // 跳过明显的搜索按钮
+          if (/search/i.test(cls) || /搜索/.test(el.getAttribute('aria-label') || '')) continue;
+          results.push(`${cls}|${el.getAttribute('title') || ''}|${el.getAttribute('aria-label') || ''}`);
+        }
+        return results;
+      }).catch(() => []);
+      if (headerBtns.length > 0) {
+        logger.warn(`[智谱AI] 顶部操作栏按钮转储: ${headerBtns.join(' || ')}`);
+        for (const desc of headerBtns.slice(0, 6)) {
+          const [cls] = desc.split('|');
+          if (!cls) continue;
+          try {
+            const btn = await page.$(`[class*="${cls.split(' ')[0]}"]`).catch(() => null);
+            if (btn) {
+              const visible = await btn.isVisible().catch(() => false);
+              if (!visible) continue;
+              await btn.click({ timeout: 2000 }).catch(() => {});
+              await page.waitForTimeout(1500);
+              const cap = await this.getCapturedShareUrl(page, '/share/');
+              if (cap) {
+                logger.info(`[智谱AI] 点击操作栏按钮捕获到分享链接: ${cap}`);
+                return cap;
+              }
+              const dlg = await this.extractShareUrlFromDialog(page, '/share/');
+              if (dlg) return dlg;
+              // 没触发分享则关闭可能的浮层，继续试下一个
+              await page.keyboard.press('Escape').catch(() => {});
+              await page.waitForTimeout(500);
+            }
+          } catch { /* 继续 */ }
+        }
+      }
+    } catch { /* 忽略 */ }
+
     // 步骤4: 兜底从当前页面 URL 提取显式分享 URL（/share/{短码}）
     // v1.9: getCurrentPageShareUrl 已移除私有对话URL模式，仅匹配显式分享链接，安全
     const currentUrl = await this.getCurrentPageShareUrl(page);

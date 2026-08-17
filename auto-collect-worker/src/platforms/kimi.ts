@@ -94,33 +94,46 @@ export class KimiAdapter extends BasePlatformAdapter {
           // v1.9.6: Kimi 新版（K3）操作栏是纯图标按钮（无文字/aria），
           // 标准选择器匹配不到。hover 后扫描消息下方/附近出现的图标按钮，
           // 逐个点击试探（点击分享类图标会弹出分享面板或复制链接）。
+          // v1.9.9: 限制扫描范围到 hover 的消息附近（含下方操作栏区域），
+          // 排除左侧边栏图标（x<260）——旧版扫到的是侧边栏 new-icon-wrapper，点到无效果。
           if (!shareClicked) {
-            const iconBtn = await page.evaluate(() => {
+            const msgRect = await allMessages[i].boundingBox().catch(() => null);
+            const iconBtns = await page.evaluate((rect) => {
               const candidates = document.querySelectorAll(
-                'button, [role="button"], [class*="icon"], [class*="toolbar"] *, [class*="action"] *, [class*="btn"]'
+                'button, [role="button"], [class*="icon"], [class*="toolbar"] *, [class*="action"] *, [class*="btn"], [class*="share"]'
               );
-              // 只看可见且尺寸小的按钮（图标按钮通常 < 40px）
-              for (let j = 0; j < candidates.length; j++) {
+              const results: string[] = [];
+              for (let j = 0; j < candidates.length && results.length < 5; j++) {
                 const el = candidates[j] as HTMLElement;
-                const rect = el.getBoundingClientRect();
-                if (rect.width <= 0 || rect.height <= 0) continue;
-                if (rect.width > 48 || rect.height > 48) continue;
+                const r = el.getBoundingClientRect();
+                if (r.width <= 0 || r.height <= 0) continue;
+                if (r.width > 48 || r.height > 48) continue;
                 const style = window.getComputedStyle(el);
-                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
                 // 排除输入框相关
                 if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') continue;
                 // 排除已有明确文字的按钮（如"发送"）
                 const txt = (el.innerText || '').trim();
                 if (txt && txt.length > 0 && txt.length < 6) continue;
-                return `${el.tagName.toLowerCase()}|${(el.className || '').toString().slice(0, 40)}|${el.getAttribute('aria-label') || ''}|${el.getAttribute('title') || ''}`;
+                // 排除左侧边栏区域
+                if (r.left < 260) continue;
+                // 若知道消息区域，只收集消息附近的操作栏图标
+                if (rect) {
+                  const nearX = Math.abs(r.left - rect.x) < 200;
+                  const nearY = (r.top > rect.y - 20) && (r.top < rect.y + rect.height + 120);
+                  if (!(nearX && nearY)) continue;
+                }
+                results.push(`${el.tagName.toLowerCase()}|${(el.className || '').toString().slice(0, 40)}|${el.getAttribute('aria-label') || ''}|${el.getAttribute('title') || ''}`);
               }
-              return '';
-            }).catch(() => '');
-            if (iconBtn) {
+              return results;
+            }, msgRect ? { x: msgRect.x, y: msgRect.y, height: msgRect.height } : null).catch(() => []);
+            for (const iconBtn of iconBtns) {
               const [tag, cls, aria, title] = iconBtn.split('|');
-              logger.warn(`[Kimi] 尝试点击操作栏图标: class="${cls}" aria="${aria}" title="${title}"`);
+              logger.warn(`[Kimi] 尝试点击消息附近操作栏图标: class="${cls}" aria="${aria}" title="${title}"`);
               // 优先用 class 定位并点击
-              const btn = await page.$(`[class*="${cls.split(' ')[0]}"]`).catch(() => null);
+              let btn: any = null;
+              if (cls) btn = await page.$(`[class*="${cls.split(' ')[0]}"]`).catch(() => null);
+              if (!btn && aria) btn = await page.$(`[aria-label*="${aria}"]`).catch(() => null);
               if (btn) {
                 const bVisible = await btn.isVisible().catch(() => false);
                 if (bVisible) {
@@ -131,6 +144,12 @@ export class KimiAdapter extends BasePlatformAdapter {
                   if (cap) return cap;
                   const dl = await this.extractShareUrlFromDialog(page, '/share/');
                   if (dl) return dl;
+                  // 分享面板可能需要二次点"复制链接"
+                  const menuClicked = await this.clickShareMenuItem(page);
+                  if (menuClicked) {
+                    const cap2 = await this.getCapturedShareUrl(page, '/share/');
+                    if (cap2) return cap2;
+                  }
                   // 没触发分享则关闭可能的浮层
                   await page.keyboard.press('Escape').catch(() => {});
                   await page.waitForTimeout(500);

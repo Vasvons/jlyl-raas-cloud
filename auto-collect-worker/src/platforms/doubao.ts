@@ -1,6 +1,7 @@
 import { Page } from 'playwright';
 import * as logger from '../logger';
 import { BasePlatformAdapter } from './baseAdapter';
+import { smartFindLongestContent } from '../indexedInteractor';
 
 /** 豆包适配器
  *
@@ -113,7 +114,8 @@ export class DoubaoAdapter extends BasePlatformAdapter {
     };
     const baseline = await snapshot();
     // 阶段1: 等待回答开始生成（文本变化）
-    const deadline1 = Date.now() + 30000;
+    // v1.9.9: 30s → 45s（豆包回答队列可能较长，30s 内未开始生成就提取会抓到侧边栏）
+    const deadline1 = Date.now() + 45000;
     let changed = false;
     while (Date.now() < deadline1) {
       await page.waitForTimeout(3000);
@@ -167,6 +169,7 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       const frames = page.frames().filter(f => f !== page.mainFrame());
       for (const frame of frames) {
         try {
+          // v1.9.9: 先按 responseSelector 精确匹配
           const hasContent = await frame.$(this.responseSelector).catch(() => null);
           if (hasContent) {
             const el = await frame.$(this.responseSelector);
@@ -176,6 +179,13 @@ export class DoubaoAdapter extends BasePlatformAdapter {
               logger.info(`[豆包] 从 iframe 提取到回答: ${text.trim().length} 字符`);
               return { text: text.trim(), html: html || `<div>${text.trim()}</div>` };
             }
+          }
+          // v1.9.9: responseSelector 匹配不到/内容过短时，用 smartFindLongestContent
+          // 在 iframe 内找最长文本块（豆包回答可能在 iframe 内的其他容器/深层 DOM）
+          const smart = await smartFindLongestContent(frame as any, 80).catch(() => null);
+          if (smart && smart.text && smart.text.trim().length > 150) {
+            logger.info(`[豆包] 从 iframe smartFindLongestContent 提取到回答: ${smart.text.trim().length} 字符`);
+            return { text: smart.text.trim(), html: smart.html || `<div>${smart.text.trim()}</div>` };
           }
         } catch { /* 继续下一个 frame */ }
       }

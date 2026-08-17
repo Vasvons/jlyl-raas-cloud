@@ -183,35 +183,57 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    * 用于分享提取前提前短路：无可点击分享入口时（平台改版移除分享），
    * 不再执行多轮 hover 扫描（通义千问实测每次浪费 30+ 秒），直接走静态页兜底。
    * 扫描异常时返回 true（不短路，保守执行完整提取流程）。
+   *
+   * v1.9.9: 修复「只认可见元素」导致的漏判——千问等平台分享按钮是 hover 才显示
+   * （默认 display:none），旧逻辑直接短路跳过，导致千问永远不产出分享链接。
+   * 改为「只认消息/回答容器内的分享元素」（含隐藏的 hover 型按钮），
+   * 既排除侧边栏 share 装饰的误判，又能识别 hover 显示的真实分享入口。
    */
   protected async hasAnyShareElement(page: Page): Promise<boolean> {
     try {
       return await page.evaluate(() => {
-        const clickables = document.querySelectorAll('button, a, [role="button"]');
+        // 元素是否位于消息/回答容器内（hover 才显示的操作栏分享按钮都挂在消息容器下）
+        const inMessageContainer = (el: Element): boolean => {
+          let node: Element | null = el;
+          let depth = 0;
+          while (node && depth < 8) {
+            const cls = (node.className || '').toString().toLowerCase();
+            const role = node.getAttribute && (node.getAttribute('role') || '');
+            if (
+              /message|answer|response|chat-item|chat-content|bubble|conversation-turn|msg-|reply|assistant|bot-message|dialogue|agent-chat/i.test(cls) ||
+              /article|main/i.test(role)
+            ) {
+              return true;
+            }
+            node = node.parentElement;
+            depth++;
+          }
+          return false;
+        };
+
+        const clickables = document.querySelectorAll(
+          'button, a, [role="button"], [class*="share"], [class*="icon-share"], [class*="share-selection"]'
+        );
         for (let i = 0; i < clickables.length; i++) {
           const el = clickables[i] as HTMLElement;
-          // v1.9.5: 可见性检查——隐藏元素（display:none / 零尺寸模板）不算可用分享入口。
-          // 实测踩坑（2026-08-17 千问）：页面存在隐藏的 share class 装饰元素/预渲染模板，
-          // 导致短路永不触发，兜底 hover 循环对每条消息重复扫描浪费 2.5 分钟
-          const rect = el.getBoundingClientRect();
-          if (rect.width <= 0 || rect.height <= 0) continue;
-          const style = window.getComputedStyle(el);
-          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          // 仅关注消息容器内的分享元素（侧边栏/导航的 share 装饰不算）
+          if (!inMessageContainer(el)) continue;
           const cls = (el.className || '').toString().toLowerCase();
           const aria = (el.getAttribute('aria-label') || '').toLowerCase();
           const title = (el.getAttribute('title') || '').toLowerCase();
           const tid = (el.getAttribute('data-testid') || '').toLowerCase();
           const did = (el.getAttribute('data-id') || '').toLowerCase();
           const text = (el.textContent || '').trim();
-          if (
-            cls.includes('share') && !cls.includes('shared') && !cls.includes('sharing') ||
+          const isShare =
+            (cls.includes('share') && !cls.includes('shared') && !cls.includes('sharing')) ||
+            cls.includes('icon-share') || cls.includes('share-selection') ||
             aria.includes('分享') || aria.includes('share') ||
             title.includes('分享') || title.includes('share') ||
             tid.includes('share') || did.includes('share') ||
-            text === '分享' || text === 'Share' || text.includes('复制链接') || text.includes('复制对话链接')
-          ) {
-            return true;
-          }
+            text === '分享' || text === 'Share' || text.includes('复制链接') || text.includes('复制对话链接');
+          if (!isShare) continue;
+          // 隐藏的分享元素 = hover 才显示的操作栏按钮，同样是可用分享入口
+          return true;
         }
         return false;
       }).catch(() => true);
@@ -228,6 +250,35 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    */
   protected async clickShareMenuItem(page: Page): Promise<boolean> {
     await page.waitForTimeout(1000);
+
+    // v1.9.9: 部分平台（元宝）分享弹窗需先勾选消息（"点击全选以下消息"）才激活"复制链接"。
+    // 先尝试点击"全选/选择全部"复选框，再找复制按钮。
+    try {
+      const selectAllSelectors = [
+        'button:has-text("全选")',
+        ':text-is("全选")',
+        'button:has-text("选择全部")',
+        ':text-is("选择全部")',
+        '[class*="select-all"]',
+        '[class*="selectAll"]',
+        'label:has-text("全选")',
+        '[class*="checkbox"]:has-text("全选")',
+      ];
+      for (const sel of selectAllSelectors) {
+        try {
+          const el = await page.$(sel);
+          if (el) {
+            const visible = await el.isVisible().catch(() => false);
+            if (!visible) continue;
+            await el.click({ timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(800);
+            logger.info(`[${this.platformName}] 分享弹窗勾选全选: ${sel}`);
+            break;
+          }
+        } catch { /* 继续 */ }
+      }
+    } catch { /* 忽略 */ }
+
     const menuSelectors = [
       'button:has-text("复制对话链接")',
       ':text-is("复制对话链接")',
@@ -313,6 +364,75 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       }
     } catch { /* 忽略 */ }
 
+    // v1.9.9: 弹窗作用域扫描——先定位当前最大可见弹层（modal/dialog/popover/share/menu 中面积最大者），
+    // 只在弹层内部找含 复制/链接/Copy 文案的按钮（含纯"复制"），避免误点页面其他地方的同名按钮。
+    // 元宝/智谱的分享面板是自绘覆盖层，按钮可能是 div/span，且文案可能只有"复制"。
+    try {
+      const dialogBtn = await page.evaluate(() => {
+        const floatings = document.querySelectorAll(
+          '[class*="modal"], [class*="dialog"], [class*="popover"], [class*="popup"], [class*="overlay"], [class*="share"], [class*="menu"], [class*="panel"]'
+        );
+        let best: HTMLElement | null = null;
+        let bestArea = 0;
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        for (let i = 0; i < floatings.length; i++) {
+          const el = floatings[i] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          const area = rect.width * rect.height;
+          // 排除占满全屏的底层容器（覆盖层），只取中部弹层
+          if (area > bestArea && area < vw * vh * 0.95) {
+            bestArea = area;
+            best = el;
+          }
+        }
+        if (!best) return '';
+        // 在弹层内找 复制/链接 按钮
+        const btns = best.querySelectorAll('button, a[href], [role="button"], [class*="btn"], [class*="button"], [class*="item"], [class*="action"], span, div');
+        for (let j = 0; j < btns.length; j++) {
+          const el = btns[j] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) continue;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+          const aria = el.getAttribute('aria-label') || '';
+          const title = el.getAttribute('title') || '';
+          const combined = (text + ' ' + aria + ' ' + title).trim();
+          if (!combined) continue;
+          const isCopy = /^(复制|复制链接|复制对话链接|Copy|Copy Link|复制链接分享)$/i.test(combined) ||
+            /复制链接|复制对话链接|copy link|Copy Link/i.test(combined) ||
+            (/^(复制|Copy)$/i.test(combined) && rect.width < 200 && rect.height < 60);
+          if (!isCopy) continue;
+          // 只返回可定位的最小元素（叶子级：无子元素或子元素都不可见）
+          const cls = (el.className || '').toString().slice(0, 40);
+          return `${el.tagName.toLowerCase()}|${cls.split(' ')[0]}|${text.slice(0, 15)}|${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)}`;
+        }
+        return '';
+      }).catch(() => '');
+      if (dialogBtn) {
+        const [tag, cls, txt] = dialogBtn.split('|');
+        logger.warn(`[${this.platformName}] 弹窗作用域找到复制按钮: <${tag} class="${cls}" text="${txt}">`);
+        try {
+          let target: any = null;
+          if (cls) target = await page.$(`[class*="${cls}"]`).catch(() => null);
+          if (!target && txt) target = await page.$(`:has-text("${txt}")`).catch(() => null);
+          if (target) {
+            const visible = await target.isVisible().catch(() => false);
+            if (visible) {
+              await target.click({ timeout: 2000 }).catch(() => {});
+              await page.waitForTimeout(1500);
+              logger.info(`[${this.platformName}] 弹窗作用域复制按钮点击成功: ${txt || cls || tag}`);
+              return true;
+            }
+          }
+        } catch { /* 忽略 */ }
+      }
+    } catch { /* 忽略 */ }
+
     // v1.9.6: 分享面板若直接展示链接 input（readonly），直接从面板中读值
     try {
       const linkVal = await page.evaluate(() => {
@@ -352,6 +472,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // v1.9.7: 分享面板结构诊断升级——找不到复制链接时，转储「页面所有可见可点击元素」，
     // 暴露真实分享面板按钮（智谱/元宝分享面板可能是自绘覆盖层，class 不含 menu/modal/dialog）
     // v1.9.8: 按 z-index 排序 + 过滤屏幕中部元素，跳过侧边栏/导航噪音（上一版被侧边栏图标占满）
+    // v1.9.9: 过滤左侧边栏区域（x<260，元宝/智谱/千问侧边栏图标 z=0 占满 top-30），
+    //         并扩大采样到前 40 个，让分享弹窗按钮浮出水面。
     try {
       const allBtnDump = await page.evaluate(() => {
         const results: Array<{ z: number; desc: string }> = [];
@@ -363,6 +485,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           const rect = el.getBoundingClientRect();
           if (rect.width <= 0 || rect.height <= 0) continue;
           if (rect.width < 16 || rect.height < 16) continue;
+          // v1.9.9: 排除左侧边栏区域（多数平台侧边栏宽度 <260px）
+          if (rect.left < 260 && rect.left + rect.width < 260) continue;
           const style = window.getComputedStyle(el);
           if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') continue;
           // 排除完全在视口外的元素
@@ -375,12 +499,12 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           const tid = el.getAttribute('data-testid') || '';
           results.push({ z, desc: `<${el.tagName.toLowerCase()} z=${z} class="${cls}" aria="${aria.slice(0, 18)}" title="${title.slice(0, 18)}" tid="${tid.slice(0, 18)}" text="${text}" pos=(${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)})` });
         }
-        // 按 z-index 降序，取前 30
+        // 按 z-index 降序，取前 40
         results.sort((a, b) => b.z - a.z);
-        return results.slice(0, 30).map(r => r.desc).join(' | ');
+        return results.slice(0, 40).map(r => r.desc).join(' | ');
       }).catch(() => '');
       if (allBtnDump) {
-        logger.warn(`[${this.platformName}] 页面可点击元素按z-index转储(前30): ${allBtnDump}`);
+        logger.warn(`[${this.platformName}] 页面可点击元素按z-index转储(前40,过滤左侧边栏): ${allBtnDump}`);
       }
     } catch { /* 忽略 */ }
 
