@@ -247,6 +247,18 @@ jobs:
             echo ">>> 数据库状态:"
             $DC ps db
 
+            # v3.16.x：同步数据库密码——确保 server 连接密码与 .env 实际生效值一致
+            #   根因：PostgreSQL 数据卷首次初始化后 POSTGRES_PASSWORD 不再生效，
+            #        若 .env 密码与数据卷初始化时密码不一致，server 报 password authentication failed
+            #   修复：以 postgres 超级用户身份（peer 认证，无需 jlyl 密码）重置 jlyl 用户密码
+            echo ">>> 同步数据库密码（确保与 .env 生效配置一致）..."
+            ENV_DB_PASSWORD=$(grep -E '^DB_PASSWORD=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true)
+            ENV_DB_PASSWORD=${ENV_DB_PASSWORD:-$DB_PASSWORD}
+            if [ -n "$ENV_DB_PASSWORD" ]; then
+              docker exec -u postgres jlyl-cloud-db psql -v ON_ERROR_STOP=1 -c "ALTER USER jlyl WITH PASSWORD '$ENV_DB_PASSWORD';" 2>&1 | tail -3 || echo ">>> 警告：数据库密码同步失败（继续尝试启动 server）"
+              echo ">>> 数据库密码已同步"
+            fi
+
             echo ">>> 先启动 server 容器（单独启动，便于捕获启动日志）..."
             # v1.8.2：启动前强制删除可能残留的 server 容器并带重试
             #   根因：Docker daemon 重启后 restart:always 策略会异步重建容器，或上次失败部署残留容器，
