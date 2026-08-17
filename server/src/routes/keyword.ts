@@ -179,7 +179,7 @@ router.post('/keywordsearchrank/generate', authMiddleware, async (req, res) => {
   try {
     // v2.5.36：代理强制用自己 userId
     const userId = isAgent(req) ? String(getUserId(req)) : req.body.userId;
-    const { A, B, C, D, E, F, G, keywordType } = req.body;
+    const { A, B, C, D, E, F, G, keywordType, brandId } = req.body;
     // v3.16.x：生成前先同步删除词库里使用已删除词汇的关键词
     //   用户删除了生成器某环节词汇（如D同义词删掉"工厂"）后直接点生成，词库同步清理
     const syncConfigType = (keywordType || 0) === 1 ? 'brand' : 'distillate';
@@ -187,7 +187,8 @@ router.post('/keywordsearchrank/generate', authMiddleware, async (req, res) => {
     if (syncResult.deleted > 0) {
       console.log(`[Generate] 同步删除词库关键词 ${syncResult.deleted} 条:`, JSON.stringify(syncResult.groups));
     }
-    const result = await generateZlgjcKeywords(String(userId), { A, B, C, D, E, F, G }, keywordType || 0);
+    // v3.16.x：透传 brandId——生成关键词归属当前品牌（默认 NULL 全库桶），覆盖删除按品牌范围
+    const result = await generateZlgjcKeywords(String(userId), { A, B, C, D, E, F, G }, keywordType || 0, brandId ? parseInt(brandId) : undefined);
     res.json({ code: 200, data: { ...result, syncedDeleted: syncResult } });
   } catch (e) {
     res.json({ code: 500, message: '服务器错误' });

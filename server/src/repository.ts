@@ -1528,20 +1528,26 @@ export async function generateZlgjcKeywords(userId: string, wordGroups: { A: str
     }
   }
 
-  // v3.16.x：覆盖语义——清理"不再生成"的旧自动生成词
-  // 判断标准：generation_codes 非空 = 生成器自动生成的关键词（含本次与历史生成）；
-  // 手动添加的关键词 generation_codes 为空，保留不动。
-  // 效果：词库最终 = 当前生成结果 ∪ 手动添加词，与生成器当前短语严格一致。
+  // v3.16.x：覆盖语义——删除该用户+类型（+品牌）下"不在当前生成结果"的所有旧词（全量覆盖）
+  //   全量覆盖：无论旧词是否带 generation_codes 编码（含早期无编码的自动生成词）一律清理，
+  //   词库严格 = 当前生成结果，避免旧词残留。
+  //   覆盖范围：
+  //     - 传 brandId → 只覆盖该品牌下不在结果的词（不误伤其他品牌）
+  //     - 未传 brandId → 只覆盖 brand_id IS NULL 桶（生成器全库生成归属的桶），不碰品牌词
   let overwritten = 0;
   if (combinations.length > 0) {
     const generatedValues = combinations.map(c => c.keyword);
+    const brandClause = brandId ? 'AND brand_id = $3' : 'AND brand_id IS NULL';
+    const valueIdx = brandId ? 4 : 3;
+    const params = brandId
+      ? [userId, keywordType, brandId, generatedValues]
+      : [userId, keywordType, generatedValues];
     const staleRes = await query(
       `DELETE FROM zlgjc
-       WHERE userid = $1 AND keyword_type = $2
-         AND generation_codes IS NOT NULL AND array_length(generation_codes, 1) > 0
-         AND value <> ALL($3::text[])
+       WHERE userid = $1 AND keyword_type = $2 ${brandClause}
+         AND value <> ALL($${valueIdx}::text[])
        RETURNING id`,
-      [userId, keywordType, generatedValues]
+      params
     );
     overwritten = staleRes.rowCount || 0;
     if (overwritten > 0) {
