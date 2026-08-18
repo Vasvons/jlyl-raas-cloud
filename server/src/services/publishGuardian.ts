@@ -1,38 +1,30 @@
 /**
- * v3.8 发布守护进程（Publish Guardian）
+ * v3.9.1 发布守护进程（Publish Guardian）
  *
- * 设计目标：
- * - 监听 publish_failed 事件，自动分析失败原因
- * - 修改 step-list JSON 配置（带版本控制 + 备份 + 回滚）
- * - 触发重试 → 验证结果 → 成功汇报/失败回滚
- * - 账号问题（被封/掉线）直接汇报用户，不修改配置
- * - 单条记录最多自动重试 max_retry_per_record 次（默认 2）
+ * 设计目标（v3.9.1 起改为「只分析失败原因并提醒」，不再修改发布配置、不再自动重试）：
+ * - 监听 publish_failed 事件，分析失败原因并提醒用户
+ * - 账号问题（登录态失效 / 被封禁 / 日额度耗尽）通过规则直接识别并提醒，不依赖 AI
+ * - 其他失败原因由 AI 分析（可选），或直接汇报原始失败摘要
+ * - 守护未启用时静默落库跳过（不推送任何提醒），且落库日志防止兜底扫描器反复挑中旧失败记录
  *
  * 调用入口：
- *   handlePublishFailedEvent(event) —— 由 /content/flywheel/event-logs 路由调用
+ *   handlePublishFailedEvent(event) —— 由 /content/flywheel/event-logs 与 /publish/records/:id/result 路由调用
  *
- * 工具调用循环：
- *   AI 通过 function calling 调用以下工具完成分析+修复：
- *   - read_publish_log：读取失败日志详情
- *   - read_step_list：读取当前平台 JSON 配置
- *   - update_step_list：修改 JSON 配置（自动备份旧版本）
- *   - retry_publish：触发重试
+ * 工具调用循环（只读 + 汇报）：
+ *   AI 通过 function calling 调用以下工具完成分析：
+ *   - read_step_list：读取当前平台 JSON 配置（辅助判断流程类问题）
  *   - get_account_status：查询账号健康状态
- *   - report_to_user：发送汇报消息
+ *   - report_to_user：发送提醒消息
  */
-import axios from 'axios';
 import { callModelStream } from './pet/petChatService';
 import {
   getGuardianConfig, createGuardianLog, updateGuardianLog,
   getRecentGuardianLogsByRecord, getStepListByPlatform,
-  upsertStepListWithGuardian, deactivateStepListVersion, deactivateAllActiveStepLists,
+  upsertStepListWithGuardian, deactivateStepListVersion,
   getPetModelConfigWithKey,
 } from '../repository';
 import { wsBroadcast } from '../wsServer';
 import { query } from '../db';
-
-const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3002';
-const WORKER_SECRET = process.env.WORKER_SECRET || 'dev-secret';
 
 /** 处理中的 record_id 集合，防止并发重复处理 */
 const processingRecords = new Set<number>();
@@ -86,36 +78,6 @@ const GUARDIAN_TOOLS = [
   {
     type: 'function',
     function: {
-      name: 'update_step_list',
-      description: '修改指定平台的发布步骤配置。系统会自动备份旧版本，若后续重试失败可自动回滚。修改后版本号自动递增（如 1.7.7 → 1.7.8）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          platform: { type: 'string', description: '平台代码' },
-          step_list: { type: 'object', description: '完整的 step_list JSON 对象（必须包含 steps 数组）' },
-          description: { type: 'string', description: '修改说明，简述改了什么' },
-        },
-        required: ['platform', 'step_list', 'description'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'retry_publish',
-      description: '触发指定发布记录重试。系统会把 record 状态重置为 pending，Worker 下次轮询会拉取执行。',
-      parameters: {
-        type: 'object',
-        properties: {
-          record_id: { type: 'number', description: '发布记录 ID' },
-        },
-        required: ['record_id'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'get_account_status',
       description: '查询指定平台账号的健康状态（normal/banned/offline/limited）和配额使用情况。',
       parameters: {
@@ -132,7 +94,7 @@ const GUARDIAN_TOOLS = [
     type: 'function',
     function: {
       name: 'report_to_user',
-      description: '向用户发送汇报消息。用于：1) 成功修复后通知用户；2) 账号问题需用户处理；3) 连续失败需用户协助。',
+      description: '向用户发送汇报消息，说明本次发布失败的原因与处理建议。',
       parameters: {
         type: 'object',
         properties: {
@@ -146,54 +108,41 @@ const GUARDIAN_TOOLS = [
 ];
 
 /** 系统提示词 */
-const SYSTEM_PROMPT = `你是发布守护进程，负责自动分析自媒体平台发布失败的原因并自动修复。你是自动化系统，不是客服，不要问用户问题，直接采取行动。
+const SYSTEM_PROMPT = `你是发布守护进程，负责自动分析自媒体平台发布失败的原因。你是分析/汇报系统，不是修复系统，不要修改任何配置或触发重试。
 
 ## 核心原则（最重要）
-- **你是执行者，不是咨询者**：分析失败原因后，直接调用工具修复，不要问用户"是否需要修复"或"应该怎么处理"
-- **默认能修就修**：流程问题必须尝试自动修复（read_step_list → update_step_list → retry_publish），只有账号问题和内容问题才汇报用户
-- **不要让用户代劳**：你是守护进程，用户期望你自动解决问题，而不是把问题抛回给用户
-- **只有以下情况才汇报"需协助"**：① 连续修复 2 次仍失败 ② 账号被封禁/掉线 ③ 内容违规/为空 ④ 确实无法判断原因
-- **禁止提问**：不要在汇报中问"您希望怎么处理"之类的问题，要么报告"已修复"，要么报告"需协助（附原因）"
+- **你是分析者，不是修复者**：收到失败事件后，分析失败原因，然后直接汇报用户
+- **不要修改配置**：无论什么原因，都不要调用 read_step_list 以外的任何写操作
+- **不要触发重试**：发布重试由用户手动操作
+- **不要问用户问题**：分析完成后直接汇报结果，不要问"是否需要处理"或"怎么处理"
 
 ## 你的工作流程
 1. 分析失败日志和页面诊断信息，判断失败原因类型：
-   - **流程问题**（选择器失配、按钮点击无效、URL 超时、弹窗遮挡）：必须自动修复
-   - **账号问题**（被封禁、掉线、配额已满）：需用户处理，不能自动修复
-   - **内容问题**（标题超长、正文为空、图片缺失）：需用户检查内容
-   - **平台变更**（页面改版、API 变化）：尝试修复选择器，失败则汇报用户
+   - **账号问题**（登录态失效 account_login_expired、被封禁 account_banned、配额耗尽 account_limited、日额度耗尽）：需用户处理，可直接从 error_type 判断
+   - **内容问题**（content_error：标题超长、正文为空、图片缺失、违规内容）：需用户检查文章内容
+   - **平台问题**（platform_error：平台服务器错误、服务繁忙）：可告知用户稍后重试
+   - **流程问题**（unknown 或其他：选择器失配、按钮点击无效、弹窗遮挡等）：可告知用户需要人工修改发布配置
+   - **页面改版**（页面结构变化导致选择器失效）：告知用户需要更新发布配置
 
-2. 如果是流程问题（必须自动修复，不要问用户）：
-   - 调用 read_step_list 读取当前配置
-   - 分析失败日志中的选择器、URL、按钮文本，找出失配点
-   - 调用 update_step_list 修改 JSON 配置（只改失败的部分，不要重写整个文件）
-   - 调用 retry_publish 触发重试
-   - 等待重试结果（系统会自动推送）
-   - 如果重试成功，调用 report_to_user 汇报"已修复"
-   - 如果重试失败，回滚配置（系统自动处理），调用 report_to_user 汇报"需协助"
-
-3. 如果是账号问题：直接调用 report_to_user，说明需要用户处理（如"账号被封禁，请恢复后重试"），不要问用户要不要处理
-
-4. 如果是内容问题：调用 report_to_user，说明需要用户检查文章内容，不要问用户要不要检查
-
-## 重要规则
-- **修改要最小化**：只改失败相关的 step，不要重写整个 JSON
-- **版本号自动递增**：系统会自动处理版本号，你不需要手动指定
-- **备份与回滚**：系统会自动备份旧版本，重试失败会自动回滚
-- **单条记录最多重试 2 次**：超过则汇报"连续修复失败，需人工协助"
-- **不要猜测**：如果无法确定原因，调用 report_to_user 汇报"需要人工协助"，附上失败日志摘要
-- **工具调用失败时**：如果某个工具返回 error，不要直接汇报用户"无法连接"，应分析错误原因并尝试其他方案。例如 retry_publish 失败可重试一次，update_step_list 失败可检查参数格式
+2. 分析完成后，直接调用 report_to_user 汇报结果：
+   - 如果是账号问题，明确说明是「登录态失效」「账号被封禁」「日额度已用完」等，建议用户去平台恢复或更换账号
+   - 如果是内容问题，说明具体问题，建议用户检查文章内容后重试
+   - 如果是平台问题，说明可能是平台服务异常，建议稍后重试
+   - 如果是流程问题，说明需要人工更新发布配置
 
 ## 平台代码对照
 tt=头条号, qeh=企鹅号, bjh=百家号, wxgzh=微信公众号, zh=知乎, xhs=小红书, sohu=搜狐号, wy=网易号, bili=哔哩哔哩, js=简书, dy=抖音, csdn=CSDN
 
-## 常见失败模式与修复策略
-- **"等待 URL 超时"**：wait_for_url 的 wait_until 改为 domcontentloaded；或 timeout 增加；或 value 匹配模式调整
-- **"按钮未找到"**：选择器过时，需要根据页面诊断中的按钮文本更新选择器
-- **"弹窗遮挡"**：在点击前增加关闭弹窗的步骤
-- **"封面未设置"**：封面设置步骤失败，可能是选择器失配或弹窗阻塞
-- **"请选择 XX"**：必填项未选择，需要增加选择步骤
-- **"未实名认证"**：账号问题，需用户去平台实名认证，不能自动修复
-- **"账号已被封禁"**：账号问题，需用户处理`;
+## 常见失败原因
+- **"等待 URL 超时"**：流程问题，页面跳转未发生
+- **"按钮未找到"**：流程问题，选择器过时
+- **"弹窗遮挡"**：流程问题，需要调整点击时机
+- **"封面未设置"**：流程问题，封面设置步骤失败
+- **"请选择 XX"**：流程问题，必填项未选择
+- **"未实名认证"**：账号问题，需用户去平台实名认证
+- **"账号已被封禁"**：账号问题，需用户处理
+- **"登录态失效"**：账号问题，需用户重新登录
+- **"发布成功检测超时"**：可能是流程问题或平台响应慢`;
 
 /** 处理 publish_failed 事件入口 */
 export async function handlePublishFailedEvent(event: {
@@ -216,56 +165,43 @@ export async function handlePublishFailedEvent(event: {
   }
 
   // 2. 检查用户是否启用守护
-  // v3.8.7：修复"管理员开启了守护但系统提示未启用"的问题
-  // 根因：管理员帮客户创建发布任务时，publish_task.user_id 是客户的 id
-  //       失败事件携带的是客户的 userId，查守护配置查的是客户的（enabled=false）
-  //       但管理员开启守护保存到的是管理员自己的 userId
-  // 修复：如果当前 userId 没开启守护，回退查找管理员（level='1'）的守护配置
-  //       管理员的守护配置对所有用户的发布任务生效（符合 RaaS 平台管理员代管场景）
-  let config = await getGuardianConfig(userId);
+  // v3.9.1：用户显式停用（存在配置行且 enabled=false）时尊重用户选择——不回退管理员配置、不推送任何提醒（停用=静默）。
+  //         仅当用户从未配置过（无配置行）时，才回退到管理员（level='1'）的守护配置（管理员代管场景）。
+  //         停用/未启用时落库一条 skipped 日志，避免兜底扫描器（按 gl.id IS NULL 判定）反复挑中同一批旧失败记录
+  //         ——这是"发布失败几小时后仍在弹窗提醒"的根因。
+  const userConfig = await getGuardianConfig(userId);
+  let config = userConfig || null;
   let configOwnerUserId = userId;
   if (!config?.enabled) {
-    // 查找管理员（level='1'）的守护配置
+    if (userConfig) {
+      // 用户显式停用守护：静默落库跳过
+      await createSkipGuardianLog(userId, recordId, platform, data, event.message, '用户显式停用守护');
+      console.log(`[Guardian] user=${userId} 显式停用守护，record #${recordId} 落库跳过（不推送提醒）`);
+      return;
+    }
+    // 无用户配置行 → 回退管理员配置（代管场景）
     const adminConfig = await getAdminGuardianConfig();
     if (adminConfig?.enabled) {
-      console.log(`[Guardian] user=${userId} 未启用守护，回退使用管理员配置（admin userId=${adminConfig.user_id}）`);
+      console.log(`[Guardian] user=${userId} 未配置守护，回退使用管理员配置（admin userId=${adminConfig.user_id}）`);
       config = adminConfig;
       configOwnerUserId = Number(adminConfig.user_id);
+    } else {
+      // 用户与管理员均未启用守护：静默落库跳过
+      await createSkipGuardianLog(userId, recordId, platform, data, event.message, '用户与管理员均未启用守护');
+      console.log(`[Guardian] user=${userId} 及管理员均未启用守护，record #${recordId} 落库跳过（不推送提醒）`);
+      return;
     }
-  }
-  if (!config?.enabled) {
-    // v3.8.7：守护未启用时不再静默 return，而是推一条 guardian_report 提醒用户
-    // 避免用户困惑"守护运行中但什么也不汇报"——实际是开关没开
-    console.log(`[Guardian] user=${userId} 及管理员均未启用守护，跳过 record #${recordId}（推送提醒）`);
-    // v3.9.0：冷却控制，同一用户+平台 30 分钟内不重复推送"未启用提醒"
-    if (shouldReport(userId, platform, 'guardian_disabled')) {
-      wsBroadcast('guardian_report', {
-        log_id: 0,
-        record_id: recordId,
-        platform,
-        severity: 'info',
-        message: `⚠️ 发布守护进程未启用：${platform} 平台 record #${recordId} 发布失败，但守护开关未开启，未自动处理。请到「精灵设置 → 自动化守护」开启守护开关。`,
-      }, userId);
-    }
-    return;
   }
 
   // 3. 检查平台作用域
   const platforms: string[] = Array.isArray(config.platforms) ? config.platforms : [];
   if (platforms.length > 0 && !platforms.includes(platform)) {
-    console.log(`[Guardian] 平台 ${platform} 不在守护作用域内，跳过`);
+    await createSkipGuardianLog(userId, recordId, platform, data, event.message, `平台 ${platform} 不在守护作用域内`);
+    console.log(`[Guardian] 平台 ${platform} 不在守护作用域内，record #${recordId} 落库跳过`);
     return;
   }
 
-  // 4. 检查重试次数（单条记录最多 max_retry_per_record 次）
-  const recentLogs = await getRecentGuardianLogsByRecord(recordId, 10);
-  const autoRetryCount = recentLogs.filter(l => l.ai_action === 'auto_fixed' || l.ai_action === 'auto_retry').length;
-  if (autoRetryCount >= (config.max_retry_per_record || 2)) {
-    console.log(`[Guardian] record #${recordId} 已达最大重试次数 ${config.max_retry_per_record}，跳过`);
-    return;
-  }
-
-  // 5. 防止并发重复处理
+  // 4. 防止并发重复处理
   if (processingRecords.has(recordId)) {
     console.log(`[Guardian] record #${recordId} 正在处理中，跳过`);
     return;
@@ -283,9 +219,6 @@ export async function handlePublishFailedEvent(event: {
       failureMsg: event.message,
       errorMsg: data.error_msg || '',
       errorType: data.error_type || '',
-      maxRetry: config.max_retry_per_record || 2,
-      autoFix: config.auto_fix !== false,
-      autoRetry: config.auto_retry !== false,
     });
   } catch (err: any) {
     console.error(`[Guardian] 处理 record #${recordId} 异常:`, err.message);
@@ -294,7 +227,36 @@ export async function handlePublishFailedEvent(event: {
   }
 }
 
-/** 核心处理逻辑 */
+/** v3.9.1：守护未启用/跳过时落库一条 skipped 日志，防止兜底扫描器反复挑中同一失败记录 */
+async function createSkipGuardianLog(
+  userId: number,
+  recordId: number,
+  platform: string,
+  data: any,
+  message: string,
+  reason: string
+): Promise<void> {
+  try {
+    const logId = await createGuardianLog({
+      user_id: userId,
+      record_id: recordId,
+      platform,
+      article_title: message.match(/"([^"]+)"/)?.[1] ?? undefined,
+      failure_msg: data.error_msg || message,
+      page_diagnostic: extractPageDiagnostic(data.error_msg) ?? undefined,
+      error_type: data.error_type || '',
+    });
+    await updateGuardianLog(logId, {
+      ai_action: 'skipped',
+      ai_analysis: `未处理：${reason}`,
+      report_status: 'skipped',
+    });
+  } catch (e: any) {
+    console.error(`[Guardian] 落库 skipped 日志失败:`, e.message);
+  }
+}
+
+/** 核心处理逻辑（只分析失败原因并提醒，不修改配置、不自动重试） */
 async function processFailure(params: {
   userId: number;
   recordId: number;
@@ -302,11 +264,8 @@ async function processFailure(params: {
   failureMsg: string;
   errorMsg: string;
   errorType: string;
-  maxRetry: number;
-  autoFix: boolean;
-  autoRetry: boolean;
 }): Promise<void> {
-  const { userId, recordId, platform, failureMsg, errorMsg, errorType, autoFix, autoRetry } = params;
+  const { userId, recordId, platform, failureMsg, errorMsg, errorType } = params;
 
   // 1. 创建守护日志
   const logId = await createGuardianLog({
@@ -319,7 +278,7 @@ async function processFailure(params: {
     error_type: errorType,
   });
 
-  console.log(`[Guardian] 开始处理 record #${recordId} platform=${platform} logId=${logId}`);
+  console.log(`[Guardian] 开始分析 record #${recordId} platform=${platform} logId=${logId}`);
 
   // 2. 推送"开始分析"事件
   wsBroadcast('guardian_update', {
@@ -330,31 +289,45 @@ async function processFailure(params: {
     message: `正在分析 ${platform} 平台发布失败原因...`,
   }, userId);
 
-  // 3. 获取精灵模型配置
-  const modelConfig = await getPetModelConfigWithKey(userId);
-  if (!modelConfig || !modelConfig.api_key) {
-    console.error('[Guardian] 精灵模型未配置，无法进行 AI 分析');
+  // 3. 规则分类：账号问题（登录态失效/封禁/日额度耗尽）直接提醒，不依赖 AI，保证必达
+  const cls = classifyPublishFailure(errorType, errorMsg, failureMsg);
+  if (cls.category !== 'other') {
+    const accountMsg = buildAccountFailureMessage(platform, recordId, cls.category, cls.title);
+    console.log(`[Guardian] record #${recordId} 判定为账号类失败（${cls.category}），直接提醒`);
     await updateGuardianLog(logId, {
-      ai_action: 'skipped',
-      ai_analysis: '精灵模型未配置，无法进行 AI 分析',
+      ai_action: 'reported',
+      ai_analysis: `规则识别：${cls.title}`,
       report_status: 'reported',
-      report_msg: '精灵模型未配置，发布守护无法工作。请在管理端配置精灵底座模型。',
+      report_msg: accountMsg,
     });
-    // v3.8.7：改推 guardian_report（而非 guardian_update），让桌面端能收到可见提示
-    // v3.9.0：冷却控制，同一用户+平台 30 分钟内不重复推送"模型未配置"
-    if (shouldReport(userId, platform, 'model_not_configured')) {
-      wsBroadcast('guardian_report', {
-        log_id: logId,
-        record_id: recordId,
-        platform,
-        severity: 'error',
-        message: `❌ ${platform} 平台发布失败，但精灵模型未配置，守护进程无法自动分析。请在「设置 → 精灵设置 → 精灵底座」配置 AI 模型后，守护才能自动修复。`,
-      }, userId);
-    }
+    wsBroadcast('guardian_report', {
+      log_id: logId, record_id: recordId, platform,
+      severity: cls.severity,
+      message: accountMsg,
+    }, userId);
     return;
   }
 
-  // 4. 构造上下文消息
+  // 4. 获取精灵模型配置（AI 分析其他类失败原因）
+  const modelConfig = await getPetModelConfigWithKey(userId);
+  if (!modelConfig || !modelConfig.api_key) {
+    console.log('[Guardian] 精灵模型未配置，直接汇报原始失败原因');
+    const fallbackMsg = buildFailureMessage(platform, recordId, errorType, errorMsg, failureMsg);
+    await updateGuardianLog(logId, {
+      ai_action: 'reported',
+      ai_analysis: '精灵模型未配置，未做 AI 分析',
+      report_status: 'reported',
+      report_msg: fallbackMsg,
+    });
+    wsBroadcast('guardian_report', {
+      log_id: logId, record_id: recordId, platform,
+      severity: 'warning',
+      message: fallbackMsg,
+    }, userId);
+    return;
+  }
+
+  // 5. 构造上下文消息
   const userMessage = `## 发布失败事件
 - 平台：${platform}
 - 记录 ID：${recordId}
@@ -362,21 +335,16 @@ async function processFailure(params: {
 - 错误详情：${errorMsg}
 - 错误类型：${errorType}
 
-请分析失败原因并采取行动。`;
+请分析失败原因并汇报。`;
 
-  // 5. 工具调用循环
+  // 6. 工具调用循环（只读工具 + report_to_user，v3.9.1 起不再提供修改配置/触发重试工具）
   const toolContext: ToolContext = {
-    userId, recordId, platform, logId, autoFix, autoRetry,
-    stepListBackup: null,
-    oldVersion: null,
-    newVersion: null,
-    retryTriggered: false,
-    reportSent: false,
+    userId, recordId, platform, logId, reportSent: false,
   };
 
   const messages: any[] = [{ role: 'user', content: userMessage }];
   let iterations = 0;
-  const maxIterations = 8; // 最多 8 轮工具调用
+  const maxIterations = 6; // 最多 6 轮工具调用
 
   while (iterations < maxIterations) {
     iterations++;
@@ -420,7 +388,7 @@ async function processFailure(params: {
       // 模型返回了纯文本（分析完成，没有更多工具调用）
       await updateGuardianLog(logId, {
         ai_analysis: result.fullText,
-        ai_action: toolContext.reportSent ? 'reported' : (toolContext.retryTriggered ? 'auto_retry' : 'analyzed'),
+        ai_action: toolContext.reportSent ? 'reported' : 'analyzed',
       });
       break;
     } catch (err: any) {
@@ -444,16 +412,9 @@ async function processFailure(params: {
     }
   }
 
-  // 6. 如果 AI 没有发送汇报，发送默认汇报
+  // 7. 如果 AI 没有发送汇报，发送默认汇报
   if (!toolContext.reportSent) {
-    const reportMsg = `⚠️ **${platform} 平台发布失败**
-
-记录 ID: ${recordId}
-失败原因: ${errorType || '未知'}
-错误摘要: ${(errorMsg || failureMsg).slice(0, 200)}
-
-AI 已分析完成，但未能自动修复。请人工检查。`;
-
+    const reportMsg = buildFailureMessage(platform, recordId, errorType, errorMsg, failureMsg);
     await updateGuardianLog(logId, {
       report_status: 'reported',
       report_msg: reportMsg,
@@ -465,7 +426,98 @@ AI 已分析完成，但未能自动修复。请人工检查。`;
     }, userId);
   }
 
-  console.log(`[Guardian] record #${recordId} 处理完成 (iterations=${iterations})`);
+  console.log(`[Guardian] record #${recordId} 分析完成 (iterations=${iterations})`);
+}
+
+/**
+ * v3.9.1：规则分类发布失败原因，优先识别账号类问题（登录态失效/被封禁/日额度耗尽）。
+ * 优先使用桌面端回传的 error_type（account_login_expired / account_banned / account_limited），
+ * 其次用关键词兜底（覆盖兜底扫描器等 error_type 不明确的路径）。
+ */
+function classifyPublishFailure(
+  errorType: string,
+  errorMsg: string,
+  failureMsg: string
+): { category: 'login_expired' | 'banned' | 'quota' | 'other'; title: string; severity: string } {
+  const et = (errorType || '').toLowerCase();
+  const combined = `${errorMsg || ''} ${failureMsg || ''}`;
+  const lower = combined.toLowerCase();
+
+  // 账号登录态失效（掉线/cookie过期/token失效/需重新扫码）
+  if (
+    et.includes('login_expired') ||
+    /登录|未登录|登录态失效|登录已失效|登录过期|请重新登录|重新扫码|请扫码|login|sign ?in|session expired|token 过期|凭证过期/i.test(combined)
+  ) {
+    return { category: 'login_expired', title: '账号登录态失效', severity: 'error' };
+  }
+
+  // 账号被封禁/限制
+  if (
+    et.includes('banned') ||
+    /封禁|封号|被封|账号异常|账号已被限制|限制登录|已冻结|冻结|banned|blocked|违规处罚/i.test(combined)
+  ) {
+    return { category: 'banned', title: '账号被封禁', severity: 'error' };
+  }
+
+  // 日额度/配额耗尽 / 限流
+  if (
+    et.includes('limited') || et.includes('quota') ||
+    /上限|限额|额度|配额|限流|太频繁|过于频繁|次数已用完|今日已用完|rate limit|too many|quota|limited/i.test(combined)
+  ) {
+    return { category: 'quota', title: '当日发布额度已用完', severity: 'warning' };
+  }
+
+  return { category: 'other', title: '', severity: 'warning' };
+}
+
+/** 账号类失败的提醒消息模板 */
+function buildAccountFailureMessage(
+  platform: string,
+  recordId: number,
+  category: 'login_expired' | 'banned' | 'quota',
+  title: string
+): string {
+  const map = {
+    login_expired: {
+      emoji: '🔑',
+      detail: '该平台账号登录态已失效（掉线 / cookie 过期 / 需重新扫码），需要重新登录后才能继续发布。',
+      suggest: '请到「自媒体账号管理」重新扫码登录该平台账号后重试。',
+    },
+    banned: {
+      emoji: '🚫',
+      detail: '该平台账号已被封禁 / 限制（违规、封号、账号异常），无法继续发布。',
+      suggest: '请去平台后台申诉或更换可用账号后重试。',
+    },
+    quota: {
+      emoji: '📉',
+      detail: '该平台账号今日发布次数已达上限或被限流，暂时无法继续发布。',
+      suggest: '请明天再试，或更换账号 / 调整配额后重试。',
+    },
+  };
+  const m = map[category];
+  return `${m.emoji} **${platform} 平台发布失败 · ${title}**
+
+记录 ID: ${recordId}
+原因：${m.detail}
+
+${m.suggest}`;
+}
+
+/** 非账号类失败的兜底提醒消息模板 */
+function buildFailureMessage(
+  platform: string,
+  recordId: number,
+  errorType: string,
+  errorMsg: string,
+  failureMsg: string
+): string {
+  return `⚠️ **${platform} 平台发布失败**
+
+记录 ID: ${recordId}
+失败类型: ${errorType || '未知'}
+错误摘要: ${(errorMsg || failureMsg).slice(0, 300)}
+
+请根据失败原因处理（账号类问题请重新登录/更换账号，流程类问题请人工更新发布配置）后重试。`;
 }
 
 /** 工具调用上下文 */
@@ -474,12 +526,6 @@ interface ToolContext {
   recordId: number;
   platform: string;
   logId: number;
-  autoFix: boolean;
-  autoRetry: boolean;
-  stepListBackup: any | null;
-  oldVersion: string | null;
-  newVersion: string | null;
-  retryTriggered: boolean;
   reportSent: boolean;
 }
 
@@ -498,18 +544,6 @@ async function executeToolCall(toolCall: any, ctx: ToolContext): Promise<any> {
   switch (name) {
     case 'read_step_list':
       return await toolReadStepList(args.platform || ctx.platform);
-
-    case 'update_step_list':
-      if (!ctx.autoFix) {
-        return { error: '用户未启用自动修复（auto_fix=false），不能修改 step_list' };
-      }
-      return await toolUpdateStepList(args.platform || ctx.platform, args.step_list, args.description, ctx);
-
-    case 'retry_publish':
-      if (!ctx.autoRetry) {
-        return { error: '用户未启用自动重试（auto_retry=false），不能触发重试' };
-      }
-      return await toolRetryPublish(args.record_id || ctx.recordId, ctx);
 
     case 'get_account_status':
       return await toolGetAccountStatus(args.platform || ctx.platform, args.user_id || ctx.userId);
@@ -532,111 +566,6 @@ async function toolReadStepList(platform: string): Promise<any> {
     description: data.description,
     step_list: data.step_list,
   };
-}
-
-/** 工具：更新 step_list（带备份） */
-async function toolUpdateStepList(
-  platform: string,
-  newStepList: any,
-  description: string,
-  ctx: ToolContext
-): Promise<any> {
-  // 1. 读取当前配置作为备份
-  const current = await getStepListByPlatform(platform);
-  if (!current) {
-    return { error: `平台 ${platform} 暂无 step_list 配置，无法更新` };
-  }
-
-  // 2. 校验新配置
-  if (!newStepList || !Array.isArray(newStepList.steps)) {
-    return { error: 'step_list 必须包含 steps 数组' };
-  }
-
-  // 3. 记录备份
-  ctx.stepListBackup = current.step_list;
-  ctx.oldVersion = current.version;
-
-  // 4. 计算新版本号（自动递增 patch 版本）
-  const newVersion = incrementVersion(current.version || '1.0.0');
-  ctx.newVersion = newVersion;
-
-  // 5. 保留新配置的元信息
-  const finalStepList = {
-    ...newStepList,
-    platform,
-    version: newVersion,
-  };
-
-  // 6. 停用该平台所有 active 版本（v3.8.10：彻底清理，避免旧版本与新版本并存）
-  //   之前 Bug：只 deactivate 当前版本，更早的遗留版本仍 is_active=true，
-  //   getStepListByPlatform ORDER BY create_time DESC 可能取到格式异常的旧版本
-  await deactivateAllActiveStepLists(platform);
-
-  // 7. 写入新版本
-  const id = await upsertStepListWithGuardian(
-    platform,
-    newVersion,
-    finalStepList,
-    description,
-    'guardian',
-    ctx.logId,
-    description
-  );
-
-  // 8. 更新守护日志
-  await updateGuardianLog(ctx.logId, {
-    old_version: current.version,
-    new_version: newVersion,
-    step_list_backup: current.step_list,
-    step_list_new: finalStepList,
-    ai_action: 'auto_fixed',
-  });
-
-  // 9. 推送 WS 事件
-  wsBroadcast('guardian_update', {
-    log_id: ctx.logId,
-    record_id: ctx.recordId,
-    platform,
-    action: 'fixed',
-    message: `已修改 ${platform} 配置 v${current.version} → v${newVersion}：${description}`,
-  }, ctx.userId);
-
-  return {
-    success: true,
-    old_version: current.version,
-    new_version: newVersion,
-    id,
-    message: `配置已更新（v${current.version} → v${newVersion}），旧版本已备份可回滚`,
-  };
-}
-
-/** 工具：触发重试 */
-async function toolRetryPublish(recordId: number, ctx: ToolContext): Promise<any> {
-  try {
-    // v3.8.7：修复 retry_publish 调用失败的问题
-    // 原实现走 HTTP 回调 ${SERVER_URL}/content/publish/records/${recordId}/retry
-    // 但该接口需要 JWT 鉴权（authMiddleware），守护进程只有 X-Worker-Secret
-    // 当服务器未设置 WORKER_SECRET 环境变量时，auth.ts 中 WORKER_SECRET=''，
-    // worker secret 认证被跳过，导致 401 拒绝
-    // 修复：守护进程是云端内部服务，直接调用 retryPublishRecords 函数，不走 HTTP
-    const { retryPublishRecords } = await import('../repository');
-    const result = await retryPublishRecords(undefined, recordId);
-    ctx.retryTriggered = true;
-    await updateGuardianLog(ctx.logId, {
-      ai_action: 'auto_retry',
-      retry_count: 1,
-    });
-    wsBroadcast('guardian_update', {
-      log_id: ctx.logId,
-      record_id: recordId,
-      platform: ctx.platform,
-      action: 'retrying',
-      message: `已触发 record #${recordId} 重试，等待 Worker 拉取执行...`,
-    }, ctx.userId);
-    return { success: true, message: `已触发重试（重置 ${result.reset_count} 条记录），Worker 将在 30 秒内拉取执行` };
-  } catch (err: any) {
-    return { error: `触发重试失败: ${err.message}` };
-  }
 }
 
 /** 工具：查询账号状态 */
@@ -687,16 +616,6 @@ async function toolReportToUser(message: string, severity: string, ctx: ToolCont
     message,
   }, ctx.userId);
   return { success: true, message: '汇报已发送' };
-}
-
-/** 版本号递增（patch +1） */
-function incrementVersion(version: string): string {
-  const parts = version.split('.').map(p => parseInt(p, 10) || 0);
-  if (parts.length < 3) {
-    while (parts.length < 3) parts.push(0);
-  }
-  parts[2] += 1;
-  return parts.join('.');
 }
 
 /** 从错误消息中提取页面诊断信息 */
