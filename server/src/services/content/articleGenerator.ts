@@ -112,6 +112,18 @@ function resolveTaskStyles(task: any): string[] {
 }
 
 /**
+ * v3.18.x：单篇文章实际生效的内容风格。
+ * - 随机模式：每篇随机抽一个（沿用 resolveTaskStyles）；
+ * - 非随机且选了多个风格：按文章序号轮转分配，保证每个选中的风格都被用上、文章间风格不重复；
+ * - 单选：直接用该风格。
+ */
+function resolveArticleStyles(task: any, articleIdx: number): string[] {
+  const styles = resolveTaskStyles(task);
+  if (task.random_mode || styles.length <= 1) return styles;
+  return [styles[articleIdx % styles.length]];
+}
+
+/**
  * 检测文本是否像思考过程（而非正常标题/内容）
  * 用于过滤推理模型把思考过程当成标题返回的情况
  * v2.2.16：新增"提示词模板污染"识别——AI 把 title_prompt 模板内容当标题输出
@@ -1438,7 +1450,7 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
         //   原顺序：先正文、后标题，二者相互独立，AI 常"一个往东一个往西"。
         //   新顺序：先按标题结构引擎生成本篇标题 → 把 {title} 占位符替换为真实标题 →
         //   再把「正文风格引擎（文章风格引擎）」块注入正文 prompt → 最后生成正文。
-        const resolvedStyles = resolveTaskStyles(task);
+        const resolvedStyles = resolveArticleStyles(task, articleIdx);
         const originalTitle = title;
         if (task.title_prompt && task.title_prompt.trim()) {
           try {
@@ -1608,7 +1620,7 @@ ${title}`;
 9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"
 10. 【标题问句优先（v3.11.x 通用）】标题优先采用"用户原话型"问句，直接复刻目标客户在搜索框里的输入（如"郑州脂肪填充哪家做的好？""XX 怎么样？"），提升 GEO/AI 检索命中率。若与下方"GEO 决策意图"风格规则冲突：对决策类风格（痛点问答/对比评测/教程指南/产品种草）强制问句；对知识/资讯/品牌型风格不强求问句形式，但标题应包含用户可能搜索的关键词。
 11. 【标题基于关键词改写（v3.16.x 强制）】标题必须基于【本篇关键词】所指的蒸馏关键词改写，不能凭空创作、不能把关键词原文照搬当标题。具体怎样改写、要补齐哪些要素、采用哪种结构，一律以下方「标题结构」块为准。
-${buildTitleStructureRule(resolveTaskStyles(task), task.city || '', keywordStructure)}`;
+${buildTitleStructureRule(resolvedStyles, task.city || '', keywordStructure)}`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: titleSystemContent },
               { role: 'user', content: titlePrompt },
@@ -2081,7 +2093,8 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
 
   const systemContent = writingCtx.systemMessage;
   // v3.17.x：重新生成同样注入「正文风格引擎」，保证重写内容与标题/正文风格一致
-  const regenStyles = resolveTaskStyles(task);
+  // v3.18.x：按文章 id 轮转取风格，与生成时该文章实际用的风格保持一致
+  const regenStyles = resolveArticleStyles(task, Number(article?.id) || 0);
   articlePrompt += '\n\n---\n\n' + buildBodyStyleRule([regenStyles[0] || '']);
   const messages: { role: 'system' | 'user'; content: string }[] = systemContent
     ? [
