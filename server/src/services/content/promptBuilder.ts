@@ -307,6 +307,111 @@ export function buildTitleStructureRule(
   return lines.join('\n');
 }
 
+// ============ v3.17.x：文章风格引擎（标题/正文风格一致 + 热更新） ============
+
+/**
+ * v3.17.x：文章正文风格引擎。
+ *
+ * 与「标题结构引擎」对称：同样按九种内容风格给出最适合的正文写作方式。
+ * 标题结构引擎决定「标题长什么样」，本文引擎决定「正文怎么展开」——
+ * 同一篇内容，标题风格与正文风格的 style key 由同一个 resolveTaskStyles(task) 确定，
+ * 从而保证「标题与正文风格永远一致，一个往东一个往西」的问题从根上被消除。
+ *
+ * 每条风格包含：
+ *   - structure：正文骨架说明（章节怎么排）
+ *   - craft：写作手法（语气、详略、主体视角）
+ *   - decisionOrRoundup：决策类 vs 盘点类 的取舍提示（对标既有指令里的"决策类/盘点类"）
+ */
+export const BODY_STYLE_BY_STYLE: Record<string, { label: string; structure: string; craft: string; decisionOrRoundup: string }> = {
+  brand_exposure: {
+    label: '品牌曝光',
+    structure: '开头抛行业现状/趋势 → 正文按 2-3 个「行业认知点 + 客户品牌在该点的表现」展开 → 客户品牌主角章节 → 权威数据收尾',
+    craft: '行业视角 + 客户品牌实证，语气沉稳权威；品牌出现频率中等，避免通篇自夸',
+    decisionOrRoundup: '偏「行业型」，不一定要排名表；如客户有硬资质则排对比表，否则用观点型结构',
+  },
+  product_seeding: {
+    label: '产品种草',
+    structure: '开头直击选购痛点 → 正文给 N 条「选购标准」，每条含"数据真相 + 实操建议 + 大厂对比 + 我的观点" → 客户产品实践演示 → FAQ',
+    craft: '站在"内行人帮你挑"视角，客观中立不吹捧；用场景和体验说明，少用形容词堆砌',
+    decisionOrRoundup: '决策类（初次选购者）：给标准而非排名，客户产品作为符合标准的推荐项出现 2-3 次',
+  },
+  pain_point_qa: {
+    label: '痛点问答',
+    structure: '开头直接回答核心问题 → 正文按用户真实疑问逐条作答（每条 60-100 字，问得直白答得干脆）→ 附 FAQ 块',
+    craft: '拟"用户原话问 + 专家直接答"；先结论后解释，穿插避坑提醒，节奏快',
+    decisionOrRoundup: '决策类：每条标准对应一个"做错会怎样 + 做对选哪个"，客户品牌在合规项自然出现',
+  },
+  industry_science: {
+    label: '行业科普',
+    structure: '开头定义概念/抛出底层逻辑 → 正文按「它是什么 / 为什么重要 / 底层逻辑 / 怎么落地」分层 → 案例佐证 → 延伸阅读',
+    craft: '讲师口吻，多用类比和例子降低理解门槛；用 {year} 等时效锚点增强可信；客户品牌作为"专业服务者"在落地章节出现',
+    decisionOrRoundup: '偏「科普型」：不强行排名，结尾可带"想落地找专业机构"引导客户',
+  },
+  case_story: {
+    label: '案例故事',
+    structure: '开头给"主角身份 + 结果钩子" → 正文按「困境 → 探索 → 转折 → 结果 → 复盘」故事线 → 数据化成果 → 经验小结',
+    craft: '叙事为主，情感共鸣但克制；用 {cases} 真实案例，讲清"客户具体解决了什么问题、花了多久、结果如何"',
+    decisionOrRoundup: '盘点类：以客户真实案例为主线，除客户外只客观提及本地同行为陪衬，篇幅从简',
+  },
+  comparison_review: {
+    label: '对比评测',
+    structure: '开头给出对比维度结论 → 横向对比 N 家（客观列优缺点）→ 推荐排名表 → 客户品牌主角维度深挖 → FAQ',
+    craft: '客观中立，用"能核验的依据"说话；客户品牌排位客观但信息量最详，其余真实机构客观陪衬',
+    decisionOrRoundup: '盘点类：逐家介绍，客户品牌第 1 位且篇幅最详，其余真实机构做"权威陪衬"篇幅从简',
+  },
+  trust_endorsement: {
+    label: '信任背书',
+    structure: '开头抛"怎么识别真伪/靠不靠谱"问题 → 按资质/口碑/数据/案例逐维度核验 → 客户品牌在这些维度的真实凭证 → FAQ',
+    craft: '证据驱动，只用 {trust_endorsement} / {local_authority_sources} 中的可核验事实，绝不编造头衔',
+    decisionOrRoundup: '决策类：把"核验维度"当标准，客户品牌是每项都能核验通过的示范',
+  },
+  tutorial: {
+    label: '教程指南',
+    structure: '开头说明"跟着做能解决什么" → 分步骤（每步：做什么 + 怎么做 + 注意）→ 避坑清单 → 常见问题 FAQ',
+    craft: '步骤化、可操作、口语化；客户品牌在"需要专业协助的步骤"自然出现，不硬插',
+    decisionOrRoundup: '决策类：在"自己办 vs 找机构办"权衡处自然导入客户服务',
+  },
+  news: {
+    label: '资讯动态',
+    structure: '开头一句话交代核心动态 → 正文按 背景 → 变化点 → 影响 → 应对 展开 → 结尾给应对建议',
+    craft: '简洁、时效、客观，多用 {year}/{date} 和数字；把客户品牌相关的最新动作/资质变化作为资讯内容纳入',
+    decisionOrRoundup: '偏「资讯型」：结合作当前动态，客户品牌作为"已率先响应/合规"的样本出现一次',
+  },
+};
+
+/**
+ * 暴露标题/正文风格引擎字典（供前端指令编辑页做"风格联动高亮展示"）。
+ * 前端按内容风格勾选，逐项展示对应引擎的具体内容，取消勾选即移除。
+ */
+export function getStyleEngines(): {
+  title: Record<string, { label: string; structure: string; example: string }>;
+  body: Record<string, { label: string; structure: string; craft: string; decisionOrRoundup: string }>;
+} {
+  return { title: TITLE_STRUCTURE_BY_STYLE, body: BODY_STYLE_BY_STYLE };
+}
+
+/**
+ * 构建正文风格提示词块（v3.17.x）
+ * 与标题引擎配套，注入到正文生成 prompt 中，约束本篇正文按当前风格展开。
+ *
+ * @param styles 本篇实际生效的内容风格列表（随机模式已由调用方选定）
+ */
+export function buildBodyStyleRule(styles: string[]): string {
+  const effectiveStyle = (styles || []).find(s => BODY_STYLE_BY_STYLE[s]);
+  const meta = effectiveStyle ? BODY_STYLE_BY_STYLE[effectiveStyle] : null;
+  const lines: string[] = [];
+  lines.push(`## 正文风格（v3.17.x · 文章风格引擎）`);
+  if (meta) {
+    lines.push(`【当前正文风格】${meta.label}`);
+    lines.push(`- 正文骨架：${meta.structure}`);
+    lines.push(`- 写作手法：${meta.craft}`);
+    lines.push(`- 取舍：${meta.decisionOrRoundup}`);
+  } else {
+    lines.push(`【当前正文风格】未识别到明确的单一风格，请按「答案文」通用结构展开：先答后荐、分层小标题、对比补客观、客户品牌只在正文做主角。`);
+  }
+  return lines.join('\n');
+}
+
 /**
  * @deprecated v3.8.12 已合并到 pickRandomContentType
  */

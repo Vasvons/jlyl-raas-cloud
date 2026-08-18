@@ -1,5 +1,5 @@
 import { chatCompletion, extractApiErrorMessage } from './aiClient';
-import { buildPrompt, buildDirectionContext, pickRandomContentType, formatEnterprise, migrateCategoryToStyle, migrateOldTypesToStyle, buildTitleStructureRule, parseKeywordStructure } from './promptBuilder';
+import { buildPrompt, buildDirectionContext, pickRandomContentType, formatEnterprise, migrateCategoryToStyle, migrateOldTypesToStyle, buildTitleStructureRule, buildBodyStyleRule, parseKeywordStructure } from './promptBuilder';
 import { buildWritingContext, stripHtml, type RecentArticleItem, type PerformanceMemoryItem, type StrategyMemoryItem, type RagSnippet } from './contextBuilder';
 import { retrieveRelevantArticles } from './ragRetrieval';
 import { generateAndSaveEmbedding } from './embeddingService';
@@ -1434,6 +1434,100 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
           articlePrompt += buildPlatformConstraintPrompt(currentPlatformRule, task.target_word_count);
         }
 
+        // v3.17.x：先生成标题，再把标题回填进正文，让「标题与正文绑定、风格一致」。
+        //   原顺序：先正文、后标题，二者相互独立，AI 常"一个往东一个往西"。
+        //   新顺序：先按标题结构引擎生成本篇标题 → 把 {title} 占位符替换为真实标题 →
+        //   再把「正文风格引擎（文章风格引擎）」块注入正文 prompt → 最后生成正文。
+        const resolvedStyles = resolveTaskStyles(task);
+        const originalTitle = title;
+        if (task.title_prompt && task.title_prompt.trim()) {
+          try {
+            let titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
+              keyword: keywordsListStr || '',       // 向后兼容
+              topic: topicPlan.topic,
+              direction: topicPlan.direction,
+              titleHint: topicPlan.titleHint,
+              coverageKeywords,
+              enterprise: enterpriseInfo,
+              wordCount: task.target_word_count,
+            });
+            // v3.16.x：注入【本篇关键词】用于标题基于关键词改写（强制规则11使用）
+            // v3.17.x：同时解析该关键词的字段结构（A/B/C/D/E/F），供标题结构引擎精准改写
+            const specificKeyword = kw?.value?.trim() || '';
+            const keywordStructure = parseKeywordStructure(kw?.generation_codes || kw?.generationCodes || null);
+            if (specificKeyword) {
+              titlePrompt = `【本篇关键词】${specificKeyword}\n\n` + titlePrompt;
+            }
+            titlePrompt += writingCtx.userPromptSuffix;
+            // v1.8.0：标题生成也注入平台字数约束（标题是平台最严格的字段）
+            if (currentPlatformRule) {
+              titlePrompt += `\n\n【标题字数硬约束】目标平台：${currentPlatformRule.name}，标题必须 ${currentPlatformRule.title_min_length ?? 1}-${currentPlatformRule.title_max_length ?? 100} 字。超出 ${currentPlatformRule.title_max_length ?? 100} 字会被平台拒绝，请严格控制。`;
+            }
+            const titleSystemPrefix = writingCtx.systemMessage
+              ? writingCtx.systemMessage + '\n\n---\n\n'
+              : '';
+            const titleSystemContent = titleSystemPrefix + `你是标题生成器。基于上述所有上下文（客户档案、AEO 写作建议、专家角色等）生成与文章方向一致的标题。
+
+【输出规则（必须严格遵守）】
+1. 只输出标题文字本身，不要输出任何其他内容
+2. 不要输出思考过程、分析、解释、引号
+3. 不要输出任何前缀：禁止使用 #、##、### 等 markdown 标题符号
+4. 禁止使用 【标题】、【标题：】、标题：、Title: 等前缀字样
+5. 禁止使用项目符号（- 1. 1、等）
+6. 禁止使用书名号《》包裹标题
+7. 直接输出标题文字，例如："如何选择适合的智能家居方案" 而不是 "## 【标题】如何选择适合的智能家居方案"
+8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词
+9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"
+10. 【标题问句优先（v3.11.x 通用）】标题优先采用"用户原话型"问句，直接复刻目标客户在搜索框里的输入（如"郑州脂肪填充哪家做的好？""XX 怎么样？"），提升 GEO/AI 检索命中率。若与下方"GEO 决策意图"风格规则冲突：对决策类风格（痛点问答/对比评测/教程指南/产品种草）强制问句；对知识/资讯/品牌型风格不强求问句形式，但标题应包含用户可能搜索的关键词。
+11. 【标题基于关键词改写（v3.16.x 强制）】标题必须基于【本篇关键词】所指的蒸馏关键词改写，不能凭空创作、不能把关键词原文照搬当标题。具体怎样改写、要补齐哪些要素、采用哪种结构，一律以下方「标题结构」块为准。
+${buildTitleStructureRule(resolvedStyles, task.city || '', keywordStructure)}`;
+            const titleMessages: { role: 'system' | 'user'; content: string }[] = [
+              { role: 'system', content: titleSystemContent },
+              { role: 'user', content: titlePrompt },
+            ];
+            const titleResult = await chatCompletion({
+              baseUrl: modelConfig.base_url,
+              apiKey,
+              model: modelConfig.model_name,
+              messages: titleMessages,
+              temperature: Number(modelConfig.temperature) || 0.7,
+              // 不传 maxTokens，避免推理模型思考过程占满 token 后被截断
+              timeout: 30000,
+            });
+            title = stripThinking(titleResult.content)
+              .replace(/<[^>]+>/g, '')
+              .replace(/\n+/g, ' ')
+              .trim();
+            title = cleanTitlePrefix(title);
+            if (title.length > 50) {
+              const truncated = title.slice(0, 50);
+              const punctPos = Math.max(
+                truncated.lastIndexOf('。'), truncated.lastIndexOf('？'),
+                truncated.lastIndexOf('！'), truncated.lastIndexOf('，'),
+                truncated.lastIndexOf('；'), truncated.lastIndexOf('、'),
+                truncated.lastIndexOf(','), truncated.lastIndexOf('?'),
+                truncated.lastIndexOf(';'), truncated.lastIndexOf('!'),
+              );
+              title = punctPos > 10 ? truncated.slice(0, punctPos + 1) : truncated;
+            }
+            if (!title || title.length < 5 || isThinkingProcess(title)) {
+              title = '';
+            }
+          } catch (titleErr) {
+            title = '';
+          }
+        }
+        // 若标题未生成（无 title_prompt / 生成失败），正文仍可生成，后续用正文解析标题兜底
+        void originalTitle;
+        if (title) {
+          // 回填标题：把正文模板里的 {title} 占位符替换为真实标题，正文围绕已定标题写
+          articlePrompt = articlePrompt.replace(/\{title\}/g, title);
+          articlePrompt += '\n\n---\n\n' + `## 本文标题（必须与正文完全一致，写作用它定调）
+${title}`;
+        }
+        // v3.17.x：注入正文风格引擎（文章风格引擎），确保标题与正文风格一致
+        articlePrompt += '\n\n---\n\n' + buildBodyStyleRule([resolvedStyles[0] || '']);
+
         // 3. 组装 messages（systemMessage 含 L0+L1+L2+L3+L5）
         // v3.14.x：字数约束由 L6 平台约束层（buildPlatformConstraintPrompt）统一注入，
         //   不再在 system message 里重复强调——平台约束设定的字数上限就是硬约束，AI 一开始就按它创作。
@@ -1461,9 +1555,10 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
           webSearch: !!modelConfig.web_search,
         });
 
-        // 如果指令配置了 title_prompt，单独调用AI生成标题（失败时降级使用正文解析的标题）
-        // v3.8.13：标题生成注入专家选题结果（{topic}/{direction}/{titleHint}），替代关键词列表
-        if (task.title_prompt && task.title_prompt.trim()) {
+        // 标题已在上方 v3.17.x 前置步骤生成并回填进正文（见上方"先生成标题"块）。
+        // 仅在【前置未生成（无 title_prompt / 生成失败）】时这里才作为兜底重新生成——
+        // 用 !title 守卫避免与前置标题重复，保证"先标题后正文"只调一次标题生成。
+        if (!title && task.title_prompt && task.title_prompt.trim()) {
           try {
             let titlePrompt = buildPrompt(directionCtx + task.title_prompt, {
               keyword: keywordsListStr || '',       // 向后兼容
@@ -1985,6 +2080,9 @@ export async function regenerateArticle(articleId: number, userId: number): Prom
   }
 
   const systemContent = writingCtx.systemMessage;
+  // v3.17.x：重新生成同样注入「正文风格引擎」，保证重写内容与标题/正文风格一致
+  const regenStyles = resolveTaskStyles(task);
+  articlePrompt += '\n\n---\n\n' + buildBodyStyleRule([regenStyles[0] || '']);
   const messages: { role: 'system' | 'user'; content: string }[] = systemContent
     ? [
         { role: 'system', content: systemContent },

@@ -159,6 +159,7 @@ import { testModelConnection, chatCompletion } from '../services/content/aiClien
 import { executeWritingTask, regenerateArticle } from '../services/content/articleGenerator';
 import { extractTriplesFromKnowledge } from '../services/content/tripleExtractor';
 import { organizeLocalCompetitors } from '../services/content/geoOrganizer';
+import { getStyleEngines, buildTitleStructureRule, buildBodyStyleRule, parseKeywordStructure } from '../services/content/promptBuilder';
 import { autoCreateWritingFromLatestPeriod } from '../services/aeo/analyzer';
 import { wsBroadcast } from '../wsServer';
 import multer from 'multer';
@@ -525,6 +526,14 @@ ${actionDesc}
 
 // ============ 写作指令 ============
 
+// v3.17.x：标题结构引擎 + 文章风格引擎 字典（供桌面端指令编辑页「内容风格联动高亮展示」）
+//   - title: 九种内容风格 → 标题结构模板 + 示例
+//   - body:  九种内容风格 → 正文骨架/写作手法/取舍
+//   前端按内容风格勾选逐项展示，取消勾选即移除对应块。
+router.get('/instruction-style-engines', (req: Request, res: Response) => {
+  res.json({ code: 200, data: getStyleEngines() });
+});
+
 router.get('/instructions/categories', (req: Request, res: Response) => {
   const categories = [
     { key: '认知层', name: '认知层', description: '用户刚意识到问题存在，搜索泛词了解基础概念' },
@@ -559,8 +568,10 @@ router.get('/instructions', async (req: Request, res: Response) => {
 
 router.post('/instructions', async (req: Request, res: Response) => {
   try {
-    // 支持显式指定 customer_id（管理员模式），否则用当前登录用户
-    const customerId = req.body.customer_id
+    // v3.17.x：customer_id 显式传 0（全部客户视图）时保留 0，不再回退成管理员 userId——
+    //   原逻辑 `req.body.customer_id ? ... : getUserId(req)` 把 0 当 falsy，
+    //   导致「全部客户」视图新建的指令绑到管理员账号，列表筛选（user_id=0 或 NULL）看不到、删不掉。
+    const customerId = req.body.customer_id !== undefined && req.body.customer_id !== null
       ? Number(req.body.customer_id)
       : getUserId(req);
     const { name, category, article_prompt, title_prompt, system_prompt, user_prompt_template, target_word_count, include_faq, include_comparison_table, content_types, random_mode } = req.body;
