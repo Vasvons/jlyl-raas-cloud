@@ -1755,6 +1755,23 @@ export async function migrate() {
       console.warn('[Migrate] 修复 publish 外键 CASCADE 失败（不阻断 migrate）:', e.message);
     }
 
+    // v3.18.x：writing_instruction 删除支持。ai_writing_task.instruction_id 原外键无 ON DELETE 子句（RESTRICT），
+    //   改为 ON DELETE SET NULL：删除指令时任务不再阻断报错，相关任务 instruction_id 置空（运行时回退到第一个指令）。
+    //   作用域：指令库管理「删除自建指令」时避免外键约束错误。
+    try {
+      const wiFk = await client.query(
+        `SELECT pg_get_constraintdef(oid) as def FROM pg_constraint
+         WHERE conname = 'ai_writing_task_instruction_id_fkey' AND contype = 'f'`
+      );
+      if (wiFk.rows.length > 0 && !String(wiFk.rows[0].def).toLowerCase().includes('on delete set null')) {
+        await client.query('ALTER TABLE ai_writing_task DROP CONSTRAINT ai_writing_task_instruction_id_fkey');
+        await client.query('ALTER TABLE ai_writing_task ADD CONSTRAINT ai_writing_task_instruction_id_fkey FOREIGN KEY (instruction_id) REFERENCES writing_instruction(id) ON DELETE SET NULL');
+        console.log('[Migrate] ai_writing_task.instruction_id 外键已改为 ON DELETE SET NULL');
+      }
+    } catch (e: any) {
+      console.warn('[Migrate] 修复 instruction 外键 SET NULL 失败（不阻断 migrate）:', e.message);
+    }
+
     // v2.0.0: ai_writing_task 表新增 AEO 驱动字段
     // aeo_context: AEO综合建议池（周/月报汇总后注入，直接驱动写作方向）
     // auto_publish: 写作完成后自动创建发布任务（覆盖客户级 auto_publish_enabled）
