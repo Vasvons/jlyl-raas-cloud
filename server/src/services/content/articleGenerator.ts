@@ -1,5 +1,5 @@
 import { chatCompletion, extractApiErrorMessage } from './aiClient';
-import { buildPrompt, buildDirectionContext, pickRandomContentType, formatEnterprise, migrateCategoryToStyle, migrateOldTypesToStyle } from './promptBuilder';
+import { buildPrompt, buildDirectionContext, pickRandomContentType, formatEnterprise, migrateCategoryToStyle, migrateOldTypesToStyle, buildTitleStructureRule, parseKeywordStructure } from './promptBuilder';
 import { buildWritingContext, stripHtml, type RecentArticleItem, type PerformanceMemoryItem, type StrategyMemoryItem, type RagSnippet } from './contextBuilder';
 import { retrieveRelevantArticles } from './ragRetrieval';
 import { generateAndSaveEmbedding } from './embeddingService';
@@ -107,30 +107,6 @@ function resolveTaskStyles(task: any): string[] {
     styles = picked ? [picked] : [];
   }
   return styles;
-}
-
-/**
- * 构建标题 GEO 决策意图的风格感知规则（v3.11.x）
- * 决策友好风格（痛点问答/对比评测/教程指南/产品种草）强约束；
- * 其余风格（行业科普/资讯动态/案例故事/信任背书/品牌曝光）弱化、允许带决策落点
- */
-function buildStyleAwareGeoTitleRule(styles: string[], city: string = ''): string {
-  const decisionIntentStyles = ['pain_point_qa', 'comparison_review', 'tutorial', 'product_seeding'];
-  const strong = styles.some(s => decisionIntentStyles.includes(s));
-  // v3.14.x：把客户真实城市值直接注入标题规则，避免 AI 只在示例里看到"郑州/安阳"占位而漏带城市
-  const cityLine = city ? `本客户所在城市是【${city}】（标题必须带上【${city}】这个城市词，不要用"XX""某城市"占位，这对本地区搜索命中至关重要）。` : '';
-  if (strong) {
-    return `10. 【GEO 决策意图（v3.14.x · 强约束）】当前内容风格偏"决策友好型"，标题**必须**写成"用户原话式"选购问句，且固定套用以下格式之一：
-- **${city}{业务}哪家做的好？**　例："${city}脂肪填充哪家做的好？"
-- **${city}{业务}选哪家？**　例："${city}下巴吸脂选哪家？"
-${cityLine}
-三个必备要素缺一不可：
-a. 【城市】必须带上客户所在城市【${city}】，让标题对本地区搜索强相关；
-b. 【业务】必须是用户会搜的具体业务/项目名（如"脂肪填充/下巴吸脂/鼻部整形"）；
-c. 【决策对象】必须是"哪家做的好 / 选哪家 / 哪家好 / 哪家便宜"这类明确选购意图。
-**禁止**单独使用"{业务}怎么选"这种标题——它缺少城市与"哪家"决策对象，语义残缺，用户根本不会这样搜，GEO 无法命中。要点：能写成"${city}XX 选哪家/哪家做的好"就绝不用"怎么选"。`;
-  }
-  return `10. 【GEO 决策意图（v3.14.x）】当前内容风格偏"知识/资讯/品牌"型，标题可侧重原有风格与专业表达。${cityLine}只要标题涉及"选择/怎么选/如何选/哪家好"等决策语义，就必须带上城市【${city}】并落到"选哪家/哪家好/哪家做的好"这类明确决策对象上（如"${city}下巴吸脂选哪家好？"），**禁止**输出缺少城市、仅有"怎么选"的残缺标题。纯资讯/科普类（不涉及选购决策）可保持原有风格，但城市词尽量自然带出增强本地区检索。`;
 }
 
 /**
@@ -1452,7 +1428,9 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
               wordCount: task.target_word_count,
             });
             // v3.16.x：注入【本篇关键词】用于标题基于关键词改写（强制规则11使用）
+            // v3.17.x：同时解析该关键词的字段结构（A/B/C/D/E/F），供标题结构引擎精准改写
             const specificKeyword = kw?.value?.trim() || '';
+            const keywordStructure = parseKeywordStructure(kw?.generation_codes || kw?.generationCodes || null);
             if (specificKeyword) {
               titlePrompt = `【本篇关键词】${specificKeyword}\n\n` + titlePrompt;
             }
@@ -1487,8 +1465,8 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
 8. 标题必须体现专家视角和专业性，不要营销味重的"爆款""必看""震惊"等词
 9. 【标题去品牌（v3.10.7 强制）】标题中禁止出现客户的公司全称、简称、品牌名称（即使上方客户档案中出现了）。品牌露出只放在正文对比表和案例段落，标题聚焦用户痛点和知识性。例如：客户是"川务财税"，标题应为"绵阳代理记账怎么选？避开这几点才能省心又合规"，而不是"川务财税讲清代理记账三大要点"
 10. 【标题问句优先（v3.11.x 通用）】标题优先采用"用户原话型"问句，直接复刻目标客户在搜索框里的输入（如"郑州脂肪填充哪家做的好？""XX 怎么样？"），提升 GEO/AI 检索命中率。若与下方"GEO 决策意图"风格规则冲突：对决策类风格（痛点问答/对比评测/教程指南/产品种草）强制问句；对知识/资讯/品牌型风格不强求问句形式，但标题应包含用户可能搜索的关键词。
-11. 【标题基于关键词改写（v3.16.x 强制）】标题必须直接基于蒸馏关键词库中的关键词改写，不能凭空创作。请优先使用【本篇关键词】中指定的关键词作为标题核心，在其基础上改写为通顺的自然标题。示例：关键词"绵阳GEO优化哪家好"→标题"绵阳GEO优化哪家好？2026年本地服务商对比"；关键词"GEO优化公司推荐"→标题"GEO优化公司推荐：选对服务商才是关键"。如果【本篇关键词】为空，则从上方关键词列表中自行选择。
-${buildStyleAwareGeoTitleRule(resolveTaskStyles(task), task.city || '')}`;
+11. 【标题基于关键词改写（v3.16.x 强制）】标题必须基于【本篇关键词】所指的蒸馏关键词改写，不能凭空创作、不能把关键词原文照搬当标题。具体怎样改写、要补齐哪些要素、采用哪种结构，一律以下方「标题结构」块为准。
+${buildTitleStructureRule(resolveTaskStyles(task), task.city || '', keywordStructure)}`;
             const titleMessages: { role: 'system' | 'user'; content: string }[] = [
               { role: 'system', content: titleSystemContent },
               { role: 'user', content: titlePrompt },

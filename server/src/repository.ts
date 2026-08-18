@@ -7125,8 +7125,9 @@ export async function getRandomImages(userId: number, knowledgeId: number, image
 
 export async function getKeywordsByIds(ids: number[]): Promise<any[]> {
   if (ids.length === 0) return [];
+  // v3.17.x：增加 generation_codes 字段，供标题生成时解析蒸馏关键词的字段结构（A/B/C/D/E/F）
   const result = await query(
-    `SELECT id, value, hxgjc, userid, keyword_type FROM zlgjc WHERE id = ANY($1::int[])`,
+    `SELECT id, value, hxgjc, userid, keyword_type, generation_codes FROM zlgjc WHERE id = ANY($1::int[])`,
     [ids]
   );
   return result.rows;
