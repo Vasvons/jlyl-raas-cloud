@@ -1451,6 +1451,9 @@ FAQ 问题必须是用户真实搜索场景中的疑问，基于客户档案和�
         //   新顺序：先按标题结构引擎生成本篇标题 → 把 {title} 占位符替换为真实标题 →
         //   再把「正文风格引擎（文章风格引擎）」块注入正文 prompt → 最后生成正文。
         const resolvedStyles = resolveArticleStyles(task, articleIdx);
+        // v3.18.x：诊断日志——定位"内容没按风格写"问题。打印本篇解析出的内容风格与指令信息，
+        //   若 styles 为空说明指令未选内容风格或指令未关联，生成会走通用兜底模板。
+        console.log(`[ArticleGen] 任务 ${taskId} 第 ${i + 1} 篇 内容风格=${JSON.stringify(resolvedStyles)} 指令#${task.instruction_id ?? 'null'} 指令content_types=${JSON.stringify(task.content_types)} 指令category=${JSON.stringify(task.instruction_category)}`);
         const originalTitle = title;
         if (task.title_prompt && task.title_prompt.trim()) {
           try {
