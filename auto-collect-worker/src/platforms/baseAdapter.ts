@@ -744,20 +744,21 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       this.inputSelector,
       'textarea',
       'div[contenteditable="true"]',
+      '[contenteditable]:not([contenteditable="false"])',
       'div[data-slate-node="element"]',
       '[data-slate-node="element"]',
       '#chat-input',
       '.chat-input',
       '[class*="chat-input"]',
       '[class*="input-area"] textarea',
-      '[class*="input-area"] [contenteditable="true"]',
+      '[class*="input-area"] [contenteditable]:not([contenteditable="false"])',
       'div[class] textarea',
       '[role="textbox"]',
       '[class*="editor"]',
       '[class*="prompt"] textarea',
-      '[class*="prompt"] [contenteditable="true"]',
+      '[class*="prompt"] [contenteditable]:not([contenteditable="false"])',
       'form textarea',
-      'form [contenteditable="true"]',
+      'form [contenteditable]:not([contenteditable="false"])',
     ];
 
     for (const selector of fallbackSelectors) {
@@ -1253,27 +1254,64 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     await page.evaluate((patterns: string[]) => {
       (window as any).__capturedShareUrl__ = null;
       (window as any).__lastClipboardText__ = null;
+      const record = (text: unknown) => {
+        if (typeof text !== 'string' || !text) return;
+        (window as any).__lastClipboardText__ = text;
+        if (patterns.some(p => text.includes(p))) {
+          (window as any).__capturedShareUrl__ = text;
+        }
+      };
       const origWrite = navigator.clipboard.writeText.bind(navigator.clipboard);
       navigator.clipboard.writeText = (text: string) => {
         // v1.9.12: 始终记录最后一次复制文本（诊断用），匹配模式才标记为分享链接
-        if (typeof text === 'string') (window as any).__lastClipboardText__ = text;
-        if (text && patterns.some(p => text.includes(p))) {
-          (window as any).__capturedShareUrl__ = text;
-        }
+        record(text);
         return origWrite(text);
+      };
+      // v1.9.13: 拦截 navigator.clipboard.write()（ClipboardItem 方式）。
+      //   豆包/Kimi 等平台"复制链接"可能用 write([new ClipboardItem({'text/plain': blob})])，
+      //   旧版只拦 writeText/execCommand 导致"点了复制但剪贴板零捕获"。
+      const origWriteItems = navigator.clipboard.write.bind(navigator.clipboard);
+      navigator.clipboard.write = async (items: any) => {
+        try {
+          if (Array.isArray(items)) {
+            for (const it of items) {
+              if (it && typeof it.getType === 'function') {
+                try {
+                  const blob = await it.getType('text/plain');
+                  if (blob && typeof blob.text === 'function') {
+                    record(await blob.text());
+                  }
+                } catch { /* 无 text/plain 类型 */ }
+              } else if (it && typeof it === 'object') {
+                const data = (it as any)['text/plain'];
+                if (data instanceof Blob) record(await data.text());
+                else if (typeof data === 'string') record(data);
+              }
+            }
+          }
+        } catch { /* 忽略 */ }
+        return origWriteItems(items);
       };
       const origExec = document.execCommand.bind(document);
       document.execCommand = (cmd: string) => {
         if (cmd === 'copy') {
           const selection = window.getSelection();
           const selText = selection ? selection.toString() : '';
-          if (selText) (window as any).__lastClipboardText__ = selText;
-          if (patterns.some(p => selText.includes(p))) {
-            (window as any).__capturedShareUrl__ = selText;
-          }
+          record(selText);
         }
         return origExec(cmd);
       };
+      // v1.9.13: copy 事件兜底——应用可能在 copy 处理器里用 clipboardData.setData() 填充分享链接
+      document.addEventListener('copy', (e: Event) => {
+        try {
+          const cd = (e as ClipboardEvent).clipboardData;
+          if (cd && typeof cd.getData === 'function') {
+            record(cd.getData('text/plain'));
+          }
+        } catch { /* 忽略 */ }
+        const selection = window.getSelection();
+        record(selection ? selection.toString() : '');
+      });
     }, urlPatterns).catch(() => {});
   }
 

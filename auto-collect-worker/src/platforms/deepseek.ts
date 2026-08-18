@@ -69,8 +69,8 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
     }
 
     if (!inputFound) {
-      // 尝试 contenteditable div
-      const editableLocator = page.locator('div[contenteditable="true"]').first();
+      // 尝试 contenteditable div（v1.9.13: 放宽为任意 contenteditable 值，兼容 plaintext-only 等）
+      const editableLocator = page.locator('[contenteditable]:not([contenteditable="false"])').first();
       try {
         await editableLocator.waitFor({ state: 'visible', timeout: 5000 });
         inputFound = true;
@@ -125,8 +125,8 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
             textarea.focus();
             return true;
           }
-          // 尝试 contenteditable
-          const editable = document.querySelector('div[contenteditable="true"]') as HTMLElement | null;
+          // 尝试 contenteditable（任意值，兼容 plaintext-only）
+          const editable = document.querySelector('[contenteditable]:not([contenteditable="false"])') as HTMLElement | null;
           if (editable) {
             editable.textContent = kw;
             editable.dispatchEvent(new InputEvent('input', { bubbles: true, data: kw }));

@@ -35,7 +35,7 @@ async function getState(page: Page): Promise<IndexedElement[]> {
       'button',
       'a[href]',
       'select',
-      '[contenteditable="true"]',
+      '[contenteditable]:not([contenteditable="false"])',
       '[role="button"]',
       '[role="textbox"]',
     ].join(', ');
@@ -154,7 +154,7 @@ export async function smartFindInputElement(
     const selector = await page.evaluate(() => {
       const candidates = [
         'textarea',
-        'div[contenteditable="true"]',
+        'div[contenteditable]:not([contenteditable="false"])',
         '[role="textbox"]',
         'input[type="text"]',
         'input:not([type])',
@@ -358,7 +358,7 @@ export async function smartFindLongestContent(
       }
 
       // [减分] 含表单元素 = 输入区
-      if (el.querySelector('textarea, input[type="text"], [contenteditable="true"]')) {
+      if (el.querySelector('textarea, input[type="text"], [contenteditable]:not([contenteditable="false"])')) {
         score *= 0.3;
       }
 
