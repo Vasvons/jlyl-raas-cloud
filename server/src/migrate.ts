@@ -1779,6 +1779,11 @@ export async function migrate() {
     // trigger_period_report_id: 关联的周/月报ID（追溯触发来源）
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS aeo_context JSONB`);
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS auto_publish BOOLEAN DEFAULT false`);
+    // v3.18.x：ai_writing_task 自持内容风格与随机模式。
+    //   原设计依赖 join 指令取 content_types/random_mode，指令被删或关联不上时风格即丢失、
+    //   生成走通用兜底模板。现创建任务时自动从指令继承并落库，任务自包含、不依赖指令存活。
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS content_types JSONB DEFAULT '[]'`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS random_mode BOOLEAN DEFAULT FALSE`);
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS auto_generated BOOLEAN DEFAULT false`);
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS trigger_period_report_id BIGINT`);
 

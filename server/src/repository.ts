@@ -6511,12 +6511,31 @@ export async function incrementProxyUsedCount(id: number): Promise<void> {
 // ============ 内容中枢：AI写作任务 ============
 
 export async function createWritingTask(data: any): Promise<number> {
+  // v3.18.x：内容风格与随机模式自动继承所选指令（用户创建任务选了指令即可，无需再选风格）。
+  //   原 bug：任务不落库 content_types/random_mode，生成时依赖 join 指令；指令被删或关联不上
+  //   时风格丢失、走通用兜底模板。现在创建任务时从指令读取并写入任务行，任务自包含。
+  let contentTypes = data.content_types;
+  let randomMode = data.random_mode;
+  if (data.instruction_id) {
+    const inst = await query('SELECT content_types, random_mode FROM writing_instruction WHERE id = $1', [data.instruction_id])
+      .catch(() => ({ rows: [] }));
+    const row = inst.rows[0];
+    if (row) {
+      const raw = row.content_types;
+      if (!Array.isArray(contentTypes) || contentTypes.length === 0) {
+        contentTypes = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+      }
+      if (randomMode === undefined || randomMode === null) {
+        randomMode = !!row.random_mode;
+      }
+    }
+  }
   const result = await query(
     `INSERT INTO ai_writing_task (user_id, task_name, keyword_ids, instruction_id, knowledge_id,
             model_config_id, generation_mode, agent_profile_id, status, total_count, started_at,
             cover_image_mode, cover_image_id, illustration_count, target_platforms, auto_generated, aeo_context,
-            focus_cities, focus_keyword_weights)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17)
+            focus_cities, focus_keyword_weights, content_types, random_mode)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
      data.model_config_id || null, data.generation_mode || 'expert', data.agent_profile_id || null,
@@ -6526,7 +6545,9 @@ export async function createWritingTask(data: any): Promise<number> {
      data.auto_generated === true ? true : false,
      data.aeo_context || null,
      Array.isArray(data.focus_cities) ? JSON.stringify(data.focus_cities) : null,
-     data.focus_keyword_weights && typeof data.focus_keyword_weights === 'object' ? JSON.stringify(data.focus_keyword_weights) : null]
+     data.focus_keyword_weights && typeof data.focus_keyword_weights === 'object' ? JSON.stringify(data.focus_keyword_weights) : null,
+     Array.isArray(contentTypes) ? JSON.stringify(contentTypes) : (contentTypes ? JSON.stringify([contentTypes]) : '[]'),
+     !!randomMode]
   );
   return result.rows[0].id;
 }
