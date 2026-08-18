@@ -6252,7 +6252,9 @@ export async function updateWritingInstruction(id: number, data: any): Promise<v
 }
 
 export async function deleteWritingInstruction(id: number): Promise<void> {
-  await query('UPDATE writing_instruction SET is_active = false WHERE id = $1', [id]);
+  // v3.18.x：硬删除。原软删除（is_active=false）会让已删除指令继续留在管理列表
+  //   （管理页默认展示全部含停用），用户看到行还在、看似删不掉。改为彻底删除。
+  await query('DELETE FROM writing_instruction WHERE id = $1', [id]);
 }
 
 // ============ 内容中枢：企业知识库 ============
