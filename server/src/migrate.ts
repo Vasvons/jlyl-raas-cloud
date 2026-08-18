@@ -2037,6 +2037,9 @@ export async function migrate() {
     // ai_writing_task 新增 target_platforms 字段：存储目标平台数组，如 ["dy","xhs","zh"]
     // 旧任务该字段为 NULL，向后兼容（按通用流程生成单篇通用文章）
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS target_platforms JSONB`);
+    // v3.17.x：ai_writing_task 新增重点覆盖城市 + 主词权重（自动写作选题控制）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS focus_cities JSONB`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS focus_keyword_weights JSONB`);
 
     // article 表新增 target_platform 字段：v1.4 预留未启用，v1.8.0 正式启用
     // 必须先 ADD COLUMN 再创建索引，否则索引创建会因列不存在而失败
@@ -3085,7 +3088,8 @@ export async function migrate() {
         cover_image_id INTEGER,
         illustration_count INTEGER DEFAULT -1,
         target_platforms JSONB,
-        focus_keywords JSONB,
+        focus_cities JSONB,
+        focus_keyword_weights JSONB,
         auto_publish BOOLEAN DEFAULT false,
         enable_compliance_review BOOLEAN DEFAULT false,
         compliance_industry VARCHAR(32) DEFAULT '',
@@ -3097,6 +3101,22 @@ export async function migrate() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_awt_user ON auto_writing_task(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_awt_brand ON auto_writing_task(brand_id)`);
+
+    // ============ v3.17.x 自动写作任务：重点覆盖城市 + 主词权重（替换 focus_keywords）============
+    // 用户反馈：自动写作任务里的「重点优化关键词」应去掉，替换为「重点覆盖城市」(focus_cities)
+    //   与「主词权重」(focus_keyword_weights) 两项配置，用于控制专家选题时的地域过滤与主词加权。
+    //   旧 focus_keywords 列物理删除（需先确保已建好新列，避免删列异常时表处于半迁移状态）。
+    await client.query(`ALTER TABLE auto_writing_task ADD COLUMN IF NOT EXISTS focus_cities JSONB`);
+    await client.query(`ALTER TABLE auto_writing_task ADD COLUMN IF NOT EXISTS focus_keyword_weights JSONB`);
+    // 迁移旧 focus_keywords：旧值无法自动映射为「城市+权重」，只能丢弃该维度的历史配置。
+    // 为降低破坏性，删除列前先确认新列已存在；若确有旧列，直接删除（用户需在新任务里重新配置）。
+    const hasFocusKwCol = await client.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name='auto_writing_task' AND column_name='focus_keywords'`
+    );
+    if (hasFocusKwCol.rows.length > 0) {
+      await client.query(`ALTER TABLE auto_writing_task DROP COLUMN focus_keywords`);
+      console.log(`[migrate] v3.17.x 已删除 auto_writing_task.focus_keywords 列，新增 focus_cities/focus_keyword_weights`);
+    }
 
     // ============ v3.13 存量数据迁移（品牌词层级，保证旧数据不丢失）============
     // 品牌词重构后，旧数据（品牌词产生前创建）没有 brand_id，会被品牌维度过滤隐藏。
@@ -3148,11 +3168,12 @@ export async function migrate() {
       WHERE p.brand_id IS NULL
     `).catch((e: any) => console.warn('[Migrate] 归并品牌关键词品牌失败（可忽略）:', e.message));
     // 把旧的 cloud_api_config 单条自动写作配置迁移为一条 auto_writing_task（任务名「历史自动写作配置」）
+    // v3.17.x：focus_keywords 已被删除，迁移时不再携带旧重点关键词，focus_cities/focus_keyword_weights 置 NULL
     await client.query(`
       INSERT INTO auto_writing_task (
         user_id, task_name, instruction_id, knowledge_id, agent_profile_id,
         daily_quota, generation_mode, cover_image_mode, cover_image_id, illustration_count,
-        target_platforms, focus_keywords, auto_publish, enable_compliance_review,
+        target_platforms, auto_publish, enable_compliance_review,
         compliance_industry, compliance_rule_ids, is_active
       )
       SELECT
@@ -3164,7 +3185,6 @@ export async function migrate() {
         NULL,
         COALESCE(c.auto_illustration_count, -1),
         c.auto_target_platforms,
-        c.focus_keywords,
         COALESCE(c.auto_publish_enabled, false),
         COALESCE(c.enable_compliance_review, false),
         COALESCE(c.compliance_industry, ''),

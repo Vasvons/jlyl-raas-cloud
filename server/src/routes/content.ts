@@ -1082,6 +1082,7 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
     const { task_name, keyword_ids, keywords, instruction_id, knowledge_id, model_config_id, generation_mode, agent_profile_id, article_count,
             cover_image_mode, cover_image_id, illustration_count,
             target_platforms, auto_generated, user_id, apply_aeo_suggestions,
+            focus_cities, focus_keyword_weights,
             enable_compliance_review, compliance_industry: complianceIndustryInput } = req.body;
     // v3.12：行业维度合规选用（用 let 声明，auto_generated=true 时可从 AEO 配置回填）
     let compliance_industry = complianceIndustryInput;
@@ -1303,6 +1304,9 @@ router.post('/writing-tasks', async (req: Request, res: Response) => {
       target_platforms: finalTargetPlatforms,
       auto_generated: auto_generated === true,
       aeo_context: aeoContext,
+      // v3.17.x：手动写作任务透传重点覆盖城市 + 主词权重，供文章生成选题阶段消费
+      focus_cities: Array.isArray(focus_cities) ? focus_cities : undefined,
+      focus_keyword_weights: focus_keyword_weights && typeof focus_keyword_weights === 'object' ? focus_keyword_weights : undefined,
     });
     // v3.10：保存合规审查开关
     if (enable_compliance_review !== undefined) {

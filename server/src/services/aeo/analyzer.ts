@@ -3171,19 +3171,11 @@ async function createWritingTaskFromAutoTask(
     return 0;
   }
 
-  // 5. 关键词：优先用任务配置的 focus_keywords；否则按品牌词取该品牌下辖的蒸馏+品牌关键词；否则回退客户全量
+  // 5. 关键词：按品牌词取该品牌下辖的蒸馏+品牌关键词；否则回退客户全量
+  //   v3.17.x：重点覆盖城市/主词权重由专家选题阶段（articleGenerator）统一消费，
+  //   这里 keyword_ids 仅作为「候选词库」传入写作任务，供专家选题做候选池 + 加权抽样。
   let focusKeywordIds: number[] = [];
-  if (Array.isArray(task.focus_keywords) && task.focus_keywords.length > 0) {
-    try {
-      focusKeywordIds = await getKeywordIdsByValues(
-        userIdNum,
-        task.focus_keywords.filter((k: any) => typeof k === 'string' && k.trim())
-      );
-    } catch (e: any) {
-      console.warn(`[AutoTask] 查询任务 focus_keywords ID 失败:`, e.message);
-    }
-  }
-  if (focusKeywordIds.length === 0) {
+  {
     try {
       if (task.brand_id) {
         const brandKeywords = await getCustomerKeywordIdsByBrand(userIdNum, Number(task.brand_id));
@@ -3290,6 +3282,9 @@ async function createWritingTaskFromAutoTask(
     cover_image_id: null,
     illustration_count: illustrationCount,
     target_platforms: targetPlatforms,
+    // v3.17.x：透传重点覆盖城市 + 主词权重，供文章生成选题阶段消费
+    focus_cities: Array.isArray(task.focus_cities) ? task.focus_cities : undefined,
+    focus_keyword_weights: task.focus_keyword_weights && typeof task.focus_keyword_weights === 'object' ? task.focus_keyword_weights : undefined,
   });
 
   // 11. 补充 AEO/合规相关字段

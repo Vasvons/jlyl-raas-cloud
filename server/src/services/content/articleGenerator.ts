@@ -27,6 +27,8 @@ import {
   updateWritingTaskAeoContext,
   getCoreKeywordsByUserId,
   getCoreKeywordsFromZlgjcByUserId,
+  getTitleCandidateKeywords,
+  weightedPickKeyword,
   getActiveManualRulesByIndustry,
   getAllActiveManualRules,
   updateArticleComplianceStatus,
@@ -1033,6 +1035,39 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
   const keywordsListStr = keywordsForPrompt.map((k: any) => k.value).join('、');
   // v3.8.13：核心关键词列表（选题用，前 30 个）
   const coreKeywordsForPlanning = coreKeywordValues.slice(0, 30);
+  // v3.17.x：专家选题候选池（带 generation_codes 的蒸馏关键词，按重点覆盖城市/主词权重过滤加权）
+  //   当任务配置了 focus_cities/focus_keyword_weights 时使用；否则回退 coreKeywordsForPlanning 种子词。
+  //   候选池内容：{ value, hxgjc, generationCodes, weight }，用于：
+  //     1. 每篇按主词权重加权随机抽 kw（决定产出分布）
+  //     2. 专家选题依据 = 候选池的 value + generationCodes（字段感知）
+  let titleCandidatePool: Array<{ value: string; hxgjc: string; generationCodes: string[]; weight: number }> = [];
+  try {
+    titleCandidatePool = await getTitleCandidateKeywords(
+      String(userId),
+      Array.isArray(task.focus_cities) ? task.focus_cities : [],
+      task.focus_keyword_weights && typeof task.focus_keyword_weights === 'object'
+        ? task.focus_keyword_weights
+        : null,
+      task.brand_id ? Number(task.brand_id) : undefined,
+    );
+    if (titleCandidatePool.length > 0) {
+      console.log(`[ArticleGen] 任务 ${taskId} 专家选题候选池: ${titleCandidatePool.length} 个带字段蒸馏关键词（focus_cities=${JSON.stringify(task.focus_cities || [])}，重点主词=${task.focus_keyword_weights ? Object.keys(task.focus_keyword_weights).join(',') : '无'}）`);
+    }
+  } catch (err: any) {
+    console.warn(`[ArticleGen] 任务 ${taskId} 构建专家选题候选池失败（回退种子词）:`, err?.message || err);
+  }
+  // v3.17.x：专家选题候选文本（带字段语义，供 planArticleTopic 选题依据）
+  //   有候选池 → 用「关键词 value（地域:xx｜主词:xx）」可读文本，让专家基于字段感知选择；
+  //   无候选池 → 回退 coreKeywordsForPlanning 种子词。
+  const planningCandidates = titleCandidatePool.length > 0
+    ? titleCandidatePool.map(c => {
+        const region = c.generationCodes.find((x) => x.startsWith('A:')) || '';
+        const main = c.generationCodes.find((x) => x.startsWith('C:')) || '';
+        const regionPart = region ? `｜${region}` : '';
+        const mainPart = main ? `｜${main}` : '';
+        return `${c.value}（${regionPart.replace('｜', '')}${mainPart.replace('｜', '')}）`;
+      })
+    : coreKeywordsForPlanning;
   if (keywords.length > MAX_KEYWORDS_FOR_PROMPT) {
     console.warn(`[ArticleGen] 任务 ${taskId} 关键词库过大：共 ${keywords.length} 个，已截断到前 ${MAX_KEYWORDS_FOR_PROMPT} 个注入 {keyword} 占位符，前 ${MAX_KEYWORDS_FOR_CONTEXT} 个传入 L4 关键词覆盖层`);
   }
@@ -1178,7 +1213,19 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
       //   原流程：const kw = keywords[articleIdx % keywords.length]; → 硬注入"本篇核心主题关键词"
       //   新流程：调 AI 让专家选题 → {topic, direction, titleHint} → 注入 prompt 占位符
       //   降级：选题失败时用关键词轮询兜底
-      const kw = keywords.length > 0 ? keywords[articleIdx % keywords.length] : null;
+      // v3.17.x：若构建了专家选题候选池（带字段、可按重点覆盖城市/主词权重过滤加权），
+      //   本篇 kw 从候选池按主词权重加权随机抽取（权重越高产出越多）；否则回退原轮询逻辑。
+      let kw: any = null;
+      {
+        const poolPick = titleCandidatePool.length > 0 ? weightedPickKeyword(titleCandidatePool) : null;
+        if (poolPick) {
+          // 从原始 keywords 中找到已带完整字段（generation_codes）的条目，保证标题引擎可解析字段结构
+          kw = keywords.find((k: any) => String(k?.value) === poolPick.value) ||
+            { value: poolPick.value, hxgjc: poolPick.hxgjc, generation_codes: poolPick.generationCodes, keyword_type: 0 };
+        } else {
+          kw = keywords.length > 0 ? keywords[articleIdx % keywords.length] : null;
+        }
+      }
 
       if (generationMode === 'coze') {
         // 扣子工作流模式
@@ -1225,7 +1272,7 @@ async function executeWritingTaskInner(taskId: number, userId: number): Promise<
         //   专家围绕核心关键词找出最优主题+方向+标题方向，注入 prompt 占位符
         //   选题失败时降级用关键词轮询（向后兼容）
         const topicPlanResult = await planArticleTopic(
-          task, coreKeywordsForPlanning, writingCtx, articleIdx, recentArticles,
+          task, planningCandidates.slice(0, 30), writingCtx, articleIdx, recentArticles,
           modelConfig, apiKey, taskId, currentPlatform,
         );
         topicPlan = topicPlanResult;

@@ -794,7 +794,7 @@ export async function getAutoWritingTasks(userId: string) {
   const result = await query(
     `SELECT id, user_id, brand_id, task_name, instruction_id, knowledge_id, agent_profile_id,
             daily_quota, generation_mode, cover_image_mode, cover_image_id, illustration_count,
-            target_platforms, focus_keywords, auto_publish, enable_compliance_review,
+            target_platforms, focus_cities, focus_keyword_weights, auto_publish, enable_compliance_review,
             compliance_industry, compliance_rule_ids, is_active, create_time, update_time
      FROM auto_writing_task WHERE user_id = $1 ORDER BY id DESC`,
     [userId]
@@ -802,7 +802,8 @@ export async function getAutoWritingTasks(userId: string) {
   return result.rows.map((r: any) => ({
     ...r,
     target_platforms: parseJsonField(r.target_platforms),
-    focus_keywords: parseJsonField(r.focus_keywords),
+    focus_cities: parseJsonField(r.focus_cities),
+    focus_keyword_weights: parseJsonField(r.focus_keyword_weights),
     compliance_rule_ids: parseJsonField(r.compliance_rule_ids),
   }));
 }
@@ -811,7 +812,7 @@ export async function getAutoWritingTaskById(id: number) {
   const result = await query(
     `SELECT id, user_id, brand_id, task_name, instruction_id, knowledge_id, agent_profile_id,
             daily_quota, generation_mode, cover_image_mode, cover_image_id, illustration_count,
-            target_platforms, focus_keywords, auto_publish, enable_compliance_review,
+            target_platforms, focus_cities, focus_keyword_weights, auto_publish, enable_compliance_review,
             compliance_industry, compliance_rule_ids, is_active, create_time, update_time
      FROM auto_writing_task WHERE id = $1`,
     [id]
@@ -821,7 +822,8 @@ export async function getAutoWritingTaskById(id: number) {
   return {
     ...r,
     target_platforms: parseJsonField(r.target_platforms),
-    focus_keywords: parseJsonField(r.focus_keywords),
+    focus_cities: parseJsonField(r.focus_cities),
+    focus_keyword_weights: parseJsonField(r.focus_keyword_weights),
     compliance_rule_ids: parseJsonField(r.compliance_rule_ids),
   };
 }
@@ -831,9 +833,9 @@ export async function insertAutoWritingTask(data: any): Promise<number> {
     `INSERT INTO auto_writing_task
        (user_id, brand_id, task_name, instruction_id, knowledge_id, agent_profile_id,
         daily_quota, generation_mode, cover_image_mode, cover_image_id, illustration_count,
-        target_platforms, focus_keywords, auto_publish, enable_compliance_review,
+        target_platforms, focus_cities, focus_keyword_weights, auto_publish, enable_compliance_review,
         compliance_industry, compliance_rule_ids, is_active)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
      RETURNING id`,
     [
       Number(data.user_id),
@@ -848,7 +850,8 @@ export async function insertAutoWritingTask(data: any): Promise<number> {
       data.cover_image_id ? Number(data.cover_image_id) : null,
       data.illustration_count === undefined || data.illustration_count === null ? -1 : Number(data.illustration_count),
       Array.isArray(data.target_platforms) ? JSON.stringify(data.target_platforms) : null,
-      Array.isArray(data.focus_keywords) ? JSON.stringify(data.focus_keywords) : null,
+      Array.isArray(data.focus_cities) ? JSON.stringify(data.focus_cities) : null,
+      data.focus_keyword_weights && typeof data.focus_keyword_weights === 'object' ? JSON.stringify(data.focus_keyword_weights) : null,
       data.auto_publish === true,
       data.enable_compliance_review === true,
       data.compliance_industry || '',
@@ -878,7 +881,8 @@ export async function updateAutoWritingTask(id: number, data: any): Promise<void
   if (data.cover_image_id !== undefined) setField('cover_image_id', data.cover_image_id ? Number(data.cover_image_id) : null);
   if (data.illustration_count !== undefined) setField('illustration_count', data.illustration_count === undefined || data.illustration_count === null ? -1 : Number(data.illustration_count));
   if (data.target_platforms !== undefined) setField('target_platforms', Array.isArray(data.target_platforms) ? JSON.stringify(data.target_platforms) : null);
-  if (data.focus_keywords !== undefined) setField('focus_keywords', Array.isArray(data.focus_keywords) ? JSON.stringify(data.focus_keywords) : null);
+  if (data.focus_cities !== undefined) setField('focus_cities', Array.isArray(data.focus_cities) ? JSON.stringify(data.focus_cities) : null);
+  if (data.focus_keyword_weights !== undefined) setField('focus_keyword_weights', data.focus_keyword_weights && typeof data.focus_keyword_weights === 'object' ? JSON.stringify(data.focus_keyword_weights) : null);
   if (data.auto_publish !== undefined) setField('auto_publish', data.auto_publish === true);
   if (data.enable_compliance_review !== undefined) setField('enable_compliance_review', data.enable_compliance_review === true);
   if (data.compliance_industry !== undefined) setField('compliance_industry', data.compliance_industry || '');
@@ -1726,6 +1730,39 @@ function parseWordList(v: any): string[] {
 }
 
 /**
+ * v3.17.x：获取自动写作任务的「重点覆盖城市 + 重点优化主词」候选选项
+ * 来源：kw_config 表 config_type='distillate' 的蒸馏关键词生成器配置
+ *   - A 组词（前缀词/地域词，如 绵阳/成都/国内）→ 城市候选
+ *   - C 组词（主词/核心关键词，如 代理记账/公司注册）→ 主词候选
+ * 若用户未保存配置，从对应默认组取（与 getExcludePrefixOptions 一致）。
+ */
+export async function getAutoWritingFocusOptions(userId: string): Promise<{
+  cities: string[];
+  mainKeywords: string[];
+}> {
+  const configJson = await getKwConfig(userId, 'distillate');
+  let A: string[] = ['市面上', '行业内', '市场', '目前', '国内'];
+  let C: string[] = [];
+  if (configJson) {
+    try {
+      const config = JSON.parse(configJson);
+      const aParsed = parseWordList(config.A);
+      if (aParsed.length > 0) A = aParsed;
+      const cParsed = parseWordList(config.C);
+      if (cParsed.length > 0) C = cParsed;
+    } catch {}
+  }
+  // 若 C 主词配置缺失，从 distillate_keyword 表兜底（用户手动添加的核心关键词）
+  if (C.length === 0) {
+    try {
+      const core = await getCoreKeywordsByUserId(userId);
+      if (core.length > 0) C = core;
+    } catch {}
+  }
+  return { cities: A, mainKeywords: C };
+}
+
+/**
  * 获取蒸馏关键词库可用的前缀屏蔽词选项
  * 来源：kw_config 表中 config_type='distillate' 的 A 组词（编号A，排在组合最前面）
  * 若用户未保存配置，返回默认 A 组词
@@ -1751,7 +1788,6 @@ export async function getExcludePrefixOptions(userId: string): Promise<string[]>
  * 若用户未保存配置，返回默认组合
  */
 export async function getExcludeComboOptions(userId: string): Promise<string[]> {
-  // v2.0.9: 从 zlgjc 表实际关键词反向推导所有存在的组合模式
   // 原实现只返回 kw_config.combos 固定列表（如 ['C+D','A+C+D','B+C+D','C+D+E']），
   // 但 detectKeywordCombo 会动态生成 C+D+E+F 等组合，选项里没有就无法屏蔽
   const comboMap = await buildComboDetectionMap(userId);
@@ -3875,6 +3911,84 @@ export async function getCoreKeywordsFromZlgjcByUserId(userId: string): Promise<
   const keywords = result.rows.map((r: any) => r.hxgjc).filter(Boolean);
   console.log(`[getCoreKeywordsFromZlgjcByUserId] userId=${userId}, 命中${result.rows.length}条记录, 返回${keywords.length}个关键词: [${keywords.slice(0, 10).join('、')}]`);
   return keywords;
+}
+
+/**
+ * v3.17.x：获取专家选题候选池（带 generation_codes 的蒸馏关键词）
+ *
+ * 用途：专家选题（planArticleTopic）的候选关键词，替代原来的「种子词列表」。
+ * 候选词必须是蒸馏关键词（keyword_type=0）且带 generation_codes，以便标题引擎做字段感知改写。
+ *
+ * @param userId 用户 id
+ * @param focusCities 重点覆盖城市数组（留空数组 = 不限制地域，有 A 就用、无 A 也保留）
+ * @param focusKeywordWeights 主词权重映射 {主词: 数字}（留空 = 等权）
+ * @param brandId 可选品牌限定
+ * @returns { value, hxgjc, generation_codes, weight } 已生成加权候选
+ */
+export async function getTitleCandidateKeywords(
+  userId: string,
+  focusCities?: string[],
+  focusKeywordWeights?: Record<string, number> | null,
+  brandId?: number,
+): Promise<Array<{ value: string; hxgjc: string; generationCodes: string[]; weight: number }>> {
+  const brandClause = brandId ? ' AND brand_id = $2' : '';
+  const result = await query(
+    `SELECT id, value, hxgjc, generation_codes, brand_id
+     FROM zlgjc
+     WHERE userid = $1 AND (keyword_type = 0 OR keyword_type IS NULL) AND value != ''
+       AND generation_codes IS NOT NULL AND array_length(generation_codes, 1) > 0
+       ${brandClause}
+     ORDER BY id`,
+    brandId ? [userId, brandId] : [userId]
+  );
+
+  const cities = Array.isArray(focusCities) ? focusCities.map(c => String(c).trim()).filter(Boolean) : [];
+  const weights = focusKeywordWeights && typeof focusKeywordWeights === 'object' ? focusKeywordWeights : {};
+
+  const candidates: Array<{ value: string; hxgjc: string; generationCodes: string[]; weight: number }> = [];
+  for (const r of result.rows) {
+    const codes: string[] = Array.isArray(r.generation_codes) ? r.generation_codes.filter(Boolean) : [];
+    if (codes.length === 0) continue;
+
+    // 1. 城市过滤：解析 A 字段（前缀词/地域词），命中任一焦点城市则保留
+    const regionWords = codes.map((c: string) => {
+      const m = String(c).match(/^A:(.+)$/);
+      return m ? m[1] : '';
+    }).filter(Boolean);
+    if (cities.length > 0) {
+      const hitCity = cities.some(city => regionWords.some(region => region.includes(city) || city.includes(region)));
+      if (!hitCity) continue;
+    }
+
+    // 2. 主词权重：解析 C 字段（主词），未配置权重默认 1
+    let cMain = '';
+    for (const c of codes) {
+      const m = String(c).match(/^C:(.+)$/);
+      if (m) { cMain = m[1]; break; }
+    }
+    const weight = cMain && weights[cMain] != null ? Math.max(1, Number(weights[cMain]) || 1) : 1;
+
+    candidates.push({ value: String(r.value), hxgjc: String(r.hxgjc || ''), generationCodes: codes, weight });
+  }
+
+  return candidates;
+}
+
+/**
+ * v3.17.x：按主词权重从候选池中加权随机抽 1 个关键词
+ * 权重越高，被抽中的概率越大（决定该主词的产出文章越多）。
+ */
+export function weightedPickKeyword<T extends { value: string; weight: number }>(
+  candidates: T[],
+): T | null {
+  if (candidates.length === 0) return null;
+  const total = candidates.reduce((s, c) => s + (c.weight > 0 ? c.weight : 1), 0);
+  let r = Math.random() * total;
+  for (const c of candidates) {
+    r -= (c.weight > 0 ? c.weight : 1);
+    if (r <= 0) return c;
+  }
+  return candidates[candidates.length - 1];
 }
 
 /** 获取用户的蒸馏词库（DISTINCT 去重，防止 zlgjc 表历史重复入库导致关键词翻倍） */
@@ -6398,8 +6512,9 @@ export async function createWritingTask(data: any): Promise<number> {
   const result = await query(
     `INSERT INTO ai_writing_task (user_id, task_name, keyword_ids, instruction_id, knowledge_id,
             model_config_id, generation_mode, agent_profile_id, status, total_count, started_at,
-            cover_image_mode, cover_image_id, illustration_count, target_platforms, auto_generated, aeo_context)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15)
+            cover_image_mode, cover_image_id, illustration_count, target_platforms, auto_generated, aeo_context,
+            focus_cities, focus_keyword_weights)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17)
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
      data.model_config_id || null, data.generation_mode || 'expert', data.agent_profile_id || null,
@@ -6407,7 +6522,9 @@ export async function createWritingTask(data: any): Promise<number> {
      data.cover_image_mode || 'none', data.cover_image_id || null, data.illustration_count || 0,
      data.target_platforms && data.target_platforms.length > 0 ? JSON.stringify(data.target_platforms) : null,
      data.auto_generated === true ? true : false,
-     data.aeo_context || null]
+     data.aeo_context || null,
+     Array.isArray(data.focus_cities) ? JSON.stringify(data.focus_cities) : null,
+     data.focus_keyword_weights && typeof data.focus_keyword_weights === 'object' ? JSON.stringify(data.focus_keyword_weights) : null]
   );
   return result.rows[0].id;
 }
