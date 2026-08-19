@@ -94,6 +94,12 @@ export interface Step {
    *  用途：发布成功检测/获取 URL 步骤——发布成功后页面跳转导致 evaluate 抛此错，属正常导航信号，不应误判失败。
    *  注意：仅当错误消息确实包含导航竞态特征时才放行，不影响 throw_on_value 的真实失败检测 */
   nav_ok_as_success?: boolean;
+  /** v1.9.16 evaluate_edit 类型：当主框架执行返回错误（如未找到按钮）时，自动降级到所有子框架重试。
+   *  用途：头条号确认发布按钮藏在【跨域 iframe】的预览抽屉里，主文档 JS 的 document 查不到（contentDocument 被浏览器安全策略拦截）。
+   *        Playwright 的 frame.evaluate 可在子框架自身上下文执行，findBtn 会搜索该框架的 document，从而定位并点击确认按钮。
+   *  行为：主框架先执行；若失败（返回 __error）且此字段为 true，则并行在全部子框架重试；
+   *        任一子框架返回非错误结果即视为命中（返回 true 继续后续步骤），否则回落到报主框架原始错误。 */
+  run_in_frames?: boolean;
 }
 
 export interface StepExecutionContext {
@@ -1241,7 +1247,28 @@ async function execBranch(step: Step, ctx: StepExecutionContext): Promise<boolea
 
 /**
  * evaluate_edit 类型：在页面上下文执行 JS，返回结果（如获取发布后文章 URL）
+ *
+ * v1.9.16：支持 run_in_frames —— 主框架执行失败时，自动降级到子框架重试，
+ * 解决头条号确认发布按钮藏在【跨域 iframe】预览抽屉导致主文档查不到的问题。
  */
+async function runEvaluateExpr(target: { evaluate: (...args: any[]) => Promise<any> }, expression: string, arg: any): Promise<any> {
+  return target.evaluate(async ({ expr, arg: a }: any) => {
+    try {
+      // 把 arg 赋值给全局变量 ARG，供 expr 内的代码使用
+      (window as any).__jlyl_arg__ = a;
+      const ARG = a;
+      // v1.9.23：用 AsyncFunction 替代 eval，避免模板字符串注入问题
+      //   - eval(`(async (ARG) => { ${expr} })`) 中如果 expr 含反引号/${} 会破坏外层模板
+      //   - new AsyncFunction 直接把 expr 作为函数体，不经过模板字符串
+      const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+      const fn = new AsyncFunction('ARG', expr);
+      return await fn(ARG);
+    } catch (e: any) {
+      return { __error: e.message, __stack: e.stack?.slice(0, 300) };
+    }
+  }, { expr: expression, arg });
+}
+
 async function execEvaluateEdit(step: Step, ctx: StepExecutionContext): Promise<boolean> {
   let expression = resolveValue(step.value, ctx)!;
   const timeout = step.timeout || 5000;
@@ -1259,26 +1286,39 @@ async function execEvaluateEdit(step: Step, ctx: StepExecutionContext): Promise<
   // v1.9.23：诊断日志——输出 expression 的长度和首尾内容，排查 "Unexpected end of input"
   ctx.onLog?.(`[step] evaluate_edit 诊断: exprLen=${expression?.length || 0}, argsLen=${args?.length || 0}, exprHead=${JSON.stringify(expression?.slice(0, 120))}, exprTail=${JSON.stringify(expression?.slice(-80))}`, 'info');
   try {
-    const result = await ctx.page.evaluate(async ({ expr, arg }) => {
-      try {
-        // 把 arg 赋值给全局变量 ARG，供 expr 内的代码使用
-        (window as any).__jlyl_arg__ = arg;
-        const ARG = arg;
-        // v1.9.23：用 AsyncFunction 替代 eval，避免模板字符串注入问题
-        //   - eval(`(async (ARG) => { ${expr} })`) 中如果 expr 含反引号/${} 会破坏外层模板
-        //   - new AsyncFunction 直接把 expr 作为函数体，不经过模板字符串
-        const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-        const fn = new AsyncFunction('ARG', expr);
-        return await fn(ARG);
-      } catch (e: any) {
-        return { __error: e.message, __stack: e.stack?.slice(0, 300) };
-      }
-    }, { expr: expression, arg: args });
+    const result = await runEvaluateExpr(ctx.page, expression, args);
     ctx.lastEvalResult = result;
     // v1.7.4：防御 undefined 结果（JSON.stringify(undefined) 返回 undefined，调用 .slice 会抛错）
     const resultStr = JSON.stringify(result);
     ctx.onLog?.(`[step] evaluate_edit 结果: ${resultStr ? resultStr.slice(0, 200) : String(result)}`, 'info');
     if (result && typeof result === 'object' && result.__error) {
+      // v1.9.16：run_in_frames —— 主框架执行失败（如未找到确认发布按钮），降级到子框架重试
+      //   头条号确认发布按钮藏在【跨域 iframe】预览抽屉里，主文档 document 查不到（contentDocument 被安全策略拦截），
+      //   但 Playwright 的 frame.evaluate 可在子框架上下文执行，findBtn 会搜索该框架 document 成功定位/点击
+      if (step.run_in_frames) {
+        const frames = (ctx.page as any).frames ? ctx.page.frames().filter((f: any) => f !== ctx.page.mainFrame()) : [];
+        if (frames.length) {
+          ctx.onLog?.(`[step] run_in_frames: 主框架未命中（${String(result.__error).slice(0, 120)}），尝试 ${frames.length} 个子框架`, 'info');
+          const FRAME_TIMEOUT = 15000; // 单框架最多等 15s，避免无关 iframe 的空转拖慢
+          const attempts = frames.map((f: any) =>
+            Promise.race([
+              runEvaluateExpr(f, expression, args).catch((e: any) => ({ __error: 'frame:' + String(e?.message || e).slice(0, 200) })),
+              new Promise<any>((res) => setTimeout(() => res({ __error: 'frame_timeout' }), FRAME_TIMEOUT)),
+            ])
+          );
+          const settled = await Promise.all(attempts);
+          const hit = settled.find((r: any) => r && typeof r === 'object' && !r.__error);
+          if (hit) {
+            ctx.onLog?.(`[step] run_in_frames: 子框架命中 result=${JSON.stringify(hit).slice(0, 200)}`, 'info');
+            ctx.lastEvalResult = hit;
+            if (step.throw_on_value && typeof hit === 'string' && hit === step.throw_on_value) {
+              if (step.is_try) return true;
+              throw new Error(`发布未生效：检测到失败信号 "${hit}"`);
+            }
+            return true;
+          }
+        }
+      }
       if (step.is_try) return true;
       throw new Error(`evaluate_edit 执行错误: ${result.__error}`);
     }
