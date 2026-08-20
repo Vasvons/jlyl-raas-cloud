@@ -97,13 +97,22 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
     }
 
     // v1.9.10: 元宝分享弹窗勾选消息后需先点击「生成链接/创建链接」才会出现可复制的分享链接
+    // v1.9.14: 补充「生成分享/创建分享」等文案变体（实测弹窗停留在"点击全选以下消息"时
+    //   copy 选择器全落空，需先激活"生成链接"；多个变体避免平台改版文案漏匹配）
     for (const genSel of [
       'button:has-text("生成链接")',
       'button:has-text("创建链接")',
       'button:has-text("生成分享链接")',
+      'button:has-text("创建分享链接")',
+      'button:has-text("生成分享")',
+      'button:has-text("创建分享")',
       ':text-is("生成链接")',
       ':text-is("创建链接")',
+      ':text-is("生成分享链接")',
+      ':text-is("创建分享")',
       'button:has-text("下一步")',
+      '[class*="generate"] button',
+      '[class*="create-link"]',
     ]) {
       try {
         const genBtn = await page.$(genSel);
