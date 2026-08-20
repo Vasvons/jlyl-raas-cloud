@@ -214,6 +214,34 @@ export class QianwenAdapter extends BasePlatformAdapter {
       }
     }
 
+// v3.19.x: 增强分享区域 DOM 转储——全选后若仍未拿到链接，dump 整个分享相关区域的
+    //   完整结构（含 share/btn-group/qs-bottom-icon/dialog 的所有元素），供实地定位
+    //   千问真实分享流程（多选模式底部只有"取消/删除"，分享按钮可能在别处）。
+    try {
+      const shareDomDump = await page.evaluate(() => {
+        const results: string[] = [];
+        const els = document.querySelectorAll(
+          '[class*="share"], [class*="btn-group"], [class*="qs-bottom"], [class*="dialog"], [class*="modal"], [class*="popup"], [class*="confirm"], [role="dialog"]'
+        );
+        for (let i = 0; i < els.length && results.length < 30; i++) {
+          const el = els[i] as HTMLElement;
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) continue;
+          const cls = (el.className || '').toString().slice(0, 50);
+          const txt = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 20);
+          const btnChildren = Array.from(el.querySelectorAll('button, [role="button"], [class*="btn"]')).map(b => {
+            const br = (b as HTMLElement).getBoundingClientRect();
+            return `<${b.tagName.toLowerCase()} class="${((b as HTMLElement).className || '').toString().slice(0, 40)}" aria="${b.getAttribute('aria-label') || ''}" text="${((b as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim().slice(0, 10)}" pos=(${Math.round(br.left)},${Math.round(br.top)},${Math.round(br.width)}x${Math.round(br.height)})`;
+          }).slice(0, 8);
+          results.push(`[${el.tagName.toLowerCase()}.${cls}] txt="${txt}" pos=(${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}x${Math.round(r.height)}) 子按钮: ${btnChildren.join(' | ') || '无'}`);
+        }
+        return results;
+      }).catch(() => [] as string[]);
+      if (shareDomDump.length > 0) {
+        logger.warn(`[通义千问] 分享区域DOM转储(${shareDomDump.length}个容器):\n${shareDomDump.join('\n')}`);
+      }
+    } catch { /* 忽略 */ }
+
     // 步骤5: 从拦截到的剪贴板内容提取 URL
     const capturedUrl = await this.getCapturedShareUrl(page, '/share/');
     if (capturedUrl) {

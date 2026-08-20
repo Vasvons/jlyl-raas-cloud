@@ -142,6 +142,44 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       }
     } catch { /* 忽略 */ }
 
+    // v3.19.x: 增强分享弹窗 DOM 转储——探针未命中/点击未捕获时，dump 分享弹窗内所有
+    //   元素（含"点击全选以下消息"提示、checkbox、按钮）的完整结构，供实地定位元宝真实全选/复制链接入口。
+    try {
+      const shareLayerDump = await page.evaluate(() => {
+        const results: string[] = [];
+        // 找所有可能包含"点击全选以下消息"/"全选"的弹层容器
+        const layers = document.querySelectorAll(
+          '[class*="modal"], [class*="dialog"], [class*="popup"], [class*="popover"], [class*="share"], [class*="select"], [class*="check"], [class*="mask"], [class*="overlay"]'
+        );
+        for (let i = 0; i < layers.length; i++) {
+          const layer = layers[i] as HTMLElement;
+          const lr = layer.getBoundingClientRect();
+          if (lr.width <= 0 || lr.height <= 0) continue;
+          const layerText = (layer.innerText || '').replace(/\s+/g, ' ').trim();
+          if (!/全选|选择|复制|链接|生成/.test(layerText) && !/share|select/i.test((layer.className || '').toString())) continue;
+          const innerEls = layer.querySelectorAll('button, [role="button"], label, [class*="checkbox"], [class*="check"], [class*="select"], input[type="checkbox"], div, span');
+          const items: string[] = [];
+          for (let j = 0; j < innerEls.length && items.length < 20; j++) {
+            const el = innerEls[j] as HTMLElement;
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0 || r.width > 600 || r.height > 100) continue;
+            const s = window.getComputedStyle(el);
+            if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') continue;
+            const cls = (el.className || '').toString().slice(0, 45);
+            const txt = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 16);
+            const aria = el.getAttribute('aria-label') || '';
+            const title = el.getAttribute('title') || '';
+            items.push(`<${el.tagName.toLowerCase()} class="${cls}" aria="${aria.slice(0, 16)}" title="${title.slice(0, 16)}" text="${txt}" pos=(${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}x${Math.round(r.height)})`);
+          }
+          results.push(`[弹层${i} class="${(layer.className || '').toString().slice(0, 50)}" pos=(${Math.round(lr.left)},${Math.round(lr.top)},${Math.round(lr.width)}x${Math.round(lr.height)})]\n  ${items.join('\n  ')}`);
+        }
+        return results;
+      }).catch(() => [] as string[]);
+      if (shareLayerDump.length > 0) {
+        logger.warn(`[腾讯元宝] 分享弹窗DOM转储(${shareLayerDump.length}个弹层):\n${shareLayerDump.join('\n')}`);
+      }
+    } catch { /* 忽略 */ }
+
     // v1.9.10: 元宝分享弹窗勾选消息后需先点击「生成链接/创建链接」才会出现可复制的分享链接
     // v1.9.14: 补充「生成分享/创建分享」等文案变体（实测弹窗停留在"点击全选以下消息"时
     //   copy 选择器全落空，需先激活"生成链接"；多个变体避免平台改版文案漏匹配）
