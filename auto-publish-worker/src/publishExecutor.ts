@@ -937,6 +937,8 @@ function classifyError(errorMsg: string): { status: PublishResult['status']; err
     errorMsg.includes('上限') || errorMsg.includes('限额') ||
     errorMsg.includes('限流') || errorMsg.includes('配额') ||
     errorMsg.includes('太频繁') || errorMsg.includes('过于频繁') ||
+    errorMsg.includes('额度已用尽') || errorMsg.includes('发文额度') ||
+    errorMsg.includes('额度耗尽') || errorMsg.includes('已达今日上限') ||
     lower.includes('limit') || lower.includes('quota') ||
     lower.includes('too many requests') || lower.includes('rate limited')
   ) {

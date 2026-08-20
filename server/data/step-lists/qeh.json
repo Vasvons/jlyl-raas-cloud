@@ -1,7 +1,7 @@
 {
   "platform": "qeh",
-  "version": "1.9.12",
-  "description": "企鹅号图文发布流程（v1.9.9：自主声明设置与发布按钮全部改用 定位标记+Playwright真实点击——isTrusted=false 的 element.click() 无法触发 OmUI onClick，导致声明未生效、发布按钮30秒后仍可见）",
+  "version": "1.9.13",
+  "description": "企鹅号图文发布流程（v1.9.13：点击发布前先检测当日发文额度——额度已用尽时发布按钮 disabled，点击无反应被误报为 timeout_30s_btn_still_visible；现提前识别「今日发文额度已用尽」并抛明确错误，让失败原因归类为额度用尽而非未知超时）；v1.9.9：自主声明设置与发布按钮全部改用 定位标记+Playwright真实点击——isTrusted=false 的 element.click() 无法触发 OmUI onClick，导致声明未生效、发布按钮30秒后仍可见）",
   "is_placeholder": false,
   "login_check_url": "https://om.qq.com/main/creation/article",
   "login_check_selector": "span.omui-inputautogrowing__inner[contenteditable=\"true\"] | .ProseMirror.ExEditor-basic",
@@ -143,6 +143,12 @@
           "descript": "等待声明确认生效"
         }
       ]
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var bodyText = document.body.innerText || ''; var quotaHits = ['额度已用尽', '发文额度', '今日已成', '发布次数已用完', '已达今日上限', '今日已达上限']; for (var qi = 0; qi < quotaHits.length; qi++) { if (bodyText.indexOf(quotaHits[qi]) >= 0) { var snippet = bodyText.indexOf(quotaHits[qi]) >= 0 ? bodyText.slice(Math.max(0, bodyText.indexOf(quotaHits[qi]) - 20), bodyText.indexOf(quotaHits[qi]) + 30).replace(/\\s+/g, ' ') : ''; throw new Error('当日发文额度已用尽（企鹅号今日发文配额已耗尽，发布按钮被禁用；请明天再试或更换账号）：命中词「' + quotaHits[qi] + '」页面片段「' + snippet + '」'); } } var pubBtns = Array.from(document.querySelectorAll('button')).filter(function(b) { return (b.innerText || '').trim() === '发布'; }); var pub = pubBtns.find(function(b) { return b.offsetParent !== null; }); if (pub && pub.disabled === true) { throw new Error('当日发文额度已用尽（企鹅号「发布」按钮处于禁用状态，疑似今日发文配额已耗尽；请明天再试或更换账号）'); } return 'quota_ok';",
+      "descript": "v1.9.13 点击发布前检测当日发文额度：页面含「额度已用尽/发文额度/已达今日上限」文案或「发布」按钮 disabled 时，抛明确错误归类为额度用尽，避免误报 timeout_30s_btn_still_visible",
+      "timeout": 5000
     },
     {
       "type": "evaluate_edit",
