@@ -83,6 +83,12 @@ export class QianwenAdapter extends BasePlatformAdapter {
     let shareBtnClicked = false;
     const barResult = await this.hoverAndClickShareIcon(page, {
       answerSelectors: [
+        // v3.19.x 实地探查（2026-08-21）：千问回答容器为 .chat-round/.last-message-item，
+        //   回答区 message-select-wrapper-answer，问题气泡底部 hover 后出现 qs-bottom-icon 图标栏
+        '.chat-round',
+        '.last-message-item',
+        '[class*="message-select-wrapper-answer"]',
+        '[class*="chat-answers-card-wrap"]',
         '.answer-area', '.markdown-body', '[class*="answer"]', '[class*="response"]',
         '[class*="message-content"]', 'main', '[class*="chat"]', '[class*="conversation"]',
       ],

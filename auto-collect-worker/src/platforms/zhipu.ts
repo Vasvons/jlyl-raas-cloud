@@ -140,7 +140,12 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     }
 
     // 步骤2: 健壮地查找并点击"复制对话链接"按钮
+    // v3.19.x 实地探查（2026-08-21）：智谱分享按钮在回答气泡底部操作栏
+    //   .interact-operate 内的 div.share（hover 回答后显示），旧 share-icon-box 已隐藏(0x0)。
     let clickedBtn = await this.findAndClickShareButton(page, [
+      'div.share',
+      'i.shim.share',
+      '[class*="interact-operate"] [class*="share"]',
       'button:has-text("复制对话链接")',
       'button:has-text("复制链接")',
       '[class*="share"]:has-text("复制")',
@@ -160,7 +165,15 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     // 智谱消息操作栏（含分享图标）hover 回答区域才显示
     if (!clickedBtn) {
       logger.warn('[智谱AI] 顶部未找到分享按钮，尝试 hover 消息区域后重试...');
-      const answerSelectors = ['.markdown-body', '[class*="message-content"]', '[class*="answer"]', '[class*="assistant"]'];
+      const answerSelectors = [
+        '.answer-common-card',
+        '[class*="answer-common"]',
+        '[class*="interact-container"]',
+        '.markdown-body',
+        '[class*="message-content"]',
+        '[class*="answer"]',
+        '[class*="assistant"]',
+      ];
       let hoveredAny = false;
       for (const sel of answerSelectors) {
         if (hoveredAny) break;

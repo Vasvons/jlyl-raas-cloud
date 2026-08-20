@@ -28,7 +28,14 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
     // 步骤2: hover 在 AI 回答区域上，触发操作栏显示
     // v1.9 修复：hover 成功一个元素后立即停止——之前会继续 hover 兜底选择器（main 等），
     // 鼠标被移走导致已显示的操作栏消失，分享按钮永远找不到
+    // v3.19.x 实地探查（2026-08-21）：元宝回答气泡 class 为 .agent-chat__bubble--agent，
+    //   分享按钮在回答气泡右上角操作栏 .agent-chat__toolbar__right 内（aria-label=分享），
+    //   旧 .agent-chat__msg__content 等选择器已过时，hover 到问题气泡（.agent-chat__bubble--human）
+    //   或回答气泡都能让对应操作栏出现；分享面板由回答气泡的分享按钮触发。
     const answerSelectors = [
+      '.agent-chat__bubble--agent',
+      '.agent-chat__bubble--human',
+      '.agent-chat__conv--human',
       '.agent-chat__msg__content',
       '[class*="chat-content"]',
       '.markdown-body',
@@ -95,6 +102,35 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       console.log(`[腾讯元宝] 二次点击菜单后捕获分享链接: ${earlyCaptured}`);
       return earlyCaptured;
     }
+
+    // v3.19.x 实地探查（2026-08-21）：元宝分享面板为多选模式，结构：
+    //   .agent-chat__share-bar-container → .agent-chat__share-bar__content__center 内
+    //   4 个 .agent-chat__share-bar__item：复制链接 / 生成图片 / 转为文档 / 小程序码。
+    //   "全选" checkbox 默认已勾选（消息前 checkbox 默认 checked），直接点"复制链接"即可
+    //   生成 /s/ 链接并复制到剪贴板（真实 DOM 已确认）。
+    //   优先用精确选择器点击"复制链接"，再兜底探针逐个点击。
+    try {
+      const copyBtnSelectors = [
+        'div.agent-chat__share-bar__item:has-text("复制链接")',
+        '[class*="share-bar"] [class*="item"]:has-text("复制链接")',
+        '.agent-chat__share-bar__content__center [class*="item"]:has-text("复制链接")',
+      ];
+      for (const sel of copyBtnSelectors) {
+        const btn = await page.$(sel);
+        if (!btn) continue;
+        const visible = await btn.isVisible().catch(() => false);
+        if (!visible) continue;
+        await btn.click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(1500);
+        const cap = await this.getCapturedShareUrl(page, '/s/');
+        if (cap) {
+          logger.info(`[腾讯元宝] 点击分享面板"复制链接"项捕获: ${cap} (sel=${sel})`);
+          return cap;
+        }
+        const dlg = await this.extractShareUrlFromDialog(page, '/s/');
+        if (dlg) return dlg;
+      }
+    } catch { /* 忽略 */ }
 
     // v3.19.x: 元宝点击分享后弹「点击全选以下消息」多选模式，旧全选/复制链接选择器匹配不到。
     //   触发元素常是纯 div 或图标按钮、aria/label 为空。加专属探针+逐个点击：
