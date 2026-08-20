@@ -4085,6 +4085,9 @@ export async function acquirePlatformAccount(platform: string): Promise<{
   id: number;
   storageState: string;
   proxy?: { endpoint: string; username?: string; password?: string } | null;
+  // v1.9.14：借不到时返回诊断原因（无账号 / 被标记 offline-banned / 状态非 active / 过期 / 超日限额）
+  reason?: string;
+  diagnosis?: string;
 } | null> {
   // 只借用 normal 状态、status=active、未过期、未超日限额的账号（最久未使用优先）
   // v1.3+：LEFT JOIN proxy_pool 返回账号绑定的代理信息（解密密码）
@@ -4109,7 +4112,34 @@ export async function acquirePlatformAccount(platform: string): Promise<{
      RETURNING id, storage_state, proxy_id`,
     [platform]
   );
-  if (result.rows.length === 0) return null;
+  if (result.rows.length === 0) {
+    // v1.9.14：借不到账号时回查原因，便于巡检日志直接定位（无账号 / 状态 / 过期 / 超限额）
+    try {
+      const diag = await query(
+        `SELECT COUNT(*)::int AS total,
+                COUNT(*) FILTER (WHERE health_status = 'normal')::int AS normal_health,
+                COUNT(*) FILTER (WHERE status = 'active')::int AS active_status,
+                COUNT(*) FILTER (WHERE expires_at IS NULL OR expires_at > NOW())::int AS not_expired,
+                COUNT(*) FILTER (WHERE last_query_count < daily_limit)::int AS within_limit,
+                SUM(CASE WHEN health_status != 'normal' THEN 1 ELSE 0 END)::int AS not_normal_health
+         FROM platform_auth WHERE platform = $1`,
+        [platform]
+      );
+      const d = diag.rows[0] || {};
+      const parts: string[] = [];
+      if (!d.total) parts.push('该平台下没有任何账号记录');
+      else {
+        if (d.not_normal_health) parts.push(`${d.not_normal_health} 个账号被标记非 normal（banned/offline）`);
+        if (d.total - d.active_status) parts.push(`${d.total - d.active_status} 个账号 status 非 active`);
+        if (d.total - d.not_expired) parts.push(`${d.total - d.not_expired} 个账号已过期`);
+        if (d.total - d.within_limit) parts.push(`${d.total - d.within_limit} 个账号已达日限额`);
+      }
+      const diagnosis = parts.length ? parts.join('；') : '账号存在但全部条件不满足（原因未知，建议检查 storageState 是否为空）';
+      return { id: 0, storageState: '', reason: `平台 ${platform} 无可用账号`, diagnosis };
+    } catch (e: any) {
+      return { id: 0, storageState: '', reason: `平台 ${platform} 无可用账号`, diagnosis: `诊断查询失败: ${e.message}` };
+    }
+  }
 
   const row = result.rows[0];
   const account: { id: number; storageState: string; proxy?: any } = {

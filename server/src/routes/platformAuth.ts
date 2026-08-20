@@ -44,8 +44,8 @@ router.post('/acquire', async (req, res) => {
       return res.status(400).json({ code: 400, message: '缺少 platform 参数' });
     }
     const account = await acquirePlatformAccount(platform);
-    if (!account) {
-      return res.json({ code: 404, message: `平台 ${platform} 无可用账号` });
+    if (!account || !account.id) {
+      return res.json({ code: 404, message: `平台 ${platform} 无可用账号`, reason: account?.reason, diagnosis: account?.diagnosis });
     }
     res.json({ code: 200, data: account });
   } catch (e: any) {

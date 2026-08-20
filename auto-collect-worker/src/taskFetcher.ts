@@ -83,13 +83,17 @@ async function acquireAccount(platform: string): Promise<{
 } | null> {
   try {
     const resp = await axios.post(`${SERVER_URL}/platform-auth/acquire`, { platform }, { timeout: 10000 });
-    if (resp.data?.code === 200 && resp.data?.data) {
+    if (resp.data?.code === 200 && resp.data?.data && resp.data.data.id) {
       return {
         authId: resp.data.data.id,
         storageState: resp.data.data.storageState,
         // 代理信息（v1.3+：账号绑定的代理，由云端从 proxy_pool 解密返回）
         proxy: resp.data.data.proxy || null,
       };
+    }
+    // v1.9.14：借不到账号时打印诊断（无账号 / 被标记 offline-banned / 状态非 active / 过期 / 超日限额）
+    if (resp.data?.diagnosis) {
+      logger.warn(`借不到账号[${platform}]: ${resp.data.reason || ''} | 诊断: ${resp.data.diagnosis}`);
     }
     return null;
   } catch (e: any) {
