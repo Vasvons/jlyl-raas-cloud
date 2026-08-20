@@ -879,6 +879,36 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         await page.keyboard.type(keyword, { delay: 50 });
       }
     }
+    // v3.19.x: 输入后校验——contenteditable/React 受控组件上 humanType 可能静默失败
+    // （键盘逐字符输入不触发输入的 onChange），导致输入框实际为空、发送按钮 disabled、
+    // 查询未真正发送（纳米日志"发送按钮 cursor-not-allowed"、内容 139 字符即此根因）。
+    // 校验输入框是否真的含关键词，空/不含则用 evaluate 直接注入（兼容 React 受控组件）。
+    try {
+      const typedValue = await this.readInputValue(page, activeSelector);
+      if (!typedValue || !typedValue.includes(keyword.trim())) {
+        logger.warn(`[${this.platformName}] humanType 后输入框未写入关键词（读值="${typedValue.slice(0, 30)}"），用 evaluate 直接注入`);
+        await page.evaluate(({ sel, kw }: { sel: string; kw: string }) => {
+          const el = document.querySelector(sel) as HTMLElement | null;
+          if (!el) return;
+          const isTextarea = el.tagName === 'TEXTAREA';
+          const isInput = el.tagName === 'INPUT';
+          if (isTextarea || isInput) {
+            // React 受控组件需用原生 value setter + input 事件
+            const proto = isTextarea ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+            if (setter) setter.call(el, kw);
+            else (el as any).value = kw;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+          } else {
+            // contenteditable：设置 textContent + input 事件
+            el.textContent = kw;
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, data: kw }));
+          }
+          (el as HTMLElement).focus();
+        }, { sel: activeSelector, kw: keyword });
+        await page.waitForTimeout(500);
+      }
+    } catch { /* 校验失败不阻塞主流程 */ }
     // 提交前随机停顿（模拟人类思考）
     await humanDelay('medium');
 

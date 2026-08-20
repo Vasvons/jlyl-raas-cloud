@@ -9,7 +9,11 @@ export class QianwenAdapter extends BasePlatformAdapter {
   chatUrl = 'https://www.qianwen.com/chat';
   supportsShare = true;
   protected inputSelector = 'textarea, [contenteditable="true"], #chat-input, [class*="chat-input"] textarea, [class*="input-area"] textarea';
-  protected responseSelector = '.answer-area, .markdown-body, [class*="answer"], [class*="response"], [class*="message-content"]';
+  // v3.19.x: 千问新版回答容器是 .chat-round/.last-message-item（日志 z-index 转储确认），
+  // 旧 .answer-area/.markdown-body 已失效，落空后走 smartFindLongestContent 抓到侧边栏
+  // （命中"新对话/云盘"等框架标记被污染拦截 → "内容提取异常 命中5个标记"）。
+  // 精确指向回答容器，避免抓到侧边栏。
+  protected responseSelector = '.chat-round, .last-message-item, [class*="chat-round"], [class*="last-message"], .answer-area, .markdown-body, [class*="message-content"]';
   protected stopButtonSelector = '[class*="stop"], .stop-btn, [class*="Stop"]';
   protected loginUrlPattern = 'login';
   // v1.9.1 实地诊断（2026-08-16）：登录态失效后 /chat URL 不变，渲染游客首页

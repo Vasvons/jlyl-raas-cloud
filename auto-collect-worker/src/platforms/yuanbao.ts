@@ -96,6 +96,52 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       return earlyCaptured;
     }
 
+    // v3.19.x: 元宝点击分享后弹「点击全选以下消息」多选模式，旧全选/复制链接选择器匹配不到。
+    //   触发元素常是纯 div 或图标按钮、aria/label 为空。加专属探针+逐个点击：
+    //   扫描页面可见元素，优先点「全选」，再点「复制链接/生成链接」，逐个验证剪贴板。
+    try {
+      const shareLayerBtns = await page.evaluate(() => {
+        const els = document.querySelectorAll('button, a, [role="button"], label, [class*="checkbox"], [class*="check"], [class*="select"], div, span');
+        const results: Array<{ tag: string; cls: string; aria: string; text: string; x: number; y: number; kind: string }> = [];
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i] as HTMLElement;
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0 || r.width > 500 || r.height > 80) continue;
+          const s = window.getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') continue;
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+          const aria = el.getAttribute('aria-label') || '';
+          const title = el.getAttribute('title') || '';
+          const combined = text + ' ' + aria + ' ' + title;
+          let kind = '';
+          if (/全选|选择全部|选择以下消息/.test(combined)) kind = 'select-all';
+          else if (/复制链接|生成链接|创建链接|复制分享链接/.test(combined)) kind = 'copy';
+          else if (/^复制$|生成分享|创建分享/.test(text)) kind = 'copy';
+          if (!kind) continue;
+          const cls = (el.className || '').toString();
+          results.push({ tag: el.tagName.toLowerCase(), cls: cls.slice(0, 40), aria: aria.slice(0, 20), text: text.slice(0, 20), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), kind });
+        }
+        return results;
+      }).catch(() => [] as any[]);
+      if (shareLayerBtns.length > 0) {
+        logger.warn(`[腾讯元宝] 分享弹窗按钮探针(${shareLayerBtns.length}个): ${shareLayerBtns.map(b => `<${b.tag} class="${b.cls}" aria="${b.aria}" text="${b.text}" kind=${b.kind} pos=(${b.x},${b.y})`).join(' | ')}`);
+        const selectAlls = shareLayerBtns.filter(b => b.kind === 'select-all');
+        const copies = shareLayerBtns.filter(b => b.kind === 'copy');
+        const ordered = [...selectAlls, ...copies, ...shareLayerBtns.filter(b => !selectAlls.includes(b) && !copies.includes(b))];
+        for (const b of ordered.slice(0, 8)) {
+          await page.mouse.click(b.x, b.y).catch(() => {});
+          await page.waitForTimeout(1200);
+          const cap = await this.getCapturedShareUrl(page, '/s/');
+          if (cap) {
+            logger.info(`[腾讯元宝] 分享弹窗按钮点击捕获: ${cap} (btn=${b.text || b.aria || b.cls})`);
+            return cap;
+          }
+          const dlg = await this.extractShareUrlFromDialog(page, '/s/');
+          if (dlg) return dlg;
+        }
+      }
+    } catch { /* 忽略 */ }
+
     // v1.9.10: 元宝分享弹窗勾选消息后需先点击「生成链接/创建链接」才会出现可复制的分享链接
     // v1.9.14: 补充「生成分享/创建分享」等文案变体（实测弹窗停留在"点击全选以下消息"时
     //   copy 选择器全落空，需先激活"生成链接"；多个变体避免平台改版文案漏匹配）
