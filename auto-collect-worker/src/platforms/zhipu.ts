@@ -88,6 +88,53 @@ export class ZhipuAdapter extends BasePlatformAdapter {
     // v1.9: 只匹配 /share/ 分享路径（之前还匹配 'http'，任何 URL 复制都会被误捕获）
     await this.injectClipboardInterceptor(page, ['/share/']);
 
+    // 步骤1.5 (v2.1.x): 检测分享按钮 disabled 状态
+    // 实测：智谱分享按钮（share-icon-box）在"搜索中/回答未完成/会话模式不支持分享"时带 disabled，
+    // 点击无效。这里先探针检测并打印状态；若禁用，尝试 hover 消息激活后重测，仍禁用则明确跳过，
+    // 避免白白走完整个分享流程却拿不到链接。
+    const shareDisabled = await page.evaluate(() => {
+      const results: string[] = [];
+      const els = document.querySelectorAll('[class*="share-icon-box"], [class*="agent-share"], [class*="share-icon"]');
+      for (let i = 0; i < els.length; i++) {
+        const el = els[i] as HTMLElement;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        const cls = (el.className || '').toString();
+        const disabled = el.hasAttribute('disabled') || /disabled|disable/.test(cls) || (el.getAttribute('aria-disabled') === 'true');
+        results.push(`<${el.tagName.toLowerCase()} class="${cls.slice(0, 40)}" disabled=${disabled} pos=(${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}x${Math.round(r.height)})`);
+      }
+      return results;
+    }).catch(() => [] as string[]);
+    if (shareDisabled.length > 0) {
+      logger.warn(`[智谱AI] 分享按钮 disabled 状态探针: ${shareDisabled.join(' | ')}`);
+    } else {
+      logger.warn('[智谱AI] 未找到分享按钮元素（可能已改版）');
+    }
+
+    // 若分享图标带 disabled，先 hover 最后一条助手消息尝试激活，再重测
+    const stillDisabled = await page.evaluate(() => {
+      const els = document.querySelectorAll('[class*="share-icon-box"][class*="disabled"], [class*="agent-share"][class*="disabled"], [aria-disabled="true"][class*="share"]');
+      return els.length > 0;
+    }).catch(() => false);
+    if (stillDisabled) {
+      try {
+        const msgs = await page.$$('[class*="message"], .markdown-body, [class*="assistant"], [class*="answer"]');
+        for (let i = msgs.length - 1; i >= 0; i--) {
+          const visible = await msgs[i].isVisible().catch(() => false);
+          if (visible) { await msgs[i].hover({ timeout: 1500 }).catch(() => {}); break; }
+        }
+        await page.waitForTimeout(800);
+        const disabledAfterHover = await page.evaluate(() => {
+          const els = document.querySelectorAll('[class*="share-icon-box"][class*="disabled"], [class*="agent-share"][class*="disabled"], [aria-disabled="true"][class*="share"]');
+          return els.length > 0;
+        }).catch(() => true);
+        if (disabledAfterHover) {
+          logger.warn('[智谱AI] 分享按钮 hover 后仍为 disabled（会话模式不支持分享或账号受限），跳过分享提取');
+          return null;
+        }
+      } catch { /* 忽略 */ }
+    }
+
     // 步骤2: 健壮地查找并点击"复制对话链接"按钮
     let clickedBtn = await this.findAndClickShareButton(page, [
       'button:has-text("复制对话链接")',

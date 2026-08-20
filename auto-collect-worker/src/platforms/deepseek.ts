@@ -274,18 +274,25 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
     // 步骤1: 注入 clipboard + execCommand 拦截
     await this.injectClipboardInterceptor(page, ['/share/', 'deepseek.com']);
 
-    // 步骤2: 健壮地查找并点击分享按钮（英文界面，文案是"Share"）
-    const shareBtnClicked = await this.findAndClickShareButton(page, [
-      'button:has-text("Share")',
-      'button:has-text("分享")',
-      '[aria-label*="Share"]',
-      '[aria-label*="分享"]',
-      '[data-testid*="share"]',
-      '[class*="share"]:not([class*="shared"])',
-    ], ['Share', '分享', 'share']);
+    // 步骤2 (v2.1.x): hover 回答区域后，在操作栏图标中点击分享按钮
+    // DeepSeek 分享按钮是 hover 消息后才显示的图标操作栏，图标无 "share" 字样导致 findAndClickShareButton 落空。
+    // 改用通用 hover 图标探针 + 逐个点击验证（含探针日志定位真实分享图标）。
+    const barResult = await this.hoverAndClickShareIcon(page, {
+      answerSelectors: ['.ds-markdown', '.ds-message--content', '[class*="message-content"]', '[class*="response"]', '[class*="answer"]', 'main', '[class*="chat"]', '[class*="conversation"]'],
+      urlPattern: '/share/',
+      panelTexts: ['Create and copy', 'Create & copy', 'Copy link', '复制链接', '分享链接'],
+      maxIcons: 10,
+    });
 
-    if (!shareBtnClicked) {
-      console.log('[DeepSeek] 未找到分享按钮');
+    // 直接复制到剪贴板
+    if (typeof barResult === 'string' && barResult !== '__SHARE_PANEL__') {
+      console.log(`[DeepSeek] 从操作栏图标捕获到分享链接: ${barResult}`);
+      return barResult;
+    }
+
+    // 未点出分享面板，退出
+    if (barResult !== '__SHARE_PANEL__') {
+      console.log('[DeepSeek] 未定位到分享按钮');
       return null;
     }
 

@@ -283,10 +283,15 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           }
         } catch { /* 继续 */ }
       }
-      // v1.9.10: 选择器兜底失败时，用 evaluate 扫描含"全选"文本的可见可点击元素并点击
+      // v1.9.10: 选择器兜底失败时，用 evaluate 扫描含"全选/点击全选以下消息"文本的元素并点击
+      // v2.1.x: 修复「点到容器而非复选框」——元宝弹窗文案是"点击全选以下消息"所在的面板容器
+      // 也含该文本，直接点容器会误关/误切换分享模式。改为只取「面积最小的叶子元素」
+      // （复选框/开关 label），并用 tag+class 精确点击。
       if (!selAllClicked) {
-        const selAllText = await page.evaluate(() => {
-          const candidates = document.querySelectorAll('button, a, [role="button"], label, div, span, [class*="checkbox"], [class*="check"]');
+        const selAllTarget = await page.evaluate(() => {
+          const candidates = document.querySelectorAll('button, a, [role="button"], label, [class*="checkbox"], [class*="check"], [class*="switch"], [class*="select"]');
+          let best: HTMLElement | null = null;
+          let bestArea = Infinity;
           for (let i = 0; i < candidates.length; i++) {
             const el = candidates[i] as HTMLElement;
             const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
@@ -295,23 +300,30 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
             if (r.width <= 0 || r.height <= 0) continue;
             const s = window.getComputedStyle(el);
             if (s.display === 'none' || s.visibility === 'hidden') continue;
+            const area = r.width * r.height;
             // 只取叶子级（自身文本短），避免点到容器
             if (t.length > 20 && !t.includes('点击全选以下消息')) continue;
-            const cls = (el.getAttribute('class') || '').toString().split(' ')[0];
-            return cls || t;
+            const children = Array.from(el.querySelectorAll('label, [class*="checkbox"], [class*="check"], [class*="switch"]'));
+            if (children.length > 0 && !children.some(c => (c as HTMLElement).getBoundingClientRect().width > 0)) continue;
+            if (area < bestArea) { bestArea = area; best = el; }
           }
-          return '';
+          if (!best) return '';
+          const cls = (best.getAttribute('class') || '').toString().split(' ')[0];
+          return `${best.tagName.toLowerCase()}|${cls}|${(best.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 12)}`;
         }).catch(() => '');
-        if (selAllText) {
+        if (selAllTarget) {
           try {
-            let el: any = await page.$(`[class*="${selAllText}"]`).catch(() => null);
-            if (!el) el = await page.$(`:text-is("${selAllText}")`).catch(() => null);
+            const [tag, cls, txt] = selAllTarget.split('|');
+            let el: any = null;
+            if (cls) el = await page.$(`${tag}[class*="${cls}"]`).catch(() => null);
+            if (!el && cls) el = await page.$(`[class*="${cls}"]`).catch(() => null);
+            if (!el && txt) el = await page.$(`:text-is("${txt}")`).catch(() => null);
             if (el) {
               const visible = await el.isVisible().catch(() => false);
               if (visible) {
                 await el.click({ timeout: 2000 }).catch(() => {});
                 await page.waitForTimeout(800);
-                logger.info(`[${this.platformName}] 分享弹窗全选文本兜底点击: ${selAllText}`);
+                logger.info(`[${this.platformName}] 分享弹窗全选叶子元素点击: ${selAllTarget}`);
               }
             }
           } catch { /* 忽略 */ }
@@ -1443,6 +1455,153 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     } catch { /* 忽略 */ }
 
     return false;
+  }
+
+  /**
+   * v2.1.x: 通用「hover 消息后点击操作栏分享图标」+ 探针日志
+   *
+   * 背景：千问/纳米/DeepSeek 等平台新版分享按钮是 hover 消息后才显示的图标操作栏，
+   * 图标 class/aria 常不含 "share" 字样，findAndClickShareButton 匹配不到（实测全落空）。
+   *
+   * 本方法：
+   * 1. hover 回答区域
+   * 2. 枚举操作栏候选图标（优先 iconHints 类名，其次消息容器内 16-48px 的纯图标元素），
+   *    打印探针日志（index/aria/title/class/位置）——用于定位分享图标的真实标识
+   * 3. 优先点击 aria/title 含分享/share 的候选；若无则从最右侧图标逐个尝试
+   * 4. 每次点击后验证：剪贴板是否捕获到 shareUrl，或是否出现分享面板（全选/复制链接/生成链接等）
+   * @returns 捕获到 shareUrl 时返回该 URL；只弹出分享面板（分享需二次确认）返回 special:__SHARE_PANEL__；否则 null
+   */
+  protected async hoverAndClickShareIcon(
+    page: Page,
+    opts: {
+      answerSelectors: string[];
+      iconHints?: string[];
+      urlPattern: string;
+      panelTexts?: string[]; // 分享面板出现的关键词（缺省用通用分享文案）
+      maxIcons?: number;
+    }
+  ): Promise<string | null> {
+    const panelTexts = opts.panelTexts || ['点击全选', '全选以下消息', '复制链接', '生成链接', '创建链接', '复制对话链接', '确认分享', 'Create and copy', 'Copy link'];
+    const maxIcons = opts.maxIcons || 8;
+
+    // 1. hover 回答区域（成功后立即停止，避免鼠标移走导致操作栏消失）
+    let hoveredAny = false;
+    for (const sel of opts.answerSelectors) {
+      if (hoveredAny) break;
+      try {
+        const elements = await page.$$(sel);
+        for (let i = elements.length - 1; i >= 0; i--) {
+          const visible = await elements[i].isVisible().catch(() => false);
+          if (visible) {
+            await elements[i].hover({ timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(1200);
+            hoveredAny = true;
+            break;
+          }
+        }
+      } catch { /* 继续 */ }
+    }
+
+    // 2. 枚举操作栏候选图标（含探针信息）
+    const hintCss = (opts.iconHints || []).map(h => `[class*="${h}"]`).join(', ');
+    const icons = await page.evaluate(({ hintCss, maxIcons }: { hintCss: string; maxIcons: number }) => {
+      const isInMessage = (el: Element): boolean => {
+        let node: Element | null = el;
+        let depth = 0;
+        while (node && depth < 8) {
+          const cls = (node.className || '').toString().toLowerCase();
+          const role = node.getAttribute && (node.getAttribute('role') || '');
+          if (/message|answer|response|chat-item|chat-content|bubble|conversation-turn|msg-|reply|assistant|bot-message|dialogue|agent-chat|toolbar/i.test(cls) || /article|main/i.test(role)) return true;
+          node = node.parentElement;
+          depth++;
+        }
+        return false;
+      };
+      const describe = (el: Element): string | null => {
+        const r = (el as HTMLElement).getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return null;
+        if (r.width < 14 || r.height < 14 || r.width > 52 || r.height > 52) return null; // 只要小图标
+        const style = window.getComputedStyle(el as HTMLElement);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return null;
+        const text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        const cls = (el.className || '').toString();
+        const isIconOnly = text === '' || (text.length <= 1 && /like|share|more|copy|refresh|repeat|more/i.test(cls) === false);
+        if (!isIconOnly) return null; // 只要纯图标
+        return `${el.tagName.toLowerCase()}|${cls.slice(0, 40)}|${el.getAttribute('aria-label') || ''}|${el.getAttribute('title') || ''}|${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}x${Math.round(r.height)}`;
+      };
+      const seen = new Set<string>();
+      const results: Array<{ o: number; d: string; hint: boolean }> = [];
+      // 优先 iconHints 命中的
+      if (hintCss) {
+        const hit = document.querySelectorAll(hintCss);
+        for (let i = 0; i < hit.length; i++) {
+          const d = describe(hit[i]);
+          if (d) { const key = d.split('|')[0] + ':' + d.split('|').slice(1).join(':'); if (!seen.has(key)) { seen.add(key); results.push({ o: i, d, hint: true }); } }
+        }
+      }
+      // 其次消息容器内的图标按钮
+      const all = document.querySelectorAll('button, [role="button"], [class*="icon"], [class*="action-item"], [class*="operation"]');
+      for (let i = 0; i < all.length && results.length < maxIcons; i++) {
+        const el = all[i];
+        if (!isInMessage(el)) continue;
+        const d = describe(el);
+        if (!d) continue;
+        const key = d.split('|')[0] + ':' + d.split('|').slice(1).join(':');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (results.length >= maxIcons) break;
+        results.push({ o: i, d, hint: false });
+      }
+      // 探针：按位置排序（x 升序），并带 hint 标记
+      const parsed = results.map((r, idx) => {
+        const parts = r.d.split('|');
+        const pos = parts[4].split(',');
+        return { idx, x: Number(pos[0]), y: Number(pos[1]), hint: r.hint, desc: `${idx}#${r.d}` };
+      }).sort((a, b) => a.x - b.x);
+      return parsed.map(p => ({ idx: p.idx, x: p.x, y: p.y, hint: p.hint, desc: p.desc }));
+    }, { hintCss, maxIcons }).catch(() => [] as any[]);
+
+    if (!icons || icons.length === 0) {
+      logger.warn(`[${this.platformName}] hover 后操作栏未找到图标候选，无法点击分享`);
+      return null;
+    }
+    logger.warn(`[${this.platformName}] 分享操作栏图标探针(${icons.length}个): ${icons.map(i => i.desc).join(' | ')}`);
+
+    // 3. 计算点击顺序：优先 hint 命中且 index 在右侧（分享多在最右）；无 hint 时从最右侧图标往前逐个试
+    const ordered = [...icons].sort((a, b) => Number(b.hint) - Number(a.hint) || b.x - a.x);
+
+    // 4. 逐个点击验证
+    for (const icon of ordered.slice(0, Math.min(maxIcons, ordered.length))) {
+      // 用真实坐标点击（Playwright 真实鼠标事件）
+      const clicked = await page.mouse.click(icon.x + 4, icon.y + 4).catch(() => false).then(() => true);
+      if (!clicked) continue;
+      await page.waitForTimeout(1300);
+      // 先查剪贴板是否直接捕获
+      const cap = await this.getCapturedShareUrl(page, opts.urlPattern);
+      if (cap) {
+        logger.info(`[${this.platformName}] 点击操作栏图标[${icon.idx}]直接复制分享链接: ${cap}`);
+        return cap;
+      }
+      // 再查是否弹出分享面板（多选/复制链接等二次步骤）
+      const panelShown = await page.evaluate((texts: string[]) => {
+        const els = document.querySelectorAll('button, [role="button"], label, div, span, [class*="checkbox"], [class*="check"]');
+        for (let i = 0; i < els.length; i++) {
+          const t = ((els[i] as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim();
+          const r = (els[i] as HTMLElement).getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) continue;
+          for (const kw of texts) if (t.includes(kw)) return true;
+        }
+        return false;
+      }, panelTexts).catch(() => false);
+      if (panelShown) {
+        logger.info(`[${this.platformName}] 点击操作栏图标[${icon.idx}]后出现分享面板`);
+        return '__SHARE_PANEL__';
+      }
+      // 关闭可能弹出的无关浮层，试下一个
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(500);
+    }
+    return null;
   }
 
   /** 内部方法：尝试三个策略查找并点击分享按钮 */

@@ -72,47 +72,31 @@ export class QianwenAdapter extends BasePlatformAdapter {
     // 步骤1: 注入 clipboard + execCommand 拦截
     await this.injectClipboardInterceptor(page, ['/share/']);
 
-    // 步骤2: hover 在 AI 回答区域上，触发 share-selection 按钮显示
-    // v1.9 修复：hover 成功一个元素后立即停止——之前会继续 hover 兜底选择器（main 等），
-    // 鼠标被移走导致已显示的操作栏消失，分享按钮永远找不到
-    const answerSelectors = [
-      '.answer-area',
-      '.markdown-body',
-      '[class*="answer"]',
-      '[class*="response"]',
-      '[class*="message-content"]',
-      // 兜底
-      'main', '[class*="chat"]', '[class*="conversation"]',
-    ];
-
-    let hoveredAny = false;
-    for (const sel of answerSelectors) {
-      if (hoveredAny) break;
-      try {
-        const elements = await page.$$(sel);
-        for (let i = elements.length - 1; i >= 0; i--) {
-          const visible = await elements[i].isVisible().catch(() => false);
-          if (visible) {
-            await elements[i].hover({ timeout: 2000 }).catch(() => {});
-            await page.waitForTimeout(1500);
-            hoveredAny = true;
-            break;
-          }
-        }
-      } catch { /* 继续 */ }
+    // 步骤2+3 (v2.1.x): hover 操作栏并点击分享图标
+    // 新版千问分享按钮是 hover 回答后出现的 qs-bottom-icon 图标操作栏，
+    // 图标 class/aria 不含 "share" 字样，findAndClickShareButton 匹配不到（实测全落空）。
+    // 改为通用 hover 图标探针 + 逐个点击验证（含探针日志定位真实分享图标）。
+    let shareBtnClicked = false;
+    const barResult = await this.hoverAndClickShareIcon(page, {
+      answerSelectors: [
+        '.answer-area', '.markdown-body', '[class*="answer"]', '[class*="response"]',
+        '[class*="message-content"]', 'main', '[class*="chat"]', '[class*="conversation"]',
+      ],
+      iconHints: ['qs-bottom-icon'],
+      urlPattern: '/share/',
+    });
+    if (barResult === '__SHARE_PANEL__') {
+      // 已点出分享面板（进入多选模式），走下方确认流程
+      shareBtnClicked = true;
+    } else if (typeof barResult === 'string') {
+      // 点击图标后直接复制到剪贴板
+      logger.info(`[通义千问] 操作栏图标点击直接捕获分享链接: ${barResult}`);
+      return barResult;
+    } else {
+      // 未定位到分享图标或点出面板，关闭可能的浮层
+      await page.keyboard.press('Escape').catch(() => {});
+      // 保持旧式兜底（hover 消息 + findAndClickShareButton + 菜单项扫描）
     }
-
-    // 步骤3: 健壮地查找并点击分享按钮
-    // v1.9: 补充 hover 后新式操作栏的图标按钮匹配（title/aria-label 含"分享"的 SVG 图标按钮）
-    const shareBtnClicked = await this.findAndClickShareButton(page, [
-      '[class*="share-selection"]',
-      'button:has-text("分享")',
-      '[aria-label*="分享"]',
-      '[title*="分享"]',
-      '[data-testid*="share"]',
-      '[class*="icon-share"]',
-      '[class*="share"]:not([class*="shared"])',
-    ], ['分享', 'Share', 'share']);
 
     if (!shareBtnClicked) {
       // v1.9.10: 兜底——千问新版分享可能是消息操作行中的图标（无 class/aria 含 share），
