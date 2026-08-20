@@ -219,29 +219,65 @@ export class NanoAdapter extends BasePlatformAdapter {
     // 步骤1: 注入 clipboard + execCommand 拦截
     await this.injectClipboardInterceptor(page, ['/share/']);
 
-    // 步骤2+3 (v2.1.x): hover 回答区域后，在操作栏图标中点击分享图标
-    // 纳米新版分享入口是 hover 后的图标操作栏，图标无 "share" 字样导致 findAndClickShareButton 落空。
-    // 改用通用 hover 图标探针 + 逐个点击验证（含探针日志定位真实分享图标）。
-    const barResult = await this.hoverAndClickShareIcon(page, {
-      answerSelectors: [
-        '.answer-content', '.ai-summary', '[class*="ai-summary"]', '[class*="answer-content"]',
-        '[class*="answer"]', 'li.js-message-item', '[data-testid^="msg-"]', 'main', '[class*="chat"]',
-      ],
-      urlPattern: '/share/',
-      maxIcons: 10,
-    });
-
-    if (typeof barResult === 'string' && barResult !== '__SHARE_PANEL__') {
-      console.log(`[纳米] 从操作栏图标捕获到分享链接: ${barResult}`);
-      return barResult;
+    // 步骤2: 先 hover 回答区域触发操作栏（首次扫描常因操作栏未显示而找不到分享按钮）
+    const answerSelectors = [
+      '.answer-content', '.ai-summary', '[class*="ai-summary"]', '[class*="answer-content"]',
+      '[class*="answer"]', 'li.js-message-item', '[data-testid^="msg-"]', 'main', '[class*="chat"]',
+    ];
+    let hoveredAny = false;
+    for (const sel of answerSelectors) {
+      if (hoveredAny) break;
+      try {
+        const elements = await page.$$(sel);
+        for (let i = elements.length - 1; i >= 0; i--) {
+          const visible = await elements[i].isVisible().catch(() => false);
+          if (visible) {
+            await elements[i].hover({ timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(1200);
+            hoveredAny = true;
+            break;
+          }
+        }
+      } catch { /* 继续 */ }
     }
 
-    if (barResult !== '__SHARE_PANEL__') {
-      // 未点出分享面板，检查是否已有剪贴板捕获，否则退出
-      const preCaptured = await this.getCapturedShareUrl(page, '/share/');
-      if (preCaptured) return preCaptured;
-      console.log('[纳米] 未定位到分享按钮');
-      return null;
+    // 步骤3: 健壮地查找并点击分享按钮（文字"分享"按钮优先，纳米分享入口是文案按钮而非纯图标）
+    //   v3.19.x：上轮把纳米套成 hover 图标探针（hoverAndClickShareIcon），实测"未找到图标候选"
+    //   说明纳米分享不是纯图标操作栏，改回 findAndClickShareButton（含文字/aria/title 匹配）。
+    const shareBtnClicked = await this.findAndClickShareButton(page, [
+      'button:has-text("分享")',
+      '[aria-label*="分享"]',
+      '[title*="分享"]',
+      '[class*="share"]:not([class*="shared"])',
+      '[data-testid*="share"]',
+    ], ['分享', 'Share', 'share']);
+
+    if (!shareBtnClicked) {
+      // 兜底：hover 图标探针（若纳米新版把分享改成图标按钮）
+      const barResult = await this.hoverAndClickShareIcon(page, {
+        answerSelectors,
+        urlPattern: '/share/',
+        maxIcons: 10,
+      });
+      if (typeof barResult === 'string' && barResult !== '__SHARE_PANEL__') {
+        console.log(`[纳米] 从操作栏图标捕获到分享链接: ${barResult}`);
+        return barResult;
+      }
+      if (barResult !== '__SHARE_PANEL__') {
+        // 未点出分享面板，检查是否已有剪贴板捕获，否则退出
+        const preCaptured = await this.getCapturedShareUrl(page, '/share/');
+        if (preCaptured) return preCaptured;
+        console.log('[纳米] 未定位到分享按钮');
+        return null;
+      }
+    } else {
+      // 分享按钮点击成功，尝试二次菜单（复制链接）
+      await this.clickShareMenuItem(page);
+      const menuCaptured = await this.getCapturedShareUrl(page, '/share/');
+      if (menuCaptured) {
+        logger.info(`[纳米] 二次菜单命中，捕获分享链接: ${menuCaptured}`);
+        return menuCaptured;
+      }
     }
 
     // 步骤4: 分享面板出现后，点击"复制链接"按钮（如果有）

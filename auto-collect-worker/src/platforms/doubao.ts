@@ -351,24 +351,14 @@ export class DoubaoAdapter extends BasePlatformAdapter {
     }
 
     // 步骤4: 查找并点击"复制链接"按钮（如果有）
-    const copyBtnSelectors = [
-      'button:has-text("复制链接")',
-      'button:has-text("复制")',
-      'button:has-text("Copy")',
-      '[class*="copy-link"]',
-    ];
-    for (const sel of copyBtnSelectors) {
-      try {
-        const btn = await page.$(sel);
-        if (btn) {
-          const visible = await btn.isVisible().catch(() => false);
-          if (!visible) continue;
-          await btn.click({ timeout: 3000 }).catch(() => {});
-          await page.waitForTimeout(2000);
-          console.log(`[豆包] 点击复制链接按钮成功: ${sel}`);
-          break;
-        }
-      } catch { /* 继续 */ }
+    // v3.19.x：豆包分享面板是自绘弹层，简单 button 选择器匹配不到"复制链接"。
+    //   改用基类的 clickShareMenuItem（二次菜单扫描：全页面可见按钮 + 弹窗作用域 + 链接输入框直读），
+    //   先点全选再找复制链接，覆盖豆包分享面板的多样结构。
+    await this.clickShareMenuItem(page);
+    const menuCaptured = await this.getCapturedShareUrl(page, '/share/');
+    if (menuCaptured) {
+      logger.info(`[豆包] 二次菜单命中，捕获分享链接: ${menuCaptured}`);
+      return menuCaptured;
     }
 
     // 步骤5: 从拦截到的剪贴板内容提取 URL

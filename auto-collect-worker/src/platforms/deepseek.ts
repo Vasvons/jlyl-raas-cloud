@@ -55,6 +55,25 @@ export class DeepSeekAdapter extends BasePlatformAdapter {
     }
     console.log(`[DeepSeek] 导航后: URL=${currentUrl}, title=${await page.title().catch(() => '')}`);
 
+    // v3.19.x: 登录态失效但未重定向到 sign_in 时，会停留在营销/落地首页，
+    //   title 为"DeepSeek - 探索未至之境"且无输入框。提前检测首页特征，避免走完
+    //   所有输入框定位兜底后才报"输入框未找到"（无法区分登录态失效 vs 页面改版）。
+    const landingDetected = await page.evaluate(() => {
+      const title = document.title || '';
+      // 营销首页标题特征
+      if (/探索未至之境|未至之境|DeepSeek - 探索/.test(title)) return true;
+      // 无 textarea/contenteditable 且页面存在"开始对话/登录/下载"类营销按钮 → 落地页
+      const hasInput = document.querySelector('textarea, [contenteditable]:not([contenteditable="false"])');
+      if (!hasInput) {
+        const bodyText = (document.body?.innerText || '').slice(0, 500);
+        if (/下载 App|开始对话|登录后|微信登录|手机号登录|扫码登录/i.test(bodyText)) return true;
+      }
+      return false;
+    }).catch(() => false);
+    if (landingDetected) {
+      throw new Error(`登录态失效: 页面停留在营销/落地首页（URL=${currentUrl}, title=${await page.title().catch(() => '')}），storageState 可能已过期`);
+    }
+
     // 步骤3: 查找输入框（使用 locator API + auto-waiting）
     // 不依赖 CSS Module 哈希类名，直接用 textarea 标签
     // DeepSeek 已登录状态下，页面上通常只有一个可见的 textarea

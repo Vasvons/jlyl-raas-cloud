@@ -142,27 +142,72 @@ export class QianwenAdapter extends BasePlatformAdapter {
     }
 
     // 步骤4: 如果进入了多选模式，查找底部"分享"按钮
-    // v1.9: 先等待可能的选择面板出现，再确认
+    // v3.19.x：千问分享是多选模式，全选后底部 btn-group 出现「分享/复制链接」按钮组。
+    //   旧 confirmBtnSelectors 只匹配 <button> 文本「分享/复制链接」，而 btn-group 内按钮
+    //   可能是 div/span 图标按钮或文案不同，导致全选成功但拿不到链接（日志 btn-group-XJWF_N 被截断）。
+    //   改为：转储 btn-group 内所有按钮 + 优先点 aria/title 含 分享/复制/链接 的，否则逐个点击验证剪贴板。
     await page.waitForTimeout(1000);
-    const confirmBtnSelectors = [
-      'button:has-text("确认分享")',
-      'button:has-text("生成链接")',
-      'button:has-text("复制链接")',
-      '[class*="share-confirm"]',
-      'button:has-text("分享")',
-    ];
-    for (const sel of confirmBtnSelectors) {
-      try {
-        const btn = await page.$(sel);
-        if (btn) {
-          const visible = await btn.isVisible().catch(() => false);
-          if (!visible) continue;
-          await btn.click({ timeout: 3000 }).catch(() => {});
-          await page.waitForTimeout(2000);
-          console.log(`[通义千问] 点击确认分享按钮成功: ${sel}`);
-          break;
+    const btnGroupClicked = await page.evaluate(() => {
+      const groups = document.querySelectorAll('[class*="btn-group"], [class*="btnGroup"], [class*="share-selection"] ~ [class*="btn"]');
+      const candidates: Array<{ tag: string; cls: string; aria: string; title: string; text: string; x: number; y: number }> = [];
+      for (let g = 0; g < groups.length; g++) {
+        const els = groups[g].querySelectorAll('button, [role="button"], [class*="btn"], [class*="button"], [class*="item"], [class*="action"], div, span');
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i] as HTMLElement;
+          const r = el.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0 || r.width > 160 || r.height > 48) continue;
+          const s = window.getComputedStyle(el);
+          if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') continue;
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+          const aria = el.getAttribute('aria-label') || '';
+          const title = el.getAttribute('title') || '';
+          const cls = (el.className || '').toString();
+          candidates.push({ tag: el.tagName.toLowerCase(), cls: cls.slice(0, 40), aria, title, text: text.slice(0, 12), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
         }
-      } catch { /* 继续 */ }
+      }
+      return candidates;
+    }).catch(() => [] as any[]);
+
+    if (btnGroupClicked.length > 0) {
+      logger.warn(`[通义千问] 底部分享按钮组(${btnGroupClicked.length}个): ${btnGroupClicked.map(b => `<${b.tag} class="${b.cls}" aria="${b.aria}" title="${b.title}" text="${b.text}" pos=(${b.x},${b.y})`).join(' | ')}`);
+      // 优先点击 aria/title/text 含 分享/复制链接/链接 的
+      const priority = btnGroupClicked.filter(b => /分享|复制链接|分享链接|链接|share|copy/i.test(b.aria + b.title + b.text));
+      const ordered = [...priority, ...btnGroupClicked.filter(b => !priority.includes(b))];
+      for (const b of ordered.slice(0, 6)) {
+        await page.mouse.click(b.x, b.y).catch(() => {});
+        await page.waitForTimeout(1500);
+        const cap = await this.getCapturedShareUrl(page, '/share/');
+        if (cap) {
+          logger.info(`[通义千问] 点击底部按钮组捕获分享链接: ${cap} (btn=${b.text || b.aria || b.cls})`);
+          return cap;
+        }
+        const dlg = await this.extractShareUrlFromDialog(page, '/share/');
+        if (dlg) return dlg;
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(400);
+      }
+    } else {
+      // 旧选择器兜底（btn-group 未识别时的兼容）
+      const confirmBtnSelectors = [
+        'button:has-text("确认分享")',
+        'button:has-text("生成链接")',
+        'button:has-text("复制链接")',
+        '[class*="share-confirm"]',
+        'button:has-text("分享")',
+      ];
+      for (const sel of confirmBtnSelectors) {
+        try {
+          const btn = await page.$(sel);
+          if (btn) {
+            const visible = await btn.isVisible().catch(() => false);
+            if (!visible) continue;
+            await btn.click({ timeout: 3000 }).catch(() => {});
+            await page.waitForTimeout(2000);
+            console.log(`[通义千问] 点击确认分享按钮成功: ${sel}`);
+            break;
+          }
+        } catch { /* 继续 */ }
+      }
     }
 
     // 步骤5: 从拦截到的剪贴板内容提取 URL

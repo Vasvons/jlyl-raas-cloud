@@ -289,7 +289,10 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       // （复选框/开关 label），并用 tag+class 精确点击。
       if (!selAllClicked) {
         const selAllTarget = await page.evaluate(() => {
-          const candidates = document.querySelectorAll('button, a, [role="button"], label, [class*="checkbox"], [class*="check"], [class*="switch"], [class*="select"]');
+          // v2.2.x：元宝/豆包等平台"点击全选以下消息"的「全选」触发元素可能是 div/span
+          // （文案挂在纯 div 上，不是 button/label/checkbox），旧候选列表漏掉导致永远点不到全选。
+          // 扩大到 div/span，但用「面积最小 + 文本精确匹配 + 排除含子可点击元素的容器」来避免误点整个面板。
+          const candidates = document.querySelectorAll('button, a, [role="button"], label, [class*="checkbox"], [class*="check"], [class*="switch"], [class*="select"], div, span');
           let best: HTMLElement | null = null;
           let bestArea = Infinity;
           for (let i = 0; i < candidates.length; i++) {
@@ -303,8 +306,16 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
             const area = r.width * r.height;
             // 只取叶子级（自身文本短），避免点到容器
             if (t.length > 20 && !t.includes('点击全选以下消息')) continue;
-            const children = Array.from(el.querySelectorAll('label, [class*="checkbox"], [class*="check"], [class*="switch"]'));
-            if (children.length > 0 && !children.some(c => (c as HTMLElement).getBoundingClientRect().width > 0)) continue;
+            // 若候选内部还有更小的可点击子元素（含全选/勾选语义），跳过这个容器，取子元素
+            const innerClickable = el.querySelectorAll('button, [role="button"], label, [class*="checkbox"], [class*="check"], [class*="switch"], input[type="checkbox"]');
+            if (innerClickable.length > 0) {
+              const anyVisible = Array.from(innerClickable).some(c => {
+                const cr = (c as HTMLElement).getBoundingClientRect();
+                const cs = window.getComputedStyle(c as HTMLElement);
+                return cr.width > 0 && cr.height > 0 && cs.display !== 'none' && cs.visibility !== 'hidden';
+              });
+              if (anyVisible) continue;
+            }
             if (area < bestArea) { bestArea = area; best = el; }
           }
           if (!best) return '';

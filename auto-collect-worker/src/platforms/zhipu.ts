@@ -29,6 +29,10 @@ export class ZhipuAdapter extends BasePlatformAdapter {
   // 关键：用 /chat/ 而非 /，直接进入聊天页（24-25 号可工作的配置）
   chatUrl = 'https://chatglm.cn/chat/';
   supportsShare = true;
+  // v3.19.x：智谱分享链接 chatglm.cn/share/{短码} 是公开分享格式，无需登录即可查看。
+  //   关闭基类的「无登录态验证」——实测验证用按 markdown 渲染差异取 40 字符片段匹配失败，
+  //   把公开链接误判为私有、降级静态页（@2026-08-21 03:00 日志已证实访客能看到完整回答）。
+  protected verifyShareLink = false;
   // 简单选择器（24-25 号可工作的配置）
   protected inputSelector = 'textarea';
   protected responseSelector = '.markdown-body, [class*="markdown"], [class*="message"], [class*="answer"], [class*="msg-content"], [class*="msg_content"]';
