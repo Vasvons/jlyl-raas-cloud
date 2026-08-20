@@ -1368,6 +1368,39 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         const selection = window.getSelection();
         record(selection ? selection.toString() : '');
       });
+      // v3.20.x: XHR 响应 URL 扫描——豆包/元宝等平台"复制链接"不走标准剪贴板
+      // （React 闭包缓存了原生 writeText 引用，覆写 navigator.clipboard 拦截不到），
+      // 而是调用后端 API 生成分享链接（如豆包 /share/save 返回 share_url）。
+      // 扫描所有 XHR 响应体中的 https URL，命中 urlPatterns（/s/、/thread/ 等）即记录，
+      // 与剪贴板拦截互补，覆盖"API 生成链接"类平台的分享提取。
+      const _open = XMLHttpRequest.prototype.open;
+      (XMLHttpRequest.prototype as any).open = function (this: any, m: string, u: string) {
+        this.__u = u;
+        return _open.apply(this, arguments as any);
+      };
+      const _send = XMLHttpRequest.prototype.send;
+      (XMLHttpRequest.prototype as any).send = function (this: any, b: any) {
+        const xhr = this;
+        const _o = xhr.onreadystatechange;
+        xhr.onreadystatechange = function (this: any) {
+          if (xhr.readyState === 4) {
+            try {
+              const t = xhr.responseText || '';
+              if (t && t.length < 100000) {
+                const urls = t.match(/https?:\/\/[^\s"'<>\\]+/g) || [];
+                for (let ui = 0; ui < urls.length; ui++) {
+                  if (patterns.some(p => urls[ui].includes(p))) {
+                    record(urls[ui]);
+                    break;
+                  }
+                }
+              }
+            } catch { /* 忽略 */ }
+          }
+          if (_o) return (_o as any).apply(this, arguments as any);
+        };
+        return _send.apply(this, arguments as any);
+      };
     }, urlPatterns).catch(() => {});
   }
 

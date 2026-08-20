@@ -25,6 +25,115 @@ export class QianwenAdapter extends BasePlatformAdapter {
    * （回答未完成就提取 → 抓到侧边栏/部分文本被污染拦截）。
    * 增加「文本稳定」等待：主内容区域文本连续两次不变视为生成完成。
    */
+  /**
+   * v3.20.x: 千问输入框是 contenteditable，Enter 默认插入换行不发送
+   * （导致回答未生成、extractContent 提取到 14 字符问题文本被判"账号异常"）。
+   * 参考纳米：Enter → 常见发送按钮 → Ctrl+Enter → 遍历输入框周边可点击元素，逐项校验输入框清空。
+   */
+  protected async submitInput(page: Page, activeSelector: string): Promise<void> {
+    // 尝试1: Enter
+    await page.press(activeSelector, 'Enter');
+    await page.waitForTimeout(2500);
+    let v = await this.readInputValue(page, activeSelector);
+    if (!v || !v.trim()) return;
+
+    // 尝试2: 常见发送按钮选择器
+    const sendSelectors = [
+      'button[class*="send"]',
+      '[class*="send-btn"]',
+      '[class*="sendBtn"]',
+      '[data-testid*="send"]',
+      'button[aria-label*="发送"]',
+      'button[title*="发送"]',
+      '[class*="chat-input"] button',
+      '[class*="input-area"] button',
+      'button[type="submit"]',
+    ];
+    for (const sel of sendSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (btn) {
+          const visible = await btn.isVisible().catch(() => false);
+          const enabled = await btn.isEnabled().catch(() => true);
+          if (visible && enabled) {
+            await btn.click({ timeout: 3000 });
+            await page.waitForTimeout(2500);
+            v = await this.readInputValue(page, activeSelector);
+            if (!v || !v.trim()) {
+              logger.info(`[通义千问] 点击发送按钮成功: ${sel}`);
+              return;
+            }
+          }
+        }
+      } catch { /* 继续尝试下一个选择器 */ }
+    }
+
+    // 尝试3: Ctrl+Enter（部分平台快捷键发送）
+    await page.keyboard.press('Control+Enter');
+    await page.waitForTimeout(2500);
+    v = await this.readInputValue(page, activeSelector);
+    if (!v || !v.trim()) {
+      logger.info('[通义千问] Ctrl+Enter 发送成功');
+      return;
+    }
+
+    // 尝试4: 遍历输入框周边的可点击元素（发送按钮可能是图标 div/SVG 按钮）
+    try {
+      const candidates = await page.evaluate((sel: string) => {
+        const input = document.querySelector(sel);
+        if (!input) return '';
+        let container: HTMLElement | null = input.parentElement;
+        const clickables: HTMLElement[] = [];
+        for (let i = 0; i < 5 && container; i++) {
+          const els = Array.from(container.querySelectorAll<HTMLElement>(
+            'button, a[href], [role="button"], [class*="btn"], [class*="send"], [class*="send-btn"], [class*="submit"], svg[class*="icon"], [data-testid*="send"]'
+          ));
+          for (const el of els) {
+            if (!clickables.includes(el)) clickables.push(el);
+          }
+          container = container.parentElement;
+        }
+        const filtered = clickables.filter(el => el !== input && !el.contains(input) && !(el as HTMLElement).isContentEditable);
+        const inputRect = input.getBoundingClientRect();
+        filtered.sort((a, b) => {
+          const ra = a.getBoundingClientRect();
+          const rb = b.getBoundingClientRect();
+          return (Math.abs(ra.left - inputRect.left) + Math.abs(ra.top - inputRect.top)) -
+                 (Math.abs(rb.left - inputRect.left) + Math.abs(rb.top - inputRect.top));
+        });
+        return filtered.slice(0, 5).map(el => {
+          const r = el.getBoundingClientRect();
+          return `${el.tagName.toLowerCase()}|${(el.className || '').toString().slice(0, 40)}|${Math.round(r.left)},${Math.round(r.top)}`;
+        }).join('||');
+      }, activeSelector).catch(() => '');
+      if (candidates) {
+        for (const cand of candidates.split('||').filter(Boolean)) {
+          const [tag, cls] = cand.split('|');
+          const firstToken = (cls || '').split(' ')[0];
+          try {
+            const el = await page.$(`button[class*="${firstToken}"], [class*="${firstToken}"]`).catch(() => null);
+            if (el) {
+              const visible = await el.isVisible().catch(() => false);
+              if (visible) {
+                await el.click({ timeout: 2000 }).catch(() => {});
+                await page.waitForTimeout(2500);
+                v = await this.readInputValue(page, activeSelector);
+                if (!v || !v.trim()) {
+                  logger.info(`[通义千问] 遍历点击发送成功: ${cls || tag}`);
+                  return;
+                }
+              }
+            }
+          } catch { /* 继续 */ }
+        }
+      }
+    } catch { /* 忽略 */ }
+
+    // 最终兜底：再按一次 Enter
+    logger.warn('[通义千问] 未找到可点击的发送按钮，回退 Enter 提交');
+    await page.press(activeSelector, 'Enter');
+  }
+
   async waitForResponse(page: Page): Promise<void> {
     // 先尝试基类的 stop 按钮等待（快速路径）
     try {

@@ -379,42 +379,77 @@ export class DoubaoAdapter extends BasePlatformAdapter {
    *
    * 豆包分享按钮无 class/aria/title 特征（class 是通用 flex 图标类），
    * 只能靠 hover 后出现的 tooltip 文本（"分享"）识别。
-   * 策略：遍历操作栏 .message-action-button-main 内按钮，逐个 hover 读取 tooltip，
-   * 命中"分享"即点击；hover 后需把鼠标移开（move 到 0,0）避免 tooltip 残留干扰下一轮。
+   * 策略：
+   *   1. 遍历操作栏 .message-action-button-main 内按钮，逐个 hover 读取 tooltip，命中"分享"即点击；
+   *   2. tooltip 全失败（Worker 环境 tooltip class 可能不同）时，逐个点击按钮并验证是否弹出
+   *      分享面板（.share-header-ui 或文本"复制链接"），弹出即成功——不依赖 tooltip。
    */
   private async clickDoubaoShareButton(page: Page): Promise<boolean> {
     const btnSelector = '[class*="message-action-button-main"] > button';
-    const btnCount = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
-    if (!btnCount) return false;
 
-    for (let i = 0; i < btnCount; i++) {
-      try {
-        const btn = (await page.$$(btnSelector))[i];
-        if (!btn) continue;
-        const visible = await btn.isVisible().catch(() => false);
-        if (!visible) continue;
-        await btn.hover({ timeout: 1000 }).catch(() => {});
-        await page.waitForTimeout(600);
-        const tip = await page.evaluate(() => {
-          const nodes = document.querySelectorAll('[class*="tooltip"], [data-tooltip]');
-          for (let k = 0; k < nodes.length; k++) {
-            const t = (nodes[k].textContent || '').trim();
-            if (t && t.length <= 10) return t;
+    // 策略1: tooltip 识别
+    const btnCount = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
+    if (btnCount) {
+      for (let i = 0; i < btnCount; i++) {
+        try {
+          const btn = (await page.$$(btnSelector))[i];
+          if (!btn) continue;
+          const visible = await btn.isVisible().catch(() => false);
+          if (!visible) continue;
+          await btn.hover({ timeout: 1000 }).catch(() => {});
+          await page.waitForTimeout(600);
+          const tip = await page.evaluate(() => {
+            const nodes = document.querySelectorAll('[class*="tooltip"], [data-tooltip]');
+            for (let k = 0; k < nodes.length; k++) {
+              const t = (nodes[k].textContent || '').trim();
+              if (t && t.length <= 10) return t;
+            }
+            return '';
+          }).catch(() => '');
+          if (tip.includes('分享')) {
+            await btn.click({ timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(1500);
+            logger.info(`[豆包] 通过 tooltip"${tip}"定位分享按钮 (index=${i})`);
+            return true;
           }
-          return '';
-        }).catch(() => '');
-        if (tip.includes('分享')) {
-          await btn.click({ timeout: 2000 }).catch(() => {});
-          await page.waitForTimeout(1500);
-          logger.info(`[豆包] 通过 tooltip"${tip}"定位分享按钮 (index=${i})`);
-          return true;
-        }
-        // 移开鼠标，避免 tooltip 残留干扰下一轮识别
-        await page.mouse.move(5, 5).catch(() => {});
-        await page.waitForTimeout(400);
-      } catch { /* 继续下一个 */ }
+          // 移开鼠标，避免 tooltip 残留干扰下一轮识别
+          await page.mouse.move(5, 5).catch(() => {});
+          await page.waitForTimeout(400);
+        } catch { /* 继续下一个 */ }
+      }
     }
-    logger.warn('[豆包] 操作栏内未找到 tooltip 为"分享"的按钮');
+
+    // 策略2: 逐个点击验证面板（Worker 环境 tooltip 不可靠时的兜底）
+    // 分享按钮在操作栏相对位置固定（复制/朗读/喜欢/不喜欢/分享/重新生成/更多），
+    // 从最右侧开始逐个点击，检查是否弹出分享面板（出现"复制链接"/"分享对话"即命中）
+    const panelCheck = (): Promise<boolean> =>
+      page.evaluate(() => {
+        const hasPanel = !!document.querySelector('[class*="share-header-ui"]');
+        if (hasPanel) return true;
+        const bodyTxt = (document.body.innerText || '');
+        return bodyTxt.includes('复制链接') && bodyTxt.includes('分享对话');
+      }).catch(() => false);
+    const btnCount2 = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
+    if (btnCount2) {
+      // 从右侧开始（分享/重新生成在操作栏右侧），最多试前 5 个
+      const start = Math.max(0, btnCount2 - 5);
+      for (let i = btnCount2 - 1; i >= start; i--) {
+        try {
+          const btn = (await page.$$(btnSelector))[i];
+          if (!btn) continue;
+          await btn.click({ timeout: 1500 }).catch(() => {});
+          await page.waitForTimeout(1200);
+          if (await panelCheck()) {
+            logger.info(`[豆包] 通过位置点击分享按钮 (index=${i})，分享面板已出现`);
+            return true;
+          }
+          // 未弹出面板则关闭可能的浮层后继续
+          await page.keyboard.press('Escape').catch(() => {});
+          await page.waitForTimeout(500);
+        } catch { /* 继续 */ }
+      }
+    }
+    logger.warn('[豆包] 操作栏内未找到分享按钮（tooltip + 位置点击均失败）');
     return false;
   }
 
