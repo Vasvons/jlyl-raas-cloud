@@ -1401,6 +1401,31 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         };
         return _send.apply(this, arguments as any);
       };
+      // v3.20.x: fetch 响应 URL 扫描——元宝等平台"复制链接"用 fetch 而非 XHR 调用分享 API，
+      // 只 hook XHR 扫不到。用 response.clone() 读取响应体，不破坏原响应流。
+      const _fetch = window.fetch;
+      if (typeof _fetch === 'function') {
+        window.fetch = function (this: any, input: any, init?: any) {
+          return _fetch.call(this, input, init).then((resp: Response) => {
+            try {
+              if (resp && typeof resp.clone === 'function') {
+                resp.clone().text().then((t: string) => {
+                  if (t && t.length < 100000) {
+                    const urls = t.match(/https?:\/\/[^\s"'<>\\]+/g) || [];
+                    for (let ui = 0; ui < urls.length; ui++) {
+                      if (patterns.some(p => urls[ui].includes(p))) {
+                        record(urls[ui]);
+                        break;
+                      }
+                    }
+                  }
+                }).catch(() => { /* 忽略 */ });
+              }
+            } catch { /* 忽略 */ }
+            return resp;
+          });
+        };
+      }
     }, urlPatterns).catch(() => {});
   }
 
@@ -1609,6 +1634,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     const maxIcons = opts.maxIcons || 8;
 
     // 1. hover 回答区域（成功后立即停止，避免鼠标移走导致操作栏消失）
+    // v3.20.x：回答可能在视口外（如千问回答流很长、问题气泡被滚到视口上方 y=-84），
+    //   先 scrollIntoViewIfNeeded 让目标进入视口，hover 才有效、后续坐标点击才命中。
     let hoveredAny = false;
     for (const sel of opts.answerSelectors) {
       if (hoveredAny) break;
@@ -1616,12 +1643,13 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         const elements = await page.$$(sel);
         for (let i = elements.length - 1; i >= 0; i--) {
           const visible = await elements[i].isVisible().catch(() => false);
-          if (visible) {
-            await elements[i].hover({ timeout: 2000 }).catch(() => {});
-            await page.waitForTimeout(1200);
-            hoveredAny = true;
-            break;
-          }
+          if (!visible) continue;
+          await elements[i].scrollIntoViewIfNeeded().catch(() => {});
+          await page.waitForTimeout(300);
+          await elements[i].hover({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(1200);
+          hoveredAny = true;
+          break;
         }
       } catch { /* 继续 */ }
     }
@@ -1676,13 +1704,16 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         if (results.length >= maxIcons) break;
         results.push({ o: i, d, hint: false });
       }
-      // 探针：按位置排序（x 升序），并带 hint 标记
+      // 探针：按位置排序（x 升序），并带 hint 标记 + 可重定位选择器（点击前 scrollIntoView 用）
       const parsed = results.map((r, idx) => {
         const parts = r.d.split('|');
         const pos = parts[4].split(',');
-        return { idx, x: Number(pos[0]), y: Number(pos[1]), hint: r.hint, desc: `${idx}#${r.d}` };
+        const tag = parts[0];
+        const cls = parts[1];
+        const sel = r.hint ? hintCss : `${tag}[class*="${(cls || '').split(' ')[0]}"]`;
+        return { idx, o: r.o, sel, x: Number(pos[0]), y: Number(pos[1]), hint: r.hint, desc: `${idx}#${r.d}` };
       }).sort((a, b) => a.x - b.x);
-      return parsed.map(p => ({ idx: p.idx, x: p.x, y: p.y, hint: p.hint, desc: p.desc }));
+      return parsed.map(p => ({ idx: p.idx, o: p.o, sel: p.sel, x: p.x, y: p.y, hint: p.hint, desc: p.desc }));
     }, { hintCss, maxIcons }).catch(() => [] as any[]);
 
     if (!icons || icons.length === 0) {
@@ -1696,8 +1727,29 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
     // 4. 逐个点击验证
     for (const icon of ordered.slice(0, Math.min(maxIcons, ordered.length))) {
+      // v3.20.x：点击前滚动图标到可见（千问回答流很长，操作栏可能被滚到视口外 y=-84），
+      //   滚动后重新读取坐标再点击（scrollIntoView 会改变元素位置）
+      let clickX = icon.x;
+      let clickY = icon.y;
+      try {
+        const pos = await page.evaluate(({ sel, o }: { sel: string; o: number }) => {
+          if (!sel) return null;
+          const els = document.querySelectorAll(sel);
+          const el = els[o] || els[0] || null;
+          if (!el) return null;
+          (el as HTMLElement).scrollIntoView({ block: 'center' });
+          const r = (el as HTMLElement).getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) return { x: Math.round(r.left), y: Math.round(r.top) };
+          return null;
+        }, { sel: icon.sel, o: icon.o }).catch(() => null);
+        if (pos && pos.x > 0 && pos.y > 0) {
+          clickX = pos.x;
+          clickY = pos.y;
+        }
+        await page.waitForTimeout(400);
+      } catch { /* 忽略 */ }
       // 用真实坐标点击（Playwright 真实鼠标事件）
-      const clicked = await page.mouse.click(icon.x + 4, icon.y + 4).catch(() => false).then(() => true);
+      const clicked = await page.mouse.click(clickX + 4, clickY + 4).catch(() => false).then(() => true);
       if (!clicked) continue;
       await page.waitForTimeout(1300);
       // 先查剪贴板是否直接捕获

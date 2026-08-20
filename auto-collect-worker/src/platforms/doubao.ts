@@ -294,10 +294,14 @@ export class DoubaoAdapter extends BasePlatformAdapter {
 
     // 步骤1: 注入 XHR 响应拦截，捕获 save 响应的 share_url
     await this.injectShareApiInterceptor(page, '/share/save', 'share_url');
+    // v3.20.x: 注入剪贴板+XHR+fetch 拦截作为双保险（save 响应 + 剪贴板都扫）
+    await this.injectClipboardInterceptor(page, ['/thread/']);
 
     // 步骤2: hover 在 AI 回答区域上，触发操作栏显示
     // v1.9 修复：hover 成功一个元素后立即停止——之前会继续 hover 兜底选择器（main 等），
     // 鼠标被移走导致已显示的操作栏消失，分享按钮永远找不到
+    // v3.20.x：豆包回答渲染在 iframe（巡检日志 iframes=2、主文档 main 无回答），
+    //   操作栏跟随回答也在 iframe，必须遍历主文档+所有子 frame 分别 hover。
     const answerSelectors = [
       // v3.20.x：豆包操作栏 .message-action-bar 跟随回答容器，hover 它或回答文本都能显示
       '[class*="message-action-bar"]',
@@ -305,33 +309,44 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       '[class*="message-content"]',
       '[class*="bubble-content"]',
       '[class*="flow-markdown"]',
+      '[class*="markdown"]',
       // 兜底
       'main', '[class*="chat"]', '[class*="conversation"]',
     ];
+    const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
 
     let hoveredAny = false;
-    for (const sel of answerSelectors) {
+    for (const frame of frames) {
       if (hoveredAny) break;
-      try {
-        const elements = await page.$$(sel);
-        for (let i = elements.length - 1; i >= 0; i--) {
-          const visible = await elements[i].isVisible().catch(() => false);
-          if (visible) {
-            await elements[i].hover({ timeout: 2000 }).catch(() => {});
-            await page.waitForTimeout(1500);
-            hoveredAny = true;
-            break;
+      for (const sel of answerSelectors) {
+        if (hoveredAny) break;
+        try {
+          const elements = await frame.$$(sel);
+          for (let i = elements.length - 1; i >= 0; i--) {
+            const visible = await elements[i].isVisible().catch(() => false);
+            if (visible) {
+              await elements[i].hover({ timeout: 2000 }).catch(() => {});
+              await page.waitForTimeout(1200);
+              hoveredAny = true;
+              break;
+            }
           }
-        }
-      } catch { /* 继续 */ }
+        } catch { /* 继续 */ }
+      }
     }
+    if (hoveredAny) logger.info('[豆包] hover 回答区域成功（触发操作栏）');
 
     // 步骤3: 点击分享按钮（操作栏内 tooltip 为"分享"的图标按钮）
     let shareBtnClicked = await this.clickDoubaoShareButton(page);
     if (!shareBtnClicked) {
       // 兜底：hover 消息后重新扫描（v1.9.5: 最多尝试 5 条，避免遍历全部消息浪费数分钟）
       logger.info('[豆包] 首次扫描未找到分享按钮，尝试 hover 消息区域后重新扫描（最多5条）...');
-      const allMessages = await page.$$('[class*="message"], [class*="receive"], [class*="bubble"]');
+      let allMessages: any[] = [];
+      for (const frame of frames) {
+        try {
+          allMessages = allMessages.concat(await frame.$$('[class*="message"], [class*="receive"], [class*="bubble"], [class*="answer"]'));
+        } catch { /* 继续 */ }
+      }
       let attempts = 0;
       for (let i = allMessages.length - 1; i >= 0 && attempts < 5; i--) {
         try {
@@ -386,19 +401,21 @@ export class DoubaoAdapter extends BasePlatformAdapter {
    */
   private async clickDoubaoShareButton(page: Page): Promise<boolean> {
     const btnSelector = '[class*="message-action-button-main"] > button';
+    const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
 
-    // 策略1: tooltip 识别
-    const btnCount = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
-    if (btnCount) {
+    // 策略1: tooltip 识别（遍历主文档 + iframe）
+    for (const frame of frames) {
+      const btnCount = await frame.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
+      if (!btnCount) continue;
       for (let i = 0; i < btnCount; i++) {
         try {
-          const btn = (await page.$$(btnSelector))[i];
+          const btn = (await frame.$$(btnSelector))[i];
           if (!btn) continue;
           const visible = await btn.isVisible().catch(() => false);
           if (!visible) continue;
           await btn.hover({ timeout: 1000 }).catch(() => {});
           await page.waitForTimeout(600);
-          const tip = await page.evaluate(() => {
+          const tip = await frame.evaluate(() => {
             const nodes = document.querySelectorAll('[class*="tooltip"], [data-tooltip]');
             for (let k = 0; k < nodes.length; k++) {
               const t = (nodes[k].textContent || '').trim();
@@ -409,7 +426,7 @@ export class DoubaoAdapter extends BasePlatformAdapter {
           if (tip.includes('分享')) {
             await btn.click({ timeout: 2000 }).catch(() => {});
             await page.waitForTimeout(1500);
-            logger.info(`[豆包] 通过 tooltip"${tip}"定位分享按钮 (index=${i})`);
+            logger.info(`[豆包] 通过 tooltip"${tip}"定位分享按钮 (frame=${frame === page.mainFrame() ? 'main' : 'iframe'}, index=${i})`);
             return true;
           }
           // 移开鼠标，避免 tooltip 残留干扰下一轮识别
@@ -419,28 +436,33 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       }
     }
 
-    // 策略2: 逐个点击验证面板（Worker 环境 tooltip 不可靠时的兜底）
+    // 策略2: 逐个点击验证面板（Worker 环境 tooltip 不可靠时的兜底，遍历 frames）
     // 分享按钮在操作栏相对位置固定（复制/朗读/喜欢/不喜欢/分享/重新生成/更多），
     // 从最右侧开始逐个点击，检查是否弹出分享面板（出现"复制链接"/"分享对话"即命中）
-    const panelCheck = (): Promise<boolean> =>
-      page.evaluate(() => {
-        const hasPanel = !!document.querySelector('[class*="share-header-ui"]');
-        if (hasPanel) return true;
-        const bodyTxt = (document.body.innerText || '');
-        return bodyTxt.includes('复制链接') && bodyTxt.includes('分享对话');
-      }).catch(() => false);
-    const btnCount2 = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
-    if (btnCount2) {
+    const panelCheck = async (): Promise<boolean> => {
+      for (const f of frames) {
+        const r = await f.evaluate(() => {
+          if (document.querySelector('[class*="share-header-ui"]')) return true;
+          const bodyTxt = (document.body.innerText || '');
+          return bodyTxt.includes('复制链接') && bodyTxt.includes('分享对话');
+        }).catch(() => false);
+        if (r) return true;
+      }
+      return false;
+    };
+    for (const frame of frames) {
+      const btnCount2 = await frame.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
+      if (!btnCount2) continue;
       // 从右侧开始（分享/重新生成在操作栏右侧），最多试前 5 个
       const start = Math.max(0, btnCount2 - 5);
       for (let i = btnCount2 - 1; i >= start; i--) {
         try {
-          const btn = (await page.$$(btnSelector))[i];
+          const btn = (await frame.$$(btnSelector))[i];
           if (!btn) continue;
           await btn.click({ timeout: 1500 }).catch(() => {});
           await page.waitForTimeout(1200);
           if (await panelCheck()) {
-            logger.info(`[豆包] 通过位置点击分享按钮 (index=${i})，分享面板已出现`);
+            logger.info(`[豆包] 通过位置点击分享按钮 (frame=${frame === page.mainFrame() ? 'main' : 'iframe'}, index=${i})，分享面板已出现`);
             return true;
           }
           // 未弹出面板则关闭可能的浮层后继续
@@ -459,8 +481,10 @@ export class DoubaoAdapter extends BasePlatformAdapter {
    * 豆包分享面板结构（实地确认）：.share-header-ui 内底部有文本精确为"复制链接"的按钮，
    * 消息 checkbox 默认已全选，无需（也不能）再点"全选"——点了反而取消勾选。
    * 点击后触发 share_token + save 两个 API，save 响应返回 share_url。
+   * v3.20.x：面板可能在 iframe，遍历主文档 + 所有子 frame。
    */
   private async clickDoubaoCopyLink(page: Page): Promise<boolean> {
+    const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
     const selectors = [
       'button:has-text("复制链接")',
       ':text-is("复制链接")',
@@ -468,33 +492,37 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       '[class*="share-bar"] :text-is("复制链接")',
       '[class*="share-header"] :text-is("复制链接")',
     ];
-    for (const sel of selectors) {
+    for (const frame of frames) {
+      for (const sel of selectors) {
+        try {
+          const el = await frame.$(sel);
+          if (el) {
+            const visible = await el.isVisible().catch(() => false);
+            if (!visible) continue;
+            await el.click({ timeout: 2000 }).catch(() => {});
+            await page.waitForTimeout(2000);
+            logger.info(`[豆包] 点击分享面板"复制链接": ${sel} (frame=${frame === page.mainFrame() ? 'main' : 'iframe'})`);
+            return true;
+          }
+        } catch { /* 继续 */ }
+      }
+    }
+    // 兜底：evaluate 扫描文本精确为"复制链接"的 button（遍历 frames）
+    for (const frame of frames) {
       try {
-        const el = await page.$(sel);
-        if (el) {
-          const visible = await el.isVisible().catch(() => false);
-          if (!visible) continue;
-          await el.click({ timeout: 2000 }).catch(() => {});
+        const clicked = await frame.evaluate(() => {
+          const btns = Array.from(document.querySelectorAll('button'));
+          const target = btns.find(b => (b.textContent || '').trim() === '复制链接');
+          if (target) { (target as HTMLButtonElement).click(); return true; }
+          return false;
+        }).catch(() => false);
+        if (clicked) {
           await page.waitForTimeout(2000);
-          logger.info(`[豆包] 点击分享面板"复制链接": ${sel}`);
+          logger.info('[豆包] 通过 evaluate 点击"复制链接"成功');
           return true;
         }
-      } catch { /* 继续 */ }
+      } catch { /* 忽略 */ }
     }
-    // 兜底：evaluate 扫描文本精确为"复制链接"的 button
-    try {
-      const clicked = await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const target = btns.find(b => (b.textContent || '').trim() === '复制链接');
-        if (target) { (target as HTMLButtonElement).click(); return true; }
-        return false;
-      }).catch(() => false);
-      if (clicked) {
-        await page.waitForTimeout(2000);
-        logger.info('[豆包] 通过 evaluate 点击"复制链接"成功');
-        return true;
-      }
-    } catch { /* 忽略 */ }
     return false;
   }
 }
