@@ -885,8 +885,18 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // 校验输入框是否真的含关键词，空/不含则用 evaluate 直接注入（兼容 React 受控组件）。
     try {
       const typedValue = await this.readInputValue(page, activeSelector);
-      if (!typedValue || !typedValue.includes(keyword.trim())) {
-        logger.warn(`[${this.platformName}] humanType 后输入框未写入关键词（读值="${typedValue.slice(0, 30)}"），用 evaluate 直接注入`);
+      const isEditable = await page.$eval(activeSelector, (el: any) => {
+        return el && el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT' && (el.isContentEditable || el.getAttribute('contenteditable') === 'true');
+      }).catch(() => false);
+      if (!typedValue || !typedValue.includes(keyword.trim()) || isEditable) {
+        if (!typedValue || !typedValue.includes(keyword.trim())) {
+          logger.warn(`[${this.platformName}] humanType 后输入框未写入关键词（读值="${typedValue.slice(0, 30)}"），用 evaluate 直接注入`);
+        } else if (isEditable) {
+          // v3.19.x: contenteditable 即使 textContent 有值，keyboard.type 的逐字符输入也常不触发
+          // React onChange，导致发送按钮仍 disabled（纳米日志"发送按钮 cursor-not-allowed"）。
+          // 读值非空但需额外派发 input 事件，强制 React 同步输入状态。
+          logger.warn(`[${this.platformName}] contenteditable 读值非空但需同步 React 状态，派发 input 事件`);
+        }
         await page.evaluate(({ sel, kw }: { sel: string; kw: string }) => {
           const el = document.querySelector(sel) as HTMLElement | null;
           if (!el) return;
@@ -900,9 +910,10 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
             else (el as any).value = kw;
             el.dispatchEvent(new Event('input', { bubbles: true }));
           } else {
-            // contenteditable：设置 textContent + input 事件
-            el.textContent = kw;
+            // contenteditable：确保 textContent 为关键词（若已写入则保留），再派发 input 事件同步 React
+            if (!el.textContent || !el.textContent.includes(kw)) el.textContent = kw;
             el.dispatchEvent(new InputEvent('input', { bubbles: true, data: kw }));
+            el.dispatchEvent(new InputEvent('change', { bubbles: true, data: kw }));
           }
           (el as HTMLElement).focus();
         }, { sel: activeSelector, kw: keyword });
