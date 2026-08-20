@@ -282,20 +282,27 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
-    // 豆包分享链接格式：https://www.doubao.com/share/{token}
-    // 实地探查（2026-07-12）：分享是会话级别（非单条消息），在回答操作栏或会话菜单中
-    // 流程：hover 回答/会话 → 操作栏出现 → 点击分享按钮 → 弹窗 → 复制链接
+    // v3.20.x 实地探查（2026-08-21）：豆包分享链接格式为 https://www.doubao.com/thread/{share_id}
+    // 分享按钮在回答气泡底部操作栏 .message-action-button-main 内（hover 回答后显示，
+    // 无 share class/aria/title，旧 [class*="share"] 选择器匹配不到）。
+    // 点击"复制链接"会调用两个 API 生成链接（不走标准剪贴板——React 闭包缓存了原生
+    // writeText 引用，injectClipboardInterceptor 拦截不到）：
+    //   1. POST /im/message/share/share_token body {"conversation_id":xxx} → pre_share_id + share_token
+    //   2. POST /im/message/share/save body {"conv_id":xxx,"message_index_list":[...],"share_token":token}
+    //      → 返回 data.share_url: https://www.doubao.com/thread/{share_id}
+    // 真实分享链接必须从 save API 响应中提取（XHR 拦截），剪贴板只作兜底。
 
-    // 步骤1: 注入 clipboard + execCommand 拦截
-    await this.injectClipboardInterceptor(page, ['/share/', 'doubao.com']);
+    // 步骤1: 注入 XHR 响应拦截，捕获 save 响应的 share_url
+    await this.injectShareApiInterceptor(page, '/share/save', 'share_url');
 
     // 步骤2: hover 在 AI 回答区域上，触发操作栏显示
     // v1.9 修复：hover 成功一个元素后立即停止——之前会继续 hover 兜底选择器（main 等），
     // 鼠标被移走导致已显示的操作栏消失，分享按钮永远找不到
     const answerSelectors = [
+      // v3.20.x：豆包操作栏 .message-action-bar 跟随回答容器，hover 它或回答文本都能显示
+      '[class*="message-action-bar"]',
       '[class*="receive-message"]',
       '[class*="message-content"]',
-      '[class*="answer"]',
       '[class*="bubble-content"]',
       '[class*="flow-markdown"]',
       // 兜底
@@ -319,15 +326,8 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       } catch { /* 继续 */ }
     }
 
-    // 步骤3: 健壮地查找并点击分享按钮
-    const shareBtnClicked = await this.findAndClickShareButton(page, [
-      'button:has-text("分享")',
-      '[aria-label*="分享"]',
-      '[data-testid*="share"]',
-      '[class*="share"]:not([class*="shared"])',
-      '[class*="share-conversation"]',
-    ], ['分享', 'Share', 'share']);
-
+    // 步骤3: 点击分享按钮（操作栏内 tooltip 为"分享"的图标按钮）
+    let shareBtnClicked = await this.clickDoubaoShareButton(page);
     if (!shareBtnClicked) {
       // 兜底：hover 消息后重新扫描（v1.9.5: 最多尝试 5 条，避免遍历全部消息浪费数分钟）
       logger.info('[豆包] 首次扫描未找到分享按钮，尝试 hover 消息区域后重新扫描（最多5条）...');
@@ -340,40 +340,126 @@ export class DoubaoAdapter extends BasePlatformAdapter {
           attempts++;
           await allMessages[i].hover({ timeout: 1000 }).catch(() => {});
           await page.waitForTimeout(800);
-          const clicked = await this.findAndClickShareButton(page, [], ['分享', 'Share', 'share']);
-          if (clicked) break;
+          shareBtnClicked = await this.clickDoubaoShareButton(page);
+          if (shareBtnClicked) break;
         } catch { /* 继续 */ }
       }
-      const captured = await this.getCapturedShareUrl(page, '/share/');
-      if (captured) return captured;
-      await page.keyboard.press('Escape').catch(() => {});
-      return null;
+      if (!shareBtnClicked) {
+        const captured = await this.getCapturedShareUrl(page, '/thread/');
+        if (captured) return captured;
+        await page.keyboard.press('Escape').catch(() => {});
+        return null;
+      }
     }
 
-    // 步骤4: 查找并点击"复制链接"按钮（如果有）
-    // v3.19.x：豆包分享面板是自绘弹层，简单 button 选择器匹配不到"复制链接"。
-    //   改用基类的 clickShareMenuItem（二次菜单扫描：全页面可见按钮 + 弹窗作用域 + 链接输入框直读），
-    //   先点全选再找复制链接，覆盖豆包分享面板的多样结构。
-    await this.clickShareMenuItem(page);
-    const menuCaptured = await this.getCapturedShareUrl(page, '/share/');
-    if (menuCaptured) {
-      logger.info(`[豆包] 二次菜单命中，捕获分享链接: ${menuCaptured}`);
-      return menuCaptured;
-    }
+    // 步骤4: 点击"复制链接"按钮（豆包分享面板默认已全选消息，跳过全选避免误取消勾选）
+    await this.clickDoubaoCopyLink(page);
 
-    // 步骤5: 从拦截到的剪贴板内容提取 URL
-    const capturedUrl = await this.getCapturedShareUrl(page, '/share/');
+    // 步骤5: 从 save API 响应拦截到的 share_url 提取（豆包链接为 /thread/ 格式）
+    const capturedUrl = await this.getCapturedShareUrl(page, '/thread/');
     if (capturedUrl) {
-      console.log(`[豆包] 从剪贴板拦截到分享链接: ${capturedUrl}`);
+      logger.info(`[豆包] 从 save API 响应捕获分享链接: ${capturedUrl}`);
       return capturedUrl;
     }
 
-    // 步骤6: 兜底 — 从弹窗中提取
-    const dialogUrl = await this.extractShareUrlFromDialog(page, '/share/');
-    if (dialogUrl) return dialogUrl;
+    // 步骤6: 剪贴板拦截兜底（部分版本可能仍走剪贴板）
+    const clipUrl = await this.getCapturedShareUrl(page, '/thread/');
+    if (clipUrl) {
+      logger.info(`[豆包] 从剪贴板捕获分享链接: ${clipUrl}`);
+      return clipUrl;
+    }
 
     await page.keyboard.press('Escape').catch(() => {});
     console.log('[豆包] 未能提取到分享链接');
     return null;
+  }
+
+  /**
+   * v3.20.x: 定位并点击豆包分享按钮
+   *
+   * 豆包分享按钮无 class/aria/title 特征（class 是通用 flex 图标类），
+   * 只能靠 hover 后出现的 tooltip 文本（"分享"）识别。
+   * 策略：遍历操作栏 .message-action-button-main 内按钮，逐个 hover 读取 tooltip，
+   * 命中"分享"即点击；hover 后需把鼠标移开（move 到 0,0）避免 tooltip 残留干扰下一轮。
+   */
+  private async clickDoubaoShareButton(page: Page): Promise<boolean> {
+    const btnSelector = '[class*="message-action-button-main"] > button';
+    const btnCount = await page.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
+    if (!btnCount) return false;
+
+    for (let i = 0; i < btnCount; i++) {
+      try {
+        const btn = (await page.$$(btnSelector))[i];
+        if (!btn) continue;
+        const visible = await btn.isVisible().catch(() => false);
+        if (!visible) continue;
+        await btn.hover({ timeout: 1000 }).catch(() => {});
+        await page.waitForTimeout(600);
+        const tip = await page.evaluate(() => {
+          const nodes = document.querySelectorAll('[class*="tooltip"], [data-tooltip]');
+          for (let k = 0; k < nodes.length; k++) {
+            const t = (nodes[k].textContent || '').trim();
+            if (t && t.length <= 10) return t;
+          }
+          return '';
+        }).catch(() => '');
+        if (tip.includes('分享')) {
+          await btn.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(1500);
+          logger.info(`[豆包] 通过 tooltip"${tip}"定位分享按钮 (index=${i})`);
+          return true;
+        }
+        // 移开鼠标，避免 tooltip 残留干扰下一轮识别
+        await page.mouse.move(5, 5).catch(() => {});
+        await page.waitForTimeout(400);
+      } catch { /* 继续下一个 */ }
+    }
+    logger.warn('[豆包] 操作栏内未找到 tooltip 为"分享"的按钮');
+    return false;
+  }
+
+  /**
+   * v3.20.x: 点击豆包分享面板的"复制链接"按钮
+   *
+   * 豆包分享面板结构（实地确认）：.share-header-ui 内底部有文本精确为"复制链接"的按钮，
+   * 消息 checkbox 默认已全选，无需（也不能）再点"全选"——点了反而取消勾选。
+   * 点击后触发 share_token + save 两个 API，save 响应返回 share_url。
+   */
+  private async clickDoubaoCopyLink(page: Page): Promise<boolean> {
+    const selectors = [
+      'button:has-text("复制链接")',
+      ':text-is("复制链接")',
+      '[class*="share"] :text-is("复制链接")',
+      '[class*="share-bar"] :text-is("复制链接")',
+      '[class*="share-header"] :text-is("复制链接")',
+    ];
+    for (const sel of selectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          const visible = await el.isVisible().catch(() => false);
+          if (!visible) continue;
+          await el.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(2000);
+          logger.info(`[豆包] 点击分享面板"复制链接": ${sel}`);
+          return true;
+        }
+      } catch { /* 继续 */ }
+    }
+    // 兜底：evaluate 扫描文本精确为"复制链接"的 button
+    try {
+      const clicked = await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll('button'));
+        const target = btns.find(b => (b.textContent || '').trim() === '复制链接');
+        if (target) { (target as HTMLButtonElement).click(); return true; }
+        return false;
+      }).catch(() => false);
+      if (clicked) {
+        await page.waitForTimeout(2000);
+        logger.info('[豆包] 通过 evaluate 点击"复制链接"成功');
+        return true;
+      }
+    } catch { /* 忽略 */ }
+    return false;
   }
 }

@@ -1372,6 +1372,53 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   }
 
   /**
+   * v3.20.x: 注入 XHR 响应拦截，从分享生成 API 的响应 JSON 中提取分享链接
+   *
+   * 背景：豆包等平台"复制链接"不走标准剪贴板 API（React 闭包缓存了原生 writeText 引用，
+   * 运行时覆写 navigator.clipboard.writeText 拦截不到），而是调用后端 API 生成分享链接，
+   * 前端拿到响应后拼接/复制。分享链接真实来源是 API 响应体，必须拦 XHR 响应。
+   *
+   * 拦截目标：请求 URL 含 apiPathPattern 的 XHR 响应，解析 JSON，取 data[urlField]
+   * （如 share_url），写入 (window as any).__capturedShareUrl__ 供 getCapturedShareUrl 读取。
+   *
+   * @param page Playwright Page
+   * @param apiPathPattern 请求路径匹配子串（如 '/share/save'）
+   * @param urlField 响应 JSON 中存放分享链接的字段名（如 'share_url'）
+   */
+  protected async injectShareApiInterceptor(page: Page, apiPathPattern: string, urlField: string): Promise<void> {
+    await page.evaluate(
+      ({ apiPath, field }) => {
+        (window as any).__capturedShareUrl__ = null;
+        const _open = XMLHttpRequest.prototype.open;
+        (XMLHttpRequest.prototype as any).open = function (this: any, m: string, u: string) {
+          this.__u = u;
+          return _open.apply(this, arguments as any);
+        };
+        const _send = XMLHttpRequest.prototype.send;
+        (XMLHttpRequest.prototype as any).send = function (this: any, b: any) {
+          const xhr = this;
+          const _o = xhr.onreadystatechange;
+          xhr.onreadystatechange = function (this: any) {
+            if (xhr.readyState === 4) {
+              try {
+                const t = xhr.responseText || '';
+                if ((xhr.__u || '').includes(apiPath) && t) {
+                  const d = JSON.parse(t);
+                  const url = d && d.data && typeof d.data[field] === 'string' ? d.data[field] : null;
+                  if (url) (window as any).__capturedShareUrl__ = url;
+                }
+              } catch { /* 忽略 */ }
+            }
+            if (_o) return (_o as any).apply(this, arguments as any);
+          };
+          return _send.apply(this, arguments as any);
+        };
+      },
+      { apiPath: apiPathPattern, field: urlField }
+    ).catch(() => {});
+  }
+
+  /**
    * 从拦截到的剪贴板内容提取 URL
    * @param urlPattern URL 中必须包含的子串（如 '/share/'）
    * @returns 匹配到的 URL 或 null
