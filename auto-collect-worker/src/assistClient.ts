@@ -35,6 +35,8 @@ export async function reportAssist(payload: {
   shotHeight?: number;
   /** v3.22.2: 'failed'=轨迹重放完成但弹层仍在（本次拖动未通过），桌面端据此提示重试 */
   replayResult?: 'failed';
+  /** v3.22.4: 当前借用的平台账号 ID——server 查 platform_auth.user_id 关联会话归属用户（弹窗用户隔离） */
+  authId?: number | null;
 }): Promise<{ observerOnline: boolean } | null> {
   try {
     const resp = await axios.post(

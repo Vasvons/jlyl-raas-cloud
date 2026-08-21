@@ -1109,6 +1109,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       const first = await reportAssist({
         sessionId, platform: this.platformName, keyword: this.currentKeyword,
         status: 'pending', screenshot: base64, shotWidth: vp.width, shotHeight: vp.height,
+        authId: this.currentAuthId, // v3.22.4: 会话关联账号归属用户（弹窗用户隔离）
       });
       if (!first) return false;
       if (!first.observerOnline) {
@@ -1121,7 +1122,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       let sinceSeq = 0;
       // 验证通过收尾：上报 resolved + 导出 storageState 回写账号池（x5sec 跨查询复用）
       const finishPass = async (): Promise<boolean> => {
-        await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'resolved' });
+        await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'resolved', authId: this.currentAuthId });
         logger.info(`[远程协助] 人工验证完成，baxia 弹层已消失（${this.platformName}）`);
         if (this.currentAuthId != null) {
           try {
@@ -1180,7 +1181,7 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           if (!(await this.hasBaxiaLayer(page))) {
             return await finishPass();
           }
-          await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'pending', replayResult: 'failed' });
+          await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'pending', replayResult: 'failed', authId: this.currentAuthId });
           logger.info(`[远程协助] 轨迹重放完成但弹层仍在，等待用户重试（${this.platformName}）`);
         }
         // 上报最新截图（桌面端弹窗实时刷新）
@@ -1189,11 +1190,11 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
           await reportAssist({
             sessionId, platform: this.platformName, keyword: '',
             status: 'pending', screenshot: s2.toString('base64'),
-            shotWidth: vp.width, shotHeight: vp.height,
+            shotWidth: vp.width, shotHeight: vp.height, authId: this.currentAuthId,
           });
         }
       }
-      await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'timeout' });
+      await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'timeout', authId: this.currentAuthId });
       logger.warn(`[远程协助] 180秒内未完成人工验证，放弃（${this.platformName}）`);
       return false;
     } catch (e: any) {

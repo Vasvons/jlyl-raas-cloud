@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authMiddleware } from '../auth';
+import { query } from '../db';
 
 /**
  * 远程人工协助验证（v3.22：baxia 人机验证远程拖滑块）
@@ -44,6 +45,12 @@ interface AssistSession {
   commands: AssistCommand[];
   commandSeq: number;
   /**
+   * v3.22.4: 会话归属用户（platform_auth.user_id，Worker 上报 authId 时查库关联）。
+   * 弹窗用户隔离：普通用户只能看到/操作自己账号触发的验证会话；
+   * 管理员（level=1）可协助任意用户的会话。null=无归属（兜底，仅管理员可见）。
+   */
+  userId: number | null;
+  /**
    * v3.22.2: Worker 重放轨迹后的判定结果。
    * failed=重放完成但 baxia 弹层仍在（本次拖动未通过，等待用户重试）；
    * 桌面端据此显示"请重试"提示/挂起通知。重放通过时由 status=resolved 表达。
@@ -57,8 +64,10 @@ interface AssistSession {
 
 const sessions = new Map<string, AssistSession>();
 const MAX_SESSIONS = 50;
-/** 桌面端最近一次轮询 pending 的时间戳（观察者在线判定） */
-let observerLastSeen = 0;
+/** v3.22.4: 每个用户最近一次轮询 pending 的时间戳（观察者在线判定按用户隔离） */
+const observerLastSeenMap = new Map<number, number>();
+/** v3.22.4: 管理员（level=1）最近一次轮询时间——管理员可协助任意用户的会话 */
+let adminLastSeen = 0;
 /** 观察者在线窗口：桌面端 2s 轮询一次，10s 未轮询视为离线 */
 const OBSERVER_OFFLINE_MS = 10 * 1000;
 /** 会话保留时长（resolved/timeout 后保留 5 分钟供桌面端展示结果） */
@@ -74,6 +83,42 @@ function cleanExpiredSessions(): void {
     const sorted = Array.from(sessions.values()).sort((a, b) => a.updatedAt - b.updatedAt);
     for (const s of sorted.slice(0, sessions.size - MAX_SESSIONS)) sessions.delete(s.sessionId);
   }
+  // 观察者心跳 Map 兜底限量（防长期运行膨胀）
+  if (observerLastSeenMap.size > 200) {
+    const entries = Array.from(observerLastSeenMap.entries()).sort((a, b) => a[1] - b[1]);
+    for (const [uid] of entries.slice(0, observerLastSeenMap.size - 200)) observerLastSeenMap.delete(uid);
+  }
+}
+
+/** v3.22.4: 当前请求用户是否可访问该会话（管理员可协助任意会话；普通用户仅自己的） */
+function canAccessSession(s: AssistSession, req: any): boolean {
+  if (req?.user?.level === '1') return true;
+  const uid = Number(req?.user?.id);
+  return s.userId != null && Number.isFinite(uid) && s.userId === uid;
+}
+
+/** v3.22.4: 会话归属用户的观察者是否在线（本人在线 或 任一管理员在线） */
+function isObserverOnline(s: AssistSession, now: number): boolean {
+  if (now - adminLastSeen < OBSERVER_OFFLINE_MS) return true;
+  if (s.userId != null) {
+    return now - (observerLastSeenMap.get(s.userId) || 0) < OBSERVER_OFFLINE_MS;
+  }
+  // 无归属会话（兜底）：任一用户在线即可
+  for (const t of observerLastSeenMap.values()) {
+    if (now - t < OBSERVER_OFFLINE_MS) return true;
+  }
+  return false;
+}
+
+/** v3.22.4: 根据账号 ID 查归属用户（platform_auth.user_id），失败返回 null */
+async function lookupUserIdByAuthId(authId: number): Promise<number | null> {
+  try {
+    const r = await query('SELECT user_id FROM platform_auth WHERE id = $1', [authId]);
+    const uid = (r as any)?.rows?.[0]?.user_id;
+    return uid != null ? Number(uid) : null;
+  } catch {
+    return null;
+  }
 }
 
 // ============ Worker 侧接口（无鉴权，Worker 内部调用，同 dequeue 模式）============
@@ -85,7 +130,7 @@ function cleanExpiredSessions(): void {
 router.post('/report', async (req, res) => {
   try {
     cleanExpiredSessions();
-    const { sessionId, platform, keyword, status, screenshot, shotWidth, shotHeight } = req.body || {};
+    const { sessionId, platform, keyword, status, screenshot, shotWidth, shotHeight, authId } = req.body || {};
     if (!sessionId || typeof sessionId !== 'string') {
       return res.status(400).json({ code: 400, message: '缺少sessionId' });
     }
@@ -95,13 +140,17 @@ router.post('/report', async (req, res) => {
       if (status !== 'pending') {
         return res.json({ code: 200, data: { observerOnline: false } });
       }
+      // v3.22.4: 按 Worker 借用的账号 ID 关联归属用户（弹窗用户隔离的依据）
+      const userId = (typeof authId === 'number' && Number.isFinite(authId))
+        ? await lookupUserIdByAuthId(authId)
+        : null;
       s = {
         sessionId, platform: platform || '', keyword: keyword || '',
         status: 'pending', screenshot: null, shotWidth: shotWidth || 1440, shotHeight: shotHeight || 900,
-        commands: [], commandSeq: 0, replayResult: null, replayAt: 0, createdAt: now, updatedAt: now,
+        commands: [], commandSeq: 0, userId, replayResult: null, replayAt: 0, createdAt: now, updatedAt: now,
       };
       sessions.set(sessionId, s);
-      console.log(`[RemoteAssist] 新会话 ${sessionId} platform=${platform} keyword=${String(keyword || '').slice(0, 20)}`);
+      console.log(`[RemoteAssist] 新会话 ${sessionId} platform=${platform} userId=${userId} keyword=${String(keyword || '').slice(0, 20)}`);
     }
     if (screenshot && typeof screenshot === 'string' && screenshot.length > 100) {
       s.screenshot = screenshot;
@@ -119,7 +168,8 @@ router.post('/report', async (req, res) => {
       console.log(`[RemoteAssist] 会话 ${sessionId} → ${status}`);
     }
     s.updatedAt = now;
-    const observerOnline = now - observerLastSeen < OBSERVER_OFFLINE_MS;
+    // v3.22.4: 观察者在线按会话归属用户判定（本人或任一管理员）
+    const observerOnline = isObserverOnline(s, now);
     res.json({ code: 200, data: { observerOnline } });
   } catch (e: any) {
     console.error('[RemoteAssist] report失败:', e.message);
@@ -150,14 +200,21 @@ router.get('/:sessionId/commands', async (req, res) => {
 /** 桌面端轮询待验证会话（2s 一次，兼做观察者心跳） */
 router.get('/pending', authMiddleware, async (req, res) => {
   try {
-    observerLastSeen = Date.now();
+    const now = Date.now();
+    const uid = Number((req as any).user?.id);
+    const isAdmin = (req as any).user?.level === '1';
+    // v3.22.4: 观察者心跳按用户隔离（管理员心跳单独记录，可协助任意会话）
+    if (isAdmin) adminLastSeen = now;
+    if (Number.isFinite(uid)) observerLastSeenMap.set(uid, now);
     cleanExpiredSessions();
+    // v3.22.4: 会话按归属用户过滤——普通用户只见自己的，管理员见全部
+    const visible = Array.from(sessions.values()).filter(s => canAccessSession(s, req));
     // 返回最近一个 pending 会话（同一时刻通常只有一个平台触发风控）
-    const pending = Array.from(sessions.values())
+    const pending = visible
       .filter(s => s.status === 'pending' && s.screenshot)
       .sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
     // 附带最近 30 秒内结束的会话（让弹窗能显示"验证成功"的收尾状态）
-    const recentDone = Array.from(sessions.values())
+    const recentDone = visible
       .filter(s => s.status !== 'pending' && Date.now() - s.updatedAt < 30 * 1000)
       .sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
     res.json({
@@ -179,7 +236,8 @@ router.get('/pending', authMiddleware, async (req, res) => {
 router.get('/:sessionId/screenshot', authMiddleware, async (req, res) => {
   try {
     const s = sessions.get(String(req.params.sessionId));
-    if (!s || !s.screenshot) return res.json({ code: 404, message: '会话不存在或无截图' });
+    // v3.22.4: 归属校验——他人会话与"不存在"同语义（404），不暴露存在性
+    if (!s || !s.screenshot || !canAccessSession(s, req)) return res.json({ code: 404, message: '会话不存在或无截图' });
     res.json({
       code: 200,
       data: {
@@ -201,7 +259,8 @@ router.get('/:sessionId/screenshot', authMiddleware, async (req, res) => {
 router.post('/:sessionId/command', authMiddleware, async (req, res) => {
   try {
     const s = sessions.get(String(req.params.sessionId));
-    if (!s) return res.json({ code: 404, message: '会话不存在' });
+    // v3.22.4: 归属校验（同 screenshot，404 不暴露存在性）
+    if (!s || !canAccessSession(s, req)) return res.json({ code: 404, message: '会话不存在' });
     if (s.status !== 'pending') return res.json({ code: 400, message: `会话已结束(${s.status})` });
     const { type, x, y, text } = req.body || {};
     const validTypes = ['mouse_move', 'mouse_down', 'mouse_up', 'click', 'type'];
@@ -230,7 +289,8 @@ router.post('/:sessionId/command', authMiddleware, async (req, res) => {
 router.post('/:sessionId/command/batch', authMiddleware, async (req, res) => {
   try {
     const s = sessions.get(String(req.params.sessionId));
-    if (!s) return res.json({ code: 404, message: '会话不存在' });
+    // v3.22.4: 归属校验（同 screenshot，404 不暴露存在性）
+    if (!s || !canAccessSession(s, req)) return res.json({ code: 404, message: '会话不存在' });
     if (s.status !== 'pending') return res.json({ code: 400, message: `会话已结束(${s.status})` });
     const commands: Array<{ type: string; x?: number; y?: number; text?: string; ts?: number }> = req.body?.commands;
     if (!Array.isArray(commands) || commands.length === 0 || commands.length > 300) {
