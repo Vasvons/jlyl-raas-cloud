@@ -1,17 +1,22 @@
 -- ============================================================================
--- 巡检回答引用源统计（GEO 采信源分析）
+-- 巡检回答引用源统计（GEO 采信源分析）v2
 -- 用途：统计 real_collect_record.raw_content 中 AI 回答引用的 URL 域名分布，
 --       验证"12 自媒体平台作为 GEO 发布渠道是否有效"。
+-- v2 修复：CTE 只对第一条语句生效导致后续节报 relation "final" does not exist，
+--          改为 CREATE TEMP TABLE 物化一次，全会话共享，且只扫一遍大表。
 -- 用法（云服务器上执行）：
---   cd /opt/jlyl-cloud && docker compose exec -T db psql -U jlyl -d jlyl_cloud < scripts/citation-stats.sql
+--   cd /opt/jlyl-cloud && git pull origin main && \
+--   docker compose exec -T db psql -U jlyl -d jlyl_cloud < scripts/citation-stats.sql
 -- 时间窗口：默认近 30 天，修改下方 interval '30 days' 可调整。
 -- ============================================================================
 
 \timing off
 \pset footer off
 
--- ============ 公共 CTE：提取 URL 域名 + 归一化 + 排除噪声 + 分类 ============
+-- ============ 物化中间表：提取 URL 域名 + 归一化 + 排除噪声 + 分类 ============
 -- 噪声排除清单：AI 平台自身域名/分享链接、图片与静态资源 CDN、规范类站点
+DROP TABLE IF EXISTS final;
+CREATE TEMP TABLE final AS
 WITH urls AS (
   SELECT r.platform,
          r.brand_matched,
@@ -67,15 +72,15 @@ classified AS (
       ELSE NULL
     END AS other_community
   FROM norm
-),
-final AS (
-  SELECT platform, brand_matched, domain,
-    COALESCE(self_media, other_community, '其他网站') AS source_name,
-    CASE WHEN self_media IS NOT NULL THEN '系统12自媒体平台'
-         WHEN other_community IS NOT NULL THEN '其他社区/问答'
-         ELSE '其他网站' END AS source_type
-  FROM classified
 )
+SELECT platform, brand_matched, domain,
+  COALESCE(self_media, other_community, '其他网站') AS source_name,
+  CASE WHEN self_media IS NOT NULL THEN '系统12自媒体平台'
+       WHEN other_community IS NOT NULL THEN '其他社区/问答'
+       ELSE '其他网站' END AS source_type
+FROM classified;
+
+ANALYZE final;
 
 -- ============ 1. 总览 ============
 \echo ''
