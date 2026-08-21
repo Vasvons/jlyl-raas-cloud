@@ -165,11 +165,31 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
     ];
     for (const sel of copyContainerSelectors) {
       try {
+        // v3.21.3 关键修复：page.click() 可能因分享面板上方有
+        // `.agent-chat__bubble__suffix` 等层遮挡而静默失败（错误被 .catch 吞掉），
+        // 导致点击"复制链接"容器实际没生效、share API 永不触发。
+        // 改用真实鼠标坐标点击（与人工操作一致，绕开 actionability 遮挡检测），
+        // 点击前先滚动到可见并重新读取坐标。
+        let clickPos: { x: number; y: number } | null = null;
         const btn = await page.$(sel);
         if (!btn) continue;
         const visible = await btn.isVisible().catch(() => false);
         if (!visible) continue;
-        await btn.click({ timeout: 3000 }).catch(() => {});
+        try {
+          clickPos = await page.evaluate((s: string) => {
+            const el = document.querySelector(s) as HTMLElement | null;
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) return null;
+            el.scrollIntoView({ block: 'center' });
+            const r2 = el.getBoundingClientRect();
+            if (r2.width <= 0 || r2.height <= 0) return null;
+            return { x: Math.round(r2.left + r2.width / 2), y: Math.round(r2.top + r2.height / 2) };
+          }, sel).catch(() => null);
+        } catch { /* 忽略 */ }
+        if (!clickPos) continue;
+        await page.waitForTimeout(400);
+        await page.mouse.click(clickPos.x, clickPos.y).catch(() => {});
         // v3.21.2: 点击容器后用轮询等待上层拦截器回填 shareId（share API 响应可能
         // 延迟 / 异步回填）。每次轮询读 __ybShareId（拦截器专用），命中即拼链接返回。
         let found: string | null = null;
