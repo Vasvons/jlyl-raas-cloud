@@ -551,6 +551,40 @@ export class DoubaoAdapter extends BasePlatformAdapter {
     }
   }
 
+  /**
+   * v3.21.8: 内容提取异常诊断（嵌入 ERROR 消息，用户贴一行 ERROR 即可定位）
+   *
+   * 豆包"侧边栏污染拦截"三大候选根因的数据区分：
+   *   a. 用户消息=0 → 查询从未发送（发送按钮点击无效/React 受控输入失败）
+   *   b. 用户消息≥1 且 AI消息=0 → 已发送但 AI 未生成（平台风控静默处理/登录态失效）
+   *   c. 主文档计数为 0 但某 iframe 有消息 → 回答在 iframe，主文档提取路径落空
+   */
+  protected async getExtractDiagHint(page: Page): Promise<string> {
+    try {
+      const mainDiag = await page.evaluate(() => {
+        const userMsgs = document.querySelectorAll('[data-testid^="send_message"], [class*="send-message"]').length;
+        const aiMsgs = document.querySelectorAll('[data-testid^="receive_message"], [class*="receive-message"]').length;
+        const ta = document.querySelector('textarea') as HTMLTextAreaElement | null;
+        const inputVal = ta ? (ta.value || '').slice(0, 30) : '(无textarea)';
+        const avatar = document.querySelector('img[class*="avatar"], img[data-testid*="avatar"], [class*="user-avatar"]');
+        return `主文档: 用户消息=${userMsgs} AI消息=${aiMsgs} 输入框="${inputVal}" 登录头像=${avatar ? '有' : '无'}`;
+      }).catch(() => '主文档evaluate失败');
+      const frameParts: string[] = [];
+      for (const f of page.frames()) {
+        if (f === page.mainFrame()) continue;
+        const r = await f.evaluate(() => {
+          const u = document.querySelectorAll('[data-testid^="send_message"], [class*="send-message"]').length;
+          const a = document.querySelectorAll('[data-testid^="receive_message"], [class*="receive-message"]').length;
+          return `用户=${u} AI=${a}`;
+        }).catch(() => 'evaluate失败');
+        frameParts.push(r);
+      }
+      return `${mainDiag}${frameParts.length ? ' | iframe: ' + frameParts.join('; ') : ' | 无iframe'}`;
+    } catch (e: any) {
+      return `诊断失败: ${e.message}`;
+    }
+  }
+
   async extractShareLink(page: Page): Promise<string | null> {
     // v3.20.x 实地探查（2026-08-21）：豆包分享链接格式为 https://www.doubao.com/thread/{share_id}
     //

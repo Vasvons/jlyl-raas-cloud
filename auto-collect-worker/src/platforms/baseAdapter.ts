@@ -3,6 +3,7 @@ import { PlatformAdapter, PlatformCredentials, QueryResult, randomDelay } from '
 import { smartFindInputElement, smartFindLongestContent } from '../indexedInteractor';
 import { humanType, humanDelay, humanClick } from '../behaviorHumanizer';
 import * as logger from '../logger';
+import { reportAssist, pullAssistCommands, persistStorageState } from '../assistClient';
 
 /**
  * 通用平台适配器基类实现
@@ -82,6 +83,11 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
    * 抛"内容提取异常"防止垃圾数据入库（子类可按平台扩展）
    */
   protected sidebarMarkers: string[] = ['新对话', '新建对话', '创建新项目', '云盘', '云空间', '定时任务', '最近对话', 'New Chat', 'My Kimi', 'Log in to sync'];
+
+  // v3.22: 当前查询上下文（taskFetcher 借用账号后回填 authId；远程协助会话展示
+  // 关键词 + 验证通过后按 authId 回写 storageState 用。适配器是单例，字段对最近一次查询有效）
+  protected currentKeyword = '';
+  public currentAuthId: number | null = null;
 
   /**
    * 提交查询（v1.9.3 钩子方法）
@@ -625,6 +631,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   }
 
   async query(page: Page, keyword: string): Promise<QueryResult> {
+    // v3.22: 记录当前查询上下文（远程协助会话展示 + storageState 回写定位用）
+    this.currentKeyword = keyword;
     // 导航到聊天页（新对话）
     // 使用 networkidle 等待 SPA 页面 JS 渲染完成（比 domcontentloaded 更可靠）
     try {
@@ -855,6 +863,35 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       throw new Error(`输入框未找到: 主选择器(${this.inputSelector})及所有回退选择器均超时 (URL=${url}, title=${title})`);
     }
 
+    // ============ v3.22: baxia 远程协助验证 → 通过后重试一次 ============
+    // runQueryFlow 检测到 baxia 弹层时先请求远程人工协助（桌面端弹窗显示 Worker 页面
+    // 截图，用户拖滑块，指令回传本 context 执行）。验证通过后抛 __BAXIA_ASSISTED__
+    // 标志错误，此处捕获并在同一 context 内重新提交查询（页面已解锁）。
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt > 0) {
+        logger.info(`[${this.platformName}] baxia 人工验证通过，重新提交查询`);
+        await page.waitForTimeout(2500);
+      }
+      try {
+        return await this.runQueryFlow(page, keyword, activeSelector);
+      } catch (e: any) {
+        if (attempt === 0 && String(e?.message || '').includes('__BAXIA_ASSISTED__')) {
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new Error('查询失败: 查询流程意外终止');
+  }
+
+  /**
+   * 查询执行流（v3.22 从 query() 抽出）：
+   * 输入 → 提交 → 等待回答 → 提取内容 → 污染校验 → 页面风控检测 → 分享提取 → 账号异常检测
+   *
+   * 抽出目的：baxia 远程协助验证通过后，query() 需要在同一 context 内重跑本流程
+   * （context 保留了验证通过的 x5sec cookie，重开 context 凭证就丢了）。
+   */
+  protected async runQueryFlow(page: Page, keyword: string, activeSelector: string): Promise<QueryResult> {
     // 清空输入框并填入关键词（v1.3+ 行为人性化：逐字符输入 + 随机间隔）
     // 部分平台 fill 失败（如 contenteditable），降级为 humanType
     try {
@@ -949,7 +986,10 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // 历史标题含品牌词导致大量假命中。命中 2 个以上框架标记即判定为污染，抛错不入库
     const markerHits = this.sidebarMarkers.filter(m => text.includes(m)).length;
     if (markerHits >= 2) {
-      throw new Error(`内容提取异常: 抓取到页面框架/侧边栏文本（命中${markerHits}个标记），AI 回答可能未生成 (内容长度=${text.trim().length})`);
+      // v3.21.8: 嵌入平台专属诊断（豆包重写 getExtractDiagHint 返回消息计数/输入框值/
+      // 登录态/逐frame命中），ERROR 一行日志即可定位，不用翻前置 WARN
+      const diagHint = await this.getExtractDiagHint(page).catch(() => '');
+      throw new Error(`内容提取异常: 抓取到页面框架/侧边栏文本（命中${markerHits}个标记），AI 回答可能未生成 (内容长度=${text.trim().length})${diagHint ? ' | ' + diagHint : ''}`);
     }
 
     // ============ 页面级风控检测（v3.21.7，提前到分享提取之前）============
@@ -1010,7 +1050,30 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
     // 2. 阿里 baxia 人机验证弹层（实地诊断 2026-08-21 通义千问：
     //    baxia-dialog 全屏遮挡导致回答未生成，被误判"账号异常：内容过短"误标 offline）
     try {
-      const hasBaxia = await page.evaluate(() => {
+      if (await this.hasBaxiaLayer(page)) {
+        // v3.22: 先尝试远程人工协助（桌面端观察者在线时弹窗拖滑块，验证在 Worker
+        // 会话内完成，x5sec cookie 持久化到账号池）。无观察者/超时/失败走原失败路径。
+        const assisted = await this.requestRemoteAssist(page);
+        if (assisted) {
+          // 验证通过：抛带标志的错误，query() 捕获后重跑查询流程
+          throw new Error('触发风控验证码: baxia弹层已经人工远程验证通过，重试查询 (__BAXIA_ASSISTED__)');
+        }
+        const msg = `触发风控验证码: 检测到阿里baxia人机验证弹层（页面被全屏遮挡），查询被平台拦截`;
+        console.warn(`[${this.platformName}] ⚠️ ${msg}`);
+        return msg;
+      }
+    } catch (e: any) {
+      // __BAXIA_ASSISTED__ 标志错误向上透传给 query() 的重试逻辑
+      if (String(e?.message || '').includes('__BAXIA_ASSISTED__')) throw e;
+      /* 忽略 evaluate 失败 */
+    }
+    return null;
+  }
+
+  /** 检测页面是否存在可见的阿里 baxia 人机验证弹层（全屏遮挡层） */
+  protected async hasBaxiaLayer(page: Page): Promise<boolean> {
+    try {
+      return await page.evaluate(() => {
         const els = document.querySelectorAll('div[class*="baxia-dialog"], iframe[src*="baxia"]');
         for (let i = 0; i < els.length; i++) {
           const el = els[i] as HTMLElement;
@@ -1022,13 +1085,108 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         }
         return false;
       }).catch(() => false);
-      if (hasBaxia) {
-        const msg = `触发风控验证码: 检测到阿里baxia人机验证弹层（页面被全屏遮挡），查询被平台拦截`;
-        console.warn(`[${this.platformName}] ⚠️ ${msg}`);
-        return msg;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * v3.22: 请求远程人工协助验证 baxia 弹层
+   *
+   * 流程：上报会话+截图 → 云端告知桌面端观察者是否在线（离线直接放弃，不拖慢巡检）
+   * → 循环{ 拉指令执行(page.mouse 复刻人工拖动) + 上报新截图 + 检查 baxia 是否消失 }
+   * → 消失 = 验证通过：导出 context.storageState 回写账号池（x5sec 跨查询复用）
+   *
+   * @returns true=验证通过；false=无观察者/超时/异常
+   */
+  protected async requestRemoteAssist(page: Page): Promise<boolean> {
+    if (process.env.REMOTE_ASSIST === '0') return false; // 环境变量开关（默认启用）
+    try {
+      const sessionId = `assist-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const vp = page.viewportSize() || { width: 1440, height: 900 };
+      const shot = await page.screenshot({ type: 'jpeg', quality: 55 }).catch(() => null);
+      const base64 = shot ? shot.toString('base64') : null;
+      const first = await reportAssist({
+        sessionId, platform: this.platformName, keyword: this.currentKeyword,
+        status: 'pending', screenshot: base64, shotWidth: vp.width, shotHeight: vp.height,
+      });
+      if (!first) return false;
+      if (!first.observerOnline) {
+        logger.warn(`[远程协助] 无桌面端观察者在线，跳过等待（${this.platformName}）`);
+        return false;
       }
-    } catch { /* 忽略 evaluate 失败 */ }
-    return null;
+      logger.info(`[远程协助] 等待人工验证（${this.platformName} sessionId=${sessionId} 最多180秒）——请在桌面端弹窗中完成滑块验证`);
+
+      const deadline = Date.now() + 180000;
+      let sinceSeq = 0;
+      while (Date.now() < deadline) {
+        // 拉取并执行桌面端操作指令
+        const cmds = await pullAssistCommands(sessionId, sinceSeq);
+        for (const c of cmds) {
+          sinceSeq = Math.max(sinceSeq, c.seq);
+          try {
+            if (c.type === 'mouse_move' && c.x != null && c.y != null) {
+              // 轨迹人性化：随机抖动 ±1px + 分步移动（baxia 检测匀速直线轨迹）
+              const jx = c.x + (Math.random() - 0.5) * 2;
+              const jy = c.y + (Math.random() - 0.5) * 2;
+              await page.mouse.move(jx, jy, { steps: 3 });
+            } else if (c.type === 'mouse_down' && c.x != null && c.y != null) {
+              await page.mouse.move(c.x, c.y);
+              await page.mouse.down();
+            } else if (c.type === 'mouse_up') {
+              await page.mouse.up();
+            } else if (c.type === 'click' && c.x != null && c.y != null) {
+              await page.mouse.click(c.x, c.y);
+            } else if (c.type === 'type' && c.text) {
+              await page.keyboard.type(c.text, { delay: 30 });
+            }
+          } catch { /* 页面可能正在导航/弹层切换，忽略单条指令失败 */ }
+        }
+        await page.waitForTimeout(600);
+        // 验证通过判定：baxia 弹层消失
+        if (!(await this.hasBaxiaLayer(page))) {
+          await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'resolved' });
+          logger.info(`[远程协助] 人工验证完成，baxia 弹层已消失（${this.platformName}）`);
+          // 持久化验证成果：导出 context storageState（含 x5sec）回写账号池
+          if (this.currentAuthId != null) {
+            try {
+              const state = await (page.context() as any).storageState();
+              const ok = await persistStorageState(this.currentAuthId, JSON.stringify(state));
+              logger.info(`[远程协助] 验证后 storageState 回写账号 ${this.currentAuthId}: ${ok ? '成功' : '失败'}`);
+            } catch (e: any) {
+              logger.warn(`[远程协助] storageState 导出失败: ${e.message}`);
+            }
+          }
+          return true;
+        }
+        // 上报最新截图（桌面端弹窗实时刷新）
+        const s2 = await page.screenshot({ type: 'jpeg', quality: 55 }).catch(() => null);
+        if (s2) {
+          await reportAssist({
+            sessionId, platform: this.platformName, keyword: '',
+            status: 'pending', screenshot: s2.toString('base64'),
+            shotWidth: vp.width, shotHeight: vp.height,
+          });
+        }
+      }
+      await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'timeout' });
+      logger.warn(`[远程协助] 180秒内未完成人工验证，放弃（${this.platformName}）`);
+      return false;
+    } catch (e: any) {
+      logger.warn(`[远程协助] 异常: ${e.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * 内容提取异常诊断钩子（v3.21.8）
+   *
+   * 抛"内容提取异常"前调用，子类可重写返回平台专属诊断数据
+   * （如豆包的用户消息数/AI消息数/输入框值/登录态），直接嵌入 ERROR 消息，
+   * 用户贴一行 ERROR 日志即可拿到全部定位数据，无需翻找前置 WARN 日志。
+   */
+  protected async getExtractDiagHint(_page: Page): Promise<string> {
+    return '';
   }
 
   /**

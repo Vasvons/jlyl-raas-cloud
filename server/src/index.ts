@@ -15,6 +15,7 @@ import monitorRoutes from './routes/monitor';
 import realCollectTaskRoutes from './routes/realCollectTask';
 import realCollectResultRoutes from './routes/realCollectResult';
 import realCollectQueueRoutes from './routes/realCollectQueue';
+import realCollectAssistRoutes from './routes/realCollectAssist';
 import platformAuthRoutes from './routes/platformAuth';
 import workerLogRoutes from './routes/workerLog';
 import aeoRoutes from './routes/aeo';
@@ -353,6 +354,8 @@ app.use('/', keywordRoutes);
 app.use('/real-collect/tasks', realCollectTaskRoutes);
 app.use('/real-collect/results', realCollectResultRoutes);
 app.use('/real-collect/queue', realCollectQueueRoutes);
+// v3.22：远程人工协助验证（baxia 人机验证远程拖滑块）
+app.use('/real-collect/assist', realCollectAssistRoutes);
 app.use('/platform-auth', platformAuthRoutes);
 app.use('/real-collect/logs', workerLogRoutes);
 app.use('/aeo', aeoRoutes);

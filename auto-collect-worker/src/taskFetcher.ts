@@ -326,7 +326,13 @@ async function executeSingleQuery(
     }
 
     // 隐私模式：每次 newContext 用全新随机指纹（不复用账号指纹，降低被关联风险）
-    const fingerprint = getRandomFingerprint();
+    // v3.22 例外——通义千问：改用账号稳定指纹（getStableFingerprint，同账号始终同指纹）。
+    // 原因：千问频繁触发阿里 baxia 人机验证，验证凭证 x5sec 绑定 IP+UA+指纹；
+    // 随机指纹下即使人工远程验证通过、cookie 已回写账号池，下次 newContext 指纹又变，
+    // x5sec 立即失效又要重新验证。固定指纹后验证一次可管一个时间窗。
+    const fingerprint = platform === '通义千问'
+      ? getStableFingerprint(String(account.authId))
+      : getRandomFingerprint();
     const contextOptions: any = {
       storageState,
       ...fingerprintToContextOptions(fingerprint),
@@ -350,6 +356,8 @@ async function executeSingleQuery(
     page = await context.newPage();
 
     // 执行查询（query 方法内部已包含登录态检测，无需重复调用 checkLoginStatus）
+    // v3.22: 回填账号 ID——baxia 远程协助验证通过后按此 ID 回写 storageState
+    (adapter as any).currentAuthId = account.authId;
     logger.info(`查询: ${platform}/${keyword.substring(0, 30)}`);
     const result = await adapter.query(page, keyword);
     const shareInfo = result.shareUrl ? ` 分享链接=${result.shareUrl}` : ' (无分享链接)';
