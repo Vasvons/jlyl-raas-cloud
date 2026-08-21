@@ -3217,6 +3217,75 @@ export async function migrate() {
         AND NOT EXISTS (SELECT 1 FROM auto_writing_task t WHERE t.user_id = c.user_id)
     `).catch((e: any) => console.warn('[Migrate] 迁移旧自动写作配置为任务失败（可忽略）:', e.message));
 
+    // ============ v2.7.0 灵犀站点引擎（SITE_ENGINE_PLAN P0）============
+
+    // 站点主表
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS site (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        industry TEXT DEFAULT '',
+        target_audience TEXT DEFAULT '',
+        template_id INTEGER,
+        status TEXT DEFAULT 'draft',
+        blocks JSONB DEFAULT '[]',
+        pages JSONB DEFAULT '[]',
+        published_html TEXT DEFAULT '',
+        publish_url TEXT DEFAULT '',
+        custom_domain TEXT DEFAULT '',
+        seo_score INTEGER,
+        published_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_site_user ON site(user_id)`);
+
+    // 模板表（官方模板 user_id IS NULL，复用 ai_model_config 平台共享行模式）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS site_template (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER,
+        name TEXT NOT NULL,
+        category TEXT DEFAULT '通用',
+        description TEXT DEFAULT '',
+        blocks JSONB DEFAULT '[]',
+        sort_order INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_site_template_user ON site_template(user_id)`);
+
+    // 模板收藏（跨设备持久化）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS site_template_favorite (
+        user_id INTEGER NOT NULL,
+        template_id INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, template_id)
+      )
+    `);
+
+    // 站点统计日聚合
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS site_stats_daily (
+        id SERIAL PRIMARY KEY,
+        site_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        stat_date DATE NOT NULL,
+        pv INTEGER DEFAULT 0,
+        uv INTEGER DEFAULT 0,
+        referrers JSONB DEFAULT '{}',
+        devices JSONB DEFAULT '{}',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (site_id, stat_date)
+      )
+    `);
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

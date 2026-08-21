@@ -28,6 +28,9 @@ import moduleRoutes from './routes/module';
 import portalRoutes from './routes/portal';
 // v3.2：精灵底座路由
 import petRoutes from './routes/pet';
+// v2.7.0：灵犀站点引擎（SITE_ENGINE_PLAN P0）
+import sitesRoutes from './routes/sites';
+import siteTemplatesRoutes from './routes/siteTemplates';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
 import { initWsServer } from './wsServer';
@@ -370,6 +373,9 @@ app.use('/module', moduleRoutes);
 app.use('/portal', portalRoutes);
 // v3.2：精灵底座（云端代理转发精灵对话流量）
 app.use('/pet', petRoutes);
+// v2.7.0：灵犀站点引擎
+app.use('/sites', sitesRoutes);
+app.use('/site-templates', siteTemplatesRoutes);
 
 // 微信支付回调（无需鉴权，单独注册）
 app.post('/subscription/wechat/notify', wechatNotifyHandler);
