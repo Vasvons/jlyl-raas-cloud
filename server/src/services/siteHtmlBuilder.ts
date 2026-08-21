@@ -4,8 +4,9 @@
  * 自桌面端 services/publishService.ts 移植 generateBlockHtml / generateHtml / escapeHtml，
  * 成为站点的唯一 HTML 生成逻辑，保证发布(OSS)与预览(/sites/:id/preview)同源、不漂移。
  *
- * 区块类型（BlockType）：hero / features / pricing / faq / testimonials / cta / footer
- * 与桌面端 components/Editor/types.ts 保持一致，后续 P2 扩充区块类型时需同步。
+ * 区块类型（BlockType）：hero / features / pricing / faq / testimonials / cta / footer /
+ * header / about / team / stats / gallery / logos / newsletter / contact / steps / announcement / html
+ * 与桌面端 components/Editor/types.ts 保持一致，后续扩充区块类型时需同步。
  */
 
 export type SiteBlock = {
@@ -156,6 +157,159 @@ function generateBlockHtml(block: SiteBlock): string {
       </div>
     </footer>`;
     }
+
+    case 'header': {
+      const navItems = p.navItems || [];
+      return `
+    <header style="background-color:${p.backgroundColor || '#FFFFFF'};color:${p.textColor || '#1F2937'};padding:${p.padding || 16}px 24px;border-bottom:1px solid #E5E7EB">
+      <div style="max-width:960px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <span style="font-size:18px;font-weight:700">${escapeHtml(p.siteName)}</span>
+        ${navItems.length > 0 ? `<nav style="display:flex;gap:24px;flex-wrap:wrap">${navItems.map((item: any) => `<a href="${escapeHtml(item.href) || '#'}" style="color:${p.textColor || '#1F2937'};text-decoration:none;font-size:14px;font-weight:500">${escapeHtml(item.label)}</a>`).join('')}</nav>` : ''}
+      </div>
+    </header>`;
+    }
+
+    case 'about': {
+      const points = p.points || [];
+      return `
+    <section style="background-color:${p.backgroundColor || '#FFFFFF'};color:${p.textColor || '#1F2937'};padding:${p.padding || 60}px 24px">
+      <div style="max-width:960px;margin:0 auto;display:flex;gap:48px;align-items:center;flex-wrap:wrap">
+        <div style="flex:1;min-width:260px">
+          <h2 style="color:${p.textColor || '#1F2937'};margin-bottom:16px;font-size:28px">${escapeHtml(p.title)}</h2>
+          <p style="color:${p.textColor || '#1F2937'};font-size:15px;line-height:1.8;opacity:0.9">${escapeHtml(p.description)}</p>
+          ${points.length > 0 ? `<ul style="margin-top:16px;padding-left:20px">${points.map((point: any) => `<li style="color:${p.textColor || '#1F2937'};font-size:14px;line-height:2;opacity:0.85">${escapeHtml(point)}</li>`).join('')}</ul>` : ''}
+        </div>
+        ${p.image ? `<div style="flex:1;min-width:260px"><img src="${escapeHtml(p.image)}" alt="${escapeHtml(p.title)}" style="width:100%;border-radius:12px;object-fit:cover"/></div>` : ''}
+      </div>
+    </section>`;
+    }
+
+    case 'team': {
+      const members = p.members || [];
+      const cols = Math.min(Math.max(members.length, 1), 4);
+      return `
+    <section style="background-color:${p.backgroundColor || '#FFFFFF'};color:${p.textColor || '#1F2937'};padding:${p.padding || 60}px 24px;text-align:center">
+      <div style="max-width:960px;margin:0 auto">
+        <h2 style="color:${p.textColor || '#1F2937'};margin-bottom:48px;font-size:28px">${escapeHtml(p.title)}</h2>
+        <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:24px">
+          ${members.map((member: any) => `
+          <div style="text-align:center;padding:24px;border:1px solid #E5E7EB;border-radius:12px">
+            <div style="width:72px;height:72px;border-radius:50%;background:#3B82F6;color:#FFFFFF;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px;font-weight:600">${escapeHtml((member.name || '?').charAt(0))}</div>
+            <h4 style="color:${p.textColor || '#1F2937'};font-size:18px;margin-bottom:4px">${escapeHtml(member.name)}</h4>
+            <div style="color:#3B82F6;font-size:13px;margin-bottom:8px">${escapeHtml(member.role)}</div>
+            <p style="color:#6B7280;font-size:13px">${escapeHtml(member.bio)}</p>
+          </div>`).join('')}
+        </div>
+      </div>
+    </section>`;
+    }
+
+    case 'stats': {
+      const items = p.items || [];
+      const cols = Math.min(Math.max(items.length, 1), 4);
+      return `
+    <section style="background-color:${p.backgroundColor || '#F0F4FF'};color:${p.textColor || '#1F2937'};padding:${p.padding || 60}px 24px;text-align:center">
+      <div style="max-width:960px;margin:0 auto">
+        <h2 style="color:${p.textColor || '#1F2937'};margin-bottom:48px;font-size:28px">${escapeHtml(p.title)}</h2>
+        <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:24px">
+          ${items.map((item: any) => `
+          <div>
+            <div style="font-size:40px;font-weight:700;color:#3B82F6;margin-bottom:8px">${escapeHtml(item.value)}</div>
+            <div style="color:${p.textColor || '#1F2937'};font-size:14px;opacity:0.85">${escapeHtml(item.label)}</div>
+          </div>`).join('')}
+        </div>
+      </div>
+    </section>`;
+    }
+
+    case 'gallery': {
+      const images = p.images || [];
+      return `
+    <section style="background-color:${p.backgroundColor || '#F9FAFB'};color:#1F2937;padding:${p.padding || 60}px 24px;text-align:center">
+      <div style="max-width:960px;margin:0 auto">
+        <h2 style="color:#1F2937;margin-bottom:48px;font-size:28px">${escapeHtml(p.title)}</h2>
+        ${images.length > 0 ? `<div style="display:grid;grid-template-columns:repeat(${p.columns || 3},1fr);gap:16px">${images.map((src: string) => `<img src="${escapeHtml(src)}" alt="" style="width:100%;height:180px;object-fit:cover;border-radius:12px"/>`).join('')}</div>` : ''}
+      </div>
+    </section>`;
+    }
+
+    case 'logos': {
+      const names = p.names || [];
+      return `
+    <section style="background-color:${p.backgroundColor || '#FFFFFF'};color:#1F2937;padding:${p.padding || 40}px 24px;text-align:center">
+      <div style="max-width:960px;margin:0 auto">
+        <h2 style="color:#1F2937;margin-bottom:32px;font-size:24px">${escapeHtml(p.title)}</h2>
+        ${names.length > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center">${names.map((name: string) => `<div style="padding:12px 24px;border:1px solid #E5E7EB;border-radius:8px;color:#6B7280;font-size:16px;font-weight:600;background:#F9FAFB">${escapeHtml(name)}</div>`).join('')}</div>` : ''}
+      </div>
+    </section>`;
+    }
+
+    case 'newsletter':
+      return `
+    <section style="background-color:${p.backgroundColor || '#1E40AF'};color:${p.textColor || '#FFFFFF'};padding:${p.padding || 60}px 24px;text-align:center">
+      <div style="max-width:560px;margin:0 auto">
+        <h2 style="color:${p.textColor || '#FFFFFF'};margin-bottom:12px;font-size:28px">${escapeHtml(p.title)}</h2>
+        <p style="color:${p.textColor || '#FFFFFF'};font-size:15px;margin-bottom:24px;opacity:0.9">${escapeHtml(p.description)}</p>
+        <form style="display:flex;gap:8px" onsubmit="return false">
+          <input type="email" placeholder="${escapeHtml(p.placeholder)}" style="flex:1;padding:10px 14px;border:none;border-radius:8px;font-size:14px" />
+          <button type="submit" style="padding:10px 24px;background:${p.textColor === '#FFFFFF' ? '#FFFFFF' : '#1677ff'};color:${p.textColor === '#FFFFFF' ? (p.backgroundColor || '#1E40AF') : '#FFFFFF'};border:none;border-radius:8px;font-weight:600;cursor:pointer">${escapeHtml(p.buttonText)}</button>
+        </form>
+      </div>
+    </section>`;
+
+    case 'contact': {
+      const contactItems = [
+        { label: '电话', value: p.phone },
+        { label: '邮箱', value: p.email },
+        { label: '地址', value: p.address },
+      ].filter((item: any) => item.value);
+      return `
+    <section style="background-color:${p.backgroundColor || '#FFFFFF'};color:${p.textColor || '#1F2937'};padding:${p.padding || 60}px 24px">
+      <div style="max-width:720px;margin:0 auto">
+        <h2 style="color:${p.textColor || '#1F2937'};text-align:center;margin-bottom:12px;font-size:28px">${escapeHtml(p.title)}</h2>
+        <p style="color:${p.textColor || '#1F2937'};text-align:center;font-size:15px;margin-bottom:32px;opacity:0.9">${escapeHtml(p.description)}</p>
+        ${contactItems.length > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center;margin-bottom:32px">${contactItems.map((item: any) => `<div style="text-align:center"><div style="color:#3B82F6;font-size:12px;margin-bottom:4px">${escapeHtml(item.label)}</div><div style="color:${p.textColor || '#1F2937'};font-size:14px;font-weight:500">${escapeHtml(item.value)}</div></div>`).join('')}</div>` : ''}
+        <form style="max-width:480px;margin:0 auto;display:flex;flex-direction:column;gap:12px" onsubmit="return false">
+          <input placeholder="您的姓名" style="padding:10px 14px;border:1px solid #D1D5DB;border-radius:8px;font-size:14px" />
+          <input placeholder="您的联系方式" style="padding:10px 14px;border:1px solid #D1D5DB;border-radius:8px;font-size:14px" />
+          <textarea placeholder="留言内容" rows="3" style="padding:10px 14px;border:1px solid #D1D5DB;border-radius:8px;font-size:14px"></textarea>
+          <button type="submit" style="padding:12px;background:#1677ff;color:#FFFFFF;border:none;border-radius:8px;font-weight:600;cursor:pointer">${escapeHtml(p.buttonText)}</button>
+        </form>
+      </div>
+    </section>`;
+    }
+
+    case 'steps': {
+      const items = p.items || [];
+      const cols = Math.min(Math.max(items.length, 1), 4);
+      return `
+    <section style="background-color:${p.backgroundColor || '#FFFFFF'};color:${p.textColor || '#1F2937'};padding:${p.padding || 60}px 24px">
+      <div style="max-width:960px;margin:0 auto">
+        <h2 style="color:${p.textColor || '#1F2937'};text-align:center;margin-bottom:48px;font-size:28px">${escapeHtml(p.title)}</h2>
+        <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:24px">
+          ${items.map((item: any, i: number) => `
+          <div style="text-align:center;padding:24px">
+            <div style="width:48px;height:48px;border-radius:50%;background:#3B82F6;color:#FFFFFF;display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:20px;font-weight:700">${i + 1}</div>
+            <h4 style="color:${p.textColor || '#1F2937'};font-size:17px;margin-bottom:8px">${escapeHtml(item.title)}</h4>
+            <p style="color:#6B7280;font-size:14px">${escapeHtml(item.description)}</p>
+          </div>`).join('')}
+        </div>
+      </div>
+    </section>`;
+    }
+
+    case 'announcement':
+      return `
+    <div style="background-color:${p.backgroundColor || '#FEF3C7'};color:${p.textColor || '#92400E'};padding:${p.padding || 24}px 24px;border-bottom:1px solid #FDE68A">
+      <div style="max-width:960px;margin:0 auto;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <strong style="color:${p.textColor || '#92400E'};font-size:14px">${escapeHtml(p.title)}</strong>
+        <span style="color:${p.textColor || '#92400E'};font-size:14px;opacity:0.9">${escapeHtml(p.content)}</span>
+      </div>
+    </div>`;
+
+    case 'html':
+      // AI 整页 HTML（高级模式）：内容原样透传，不做转义
+      return p.html || '';
 
     default:
       return '';
