@@ -203,7 +203,8 @@ ${blocksHtml}
  */
 export function injectAnalyticsScript(html: string, cloudBase: string, siteId: number): string {
   const base = (cloudBase || '').replace(/\/$/, '');
-  const scriptTag = `<script async src="${base}/sites-analytics/analytics.js" data-site="${siteId}"></script>`;
+  // 云端 Nginx 仅将 /api/* 反向代理到后端（3002），统计脚本必须带 /api 前缀，否则会被路由到前端
+  const scriptTag = `<script async src="${base}/api/sites-analytics/analytics.js" data-site="${siteId}"></script>`;
   if (html.includes('</body>')) {
     return html.replace('</body>', `${scriptTag}\n</body>`);
   }
