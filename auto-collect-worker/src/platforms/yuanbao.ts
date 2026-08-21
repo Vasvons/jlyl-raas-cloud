@@ -75,21 +75,40 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
           }
         } catch { /* 忽略 */ }
       };
+      // v3.21.4: 记录所有 share 相关请求（method+url+body+status+响应摘要），
+      // 供点击后诊断——share API 到底有没有被触发、请求体是什么。
+      // 数组存到 window.__ybShareRequests，防重复存储爆满保留最近 20 条。
+      const recordReq = (m: string, u: string, body: unknown) => {
+        try {
+          (window as any).__ybShareRequests = (window as any).__ybShareRequests || [];
+          const arr = (window as any).__ybShareRequests;
+          const entry = { m, u, b: body != null ? String(body).slice(0, 300) : '' };
+          const dupe = arr.some((x: any) => x.m === m && x.u === u && x.b === entry.b);
+          if (!dupe) arr.push(entry);
+          if (arr.length > 20) arr.splice(0, arr.length - 20);
+        } catch { /* 忽略 */ }
+      };
       // XHR 拦截（v3.21.1: 用 addEventListener('load') 而非 onreadystatechange——
       // 页面在 send() 后可能自己给 xhr.onreadystatechange 赋值，会覆盖我们设置的 handler，
       // 导致读不到 share API 响应。addEventListener 同源订阅互不覆盖，实测更可靠。）
       const _open = XMLHttpRequest.prototype.open;
       (XMLHttpRequest.prototype as any).open = function (this: any, m: string, u: string) {
         this.__u = u;
+        this.__m = m;
         return _open.apply(this, arguments as any);
       };
       const _send = XMLHttpRequest.prototype.send;
       (XMLHttpRequest.prototype as any).send = function (this: any, b: any) {
         const xhr = this;
         const xhrUrl = xhr.__u || '';
+        const xhrMethod = xhr.__m || '';
+        const xhrBody = b;
         const handler = () => {
           try {
-            if (/share|conversations\/v2/.test(xhrUrl)) parseResp(xhr.responseText || '');
+            if (/share|conversations\/v2/.test(xhrUrl)) {
+              recordReq(xhrMethod, xhrUrl, xhrBody);
+              parseResp(xhr.responseText || '');
+            }
           } catch { /* 忽略 */ }
         };
         try { xhr.addEventListener('load', handler); } catch { /* 忽略 */ }
@@ -100,6 +119,9 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       if (typeof _fetch === 'function') {
         window.fetch = function (this: any, input: any, init?: any) {
           const u = typeof input === 'string' ? input : (input && input.url) || '';
+          const m = (init && init.method) || (typeof input === 'string' ? 'GET' : '') || 'GET';
+          const b = (init && init.body) || '';
+          if (/share|conversations\/v2/.test(u)) recordReq(m, u, b);
           return _fetch.call(this, input, init).then((resp: Response) => {
             try {
               if (resp && typeof resp.clone === 'function' && /share|conversations\/v2/.test(u)) {
@@ -200,7 +222,8 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
         }
         logger.info(`[腾讯元宝] 点击分享面板"复制链接"容器: ${sel} (hook=` +
           (await page.evaluate(() => (window as any).__ybShareHookInjected ? 'yes' : 'no').catch(() => 'err')) +
-          `, shareId=${found || 'null'})`);
+          `, shareId=${found || 'null'}, pos=(${clickPos.x},${clickPos.y}), reqs=` +
+          JSON.stringify(await page.evaluate(() => (window as any).__ybShareRequests || []).catch(() => [])));
         if (found) {
           const url = `https://yuanbao.tencent.com/s/${found}`;
           await page.evaluate((u: string) => { (window as any).__capturedShareUrl__ = u; }, url).catch(() => {});
