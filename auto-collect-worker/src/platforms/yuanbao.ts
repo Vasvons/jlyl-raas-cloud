@@ -170,8 +170,23 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
         const visible = await btn.isVisible().catch(() => false);
         if (!visible) continue;
         await btn.click({ timeout: 3000 }).catch(() => {});
-        await page.waitForTimeout(1800);
-        logger.info(`[腾讯元宝] 点击分享面板"复制链接"容器: ${sel}`);
+        // v3.21.2: 点击容器后用轮询等待上层拦截器回填 shareId（share API 响应可能
+        // 延迟 / 异步回填）。每次轮询读 __ybShareId（拦截器专用），命中即拼链接返回。
+        let found: string | null = null;
+        for (let trial = 0; trial < 6; trial++) {
+          await page.waitForTimeout(1000);
+          const s = await page.evaluate(() => (window as any).__ybShareId as string | undefined).catch(() => undefined);
+          if (s) { found = s; break; }
+        }
+        logger.info(`[腾讯元宝] 点击分享面板"复制链接"容器: ${sel} (hook=` +
+          (await page.evaluate(() => (window as any).__ybShareHookInjected ? 'yes' : 'no').catch(() => 'err')) +
+          `, shareId=${found || 'null'})`);
+        if (found) {
+          const url = `https://yuanbao.tencent.com/s/${found}`;
+          await page.evaluate((u: string) => { (window as any).__capturedShareUrl__ = u; }, url).catch(() => {});
+          logger.info(`[腾讯元宝] 轮询捕获分享链接: ${url}`);
+          return true;
+        }
         const cap = await this.getCapturedShareUrl(page, '/s/');
         if (cap) {
           logger.info(`[腾讯元宝] 点容器后捕获分享链接: ${cap}`);
