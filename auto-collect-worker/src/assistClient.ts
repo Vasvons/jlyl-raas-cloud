@@ -18,6 +18,8 @@ export interface AssistCommand {
   x?: number;
   y?: number;
   text?: string;
+  /** v3.22.1: 桌面端采集时刻（batch 轨迹指令携带），Worker 按真实时间间隔重放 */
+  ts?: number;
 }
 
 /**

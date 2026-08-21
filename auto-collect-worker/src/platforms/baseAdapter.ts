@@ -1121,15 +1121,23 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       let sinceSeq = 0;
       while (Date.now() < deadline) {
         // 拉取并执行桌面端操作指令
+        // v3.22.1: 桌面端改为松手时批量发送完整轨迹（按下→移动序列→抬起），
+        // 同批指令在本地循环内连续执行——move 之间按桌面端采集的真实时间间隔
+        // sleep（复刻真人拖动速度特征，baxia 检测匀速直线/瞬移轨迹），相邻点间
+        // 再做线性插值（steps:2）提升事件密度。轨迹本身是真人画的，不再加随机抖动。
         const cmds = await pullAssistCommands(sessionId, sinceSeq);
+        let prevTs = 0;
         for (const c of cmds) {
           sinceSeq = Math.max(sinceSeq, c.seq);
           try {
+            // 按真实时间间隔重放（同批内）：上限 80ms 防桌面端停顿导致 Worker 卡住
+            if (prevTs > 0 && c.ts && c.ts > prevTs) {
+              const dt = Math.min(c.ts - prevTs, 80);
+              if (dt > 5) await page.waitForTimeout(dt);
+            }
+            if (c.ts) prevTs = c.ts;
             if (c.type === 'mouse_move' && c.x != null && c.y != null) {
-              // 轨迹人性化：随机抖动 ±1px + 分步移动（baxia 检测匀速直线轨迹）
-              const jx = c.x + (Math.random() - 0.5) * 2;
-              const jy = c.y + (Math.random() - 0.5) * 2;
-              await page.mouse.move(jx, jy, { steps: 3 });
+              await page.mouse.move(c.x, c.y, { steps: 2 });
             } else if (c.type === 'mouse_down' && c.x != null && c.y != null) {
               await page.mouse.move(c.x, c.y);
               await page.mouse.down();
@@ -1141,6 +1149,9 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
               await page.keyboard.type(c.text, { delay: 30 });
             }
           } catch { /* 页面可能正在导航/弹层切换，忽略单条指令失败 */ }
+        }
+        if (cmds.length > 0) {
+          logger.info(`[远程协助] 已重放 ${cmds.length} 条轨迹指令（${this.platformName}）`);
         }
         await page.waitForTimeout(600);
         // 验证通过判定：baxia 弹层消失

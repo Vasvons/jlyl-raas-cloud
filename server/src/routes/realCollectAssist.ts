@@ -202,4 +202,39 @@ router.post('/:sessionId/command', authMiddleware, async (req, res) => {
   }
 });
 
+/**
+ * v3.22.1: 批量轨迹指令（完整拖动手势一次性入队）
+ *
+ * 单条转发的问题：拖动过程被 600ms 轮询切成碎片，Worker 端每次只执行零星几个
+ * move，鼠标按下-移动-抬起的手势时序被打散，baxia 滑块对碎片化事件流不响应。
+ * 改为桌面端本地收集完整轨迹（按下→移动序列→抬起），松手时一次性批量发送，
+ * Worker 端按相邻 ts 差值连续重放，复刻真人的完整手势速度特征。
+ */
+router.post('/:sessionId/command/batch', authMiddleware, async (req, res) => {
+  try {
+    const s = sessions.get(String(req.params.sessionId));
+    if (!s) return res.json({ code: 404, message: '会话不存在' });
+    if (s.status !== 'pending') return res.json({ code: 400, message: `会话已结束(${s.status})` });
+    const commands: Array<{ type: string; x?: number; y?: number; text?: string; ts?: number }> = req.body?.commands;
+    if (!Array.isArray(commands) || commands.length === 0 || commands.length > 300) {
+      return res.status(400).json({ code: 400, message: 'commands 必须为 1-300 条的数组' });
+    }
+    const validTypes = ['mouse_move', 'mouse_down', 'mouse_up', 'click', 'type'];
+    const now = Date.now();
+    let first = -1;
+    for (const c of commands) {
+      if (!c || !validTypes.includes(c.type)) continue;
+      s.commandSeq += 1;
+      if (first < 0) first = s.commandSeq;
+      // ts 为桌面端采集时刻（毫秒时间戳），供 Worker 按真实时间间隔重放
+      s.commands.push({ seq: s.commandSeq, type: c.type as AssistCommand['type'], x: c.x, y: c.y, text: c.text, ts: c.ts || now });
+    }
+    if (s.commands.length > 500) s.commands.splice(0, s.commands.length - 500);
+    s.updatedAt = Date.now();
+    res.json({ code: 200, data: { count: commands.length, firstSeq: first } });
+  } catch (e: any) {
+    res.status(500).json({ code: 500, message: e.message });
+  }
+});
+
 export default router;
