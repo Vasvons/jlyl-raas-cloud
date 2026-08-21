@@ -1,4 +1,5 @@
 import { pool } from './db';
+import type { PoolClient } from 'pg';
 import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 
@@ -3286,10 +3287,101 @@ export async function migrate() {
       )
     `);
 
+    // v2.7.0 P1：官方模板种子（幂等插入，WHERE NOT EXISTS 防重复）
+    await seedSiteTemplates(client);
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
   }
+}
+
+/** 官方模板种子（SITE_ENGINE_PLAN P1）：12 个内置模板，user_id IS NULL */
+async function seedSiteTemplates(client: PoolClient): Promise<void> {
+  // 区块默认 props（与桌面端 components/Editor/types.ts 的 BLOCK_TEMPLATES.defaultProps 对齐）
+  const DEFAULTS: Record<string, Record<string, any>> = {
+    hero: {
+      title: '引领数字化未来', subtitle: '专业解决方案，助力企业成长', ctaText: '立即开始', ctaLink: '#',
+      backgroundImage: '', backgroundColor: '#3B82F6', textColor: '#FFFFFF', alignment: 'center', padding: 80,
+    },
+    features: {
+      title: '我们的优势', backgroundColor: '#F9FAFB', textColor: '#1F2937', columns: 3, padding: 60,
+      features: [
+        { title: '专业团队', description: '资深专家团队，十年行业经验', icon: 'team' },
+        { title: '高效服务', description: '快速响应需求，7×24小时在线', icon: 'thunderbolt' },
+        { title: '品质保障', description: '严格质量把控，客户满意度99%', icon: 'safety' },
+      ],
+    },
+    pricing: {
+      title: '选择适合您的方案', backgroundColor: '#FFFFFF', textColor: '#1F2937', padding: 60,
+      plans: [
+        { name: '基础版', price: '¥99/月', features: ['5个页面', '基础SEO', '邮件支持'], ctaText: '选择方案', highlighted: false },
+        { name: '专业版', price: '¥299/月', features: ['20个页面', '高级SEO', '优先支持', '自定义域名'], ctaText: '选择方案', highlighted: true },
+        { name: '企业版', price: '¥999/月', features: ['无限页面', '全功能SEO', '专属客服'], ctaText: '联系我们', highlighted: false },
+      ],
+    },
+    faq: {
+      title: '常见问题', backgroundColor: '#FFFFFF', textColor: '#1F2937', padding: 60,
+      items: [
+        { question: '如何开始使用？', answer: '注册账号后，选择模板即可快速开始建站，全程可视化操作，无需编程基础。' },
+        { question: '是否支持自定义域名？', answer: '专业版及以上方案支持绑定自定义域名，我们提供免费的SSL证书和DNS配置指导。' },
+        { question: '如何获取技术支持？', answer: '您可以通过在线客服、邮件或电话联系我们，专业版用户享有优先响应服务。' },
+      ],
+    },
+    testimonials: {
+      title: '客户怎么说', backgroundColor: '#F0F4FF', textColor: '#1F2937', padding: 60,
+      testimonials: [
+        { name: '张先生', company: '创新科技有限公司', content: '使用灵犀建站后，我们的线上获客效率提升了3倍，非常满意！', avatar: '' },
+        { name: '李女士', company: '美妆品牌', content: '模板精美，操作简单，不懂技术也能做出专业网站。', avatar: '' },
+        { name: '王总', company: '教育集团', content: '从需求到上线只用了3天，效率惊人，服务也很到位。', avatar: '' },
+      ],
+    },
+    cta: {
+      title: '准备好开始了吗？', description: '立即联系我们，获取专属建站方案', buttonText: '立即咨询', buttonLink: '#contact',
+      backgroundColor: '#1E40AF', textColor: '#FFFFFF', padding: 60,
+    },
+    footer: {
+      companyName: '灵犀科技', description: '专业的智能建站平台', backgroundColor: '#111827', textColor: '#9CA3AF', padding: 40,
+      links: [
+        { label: '关于我们', href: '#' }, { label: '产品服务', href: '#' },
+        { label: '帮助中心', href: '#' }, { label: '联系我们', href: '#' },
+      ],
+      socialLinks: [
+        { platform: '微信', href: '#' }, { platform: '微博', href: '#' }, { platform: '抖音', href: '#' },
+      ],
+      copyright: '© 2026 灵犀科技 版权所有',
+    },
+  };
+
+  const makeBlocks = (types: string[]): any[] =>
+    types.map((type, i) => ({ id: `tpl_${type}_${i}`, type, props: { ...DEFAULTS[type] }, order: i }));
+
+  const TEMPLATES: Array<{ name: string; category: string; description: string; combo: string[]; sort: number }> = [
+    { name: '企业官网', category: '企业', description: '标准企业门户：品牌展示 + 能力介绍 + 客户口碑 + 转化入口', combo: ['hero', 'features', 'testimonials', 'cta', 'footer'], sort: 1 },
+    { name: '电商商城', category: '电商', description: '商品与套餐展示，适配电商导流', combo: ['hero', 'features', 'pricing', 'faq', 'footer'], sort: 2 },
+    { name: '博客资讯', category: '内容', description: '内容型站点，突出信息与检索', combo: ['hero', 'features', 'faq', 'footer'], sort: 3 },
+    { name: '作品展示', category: '创意', description: '作品/案例展示，突出视觉与口碑', combo: ['hero', 'testimonials', 'cta', 'footer'], sort: 4 },
+    { name: '营销落地页', category: '营销', description: '单页营销转化，完整漏斗结构', combo: ['hero', 'features', 'pricing', 'faq', 'cta', 'footer'], sort: 5 },
+    { name: 'SaaS 产品', category: '科技', description: 'SaaS 产品站：特性 + 定价 + 评价 + 转化', combo: ['hero', 'features', 'pricing', 'testimonials', 'cta', 'footer'], sort: 6 },
+    { name: '教育培训', category: '教育', description: '教育机构建站，课程与服务展示', combo: ['hero', 'features', 'faq', 'cta', 'footer'], sort: 7 },
+    { name: '医疗健康', category: '医疗', description: '医疗/大健康机构，信任与答疑', combo: ['hero', 'features', 'testimonials', 'faq', 'footer'], sort: 8 },
+    { name: '法律服务', category: '法律', description: '律所/法律服务，专业与信赖', combo: ['hero', 'features', 'testimonials', 'footer'], sort: 9 },
+    { name: '餐饮门店', category: '餐饮', description: '餐饮门店展示与引流', combo: ['hero', 'features', 'testimonials', 'cta', 'footer'], sort: 10 },
+    { name: '个人名片', category: '个人', description: '个人介绍/名片站点', combo: ['hero', 'testimonials', 'footer'], sort: 11 },
+    { name: '空白模板', category: '通用', description: '纯画布起步，从零自由搭建', combo: ['footer'], sort: 12 },
+  ];
+
+  for (const t of TEMPLATES) {
+    await client
+      .query(
+        `INSERT INTO site_template (user_id, name, category, description, blocks, sort_order)
+         SELECT NULL, $1, $2, $3, $4::jsonb, $5
+         WHERE NOT EXISTS (SELECT 1 FROM site_template WHERE user_id IS NULL AND name = $1)`,
+        [t.name, t.category, t.description, JSON.stringify(makeBlocks(t.combo)), t.sort]
+      )
+      .catch((e: any) => console.warn(`[Migrate] 模板种子「${t.name}」插入失败（可忽略）:`, e.message));
+  }
+  console.log('[Migrate] 官方模板种子完成');
 }
 
 // 直接运行迁移

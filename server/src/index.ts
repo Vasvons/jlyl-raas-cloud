@@ -31,6 +31,7 @@ import petRoutes from './routes/pet';
 // v2.7.0：灵犀站点引擎（SITE_ENGINE_PLAN P0）
 import sitesRoutes from './routes/sites';
 import siteTemplatesRoutes from './routes/siteTemplates';
+import siteAnalyticsRoutes from './routes/siteAnalytics';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
 import { initWsServer } from './wsServer';
@@ -376,6 +377,8 @@ app.use('/pet', petRoutes);
 // v2.7.0：灵犀站点引擎
 app.use('/sites', sitesRoutes);
 app.use('/site-templates', siteTemplatesRoutes);
+// v2.7.0 P1：站点埋点统计（公开，无鉴权）
+app.use('/sites-analytics', siteAnalyticsRoutes);
 
 // 微信支付回调（无需鉴权，单独注册）
 app.post('/subscription/wechat/notify', wechatNotifyHandler);
