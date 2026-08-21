@@ -275,15 +275,44 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       }
     }
     if (!changed) {
-      // 30 秒无回答文本变化：转储 main 区域文本开头 + iframe 数量，辅助定位回答渲染位置
+      // 30 秒无回答文本变化：转储发送结果诊断（v3.21.8 增强版）
+      // 实地日志（2026-08-21 22:24-22:33）：发送按钮点击后输入框已清空（verifySubmission 通过），
+      // 但 30 秒无回答变化 + domNodes=863 恒定空壳 + mainTextHead 开头为关键词。
+      // 需区分三种根因：
+      //   a. 消息已发送（用户消息出现）但 AI 未生成（平台风控静默处理）
+      //   b. 发送了空消息（evaluate 注入未触发 React state，点击发送发出空内容）
+      //   c. 回答在 iframe 但 snapshot 未捕获
       try {
         const diag = await page.evaluate(() => {
           const main = document.querySelector('main') || document.body;
           const iframes = document.querySelectorAll('iframe').length;
-          const shadowHosts = document.querySelectorAll('*').length;
-          return `mainTextHead="${((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').slice(0, 150)}" iframes=${iframes} domNodes=${shadowHosts}`;
+          const domNodes = document.querySelectorAll('*').length;
+          // 用户消息 vs AI 消息计数（data-testid 是豆包标准消息标识）
+          const userMsgs = document.querySelectorAll('[data-testid^="send_message"], [class*="send-message"]').length;
+          const aiMsgs = document.querySelectorAll('[data-testid^="receive_message"], [class*="receive-message"]').length;
+          // 输入框当前值（发送成功应已清空）
+          const ta = document.querySelector('textarea') as HTMLTextAreaElement | null;
+          const inputVal = ta ? (ta.value || '').slice(0, 40) : '(无textarea)';
+          // 登录态：豆包已登录有用户头像（img[data-testid*="avatar"] 或含 avatar class 的 img）
+          const avatar = document.querySelector('img[class*="avatar"], img[data-testid*="avatar"], [class*="user-avatar"]');
+          return `mainTextHead="${((main as HTMLElement).innerText || '').replace(/\s+/g, ' ').slice(0, 150)}" iframes=${iframes} domNodes=${domNodes} 用户消息=${userMsgs} AI消息=${aiMsgs} 输入框="${inputVal}" 登录头像=${avatar ? '有' : '无'}`;
         }).catch(() => '');
-        logger.warn(`[豆包] 30秒内未检测到回答文本变化（可能未真正发送或回答在特殊容器），诊断: ${diag}`);
+        logger.warn(`[豆包] 30秒内未检测到回答文本变化（可能未真正发送或回答在特殊容器），诊断: ${diag} URL=${page.url()}`);
+        // v3.21.8: 逐 iframe 转储消息命中情况（回答在 iframe 时主文档计数全为 0）
+        try {
+          const frameDiag: string[] = [];
+          for (const f of page.frames()) {
+            const label = f === page.mainFrame() ? 'main' : `iframe(${(f.url() || '').slice(0, 60)})`;
+            const counts = await f.evaluate(() => {
+              const u = document.querySelectorAll('[data-testid^="send_message"], [class*="send-message"]').length;
+              const a = document.querySelectorAll('[data-testid^="receive_message"], [class*="receive-message"]').length;
+              const bodyHead = (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+              return `用户=${u} AI=${a} body="${bodyHead}"`;
+            }).catch(() => 'evaluate失败');
+            frameDiag.push(`[${label}] ${counts}`);
+          }
+          logger.warn(`[豆包] 逐frame消息诊断: ${frameDiag.join(' | ')}`);
+        } catch { /* 忽略 */ }
       } catch { /* 忽略 */ }
       return;
     }

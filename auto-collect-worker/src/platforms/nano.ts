@@ -299,6 +299,38 @@ export class NanoAdapter extends BasePlatformAdapter {
             return `url=${url} | body开头="${bodyHead}" | ${detail}`;
           }).catch(() => '');
           logger.warn(`[纳米] 分享未找到，页面诊断: ${msgDump}`);
+          // v3.21.8: 新版 /chathome 结构探针——转储全部 data-testid 分布 +
+          // 最后一条用户消息（含查询关键词的元素）的祖先容器链 class，
+          // 供下轮编写新版消息容器/操作栏精确选择器（旧 li.js-message-item 已失效）
+          try {
+            const structProbe = await page.evaluate(() => {
+              const parts: string[] = [];
+              // 1. 全部 data-testid（去重统计）
+              const tids = new Map<string, number>();
+              document.querySelectorAll('[data-testid]').forEach(el => {
+                const t = el.getAttribute('data-testid') || '';
+                tids.set(t, (tids.get(t) || 0) + 1);
+              });
+              const tidStr = Array.from(tids.entries()).slice(0, 30).map(([t, n]) => `${t}x${n}`).join(', ');
+              parts.push(`testids=[${tidStr || '无'}]`);
+              // 2. 含"聚量引力"或长文本（>100字符）元素的容器链——AI 回答容器特征是长文本
+              const longEls = Array.from(document.querySelectorAll('div, section, article, li'))
+                .filter(el => {
+                  const t = (el as HTMLElement).innerText || '';
+                  return t.length > 150 && t.length < 5000 && el.children.length > 0;
+                })
+                .slice(0, 5)
+                .map(el => {
+                  const cls = (el.getAttribute('class') || '').toString().slice(0, 50);
+                  const tid = el.getAttribute('data-testid') || '';
+                  const len = ((el as HTMLElement).innerText || '').length;
+                  return `<${el.tagName.toLowerCase()} class="${cls}" tid="${tid}" 文本${len}字符>`;
+                });
+              parts.push(`长文本容器=${longEls.join(' | ') || '无'}`);
+              return parts.join('\n');
+            }).catch(() => '');
+            if (structProbe) logger.warn(`[纳米] chathome 结构探针:\n${structProbe}`);
+          } catch { /* 忽略 */ }
         } catch { /* 忽略 */ }
         console.log('[纳米] 未定位到分享按钮');
         return null;
