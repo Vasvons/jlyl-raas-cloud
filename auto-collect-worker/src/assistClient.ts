@@ -33,6 +33,8 @@ export async function reportAssist(payload: {
   screenshot?: string | null;
   shotWidth?: number;
   shotHeight?: number;
+  /** v3.22.2: 'failed'=轨迹重放完成但弹层仍在（本次拖动未通过），桌面端据此提示重试 */
+  replayResult?: 'failed';
 }): Promise<{ observerOnline: boolean } | null> {
   try {
     const resp = await axios.post(

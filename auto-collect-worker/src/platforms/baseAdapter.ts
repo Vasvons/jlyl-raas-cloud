@@ -1119,6 +1119,21 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
 
       const deadline = Date.now() + 180000;
       let sinceSeq = 0;
+      // 验证通过收尾：上报 resolved + 导出 storageState 回写账号池（x5sec 跨查询复用）
+      const finishPass = async (): Promise<boolean> => {
+        await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'resolved' });
+        logger.info(`[远程协助] 人工验证完成，baxia 弹层已消失（${this.platformName}）`);
+        if (this.currentAuthId != null) {
+          try {
+            const state = await (page.context() as any).storageState();
+            const ok = await persistStorageState(this.currentAuthId, JSON.stringify(state));
+            logger.info(`[远程协助] 验证后 storageState 回写账号 ${this.currentAuthId}: ${ok ? '成功' : '失败'}`);
+          } catch (e: any) {
+            logger.warn(`[远程协助] storageState 导出失败: ${e.message}`);
+          }
+        }
+        return true;
+      };
       while (Date.now() < deadline) {
         // 拉取并执行桌面端操作指令
         // v3.22.1: 桌面端改为松手时批量发送完整轨迹（按下→移动序列→抬起），
@@ -1156,19 +1171,17 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         await page.waitForTimeout(600);
         // 验证通过判定：baxia 弹层消失
         if (!(await this.hasBaxiaLayer(page))) {
-          await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'resolved' });
-          logger.info(`[远程协助] 人工验证完成，baxia 弹层已消失（${this.platformName}）`);
-          // 持久化验证成果：导出 context storageState（含 x5sec）回写账号池
-          if (this.currentAuthId != null) {
-            try {
-              const state = await (page.context() as any).storageState();
-              const ok = await persistStorageState(this.currentAuthId, JSON.stringify(state));
-              logger.info(`[远程协助] 验证后 storageState 回写账号 ${this.currentAuthId}: ${ok ? '成功' : '失败'}`);
-            } catch (e: any) {
-              logger.warn(`[远程协助] storageState 导出失败: ${e.message}`);
-            }
+          return await finishPass();
+        }
+        if (cmds.length > 0) {
+          // v3.22.2: 刚重放过轨迹但弹层仍在——再等 1.2s 复查（弹层消失动画/接口
+          // 响应余量），仍存在则明确上报"本次拖动未通过"，桌面端提示重试
+          await page.waitForTimeout(1200);
+          if (!(await this.hasBaxiaLayer(page))) {
+            return await finishPass();
           }
-          return true;
+          await reportAssist({ sessionId, platform: this.platformName, keyword: '', status: 'pending', replayResult: 'failed' });
+          logger.info(`[远程协助] 轨迹重放完成但弹层仍在，等待用户重试（${this.platformName}）`);
         }
         // 上报最新截图（桌面端弹窗实时刷新）
         const s2 = await page.screenshot({ type: 'jpeg', quality: 55 }).catch(() => null);

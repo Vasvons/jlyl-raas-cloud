@@ -43,6 +43,14 @@ interface AssistSession {
   shotHeight: number;
   commands: AssistCommand[];
   commandSeq: number;
+  /**
+   * v3.22.2: Worker 重放轨迹后的判定结果。
+   * failed=重放完成但 baxia 弹层仍在（本次拖动未通过，等待用户重试）；
+   * 桌面端据此显示"请重试"提示/挂起通知。重放通过时由 status=resolved 表达。
+   */
+  replayResult: 'failed' | null;
+  /** 最近一次 replayResult 更新时间（桌面端按此去重提示） */
+  replayAt: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -90,7 +98,7 @@ router.post('/report', async (req, res) => {
       s = {
         sessionId, platform: platform || '', keyword: keyword || '',
         status: 'pending', screenshot: null, shotWidth: shotWidth || 1440, shotHeight: shotHeight || 900,
-        commands: [], commandSeq: 0, createdAt: now, updatedAt: now,
+        commands: [], commandSeq: 0, replayResult: null, replayAt: 0, createdAt: now, updatedAt: now,
       };
       sessions.set(sessionId, s);
       console.log(`[RemoteAssist] 新会话 ${sessionId} platform=${platform} keyword=${String(keyword || '').slice(0, 20)}`);
@@ -100,8 +108,14 @@ router.post('/report', async (req, res) => {
       s.shotWidth = shotWidth || s.shotWidth;
       s.shotHeight = shotHeight || s.shotHeight;
     }
+    // v3.22.2: Worker 上报"轨迹重放完成但弹层仍在"→ 通知桌面端提示重试
+    if (req.body?.replayResult === 'failed' && s.status === 'pending') {
+      s.replayResult = 'failed';
+      s.replayAt = now;
+    }
     if (status === 'resolved' || status === 'timeout') {
       s.status = status;
+      s.replayResult = null;
       console.log(`[RemoteAssist] 会话 ${sessionId} → ${status}`);
     }
     s.updatedAt = now;
@@ -173,6 +187,9 @@ router.get('/:sessionId/screenshot', authMiddleware, async (req, res) => {
         width: s.shotWidth,
         height: s.shotHeight,
         status: s.status,
+        /** v3.22.2: 最近一次轨迹重放的判定（failed=未通过需重试），replayAt 供桌面端去重 */
+        replayResult: s.replayResult,
+        replayAt: s.replayAt,
       },
     });
   } catch (e: any) {
