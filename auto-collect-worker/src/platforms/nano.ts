@@ -267,6 +267,30 @@ export class NanoAdapter extends BasePlatformAdapter {
         // 未点出分享面板，检查是否已有剪贴板捕获，否则退出
         const preCaptured = await this.getCapturedShareUrl(page, '/share/');
         if (preCaptured) return preCaptured;
+        // v3.21.6: 转储最后一条消息的操作栏结构（按钮/图标/aria/title），
+        // 供下轮定位纳米真实分享入口（hover 探针找不到图标候选说明操作栏
+        // 可能不在消息条目内，需要消息条目内全部可交互元素数据）
+        try {
+          const msgDump = await page.evaluate(() => {
+            const items = document.querySelectorAll('li.js-message-item, [data-testid^="msg-"]');
+            const last = items[items.length - 1] as HTMLElement | undefined;
+            if (!last) return '无消息条目(li.js-message-item/[data-testid^="msg-"]均未命中)';
+            const els = last.querySelectorAll('button, [role="button"], [class*="btn"], [class*="icon"], svg, [aria-label], [title]');
+            const parts: string[] = [];
+            for (let i = 0; i < els.length && parts.length < 15; i++) {
+              const el = els[i] as HTMLElement;
+              const r = el.getBoundingClientRect();
+              if (r.width <= 0 || r.height <= 0) continue;
+              const cls = (el.getAttribute('class') || '').toString().slice(0, 40);
+              const aria = el.getAttribute('aria-label') || '';
+              const title = el.getAttribute('title') || '';
+              const txt = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 10);
+              parts.push(`<${el.tagName.toLowerCase()} class="${cls}" aria="${aria.slice(0, 16)}" title="${title.slice(0, 16)}" txt="${txt}" pos=(${Math.round(r.left)},${Math.round(r.top)})`);
+            }
+            return parts.length ? parts.join(' | ') : '消息条目内无可交互元素';
+          }).catch(() => '');
+          logger.warn(`[纳米] 分享未找到，最后一条消息结构转储: ${msgDump}`);
+        } catch { /* 忽略 */ }
         console.log('[纳米] 未定位到分享按钮');
         return null;
       }

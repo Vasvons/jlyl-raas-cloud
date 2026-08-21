@@ -1002,6 +1002,31 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       }
     } catch { /* 忽略 evaluate 失败 */ }
 
+    // ===== 0.5 阿里 baxia 人机验证弹层检测（v3.21.6，与内容长度无关）=====
+    // 实地诊断（2026-08-21 通义千问）：baxia-dialog 全屏弹层（z-index 最大）遮挡页面，
+    // 回答被风控拦截未生成 → 提取到 15 字符问题文本 → 被判"账号异常：内容过短"
+    // → 账号误标 offline（实际账号正常，是风控不是登录态问题）。
+    // 命中 baxia 归类为风控（rate_limited 路径，不改账号状态），换指纹重试即可。
+    try {
+      const hasBaxia = await page.evaluate(() => {
+        const els = document.querySelectorAll('div[class*="baxia-dialog"], iframe[src*="baxia"]');
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i] as HTMLElement;
+          const r = el.getBoundingClientRect();
+          if (r.width > 100 && r.height > 60) {
+            const s = window.getComputedStyle(el);
+            if (s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0') return true;
+          }
+        }
+        return false;
+      }).catch(() => false);
+      if (hasBaxia) {
+        const msg = `触发风控验证码: 检测到阿里baxia人机验证弹层（页面被全屏遮挡），查询被平台拦截`;
+        console.warn(`[${this.platformName}] ⚠️ ${msg}`);
+        return msg;
+      }
+    } catch { /* 忽略 evaluate 失败 */ }
+
     // 正常内容长度（> 200 字符）直接放行
     if (contentLen >= 200) return null;
 

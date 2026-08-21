@@ -3,6 +3,15 @@ import * as logger from '../logger';
 import { BasePlatformAdapter } from './baseAdapter';
 import { smartFindLongestContent } from '../indexedInteractor';
 
+/**
+ * v3.21.6: Node 侧按 page 捕获的豆包宿主签名 query。
+ *
+ * 页面内 XHR hook 有两个致命盲区：注入时机晚于页面加载期请求、iframe 内请求拦截不到。
+ * Node 侧 page.on('request') 天然覆盖所有 frame 的所有请求，且查询发送阶段的
+ * /im/ 业务请求（建会话/发消息，均带宿主签名）发生在 afterNavigate 之后，必被捕获。
+ */
+const doubaoSignByPage = new WeakMap<Page, string>();
+
 /** 豆包适配器
  *
  * 参考 auth helper 软件的查询脚本：
@@ -36,6 +45,24 @@ export class DoubaoAdapter extends BasePlatformAdapter {
    * 和 localStorage['__db_sign']，供 createDoubaoShareLinkViaApi 复用。
    */
   protected async afterNavigate(page: Page): Promise<void> {
+    // v3.21.6: Node 侧 page.on('request') 捕获签名（主通道，最可靠）。
+    // 查询发送阶段的 /im/ 业务请求（建会话/发消息）都带宿主签名 query，
+    // 这些请求发生在 afterNavigate 之后（输入→提交阶段），listener 必然覆盖；
+    // 且 page.on('request') 天然覆盖所有 frame（含 iframe），无注入时机/跨 frame 问题。
+    // 捕获条件放宽到「任意含 version_code= 的 doubao 请求」——宿主签名是全局级的，
+    // 实测（2026-08-21）任意业务请求的 query 复用即可通过 share API 校验。
+    try {
+      page.on('request', (req: any) => {
+        try {
+          const u: string = req.url() || '';
+          if (u.includes('version_code=') && (u.includes('/im/') || u.includes('/samantha/') || u.includes('/alice/'))) {
+            const q = u.slice(u.indexOf('?') + 1);
+            if (q) doubaoSignByPage.set(page, q);
+          }
+        } catch { /* 忽略 */ }
+      });
+    } catch { /* 忽略 */ }
+
     try {
       await page.evaluate(() => {
         const capture = () => {
@@ -60,7 +87,7 @@ export class DoubaoAdapter extends BasePlatformAdapter {
         } catch { /* 忽略 */ }
         capture();
       }).catch(() => {});
-      logger.info('[豆包] 已注入分享签名捕获 hook（afterNavigate）');
+      logger.info('[豆包] 已注入分享签名捕获 hook（afterNavigate，含 Node 侧 request 监听）');
     } catch (e: any) {
       logger.warn(`[豆包] 注入签名捕获 hook 失败: ${e.message}`);
     }
@@ -344,20 +371,52 @@ export class DoubaoAdapter extends BasePlatformAdapter {
       }
       const convId = m[1];
 
-      // 2. 获取签名 query（优先 window，其次 localStorage）
-      let sign = await page.evaluate(() => (window as any).__dbSignQuery || '').catch(() => '');
+      // 2. 获取签名 query（v3.21.6 四级恢复：Node侧捕获 → window → localStorage → performance）
+      let sign = doubaoSignByPage.get(page) || '';
+      if (!sign) {
+        sign = await page.evaluate(() => (window as any).__dbSignQuery || '').catch(() => '');
+      }
       if (!sign) {
         sign = await page.evaluate(() => {
           try { return localStorage.getItem('__db_sign') || ''; } catch { return ''; }
         }).catch(() => '');
       }
+      if (!sign) {
+        // Performance API 恢复：页面加载期的业务请求已结束，页面内 hook 注入再早也会错过，
+        // 但 performance.getEntriesByType('resource') 记录了全部请求 URL（含 fetch/XHR；
+        // iframe 的请求记录在各自 frame 的 performance 中，需逐 frame 扫描）。
+        const perfRecover = async (frame: any): Promise<string> =>
+          frame.evaluate(() => {
+            try {
+              const entries = performance.getEntriesByType('resource');
+              for (let i = entries.length - 1; i >= 0; i--) {
+                const n: string = (entries[i] as any).name || '';
+                if (n.indexOf('/im/') >= 0 && n.indexOf('version_code=') >= 0) {
+                  const q = n.indexOf('?') >= 0 ? n.substring(n.indexOf('?') + 1) : '';
+                  if (q) return q;
+                }
+              }
+            } catch { /* 忽略 */ }
+            return '';
+          }).catch(() => '');
+        sign = await perfRecover(page);
+        if (!sign) {
+          for (const f of page.frames()) {
+            if (f === page.mainFrame()) continue;
+            sign = await perfRecover(f);
+            if (sign) break;
+          }
+        }
+        if (sign) logger.info('[豆包] API直调: 从 performance entries 恢复签名 query');
+      }
       // sign 若以 ? 开头则去掉
       sign = sign.replace(/^\?/, '');
+      logger.info(`[豆包] API直调: 签名query=${sign ? `已捕获(${sign.length}字符)` : '未捕获(走无签名尝试)'}`);
 
-      const fetchShare = async (path: string, body: Record<string, unknown>): Promise<any> => {
-        const qs = sign ? '?' + sign : '';
-        // 用相对路径，走页面同源 + 自动带 cookie
-        const resp = await page.evaluate(
+      // 请求封装：sign 直接拼到 path 的 query 上，相对路径走页面同源 + 自动带 cookie
+      const callShare = async (path: string, body: Record<string, unknown>, withSign: boolean): Promise<any> => {
+        const qs = withSign && sign ? '?' + sign : '';
+        return await page.evaluate(
           ({ url, body: b }) => fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -365,45 +424,43 @@ export class DoubaoAdapter extends BasePlatformAdapter {
           }).then(r => r.text()).then(t => { try { return JSON.parse(t); } catch { return { raw: t }; } }),
           { url: path + qs, body }
         );
-        return resp;
       };
 
-      // 尝试 1: 无签名直调（豆包在某些网络/环境可能不强制校验）
-      if (!sign) {
-        const tok = await fetchShare('/im/message/share/share_token', { conversation_id: convId });
-        const token = tok && tok.data && tok.data.share_token;
+      // 尝试 1: 带签名直调（实测可行——share_token 宽松，save 需要宿主签名校验）
+      if (sign) {
+        const tok = await callShare('/im/message/share/share_token', { conversation_id: convId }, true);
+        const token = (tok && tok.data && tok.data.share_token) || '';
         if (token) {
-          const saved = await fetchShare('/im/message/share/save', {
+          const saved = await callShare('/im/message/share/save', {
             conv_id: convId, message_index_list: [1, 2], share_token: token,
-          });
-          if (saved && saved.data && saved.data.share_url) return saved.data.share_url;
+          }, true);
+          const shareUrl = (saved && saved.data && saved.data.share_url) || '';
+          if (shareUrl && shareUrl.includes('/thread/')) {
+            logger.info(`[豆包] API直调成功(带签名): share_url=${shareUrl}`);
+            return shareUrl;
+          }
+          logger.warn(`[豆包] API直调: 带签名 save 未返回 thread 链接 (resp=${JSON.stringify(saved).slice(0, 200)})`);
+        } else {
+          logger.warn(`[豆包] API直调: 带签名 share_token 未返回 (resp=${JSON.stringify(tok).slice(0, 200)})`);
         }
-        logger.warn(`[豆包] API直调: 无签名 direct 尝试未获得 share_url (tok=${JSON.stringify(tok).slice(0,120)})`);
-        return null;
       }
 
-      // 尝试 2: 带签名直调（实测可行）
-      const tok = await fetchShare('/im/message/share/share_token', { conversation_id: convId });
-      let token = '';
-      try {
-        token = tok && tok.data && (tok.data.share_token || '') || '';
-      } catch { /* 忽略 */ }
-      if (!token) {
-        logger.warn(`[豆包] API直调: share_token 未返回 (resp=${JSON.stringify(tok).slice(0,160)})`);
-        return null;
+      // 尝试 2: 无签名直调（豆包在某些网络/环境可能不强制校验；share_token 实测宽松）
+      const tok = await callShare('/im/message/share/share_token', { conversation_id: convId }, false);
+      const token = (tok && tok.data && tok.data.share_token) || '';
+      if (token) {
+        const saved = await callShare('/im/message/share/save', {
+          conv_id: convId, message_index_list: [1, 2], share_token: token,
+        }, false);
+        const shareUrl = (saved && saved.data && saved.data.share_url) || '';
+        if (shareUrl && shareUrl.includes('/thread/')) {
+          logger.info(`[豆包] API直调成功(无签名): share_url=${shareUrl}`);
+          return shareUrl;
+        }
+        logger.warn(`[豆包] API直调: 无签名 save 未返回 thread 链接 (resp=${JSON.stringify(saved).slice(0, 200)})`);
+      } else {
+        logger.warn(`[豆包] API直调: 无签名 share_token 未返回 (resp=${JSON.stringify(tok).slice(0, 200)})`);
       }
-      const saved = await fetchShare('/im/message/share/save', {
-        conv_id: convId, message_index_list: [1, 2], share_token: token,
-      });
-      let shareUrl = '';
-      try {
-        shareUrl = saved && saved.data && (saved.data.share_url || '') || '';
-      } catch { /* 忽略 */ }
-      if (shareUrl && shareUrl.includes('/thread/')) {
-        logger.info(`[豆包] API直调成功: share_url=${shareUrl}`);
-        return shareUrl;
-      }
-      logger.warn(`[豆包] API直调: save 未返回 thread 链接 (resp=${JSON.stringify(saved).slice(0,160)})`);
       return null;
     } catch (e: any) {
       logger.warn(`[豆包] API直调异常: ${e.message}`);

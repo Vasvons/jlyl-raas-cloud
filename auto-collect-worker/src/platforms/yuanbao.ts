@@ -138,110 +138,107 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
   }
 
   /**
-   * v3.21.1: 元宝分享面板精确点击（关键修复）
+   * v3.21.5: 元宝分享面板精确点击（实地实验定论 2026-08-21 晚）
    *
-   * 实测（2026-08-21 真实浏览器）：元宝分享面板结构
-   *   .agent-chat__share-bar-container
-   *     ├─ .agent-chat__share-bar__content__left/__select  → 全选 checkbox
-   *     └─ .agent-chat__share-bar__content__center
-   *           ├─ .agent-chat__share-bar__item      容器（onClick 绑定在此，点击触发配额分享 API）
-   *           │   └─ .agent-chat__share-bar__item__name  文本"复制链接"（叶子）
-   *           ├─ "生成图片" item
-   *           ├─ "转为文档" item
-   *           └─ "小程序码" item
-   *
-   * 关键：点**容器** `.agent-chat__share-bar__item` 才触发 POST /api/conversations/v2/share；
-   * 点 name 叶子（文本"复制链接"）不触发分享请求。共享 clickShareMenuItem 用
-   * `:text-is("复制链接")` 会先命中 name 叶子并 return，导致分享永远不触发。
-   *
-   * 这里按真实交互走：勾选全选 → 点复制链接容器。每步后读取拦截结果，命中即返回。
+   * 实测验证的完整触发链路（真实登录态浏览器逐步验证）：
+   *   1. 真实点击分享按钮 [aria-label="分享"] → 被 .agent-chat__bubble__suffix 遮挡拦截，
+   *      Playwright click 抛错但旧代码 .catch() 吞掉还打"成功"日志（worker 长期假成功根因）
+   *   2. 合成事件（dispatchEvent click）点分享按钮 → 面板打开（React 事件委托接受合成冒泡事件），
+   *      但面板打开本身【不触发】share API
+   *   3. 真实点击"复制链接"容器 .agent-chat__share-bar__item → 触发
+   *      POST /api/conversations/v2/share（body 默认 selectAll:true，无需点全选）
+   *      → 响应顶层 shareId → 拼 https://yuanbao.tencent.com/s/{shareId}
+   *   4. 【禁止】先点"全选"再点复制链接——会破坏 selectAll:true 默认状态，API 不触发（实测失败）
+   *   5. 面板从点击分享按钮到渲染完成有 3-7 秒延迟，page.$() 不等待会落空 → 必须 waitForSelector
    */
   protected async yuanbaoClickSharePanel(page: Page): Promise<boolean> {
-    // 步骤 A：勾选全选（消息可能默认未全选，先选上确保分享的是完整回答）
-    try {
-      const selAllSelectors = [
-        ':text-is("全选")',
-        'div.agent-chat__share-bar__content__select',
-        '.agent-chat__share-bar__content__left',
-        'label.t-checkbox',
-        'input[type="checkbox"]',
-      ];
-      for (const sel of selAllSelectors) {
-        try {
-          const el = await page.$(sel);
-          if (!el) continue;
-          const visible = await el.isVisible().catch(() => false);
-          if (!visible) continue;
-          await el.click({ timeout: 2000 }).catch(() => {});
-          await page.waitForTimeout(800);
-          break;
-        } catch { /* 继续 */ }
-      }
-    } catch { /* 忽略 */ }
-
-    // 步骤 B：精确点击"复制链接"容器（点 item 容器，触发分享 API）
-    const copyContainerSelectors = [
+    // 步骤 0：等待分享面板渲染（复制链接 item 出现）。面板有 3-7s 渲染延迟，取 9s 上限。
+    let panelReady = await page.waitForSelector(
       'div.agent-chat__share-bar__item:has-text("复制链接")',
-      '.agent-chat__share-bar__content__center [class*="item"]:has-text("复制链接")',
-      '[class*="share-bar"] [class*="item"]:has-text("复制链接")',
-    ];
-    for (const sel of copyContainerSelectors) {
-      try {
-        // v3.21.3 关键修复：page.click() 可能因分享面板上方有
-        // `.agent-chat__bubble__suffix` 等层遮挡而静默失败（错误被 .catch 吞掉），
-        // 导致点击"复制链接"容器实际没生效、share API 永不触发。
-        // 改用真实鼠标坐标点击（与人工操作一致，绕开 actionability 遮挡检测），
-        // 点击前先滚动到可见并重新读取坐标。
-        let clickPos: { x: number; y: number } | null = null;
-        const btn = await page.$(sel);
-        if (!btn) continue;
-        const visible = await btn.isVisible().catch(() => false);
-        if (!visible) continue;
-        try {
-          clickPos = await page.evaluate((s: string) => {
-            const el = document.querySelector(s) as HTMLElement | null;
-            if (!el) return null;
-            const r = el.getBoundingClientRect();
-            if (r.width <= 0 || r.height <= 0) return null;
-            el.scrollIntoView({ block: 'center' });
-            const r2 = el.getBoundingClientRect();
-            if (r2.width <= 0 || r2.height <= 0) return null;
-            return { x: Math.round(r2.left + r2.width / 2), y: Math.round(r2.top + r2.height / 2) };
-          }, sel).catch(() => null);
-        } catch { /* 忽略 */ }
-        if (!clickPos) continue;
-        await page.waitForTimeout(400);
-        await page.mouse.click(clickPos.x, clickPos.y).catch(() => {});
-        // v3.21.2: 点击容器后用轮询等待上层拦截器回填 shareId（share API 响应可能
-        // 延迟 / 异步回填）。每次轮询读 __ybShareId（拦截器专用），命中即拼链接返回。
-        let found: string | null = null;
-        for (let trial = 0; trial < 6; trial++) {
-          await page.waitForTimeout(1000);
-          const s = await page.evaluate(() => (window as any).__ybShareId as string | undefined).catch(() => undefined);
-          if (s) { found = s; break; }
-        }
-        logger.info(`[腾讯元宝] 点击分享面板"复制链接"容器: ${sel} (hook=` +
-          (await page.evaluate(() => (window as any).__ybShareHookInjected ? 'yes' : 'no').catch(() => 'err')) +
-          `, shareId=${found || 'null'}, pos=(${clickPos.x},${clickPos.y}), reqs=` +
-          JSON.stringify(await page.evaluate(() => (window as any).__ybShareRequests || []).catch(() => [])));
-        if (found) {
-          const url = `https://yuanbao.tencent.com/s/${found}`;
-          await page.evaluate((u: string) => { (window as any).__capturedShareUrl__ = u; }, url).catch(() => {});
-          logger.info(`[腾讯元宝] 轮询捕获分享链接: ${url}`);
-          return true;
-        }
-        const cap = await this.getCapturedShareUrl(page, '/s/');
-        if (cap) {
-          logger.info(`[腾讯元宝] 点容器后捕获分享链接: ${cap}`);
-          return true;
-        }
-        const dlg = await this.extractShareUrlFromDialog(page, '/s/');
-        if (dlg) {
-          // 用对话框提取到的链接直接写回页面 window，同时标记命中（供后续 getCapturedShareUrl 复用）
-          await page.evaluate((u: string) => { (window as any).__capturedShareUrl__ = u; }, dlg).catch(() => {});
-          return true;
-        }
-      } catch { /* 继续 */ }
+      { timeout: 9000 }
+    ).catch(() => null);
+
+    // 步骤 0.5：面板未开 → 上游 findAndClickShareButton 的真实点击大概率被遮挡静默失败了，
+    // 用合成事件点分享按钮打开面板（实测：合成 click 走 React 事件委托，能打开面板）
+    if (!panelReady) {
+      const opened = await page.evaluate(() => {
+        const btn = Array.from(document.querySelectorAll('[aria-label="分享"]')).find(e => {
+          const r = (e as HTMLElement).getBoundingClientRect();
+          return r.width > 0 && r.height > 0 && r.top >= 0 && r.top < window.innerHeight;
+        }) as HTMLElement | undefined;
+        if (!btn) return false;
+        btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        return true;
+      }).catch(() => false);
+      if (opened) {
+        logger.info('[腾讯元宝] 分享面板未开（上游点击被遮挡），已用合成事件点击分享按钮重新打开');
+        await page.waitForTimeout(1500);
+        panelReady = await page.waitForSelector(
+          'div.agent-chat__share-bar__item:has-text("复制链接")',
+          { timeout: 8000 }
+        ).catch(() => null);
+      }
+    }
+    if (!panelReady) {
+      logger.warn('[腾讯元宝] 分享面板未能打开（合成点击后仍无复制链接项）');
+      return false;
+    }
+
+    // 步骤 1：真实点击"复制链接"容器（唯一触发 share API 的动作；不点全选——默认 selectAll:true）
+    let clickPos: { x: number; y: number } | null = null;
+    try {
+      clickPos = await page.evaluate(() => {
+        const items = Array.from(document.querySelectorAll('div.agent-chat__share-bar__item'));
+        const el = items.find(i => ((i as HTMLElement).innerText || '').includes('复制链接')) as HTMLElement | undefined;
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return null;
+        el.scrollIntoView({ block: 'center' });
+        const r2 = el.getBoundingClientRect();
+        if (r2.width <= 0 || r2.height <= 0) return null;
+        return { x: Math.round(r2.left + r2.width / 2), y: Math.round(r2.top + r2.height / 2) };
+      }).catch(() => null);
+    } catch { /* 忽略 */ }
+    if (!clickPos) {
+      logger.warn('[腾讯元宝] 面板已开但未定位到"复制链接"容器坐标');
+      return false;
+    }
+
+    await page.waitForTimeout(400);
+    // 优先元素点击（实测有效），失败则坐标点击兜底（绕开 actionability 检测）
+    const btn = await page.$('div.agent-chat__share-bar__item:has-text("复制链接")').catch(() => null);
+    let clicked = false;
+    if (btn) {
+      clicked = await btn.click({ timeout: 3000 }).then(() => true).catch(() => false);
+    }
+    if (!clicked) {
+      await page.mouse.click(clickPos.x, clickPos.y).catch(() => {});
+      clicked = true;
+      logger.info(`[腾讯元宝] 元素点击失败，已用坐标点击"复制链接" pos=(${clickPos.x},${clickPos.y})`);
+    }
+
+    // 步骤 2：轮询等待拦截器回填 shareId（share API 响应经 XHR load 事件异步解析）
+    let found: string | null = null;
+    for (let trial = 0; trial < 8; trial++) {
+      await page.waitForTimeout(1000);
+      const s = await page.evaluate(() => (window as any).__ybShareId as string | undefined).catch(() => undefined);
+      if (s) { found = s; break; }
+    }
+    logger.info(`[腾讯元宝] 点"复制链接"容器后: shareId=${found || 'null'}, reqs=` +
+      JSON.stringify(await page.evaluate(() => (window as any).__ybShareRequests || []).catch(() => [])));
+
+    if (found) {
+      const url = `https://yuanbao.tencent.com/s/${found}`;
+      await page.evaluate((u: string) => { (window as any).__capturedShareUrl__ = u; }, url).catch(() => {});
+      logger.info(`[腾讯元宝] 捕获分享链接: ${url}`);
+      return true;
+    }
+
+    // 兜底：剪贴板/弹窗提取
+    const cap = await this.getCapturedShareUrl(page, '/s/');
+    if (cap) {
+      logger.info(`[腾讯元宝] 点容器后捕获分享链接(兜底): ${cap}`);
+      return true;
     }
     return false;
   }
@@ -402,7 +399,9 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
         logger.warn(`[腾讯元宝] 分享弹窗按钮探针(${shareLayerBtns.length}个): ${shareLayerBtns.map(b => `<${b.tag} class="${b.cls}" aria="${b.aria}" text="${b.text}" kind=${b.kind} pos=(${b.x},${b.y})`).join(' | ')}`);
         const selectAlls = shareLayerBtns.filter(b => b.kind === 'select-all');
         const copies = shareLayerBtns.filter(b => b.kind === 'copy');
-        const ordered = [...selectAlls, ...copies, ...shareLayerBtns.filter(b => !selectAlls.includes(b) && !copies.includes(b))];
+        // v3.21.5: 复制链接优先于全选——实测先点"全选"会破坏 share API 默认的
+        // selectAll:true 状态，导致之后点"复制链接"不再触发 POST /api/conversations/v2/share
+        const ordered = [...copies, ...selectAlls, ...shareLayerBtns.filter(b => !selectAlls.includes(b) && !copies.includes(b))];
         for (const b of ordered.slice(0, 8)) {
           await page.mouse.click(b.x, b.y).catch(() => {});
           await page.waitForTimeout(1200);
