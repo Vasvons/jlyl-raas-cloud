@@ -47,15 +47,27 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
         try {
           if (typeof t !== 'string' || !t) return;
           // 1. 尝试 JSON 顶层 shareId（元宝 /api/conversations/v2/share 响应）
-          if (t.trim().startsWith('{')) {
-            const d = JSON.parse(t);
+          const trimmed = t.trim();
+          if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+            let d: any;
+            try { d = JSON.parse(t); } catch { d = null; }
             if (d && typeof d.shareId === 'string' && d.shareId) {
               (window as any).__ybShareId = d.shareId;
               setShareUrl();
               return;
             }
+            // 数组/多字段兜底：递归找 shareId
+            if (d && typeof d === 'object') {
+              const jsonStr = JSON.stringify(d);
+              const m = jsonStr.match(/"shareId"\s*:\s*"([^"]+)"/);
+              if (m && m[1]) {
+                (window as any).__ybShareId = m[1];
+                setShareUrl();
+                return;
+              }
+            }
           }
-          // 2. 尝试正则提取 shareId/sharedId 字段
+          // 2. 尝试正则提取 shareId/sharedId 字段（容错非法 JSON）
           const m = t.match(/"shareId"\s*:\s*"([^"]+)"/) || t.match(/"sharedId"\s*:\s*"([^"]+)"/);
           if (m && m[1]) {
             (window as any).__ybShareId = m[1];
@@ -63,7 +75,9 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
           }
         } catch { /* 忽略 */ }
       };
-      // XHR 拦截
+      // XHR 拦截（v3.21.1: 用 addEventListener('load') 而非 onreadystatechange——
+      // 页面在 send() 后可能自己给 xhr.onreadystatechange 赋值，会覆盖我们设置的 handler，
+      // 导致读不到 share API 响应。addEventListener 同源订阅互不覆盖，实测更可靠。）
       const _open = XMLHttpRequest.prototype.open;
       (XMLHttpRequest.prototype as any).open = function (this: any, m: string, u: string) {
         this.__u = u;
@@ -72,16 +86,13 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
       const _send = XMLHttpRequest.prototype.send;
       (XMLHttpRequest.prototype as any).send = function (this: any, b: any) {
         const xhr = this;
-        const _o = xhr.onreadystatechange;
-        xhr.onreadystatechange = function (this: any) {
-          if (xhr.readyState === 4) {
-            try {
-              const u = xhr.__u || '';
-              if (/share|conversations\/v2/.test(u)) parseResp(xhr.responseText || '');
-            } catch { /* 忽略 */ }
-          }
-          if (_o) return (_o as any).apply(this, arguments as any);
+        const xhrUrl = xhr.__u || '';
+        const handler = () => {
+          try {
+            if (/share|conversations\/v2/.test(xhrUrl)) parseResp(xhr.responseText || '');
+          } catch { /* 忽略 */ }
         };
+        try { xhr.addEventListener('load', handler); } catch { /* 忽略 */ }
         return _send.apply(this, arguments as any);
       };
       // fetch 拦截（元宝部分场景可能用 fetch）
@@ -99,13 +110,85 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
           });
         };
       }
-      }).catch(() => {});
+      // 标记注入完成，供外层诊断
+      (window as any).__ybShareHookInjected = true;
+    }).catch(() => {});
+  }
+
+  /**
+   * v3.21.1: 元宝分享面板精确点击（关键修复）
+   *
+   * 实测（2026-08-21 真实浏览器）：元宝分享面板结构
+   *   .agent-chat__share-bar-container
+   *     ├─ .agent-chat__share-bar__content__left/__select  → 全选 checkbox
+   *     └─ .agent-chat__share-bar__content__center
+   *           ├─ .agent-chat__share-bar__item      容器（onClick 绑定在此，点击触发配额分享 API）
+   *           │   └─ .agent-chat__share-bar__item__name  文本"复制链接"（叶子）
+   *           ├─ "生成图片" item
+   *           ├─ "转为文档" item
+   *           └─ "小程序码" item
+   *
+   * 关键：点**容器** `.agent-chat__share-bar__item` 才触发 POST /api/conversations/v2/share；
+   * 点 name 叶子（文本"复制链接"）不触发分享请求。共享 clickShareMenuItem 用
+   * `:text-is("复制链接")` 会先命中 name 叶子并 return，导致分享永远不触发。
+   *
+   * 这里按真实交互走：勾选全选 → 点复制链接容器。每步后读取拦截结果，命中即返回。
+   */
+  protected async yuanbaoClickSharePanel(page: Page): Promise<boolean> {
+    // 步骤 A：勾选全选（消息可能默认未全选，先选上确保分享的是完整回答）
+    try {
+      const selAllSelectors = [
+        ':text-is("全选")',
+        'div.agent-chat__share-bar__content__select',
+        '.agent-chat__share-bar__content__left',
+        'label.t-checkbox',
+        'input[type="checkbox"]',
+      ];
+      for (const sel of selAllSelectors) {
+        try {
+          const el = await page.$(sel);
+          if (!el) continue;
+          const visible = await el.isVisible().catch(() => false);
+          if (!visible) continue;
+          await el.click({ timeout: 2000 }).catch(() => {});
+          await page.waitForTimeout(800);
+          break;
+        } catch { /* 继续 */ }
+      }
+    } catch { /* 忽略 */ }
+
+    // 步骤 B：精确点击"复制链接"容器（点 item 容器，触发分享 API）
+    const copyContainerSelectors = [
+      'div.agent-chat__share-bar__item:has-text("复制链接")',
+      '.agent-chat__share-bar__content__center [class*="item"]:has-text("复制链接")',
+      '[class*="share-bar"] [class*="item"]:has-text("复制链接")',
+    ];
+    for (const sel of copyContainerSelectors) {
+      try {
+        const btn = await page.$(sel);
+        if (!btn) continue;
+        const visible = await btn.isVisible().catch(() => false);
+        if (!visible) continue;
+        await btn.click({ timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(1800);
+        logger.info(`[腾讯元宝] 点击分享面板"复制链接"容器: ${sel}`);
+        const cap = await this.getCapturedShareUrl(page, '/s/');
+        if (cap) {
+          logger.info(`[腾讯元宝] 点容器后捕获分享链接: ${cap}`);
+          return true;
+        }
+        const dlg = await this.extractShareUrlFromDialog(page, '/s/');
+        if (dlg) {
+          // 用对话框提取到的链接直接写回页面 window，同时标记命中（供后续 getCapturedShareUrl 复用）
+          await page.evaluate((u: string) => { (window as any).__capturedShareUrl__ = u; }, dlg).catch(() => {});
+          return true;
+        }
+      } catch { /* 继续 */ }
+    }
+    return false;
   }
 
   async extractShareLink(page: Page): Promise<string | null> {
-    // 腾讯元宝分享链接格式：https://yuanbao.tencent.com/s/{shareId}
-    // 实地探查（2026-07-12）：分享按钮 id="shareButton" 或 data-id="shareButton"
-    // 流程：hover 回答 → 点击分享按钮 → 分享菜单弹窗 → 复制链接
 
     // v3.21.x: 先行注入专门的分享 API 拦截器（解析 /api/conversations/v2/share 响应的 shareId）
     // 必须在点击分享按钮之前注入，确保能捕获到 share 请求响应。
@@ -187,10 +270,17 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
     // 步骤3.4: v1.9.4 分享按钮点击后先尝试二次点击弹出菜单中的「复制链接」项
     // （实地日志 2026-08-17：点击 [aria-label*="分享"] 成功但剪贴板无捕获，
     //   弹出的是下拉菜单而非 Tab 面板时，必须二次点击菜单项才复制链接）
-    await this.clickShareMenuItem(page);
+    //
+    // v3.21.1 关键修复：实测发现共享 clickShareMenuItem 里 `:text-is("复制链接")`
+    // 会先匹配到 `.agent-chat__share-bar__item__name`（文本恰为"复制链接"的叶子节点），
+    // 并在其中点击后直接 return true。但元宝的分享请求（POST /api/conversations/v2/share）
+    // 只有当点到**容器** `.agent-chat__share-bar__item` 时才触发——点 name 子元素不触发
+    // （元宝 onClick 需要击中 item 容器）。因此这里不调用共享 clickShareMenuItem，
+    // 改用「先点全选容器、再点复制链接容器」的精确流程。
+    await this.yuanbaoClickSharePanel(page);
     const earlyCaptured = await this.getCapturedShareUrl(page, '/s/');
     if (earlyCaptured) {
-      console.log(`[腾讯元宝] 二次点击菜单后捕获分享链接: ${earlyCaptured}`);
+      console.log(`[腾讯元宝] 面板点击后捕获分享链接: ${earlyCaptured}`);
       return earlyCaptured;
     }
 
