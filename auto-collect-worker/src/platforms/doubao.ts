@@ -12,6 +12,19 @@ import { smartFindLongestContent } from '../indexedInteractor';
  */
 const doubaoSignByPage = new WeakMap<Page, string>();
 
+/**
+ * v3.21.7: Node 侧按 page 捕获的豆包正式会话 ID 列表（新的在前，最多 5 个）。
+ *
+ * 实地日志（2026-08-21 22:02）：Worker 页面 URL 停留在 /chat/local_xxx（客户端临时会话），
+ * share_token API 接受 local_ ID 但 save API 返回 621000001 系统内部错误——
+ * save 需要服务端正式会话 ID（发消息后由服务端创建，前端通过 /im/ API 响应返回）。
+ * 从两个来源捕获正式 ID：
+ *   1. /im/ 请求 URL query 里的 conversation_id/conv_id（消息同步请求会带）
+ *   2. /im/ POST 响应体里的 conversation_id/conv_id 字段
+ * 只保留非 local_ 开头的值；extractShareLink 时逐候选试 save。
+ */
+const doubaoConvIdsByPage = new WeakMap<Page, string[]>();
+
 /** 豆包适配器
  *
  * 参考 auth helper 软件的查询脚本：
@@ -58,6 +71,41 @@ export class DoubaoAdapter extends BasePlatformAdapter {
           if (u.includes('version_code=') && (u.includes('/im/') || u.includes('/samantha/') || u.includes('/alice/'))) {
             const q = u.slice(u.indexOf('?') + 1);
             if (q) doubaoSignByPage.set(page, q);
+          }
+          // v3.21.7: 从 /im/ 请求 URL query 捕获正式会话 ID（消息同步请求会带）
+          const m = u.match(/[?&](?:conversation_id|conv_id)=([A-Za-z0-9_-]{10,})/);
+          if (m && !m[1].startsWith('local_')) {
+            const arr = doubaoConvIdsByPage.get(page) || [];
+            if (!arr.includes(m[1])) {
+              arr.unshift(m[1]);
+              if (arr.length > 5) arr.pop();
+              doubaoConvIdsByPage.set(page, arr);
+            }
+          }
+        } catch { /* 忽略 */ }
+      });
+    } catch { /* 忽略 */ }
+
+    // v3.21.7: 从 /im/ POST 响应体捕获正式会话 ID（发消息的响应里带服务端生成的真实 ID）
+    try {
+      page.on('response', async (resp: any) => {
+        try {
+          const req = resp.request();
+          if (req.method() !== 'POST') return;
+          const u: string = resp.url() || '';
+          if (!u.includes('/im/')) return;
+          const t: string = await resp.text().catch(() => '');
+          if (!t || t.length < 10) return;
+          const head = t.slice(0, 20000);
+          const ids = Array.from(head.matchAll(/"(?:conversation_id|conv_id)"\s*:\s*"?([A-Za-z0-9_-]{10,})"?/g)).map(mm => mm[1]);
+          const real = ids.find(x => !x.startsWith('local_'));
+          if (real) {
+            const arr = doubaoConvIdsByPage.get(page) || [];
+            if (!arr.includes(real)) {
+              arr.unshift(real);
+              if (arr.length > 5) arr.pop();
+              doubaoConvIdsByPage.set(page, arr);
+            }
           }
         } catch { /* 忽略 */ }
       });
@@ -307,10 +355,16 @@ export class DoubaoAdapter extends BasePlatformAdapter {
     };
 
     // 1. 主文档深度提取（回答可能直接在 main 文档的深层 DOM/shadow 内）
+    // v3.21.7: 阈值 150 → 400——实地日志（2026-08-21 21:57 / 22:03）两轮不同关键词
+    // 均提取到恒定 257 字符（框架/导航文本而非真实回答，不同关键词回答长度不可能恒等），
+    // 257 直接 return 导致真实回答（iframe 内）从未被提取。400 以下继续走 iframe 路径。
     const mainDeep = await deepExtract(page).catch(() => null);
-    if (mainDeep && mainDeep.text && mainDeep.text.length > 150) {
+    if (mainDeep && mainDeep.text && mainDeep.text.length >= 400) {
       logger.info(`[豆包] 主文档深度提取到回答: ${mainDeep.text.length} 字符`);
       return { text: mainDeep.text, html: mainDeep.html || `<div>${mainDeep.text}</div>` };
+    }
+    if (mainDeep && mainDeep.text && mainDeep.text.length > 0) {
+      logger.warn(`[豆包] 主文档深度提取仅 ${mainDeep.text.length} 字符（<400，疑似框架文本），继续尝试 iframe`);
     }
 
     // 2. iframe 内提取（原逻辑 + 深度提取兜底）
@@ -426,40 +480,40 @@ export class DoubaoAdapter extends BasePlatformAdapter {
         );
       };
 
-      // 尝试 1: 带签名直调（实测可行——share_token 宽松，save 需要宿主签名校验）
-      if (sign) {
-        const tok = await callShare('/im/message/share/share_token', { conversation_id: convId }, true);
-        const token = (tok && tok.data && tok.data.share_token) || '';
-        if (token) {
-          const saved = await callShare('/im/message/share/save', {
-            conv_id: convId, message_index_list: [1, 2], share_token: token,
-          }, true);
-          const shareUrl = (saved && saved.data && saved.data.share_url) || '';
-          if (shareUrl && shareUrl.includes('/thread/')) {
-            logger.info(`[豆包] API直调成功(带签名): share_url=${shareUrl}`);
-            return shareUrl;
-          }
-          logger.warn(`[豆包] API直调: 带签名 save 未返回 thread 链接 (resp=${JSON.stringify(saved).slice(0, 200)})`);
-        } else {
-          logger.warn(`[豆包] API直调: 带签名 share_token 未返回 (resp=${JSON.stringify(tok).slice(0, 200)})`);
-        }
-      }
+      // v3.21.7: 会话 ID 候选列表——Node 侧捕获的正式 ID 优先（save 对 local_ 临时 ID
+      // 报 621000001 系统内部错误，正式 ID 是发消息后服务端创建的），URL 里的 ID 兜底
+      const capturedIds = doubaoConvIdsByPage.get(page) || [];
+      const candidates = [...new Set([...capturedIds.slice(0, 3), convId].filter(Boolean))];
+      logger.info(`[豆包] API直调: 会话ID候选=${JSON.stringify(candidates)} (URL=${convId}, Node侧捕获=${capturedIds.length}个)`);
 
-      // 尝试 2: 无签名直调（豆包在某些网络/环境可能不强制校验；share_token 实测宽松）
-      const tok = await callShare('/im/message/share/share_token', { conversation_id: convId }, false);
-      const token = (tok && tok.data && tok.data.share_token) || '';
-      if (token) {
+      let preShareId = '';
+      // 逐候选尝试：带签名 token+save（签名已捕获时），否则无签名
+      for (const cid of candidates) {
+        const tok = await callShare('/im/message/share/share_token', { conversation_id: cid }, !!sign);
+        const token = (tok && tok.data && tok.data.share_token) || '';
+        if (tok && tok.data && tok.data.pre_share_id) preShareId = tok.data.pre_share_id;
+        if (!token) {
+          logger.warn(`[豆包] API直调: cid=${cid} share_token 未返回 (resp=${JSON.stringify(tok).slice(0, 150)})`);
+          continue;
+        }
         const saved = await callShare('/im/message/share/save', {
-          conv_id: convId, message_index_list: [1, 2], share_token: token,
-        }, false);
+          conv_id: cid, message_index_list: [1, 2], share_token: token,
+        }, !!sign);
         const shareUrl = (saved && saved.data && saved.data.share_url) || '';
         if (shareUrl && shareUrl.includes('/thread/')) {
-          logger.info(`[豆包] API直调成功(无签名): share_url=${shareUrl}`);
+          logger.info(`[豆包] API直调成功: cid=${cid} share_url=${shareUrl}`);
           return shareUrl;
         }
-        logger.warn(`[豆包] API直调: 无签名 save 未返回 thread 链接 (resp=${JSON.stringify(saved).slice(0, 200)})`);
-      } else {
-        logger.warn(`[豆包] API直调: 无签名 share_token 未返回 (resp=${JSON.stringify(tok).slice(0, 200)})`);
+        logger.warn(`[豆包] API直调: cid=${cid} save 未返回 thread 链接 (resp=${JSON.stringify(saved).slice(0, 150)})`);
+      }
+
+      // 最终兜底: share_token 响应的 pre_share_id 直接拼 thread 链接
+      // （不确定 pre_share_id 是否就是最终 share_id，由 verifyShareLinkPublic 公开性验证兜底，
+      //   链接无效时自动降级静态页，无副作用）
+      if (preShareId) {
+        const guess = `https://www.doubao.com/thread/${preShareId}`;
+        logger.info(`[豆包] API直调: save 全部失败，尝试 pre_share_id 拼接链接: ${guess}`);
+        return guess;
       }
       return null;
     } catch (e: any) {

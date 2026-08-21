@@ -952,6 +952,15 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       throw new Error(`内容提取异常: 抓取到页面框架/侧边栏文本（命中${markerHits}个标记），AI 回答可能未生成 (内容长度=${text.trim().length})`);
     }
 
+    // ============ 页面级风控检测（v3.21.7，提前到分享提取之前）============
+    // baxia/验证码弹层拦截时回答必然未生成，extractShareLink 的多轮 hover 重试
+    // 必然失败且浪费约 90 秒——实地日志（2026-08-21 千问）：baxia 弹层 22:03 出现，
+    // 分享提取空转到 22:04:46 才在 detectAccountAnomaly 命中。提前检测快速失败。
+    const pageRisk = await this.detectPageRisk(page);
+    if (pageRisk) {
+      throw new Error(pageRisk);
+    }
+
     const rawShareUrl = await this.extractShareLink(page);
     // v1.9: 分享链接公开性验证——无登录访客看不到内容的链接判定为私有，降级静态页
     const shareUrl = rawShareUrl ? await this.verifyShareLinkPublic(page, rawShareUrl, text) : null;
@@ -974,27 +983,23 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
   }
 
   /**
-   * 检测账号异常（登录态失效、token 过期、被封禁等）
+   * 页面级风控检测（v3.21.7，从 detectAccountAnomaly 抽出并前置调用）
    *
-   * 触发条件：内容长度 < 200 字符（正常 AI 回答至少 500+ 字符）
-   * 检测策略：
-   * 1. 页面文本包含明确的登录失效/token 过期关键词 → 抛"登录态失效"
-   * 2. 内容极短（< 50 字符）且不含查询关键词 → 抛"账号异常：内容过短"
-   * 3. 页面 URL 被重定向到登录页 → 抛"登录态失效"
+   * 检测两类与内容长度无关的页面级拦截信号：
+   * 1. 验证码关键词（拼图/滑块/人机验证等）
+   * 2. 阿里 baxia 人机验证弹层（全屏遮挡，回答未生成）
    *
-   * @returns 错误消息（如"登录态失效: token 过期"）或 null（正常）
+   * 命中即抛风控错误（上层走 rate_limited 路径，不改账号状态）。
+   * 调用时机：extractContent 之后、extractShareLink 之前——
+   * 弹层拦截时分享提取必然失败，提前失败省约 90 秒。
    */
-  protected async detectAccountAnomaly(page: Page, content: string): Promise<string | null> {
-    const contentLen = content.trim().length;
-
-    // ===== 0. 风控验证码检测（v1.9.2，与内容长度无关）=====
-    // 实地诊断（2026-08-16 纳米）：查询频率过高触发拼图验证，AI 回答被拦截，
-    // 此时页面文本是智能体广场/框架文本（400+ 字符），能通过原有长度检查混入正常记录
+  protected async detectPageRisk(page: Page): Promise<string | null> {
+    // 1. 验证码关键词
     try {
-      const pageText0 = await page.evaluate(() => document.body?.innerText?.substring(0, 3000) || '').catch(() => '');
+      const pageText = await page.evaluate(() => document.body?.innerText?.substring(0, 3000) || '').catch(() => '');
       const captchaKeywords = ['拼图验证', '请完成下方拼图验证', '频繁使用，需要验证', '请完成安全验证', '拖动滑块', '人机验证'];
       for (const kw of captchaKeywords) {
-        if (pageText0.includes(kw)) {
+        if (pageText.includes(kw)) {
           const msg = `触发风控验证码: 检测到"${kw}"，查询被平台拦截`;
           console.warn(`[${this.platformName}] ⚠️ ${msg}`);
           return msg;
@@ -1002,11 +1007,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
       }
     } catch { /* 忽略 evaluate 失败 */ }
 
-    // ===== 0.5 阿里 baxia 人机验证弹层检测（v3.21.6，与内容长度无关）=====
-    // 实地诊断（2026-08-21 通义千问）：baxia-dialog 全屏弹层（z-index 最大）遮挡页面，
-    // 回答被风控拦截未生成 → 提取到 15 字符问题文本 → 被判"账号异常：内容过短"
-    // → 账号误标 offline（实际账号正常，是风控不是登录态问题）。
-    // 命中 baxia 归类为风控（rate_limited 路径，不改账号状态），换指纹重试即可。
+    // 2. 阿里 baxia 人机验证弹层（实地诊断 2026-08-21 通义千问：
+    //    baxia-dialog 全屏遮挡导致回答未生成，被误判"账号异常：内容过短"误标 offline）
     try {
       const hasBaxia = await page.evaluate(() => {
         const els = document.querySelectorAll('div[class*="baxia-dialog"], iframe[src*="baxia"]');
@@ -1026,6 +1028,24 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
         return msg;
       }
     } catch { /* 忽略 evaluate 失败 */ }
+    return null;
+  }
+
+  /**
+   * 检测账号异常（登录态失效、token 过期、被封禁等）
+   *
+   * 触发条件：内容长度 < 200 字符（正常 AI 回答至少 500+ 字符）
+   * 检测策略：
+   * 1. 页面文本包含明确的登录失效/token 过期关键词 → 抛"登录态失效"
+   * 2. 内容极短（< 50 字符）且不含查询关键词 → 抛"账号异常：内容过短"
+   * 3. 页面 URL 被重定向到登录页 → 抛"登录态失效"
+   *
+   * @returns 错误消息（如"登录态失效: token 过期"）或 null（正常）
+   */
+  protected async detectAccountAnomaly(page: Page, content: string): Promise<string | null> {
+    const contentLen = content.trim().length;
+
+    // 注：验证码/baxia 弹层检测已迁移至 detectPageRisk（v3.21.7 前置调用）
 
     // 正常内容长度（> 200 字符）直接放行
     if (contentLen >= 200) return null;

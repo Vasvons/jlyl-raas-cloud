@@ -272,24 +272,33 @@ export class NanoAdapter extends BasePlatformAdapter {
         // 可能不在消息条目内，需要消息条目内全部可交互元素数据）
         try {
           const msgDump = await page.evaluate(() => {
+            // v3.21.7: 先转储页面位置诊断——实地日志（2026-08-21 22:06）「无消息条目」
+            // 说明消息选择器全落空，需确认页面停在聊天页还是智能体广场（登录态异常时停留广场）
+            const url = location.href;
+            const bodyHead = (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 200);
             const items = document.querySelectorAll('li.js-message-item, [data-testid^="msg-"]');
             const last = items[items.length - 1] as HTMLElement | undefined;
-            if (!last) return '无消息条目(li.js-message-item/[data-testid^="msg-"]均未命中)';
-            const els = last.querySelectorAll('button, [role="button"], [class*="btn"], [class*="icon"], svg, [aria-label], [title]');
-            const parts: string[] = [];
-            for (let i = 0; i < els.length && parts.length < 15; i++) {
-              const el = els[i] as HTMLElement;
-              const r = el.getBoundingClientRect();
-              if (r.width <= 0 || r.height <= 0) continue;
-              const cls = (el.getAttribute('class') || '').toString().slice(0, 40);
-              const aria = el.getAttribute('aria-label') || '';
-              const title = el.getAttribute('title') || '';
-              const txt = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 10);
-              parts.push(`<${el.tagName.toLowerCase()} class="${cls}" aria="${aria.slice(0, 16)}" title="${title.slice(0, 16)}" txt="${txt}" pos=(${Math.round(r.left)},${Math.round(r.top)})`);
+            let detail = '';
+            if (last) {
+              const els = last.querySelectorAll('button, [role="button"], [class*="btn"], [class*="icon"], svg, [aria-label], [title]');
+              const parts: string[] = [];
+              for (let i = 0; i < els.length && parts.length < 15; i++) {
+                const el = els[i] as HTMLElement;
+                const r = el.getBoundingClientRect();
+                if (r.width <= 0 || r.height <= 0) continue;
+                const cls = (el.getAttribute('class') || '').toString().slice(0, 40);
+                const aria = el.getAttribute('aria-label') || '';
+                const title = el.getAttribute('title') || '';
+                const txt = (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 10);
+                parts.push(`<${el.tagName.toLowerCase()} class="${cls}" aria="${aria.slice(0, 16)}" title="${title.slice(0, 16)}" txt="${txt}" pos=(${Math.round(r.left)},${Math.round(r.top)})`);
+              }
+              detail = parts.length ? parts.join(' | ') : '消息条目内无可交互元素';
+            } else {
+              detail = `无消息条目(li.js-message-item/[data-testid^="msg-"]均未命中, 共${document.querySelectorAll('*').length}个DOM节点)`;
             }
-            return parts.length ? parts.join(' | ') : '消息条目内无可交互元素';
+            return `url=${url} | body开头="${bodyHead}" | ${detail}`;
           }).catch(() => '');
-          logger.warn(`[纳米] 分享未找到，最后一条消息结构转储: ${msgDump}`);
+          logger.warn(`[纳米] 分享未找到，页面诊断: ${msgDump}`);
         } catch { /* 忽略 */ }
         console.log('[纳米] 未定位到分享按钮');
         return null;
