@@ -27,6 +27,46 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   protected loginUrlPattern = 'login';
 
   /**
+   * v3.20.x: 导航到聊天页后注入签名捕获 hook。
+   *
+   * 豆包分享 API（/im/message/share/share_token、/share/save）必须在 URL query 带上
+   * 宿主签名（device_id/web_id/tea_uuid/aid/version_code/web_tab_id 等），否则返回"参数非法"。
+   * 这些签名参数在豆包自身所有 /im/ 业务请求的 URL query 里都存在。
+   * 这里注入 XHR open 拦截：捕获任何 /im/ 请求 URL 的 query，存到 window.__dbSignQuery
+   * 和 localStorage['__db_sign']，供 createDoubaoShareLinkViaApi 复用。
+   */
+  protected async afterNavigate(page: Page): Promise<void> {
+    try {
+      await page.evaluate(() => {
+        const capture = () => {
+          const _open = XMLHttpRequest.prototype.open;
+          (XMLHttpRequest.prototype as any).open = function (this: any, m: string, u: string) {
+            try {
+              if (typeof u === 'string' && u.indexOf('/im/') >= 0 && u.indexOf('version_code=') >= 0) {
+                const q = u.indexOf('?') >= 0 ? u.substring(u.indexOf('?') + 1) : '';
+                if (q && q !== (window as any).__dbSignQuery) {
+                  (window as any).__dbSignQuery = q;
+                  try { localStorage.setItem('__db_sign', q); } catch { /* 忽略 */ }
+                }
+              }
+            } catch { /* 忽略 */ }
+            return _open.apply(this, arguments as any);
+          };
+        };
+        // 从已存的签名恢复（避免导航后丢失）
+        try {
+          const saved = localStorage.getItem('__db_sign');
+          if (saved) (window as any).__dbSignQuery = saved;
+        } catch { /* 忽略 */ }
+        capture();
+      }).catch(() => {});
+      logger.info('[豆包] 已注入分享签名捕获 hook（afterNavigate）');
+    } catch (e: any) {
+      logger.warn(`[豆包] 注入签名捕获 hook 失败: ${e.message}`);
+    }
+  }
+
+  /**
    * v1.9.3 实地诊断（2026-08-16）：豆包按 Enter 不发送查询（实测 45 秒后聊天区只有
    * 用户问题、无 AI 回答，body 全是侧边栏文本），必须点击发送按钮。
    * 参考 auth helper 实测：发送按钮为 div.send-btn-wrapper button
@@ -281,8 +321,115 @@ export class DoubaoAdapter extends BasePlatformAdapter {
     return await super.extractContent(page);
   }
 
+  /**
+   * v3.20.x: 通过豆包分享 API 直调生成分享链接（绕过 UI 按钮/shadow DOM）
+   *
+   * 豆包分享纯后端 API，不依赖前端按钮。实现：
+   * 1. 从 page.url() 的 /chat/{conversation_id} 提取会话 ID
+   * 2. 复用签名 query（afterNavigate 注入的 __dbSignQuery / localStorage['__db_sign']，
+   *    即豆包自身业务请求的宿主签名 device_id/web_id/tea_uuid/aid 等）
+   * 3. POST /share/share_token{?sign} body {"conversation_id":xxx} → share_token(JWT)
+   * 4. POST /share/save{?sign} body {"conv_id","message_index_list":[1,2],"share_token"} → share_url
+   * 5. 返回 data.share_url（https://www.doubao.com/thread/{share_id}）
+   * 实测（2026-08-21 实地）：带完整签名 query 的 fetch 直调成功返回 share_url。
+   */
+  private async createDoubaoShareLinkViaApi(page: Page): Promise<string | null> {
+    try {
+      // 1. 提取 conversation_id
+      const url = page.url();
+      const m = url.match(/\/chat\/(\d+)/);
+      if (!m) {
+        logger.warn(`[豆包] API直调失败: 对话 URL 不含 conversation_id (url=${url})`);
+        return null;
+      }
+      const convId = m[1];
+
+      // 2. 获取签名 query（优先 window，其次 localStorage）
+      let sign = await page.evaluate(() => (window as any).__dbSignQuery || '').catch(() => '');
+      if (!sign) {
+        sign = await page.evaluate(() => {
+          try { return localStorage.getItem('__db_sign') || ''; } catch { return ''; }
+        }).catch(() => '');
+      }
+      // sign 若以 ? 开头则去掉
+      sign = sign.replace(/^\?/, '');
+
+      const fetchShare = async (path: string, body: Record<string, unknown>): Promise<any> => {
+        const qs = sign ? '?' + sign : '';
+        // 用相对路径，走页面同源 + 自动带 cookie
+        const resp = await page.evaluate(
+          ({ url, body: b }) => fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(b),
+          }).then(r => r.text()).then(t => { try { return JSON.parse(t); } catch { return { raw: t }; } }),
+          { url: path + qs, body }
+        );
+        return resp;
+      };
+
+      // 尝试 1: 无签名直调（豆包在某些网络/环境可能不强制校验）
+      if (!sign) {
+        const tok = await fetchShare('/im/message/share/share_token', { conversation_id: convId });
+        const token = tok && tok.data && tok.data.share_token;
+        if (token) {
+          const saved = await fetchShare('/im/message/share/save', {
+            conv_id: convId, message_index_list: [1, 2], share_token: token,
+          });
+          if (saved && saved.data && saved.data.share_url) return saved.data.share_url;
+        }
+        logger.warn(`[豆包] API直调: 无签名 direct 尝试未获得 share_url (tok=${JSON.stringify(tok).slice(0,120)})`);
+        return null;
+      }
+
+      // 尝试 2: 带签名直调（实测可行）
+      const tok = await fetchShare('/im/message/share/share_token', { conversation_id: convId });
+      let token = '';
+      try {
+        token = tok && tok.data && (tok.data.share_token || '') || '';
+      } catch { /* 忽略 */ }
+      if (!token) {
+        logger.warn(`[豆包] API直调: share_token 未返回 (resp=${JSON.stringify(tok).slice(0,160)})`);
+        return null;
+      }
+      const saved = await fetchShare('/im/message/share/save', {
+        conv_id: convId, message_index_list: [1, 2], share_token: token,
+      });
+      let shareUrl = '';
+      try {
+        shareUrl = saved && saved.data && (saved.data.share_url || '') || '';
+      } catch { /* 忽略 */ }
+      if (shareUrl && shareUrl.includes('/thread/')) {
+        logger.info(`[豆包] API直调成功: share_url=${shareUrl}`);
+        return shareUrl;
+      }
+      logger.warn(`[豆包] API直调: save 未返回 thread 链接 (resp=${JSON.stringify(saved).slice(0,160)})`);
+      return null;
+    } catch (e: any) {
+      logger.warn(`[豆包] API直调异常: ${e.message}`);
+      return null;
+    }
+  }
+
   async extractShareLink(page: Page): Promise<string | null> {
     // v3.20.x 实地探查（2026-08-21）：豆包分享链接格式为 https://www.doubao.com/thread/{share_id}
+    //
+    // 【优先路径 v3.20.x】API 直调分享（推荐，绕过 UI 按钮/shadow DOM）：
+    //   豆包分享是纯后端 API 生成链接，不依赖前端按钮。对话 URL 形如 /chat/{conversation_id}，
+    //   可用页面会话直接调（带完整签名 query——device_id/web_id/aid 等宿主级参数，从任意 XHR URL 复用）。
+    //   实测（2026-08-21 实地）：fetch POST 需带 siwent mock 的签名 query，否则返回"参数非法"；
+    //   带上完整 signature query 后成功返回 share_url:
+    //   1. POST /im/message/share/share_token{?sign} body {"conversation_id":xxx} → share_token(JWT)
+    //   2. POST /im/message/share/save{?sign} body {"conv_id":xxx,"message_index_list":[1,2],"share_token":token}
+    //      → data.share_url: https://www.doubao.com/thread/{share_id}
+    //   signature query 复用页面内任意 XHR 的 URL query（injectShareSignatureCapture 捕获宿主签名）
+    const viaApi = await this.createDoubaoShareLinkViaApi(page);
+    if (viaApi) {
+      logger.info(`[豆包] 通过 API 直调生成分享链接: ${viaApi}`);
+      return viaApi;
+    }
+
+    // 【兜底路径】UI 点击分享（仅当 API 直调失败时，网页按钮可定位的场景）
     // 分享按钮在回答气泡底部操作栏 .message-action-button-main 内（hover 回答后显示，
     // 无 share class/aria/title，旧 [class*="share"] 选择器匹配不到）。
     // 点击"复制链接"会调用两个 API 生成链接（不走标准剪贴板——React 闭包缓存了原生
