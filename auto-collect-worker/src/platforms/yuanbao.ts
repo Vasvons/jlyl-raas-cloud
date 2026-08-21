@@ -23,7 +23,8 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
 
     // 步骤1: 注入 clipboard + execCommand 拦截
     // v1.9: 只匹配 /s/ 分享路径（之前还匹配域名，任何含域名的复制文本都会被误捕获）
-    await this.injectClipboardInterceptor(page, ['/s/']);
+    // v3.20.x: 追加 yuanbao.tencent.com/chat/s/ 等变体——元宝分享链接可能有其他前缀
+    await this.injectClipboardInterceptor(page, ['/s/', 'yuanbao.tencent.com/chat/s/', '/chat/share/']);
 
     // 步骤2: hover 在 AI 回答区域上，触发操作栏显示
     // v1.9 修复：hover 成功一个元素后立即停止——之前会继续 hover 兜底选择器（main 等），

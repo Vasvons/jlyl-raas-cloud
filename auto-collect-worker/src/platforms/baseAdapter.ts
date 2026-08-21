@@ -1389,10 +1389,11 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
               if (t && t.length < 100000) {
                 const urls = t.match(/https?:\/\/[^\s"'<>\\]+/g) || [];
                 for (let ui = 0; ui < urls.length; ui++) {
-                  if (patterns.some(p => urls[ui].includes(p))) {
-                    record(urls[ui]);
-                    break;
-                  }
+                  // v3.20.x：所有 URL 都 record（写 __lastClipboardText__ 供诊断）——
+                  //   若命中 urlPatterns 才写 __capturedShareUrl__。这样即使链接格式与
+                  //   pattern 不符，日志也会打印实际返回的 URL，辅助定位平台真实分享格式。
+                  record(urls[ui]);
+                  if (patterns.some(p => urls[ui].includes(p))) break;
                 }
               }
             } catch { /* 忽略 */ }
@@ -1413,10 +1414,8 @@ export abstract class BasePlatformAdapter extends PlatformAdapter {
                   if (t && t.length < 100000) {
                     const urls = t.match(/https?:\/\/[^\s"'<>\\]+/g) || [];
                     for (let ui = 0; ui < urls.length; ui++) {
-                      if (patterns.some(p => urls[ui].includes(p))) {
-                        record(urls[ui]);
-                        break;
-                      }
+                      record(urls[ui]);
+                      if (patterns.some(p => urls[ui].includes(p))) break;
                     }
                   }
                 }).catch(() => { /* 忽略 */ });

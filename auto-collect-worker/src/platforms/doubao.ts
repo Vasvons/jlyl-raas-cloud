@@ -402,8 +402,65 @@ export class DoubaoAdapter extends BasePlatformAdapter {
   private async clickDoubaoShareButton(page: Page): Promise<boolean> {
     const btnSelector = '[class*="message-action-button-main"] > button';
     const frames = [page.mainFrame(), ...page.frames().filter(f => f !== page.mainFrame())];
+    const panelCheck = async (): Promise<boolean> => {
+      for (const f of frames) {
+        const r = await f.evaluate(() => {
+          if (document.querySelector('[class*="share-header-ui"]')) return true;
+          const bodyTxt = (document.body.innerText || '');
+          return bodyTxt.includes('复制链接') && bodyTxt.includes('分享对话');
+        }).catch(() => false);
+        if (r) return true;
+      }
+      return false;
+    };
 
-    // 策略1: tooltip 识别（遍历主文档 + iframe）
+    // 策略0: 坐标点击——穿透 shadow DOM 定位操作栏按钮
+    // Worker 环境豆包回答可能渲染在 shadow root 内（domNodes 很低），常规
+    // document.querySelectorAll 查不到 shadow 内元素，必须深度遍历 shadow root。
+    // 收集操作栏按钮坐标，逐个点击并验证是否弹出分享面板。
+    for (const frame of frames) {
+      const btns = await frame.evaluate(() => {
+        const out: Array<{ x: number; y: number }> = [];
+        const walk = (root: any) => {
+          const all = root.querySelectorAll
+            ? Array.from(root.querySelectorAll('[class*="message-action-button-main"] button, [class*="message-action-button"] button'))
+            : [];
+          for (const el of all) {
+            const r = (el as HTMLElement).getBoundingClientRect();
+            const s = window.getComputedStyle(el as HTMLElement);
+            if (r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0') {
+              out.push({ x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
+            }
+          }
+          // 穿透 open shadow root
+          for (const el of (root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [])) {
+            const shadow = (el as any).shadowRoot as ShadowRoot | undefined;
+            if (shadow) walk(shadow);
+          }
+        };
+        walk(document);
+        return out;
+      }).catch(() => [] as Array<{ x: number; y: number }>);
+
+      if (btns.length > 0) {
+        // 分享按钮在操作栏最右侧附近（复制/朗读/喜欢/不喜欢/分享/重新生成/更多），
+        // 从右往左试（最多试右侧 5 个），每点一个验证是否弹出分享面板
+        for (let i = btns.length - 1; i >= Math.max(0, btns.length - 5); i--) {
+          try {
+            await page.mouse.click(btns[i].x, btns[i].y).catch(() => {});
+            await page.waitForTimeout(1200);
+            if (await panelCheck()) {
+              logger.info(`[豆包] 通过坐标点击操作栏按钮 (shadow, frame=${frame === page.mainFrame() ? 'main' : 'iframe'}, idx=${i})，分享面板已出现`);
+              return true;
+            }
+            await page.keyboard.press('Escape').catch(() => {});
+            await page.waitForTimeout(500);
+          } catch { /* 继续 */ }
+        }
+      }
+    }
+
+    // 策略1: tooltip 识别（遍历主文档 + iframe，非 shadow 场景）
     for (const frame of frames) {
       const btnCount = await frame.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
       if (!btnCount) continue;
@@ -439,17 +496,6 @@ export class DoubaoAdapter extends BasePlatformAdapter {
     // 策略2: 逐个点击验证面板（Worker 环境 tooltip 不可靠时的兜底，遍历 frames）
     // 分享按钮在操作栏相对位置固定（复制/朗读/喜欢/不喜欢/分享/重新生成/更多），
     // 从最右侧开始逐个点击，检查是否弹出分享面板（出现"复制链接"/"分享对话"即命中）
-    const panelCheck = async (): Promise<boolean> => {
-      for (const f of frames) {
-        const r = await f.evaluate(() => {
-          if (document.querySelector('[class*="share-header-ui"]')) return true;
-          const bodyTxt = (document.body.innerText || '');
-          return bodyTxt.includes('复制链接') && bodyTxt.includes('分享对话');
-        }).catch(() => false);
-        if (r) return true;
-      }
-      return false;
-    };
     for (const frame of frames) {
       const btnCount2 = await frame.evaluate((sel: string) => document.querySelectorAll(sel).length, btnSelector).catch(() => 0);
       if (!btnCount2) continue;
@@ -471,7 +517,7 @@ export class DoubaoAdapter extends BasePlatformAdapter {
         } catch { /* 继续 */ }
       }
     }
-    logger.warn('[豆包] 操作栏内未找到分享按钮（tooltip + 位置点击均失败）');
+    logger.warn('[豆包] 操作栏内未找到分享按钮（shadow + tooltip + 位置点击均失败）');
     return false;
   }
 
