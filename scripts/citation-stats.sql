@@ -139,7 +139,7 @@ LIMIT 50;
 -- ============ 6. 每个 AI 平台各自 TOP 10 引用域名 ============
 \echo ''
 \echo '===== 6. 每个 AI 平台 TOP 10 引用域名 ====='
-SELECT platform AS AI平台, 引用次数, 域名
+SELECT platform AS AI平台, 引用次数, domain AS 域名
 FROM (
   SELECT platform, domain, count(*) AS 引用次数,
          row_number() OVER (PARTITION BY platform ORDER BY count(*) DESC) AS rn
