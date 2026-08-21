@@ -335,9 +335,9 @@ export class DoubaoAdapter extends BasePlatformAdapter {
    */
   private async createDoubaoShareLinkViaApi(page: Page): Promise<string | null> {
     try {
-      // 1. 提取 conversation_id
+      // 1. 提取 conversation_id（支持数字 ID 和 local_ 前缀的非数字会话 ID）
       const url = page.url();
-      const m = url.match(/\/chat\/(\d+)/);
+      const m = url.match(/\/chat\/([A-Za-z0-9_-]+)/);
       if (!m) {
         logger.warn(`[豆包] API直调失败: 对话 URL 不含 conversation_id (url=${url})`);
         return null;

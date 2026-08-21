@@ -16,10 +16,100 @@ export class YuanbaoAdapter extends BasePlatformAdapter {
   protected stopButtonSelector = '[class*="stop"], .stop-btn';
   protected loginUrlPattern = 'login';
 
+  /**
+   * v3.21.x: 元宝分享 API 拦截器（实地探查 2026-08-21 定论）
+   *
+   * 根因：元宝点击"复制链接"后，前端调 `POST /api/conversations/v2/share` 生成分享，
+   * 响应体只返回顶层 `shareId`（如 {"shareId":"GyY2LUyTM0cX"}），由前端 JS 拼接完整链接
+   * `https://yuanbao.tencent.com/s/{shareId}` 后再复制。
+   *
+   * 因此 worker 若只扫剪贴板 / XHR 响应里的完整 URL，永远抓不到 `/s/`：
+   *   - navigator.clipboard.writeText 被 React 闭包缓存引用，运行时覆盖拦截不到
+   *   - API 响应文本只有 shareId，没有 `/s/` 字符串
+   *
+   * 修复：专门 hook `/share` 相关 XHR/fetch 响应，解析 JSON 中的顶层 shareId，
+   * 拼接 `https://yuanbao.tencent.com/s/{shareId}` 写入 __capturedShareUrl__，
+   * 与后续 getCapturedShareUrl(page, '/s/') 无缝衔接。
+   */
+  protected async injectYuanbaoShareApiInterceptor(page: Page): Promise<void> {
+    await page.evaluate(() => {
+      // 保存当前已存在的 shareId 捕获，避免重复覆盖
+      const setShareUrl = () => {
+        try {
+          const sid = (window as any).__ybShareId;
+          if (!sid) return;
+          (window as any).__capturedShareUrl__ = `https://yuanbao.tencent.com/s/${sid}`;
+          (window as any).__lastClipboardText__ = `https://yuanbao.tencent.com/s/${sid}`;
+        } catch { /* 忽略 */ }
+      };
+      // 解析响应文本，提取 shareId
+      const parseResp = (t: string) => {
+        try {
+          if (typeof t !== 'string' || !t) return;
+          // 1. 尝试 JSON 顶层 shareId（元宝 /api/conversations/v2/share 响应）
+          if (t.trim().startsWith('{')) {
+            const d = JSON.parse(t);
+            if (d && typeof d.shareId === 'string' && d.shareId) {
+              (window as any).__ybShareId = d.shareId;
+              setShareUrl();
+              return;
+            }
+          }
+          // 2. 尝试正则提取 shareId/sharedId 字段
+          const m = t.match(/"shareId"\s*:\s*"([^"]+)"/) || t.match(/"sharedId"\s*:\s*"([^"]+)"/);
+          if (m && m[1]) {
+            (window as any).__ybShareId = m[1];
+            setShareUrl();
+          }
+        } catch { /* 忽略 */ }
+      };
+      // XHR 拦截
+      const _open = XMLHttpRequest.prototype.open;
+      (XMLHttpRequest.prototype as any).open = function (this: any, m: string, u: string) {
+        this.__u = u;
+        return _open.apply(this, arguments as any);
+      };
+      const _send = XMLHttpRequest.prototype.send;
+      (XMLHttpRequest.prototype as any).send = function (this: any, b: any) {
+        const xhr = this;
+        const _o = xhr.onreadystatechange;
+        xhr.onreadystatechange = function (this: any) {
+          if (xhr.readyState === 4) {
+            try {
+              const u = xhr.__u || '';
+              if (/share|conversations\/v2/.test(u)) parseResp(xhr.responseText || '');
+            } catch { /* 忽略 */ }
+          }
+          if (_o) return (_o as any).apply(this, arguments as any);
+        };
+        return _send.apply(this, arguments as any);
+      };
+      // fetch 拦截（元宝部分场景可能用 fetch）
+      const _fetch = window.fetch;
+      if (typeof _fetch === 'function') {
+        window.fetch = function (this: any, input: any, init?: any) {
+          const u = typeof input === 'string' ? input : (input && input.url) || '';
+          return _fetch.call(this, input, init).then((resp: Response) => {
+            try {
+              if (resp && typeof resp.clone === 'function' && /share|conversations\/v2/.test(u)) {
+                resp.clone().text().then((t: string) => parseResp(t)).catch(() => {});
+              }
+            } catch { /* 忽略 */ }
+            return resp;
+          });
+        };
+      }
+      }).catch(() => {});
+  }
+
   async extractShareLink(page: Page): Promise<string | null> {
     // 腾讯元宝分享链接格式：https://yuanbao.tencent.com/s/{shareId}
     // 实地探查（2026-07-12）：分享按钮 id="shareButton" 或 data-id="shareButton"
     // 流程：hover 回答 → 点击分享按钮 → 分享菜单弹窗 → 复制链接
+
+    // v3.21.x: 先行注入专门的分享 API 拦截器（解析 /api/conversations/v2/share 响应的 shareId）
+    // 必须在点击分享按钮之前注入，确保能捕获到 share 请求响应。
+    await this.injectYuanbaoShareApiInterceptor(page);
 
     // 步骤1: 注入 clipboard + execCommand 拦截
     // v1.9: 只匹配 /s/ 分享路径（之前还匹配域名，任何含域名的复制文本都会被误捕获）
