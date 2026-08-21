@@ -3290,6 +3290,23 @@ export async function migrate() {
     // v2.7.0 P1：官方模板种子（幂等插入，WHERE NOT EXISTS 防重复）
     await seedSiteTemplates(client);
 
+    // ============ v2.9.0 灵犀站点引擎 v3：板块独立 AI 模型配置（SITE_ENGINE_PLAN）============
+    // 建站模型配置从「智能体公司」独立出来：按 user 单行，api_key encrypt 加密。
+    // 桌面端建站对话与 Pi 底座生成统一读取此配置，不再依赖工作空间「建站助手」智能体。
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS site_ai_config (
+        id               SERIAL PRIMARY KEY,
+        user_id          INTEGER NOT NULL UNIQUE,
+        provider         TEXT NOT NULL DEFAULT 'deepseek',
+        model_name       TEXT NOT NULL DEFAULT '',
+        api_key_encrypted TEXT NOT NULL DEFAULT '',
+        base_url         TEXT DEFAULT '',
+        temperature      REAL DEFAULT 0.7,
+        system_prompt    TEXT DEFAULT '',
+        updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
