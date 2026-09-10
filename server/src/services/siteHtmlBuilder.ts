@@ -318,7 +318,14 @@ function generateBlockHtml(block: SiteBlock): string {
 
 /** 生成完整站点 HTML（未注入统计脚本）。 */
 export function generateHtml(blocks: SiteBlock[], siteName: string = '我的网站'): string {
-  const blocksHtml = (Array.isArray(blocks) ? blocks : [])
+  const arr = Array.isArray(blocks) ? blocks : [];
+  // v3 元素级编辑器保存的文档：单个 html 区块携带 nodeToHtml 渲染的完整文档
+  // （<!DOCTYPE html>...）。此时原样返回，避免再包一层 html/body 产生嵌套文档。
+  if (arr.length === 1 && arr[0].type === 'html' && typeof arr[0].props?.html === 'string') {
+    const doc = arr[0].props.html as string;
+    if (/<html|<body/i.test(doc)) return doc;
+  }
+  const blocksHtml = arr
     .slice()
     .sort((a, b) => (a.order || 0) - (b.order || 0))
     .map(generateBlockHtml)
