@@ -32,6 +32,7 @@ import {
   getActiveManualRulesByIndustry,
   getAllActiveManualRules,
   updateArticleComplianceStatus,
+  upsertXhsNoteMeta,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 import crypto from 'crypto';
@@ -1820,6 +1821,21 @@ ${buildTitleStructureRule(resolvedStyles, task.city || '', keywordStructure)}`;
         cover_image_url: coverUrlForArticle || null,
         tags: articleTags, // v1.8.4：派生 tags 用于发布时添加话题
       });
+
+      // v3.x 小红书运营大师：为 xhs 平台文章自动建立笔记体裁元数据（与 article 1:1）
+      //   默认用「平台规则已约束到 20 字以内的标题」作封面大字，用派生 tags 作话题标签，
+      //   用户可在内容工坊二次编辑。此处纯数据派生，不额外调用 AI，避免拖慢写作链路。
+      if (currentPlatform === 'xhs') {
+        try {
+          await upsertXhsNoteMeta(articleId, userId, {
+            cover_title: finalTitle,
+            topics: articleTags,
+          });
+        } catch (e: any) {
+          // 元数据写入失败不阻断文章生成（文章已落库，用户可在内容工坊手工补建）
+          console.warn(`[ArticleGen] 文章 ${articleId} 小红书笔记元数据写入失败:`, e?.message);
+        }
+      }
 
       // v3.10：保存合规审查状态
       if (complianceStatus !== 'pending') {

@@ -3307,6 +3307,101 @@ export async function migrate() {
       )
     `);
 
+    // ============ v3.x 小红书运营大师板块（XHS_MASTER_PLAN）============
+    // 1. 封面模板（先建，供 xhs_note_meta 外键引用）
+    //    user_id IS NULL 表示平台内置模板，builtin=true 的模板不允许用户修改/删除
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xhs_cover_template (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER REFERENCES users(id),
+        name        VARCHAR(64) NOT NULL,
+        layout      VARCHAR(32) NOT NULL,
+        font_config JSONB,
+        preview_url TEXT,
+        builtin     BOOLEAN DEFAULT false,
+        is_active   BOOLEAN DEFAULT true,
+        create_time TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_cover_template_user ON xhs_cover_template(user_id)`);
+
+    // 2. 小红书笔记体裁元数据（与 article 1:1）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xhs_note_meta (
+        id                SERIAL PRIMARY KEY,
+        article_id        INTEGER NOT NULL REFERENCES article(id) ON DELETE CASCADE,
+        user_id           INTEGER NOT NULL REFERENCES users(id),
+        note_style        VARCHAR(32),
+        cover_template_id INTEGER REFERENCES xhs_cover_template(id) ON DELETE SET NULL,
+        cover_title       TEXT,
+        cover_image_id    INTEGER REFERENCES image_library(id) ON DELETE SET NULL,
+        image_ids         JSONB DEFAULT '[]',
+        topics            JSONB DEFAULT '[]',
+        create_time       TIMESTAMP DEFAULT NOW(),
+        update_time       TIMESTAMP DEFAULT NOW(),
+        UNIQUE(article_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_note_meta_user ON xhs_note_meta(user_id)`);
+
+    // 3. 生图模型配置（参照 pet_model_config「独立配置表」先例，不复用 ai_model_config，
+    //    避免改生图配置影响写作 / AEO / 发布）
+    //    user_id IS NULL = 平台共享 KEY（管理员配置）；user_id = 本人 = 用户自备 KEY
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS image_model_config (
+        id                SERIAL PRIMARY KEY,
+        user_id           INTEGER REFERENCES users(id),
+        platform          VARCHAR(32) NOT NULL,
+        model_name        VARCHAR(64) NOT NULL,
+        api_key_encrypted TEXT,
+        base_url          VARCHAR(255),
+        daily_quota       INTEGER,
+        used_today        INTEGER DEFAULT 0,
+        quota_reset_at    TIMESTAMP,
+        is_active         BOOLEAN DEFAULT true,
+        create_time       TIMESTAMP DEFAULT NOW(),
+        update_time       TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    // 幂等唯一性：PostgreSQL 中 NULL 互不相等，普通 UNIQUE(user_id, platform) 挡不住重复的平台共享行，
+    // 改用两条 partial unique index 分别约束「平台共享」与「用户自备」
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_image_model_shared ON image_model_config(platform) WHERE user_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uniq_image_model_user ON image_model_config(user_id, platform) WHERE user_id IS NOT NULL`);
+
+    // 4. image_library 增加图片来源与提示词（source: upload 上传 / ai 生图 / compose 封面合成）
+    await client.query(`ALTER TABLE image_library ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'upload'`);
+    await client.query(`ALTER TABLE image_library ADD COLUMN IF NOT EXISTS prompt TEXT`);
+
+    // 5. 内置封面模板种子（幂等；font_config 与桌面端 pages/Xhs/utils/coverComposer.ts 约定一致）
+    const builtinCoverTemplates: Array<{ name: string; layout: string; font_config: Record<string, any> }> = [
+      {
+        name: '纯色大字',
+        layout: 'solid_text',
+        font_config: { color: '#FFFFFF', bgColor: '#FF2E4D', fontSize: 128, fontWeight: 800, align: 'center', position: 'center', lineHeight: 1.25, padding: 90 },
+      },
+      {
+        name: '上图下文',
+        layout: 'image_top_text',
+        font_config: { color: '#FFFFFF', fontSize: 96, fontWeight: 800, align: 'center', position: 'bottom', strokeColor: '#000000', strokeWidth: 6, lineHeight: 1.25, padding: 70, overlayOpacity: 0.35 },
+      },
+      {
+        name: '左文右图',
+        layout: 'text_left_image',
+        font_config: { color: '#222222', bgColor: '#FFFFFF', fontSize: 88, fontWeight: 800, align: 'left', position: 'center', lineHeight: 1.3, padding: 80 },
+      },
+    ];
+    for (const tpl of builtinCoverTemplates) {
+      await client.query(
+        `INSERT INTO xhs_cover_template (user_id, name, layout, font_config, builtin, is_active)
+         SELECT NULL, $1, $2, $3::jsonb, true, true
+         WHERE NOT EXISTS (
+           SELECT 1 FROM xhs_cover_template WHERE user_id IS NULL AND name = $1
+         )`,
+        [tpl.name, tpl.layout, JSON.stringify(tpl.font_config)]
+      );
+    }
+    console.log('[Migrate] v3.x 小红书运营大师表创建/验证完成（xhs_cover_template / xhs_note_meta / image_model_config）');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();

@@ -7242,13 +7242,15 @@ export async function getImageById(id: number): Promise<any | null> {
 /** 创建图片记录 */
 export async function createImage(data: any): Promise<number> {
   const result = await query(
-    `INSERT INTO image_library (user_id, knowledge_id, image_type, url, file_path, original_name, file_size, mime_type, width, height, description, tags, sort_order)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+    `INSERT INTO image_library (user_id, knowledge_id, image_type, url, file_path, original_name, file_size, mime_type, width, height, description, tags, sort_order, source, prompt)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
      RETURNING id`,
     [data.user_id, data.knowledge_id, data.image_type, data.url, data.file_path || null,
      data.original_name || null, data.file_size || null, data.mime_type || null,
      data.width || null, data.height || null, data.description || null,
-     data.tags || [], data.sort_order || 0]
+     data.tags || [], data.sort_order || 0,
+     // v3.x：图片来源（upload 手工上传 / ai 生图 / compose 封面合成）与 AI 生图提示词
+     data.source || 'upload', data.prompt || null]
   );
   return result.rows[0].id;
 }
@@ -7258,7 +7260,7 @@ export async function updateImage(id: number, data: any): Promise<void> {
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;
-  for (const key of ['description', 'tags', 'sort_order', 'url', 'original_name']) {
+  for (const key of ['description', 'tags', 'sort_order', 'url', 'original_name', 'source', 'prompt']) {
     if (data[key] !== undefined) {
       fields.push(`${key} = $${idx++}`);
       values.push(data[key]);
@@ -9818,5 +9820,409 @@ export async function updateArticleComplianceStatus(
     `UPDATE article SET compliance_status = $2, compliance_issues = $3 WHERE id = $1`,
     [articleId, status, issues ? JSON.stringify(issues) : null]
   );
+}
+
+// ============ v3.x 小红书运营大师（XHS_MASTER_PLAN）：笔记元数据 ============
+
+/** 读取笔记体裁元数据（与 article 1:1） */
+export async function getXhsNoteMeta(articleId: number): Promise<any | null> {
+  const result = await query('SELECT * FROM xhs_note_meta WHERE article_id = $1', [articleId]);
+  return result.rows[0] || null;
+}
+
+/**
+ * 写入/更新笔记体裁元数据
+ * - article_id 唯一，冲突时更新
+ * - 未传的字段保持原值不动（用 COALESCE 兜住 NULL）
+ * - image_ids / topics 未传时视为「不改」，传空数组表示「清空」
+ */
+export async function upsertXhsNoteMeta(articleId: number, userId: number, data: {
+  note_style?: string | null;
+  cover_template_id?: number | null;
+  cover_title?: string | null;
+  cover_image_id?: number | null;
+  image_ids?: number[];
+  topics?: string[];
+}): Promise<void> {
+  await query(
+    `INSERT INTO xhs_note_meta
+       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics)
+     VALUES ($1, $2, $3, $4, $5, $6,
+             COALESCE($7::jsonb, '[]'::jsonb),
+             COALESCE($8::jsonb, '[]'::jsonb))
+     ON CONFLICT (article_id) DO UPDATE SET
+       note_style        = COALESCE(EXCLUDED.note_style, xhs_note_meta.note_style),
+       cover_template_id = COALESCE(EXCLUDED.cover_template_id, xhs_note_meta.cover_template_id),
+       cover_title       = COALESCE(EXCLUDED.cover_title, xhs_note_meta.cover_title),
+       cover_image_id    = COALESCE(EXCLUDED.cover_image_id, xhs_note_meta.cover_image_id),
+       image_ids         = COALESCE(EXCLUDED.image_ids, xhs_note_meta.image_ids),
+       topics            = COALESCE(EXCLUDED.topics, xhs_note_meta.topics),
+       update_time       = NOW()`,
+    [
+      articleId,
+      userId,
+      data.note_style ?? null,
+      data.cover_template_id ?? null,
+      data.cover_title ?? null,
+      data.cover_image_id ?? null,
+      data.image_ids !== undefined ? JSON.stringify(data.image_ids) : null,
+      data.topics !== undefined ? JSON.stringify(data.topics) : null,
+    ]
+  );
+}
+
+/** 更新文章封面图 URL（封面合成后回写，发布时用的就是 article.cover_image_url） */
+export async function updateArticleCoverImage(articleId: number, url: string): Promise<void> {
+  await query('UPDATE article SET cover_image_url = $1, update_time = NOW() WHERE id = $2', [url, articleId]);
+}
+
+/** 小红书笔记列表（仅返回已建立 xhs_note_meta 的文章，即小红书笔记） */
+export async function getXhsNotes(userId: number, page: number = 1, pageSize: number = 20): Promise<{ list: any[]; total: number }> {
+  const offset = (Math.max(1, page) - 1) * pageSize;
+  const countResult = await query('SELECT COUNT(*)::int AS total FROM xhs_note_meta WHERE user_id = $1', [userId]);
+  const result = await query(
+    `SELECT a.id, a.user_id, a.title, a.core_keyword, a.word_count, a.status,
+            a.cover_image_url, a.tags, a.create_time,
+            m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
+            m.cover_image_id, m.image_ids, m.topics,
+            (SELECT COUNT(*)::int FROM publish_record r
+               JOIN publish_task t ON t.id = r.task_id
+              WHERE r.platform = 'xhs' AND t.article_id = a.id AND r.status = 'success') AS publish_success_count,
+            (SELECT COUNT(*)::int FROM publish_record r
+               JOIN publish_task t ON t.id = r.task_id
+              WHERE r.platform = 'xhs' AND t.article_id = a.id AND r.status = 'failed') AS publish_failed_count
+       FROM xhs_note_meta m
+       JOIN article a ON a.id = m.article_id
+      WHERE m.user_id = $1
+      ORDER BY a.create_time DESC
+      LIMIT $2 OFFSET $3`,
+    [userId, pageSize, offset]
+  );
+  return { list: result.rows, total: Number(countResult.rows[0]?.total || 0) };
+}
+
+/** 小红书笔记详情（article + meta + 配图明细） */
+export async function getXhsNoteDetail(articleId: number): Promise<any | null> {
+  const result = await query(
+    `SELECT a.id, a.user_id, a.title, a.content_html, a.core_keyword, a.word_count, a.status,
+            a.cover_image_url, a.tags, a.model_used, a.create_time, a.update_time,
+            m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
+            m.cover_image_id, m.image_ids, m.topics,
+            (SELECT t.knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS knowledge_id
+       FROM article a
+       JOIN xhs_note_meta m ON m.article_id = a.id
+      WHERE a.id = $1`,
+    [articleId]
+  );
+  return result.rows[0] || null;
+}
+
+// ============ v3.x 小红书运营大师：封面模板 ============
+
+/** 封面模板列表：内置模板（user_id IS NULL）+ 本人自建模板 */
+export async function getXhsCoverTemplates(userId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM xhs_cover_template
+      WHERE is_active = true AND (user_id = $1 OR user_id IS NULL)
+      ORDER BY builtin DESC, id ASC`,
+    [userId]
+  );
+  return result.rows;
+}
+
+export async function getXhsCoverTemplateById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM xhs_cover_template WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+/** 新建封面模板（仅本人模板；内置模板由 migrate 种子写入） */
+export async function createXhsCoverTemplate(data: {
+  user_id: number;
+  name: string;
+  layout: string;
+  font_config?: Record<string, any>;
+  preview_url?: string;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO xhs_cover_template (user_id, name, layout, font_config, preview_url, builtin, is_active)
+     VALUES ($1, $2, $3, $4::jsonb, $5, false, true)
+     RETURNING id`,
+    [data.user_id, data.name, data.layout, JSON.stringify(data.font_config || {}), data.preview_url || null]
+  );
+  return result.rows[0].id;
+}
+
+/**
+ * 更新封面模板
+ * - WHERE 带 user_id 约束：内置模板（user_id IS NULL）与别人的模板都改不到
+ * - 返回受影响行数，路由据此判断 404 / 403
+ */
+export async function updateXhsCoverTemplate(id: number, userId: number, data: {
+  name?: string;
+  layout?: string;
+  font_config?: Record<string, any>;
+  preview_url?: string;
+  is_active?: boolean;
+}): Promise<number> {
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  if (data.name !== undefined) { fields.push(`name = $${idx++}`); values.push(data.name); }
+  if (data.layout !== undefined) { fields.push(`layout = $${idx++}`); values.push(data.layout); }
+  if (data.font_config !== undefined) { fields.push(`font_config = $${idx++}::jsonb`); values.push(JSON.stringify(data.font_config)); }
+  if (data.preview_url !== undefined) { fields.push(`preview_url = $${idx++}`); values.push(data.preview_url); }
+  if (data.is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(!!data.is_active); }
+  if (fields.length === 0) return 0;
+  values.push(id, userId);
+  const result = await query(
+    `UPDATE xhs_cover_template SET ${fields.join(', ')} WHERE id = $${idx++} AND user_id = $${idx}`,
+    values
+  );
+  return result.rowCount || 0;
+}
+
+/** 删除封面模板（同上，带 user_id 约束，内置模板删不掉） */
+export async function deleteXhsCoverTemplate(id: number, userId: number): Promise<number> {
+  const result = await query('DELETE FROM xhs_cover_template WHERE id = $1 AND user_id = $2', [id, userId]);
+  return result.rowCount || 0;
+}
+
+// ============ v3.x 小红书运营大师：生图模型配置 ============
+
+/**
+ * 读取生效的生图配置（含密文，供服务端调用生图接口）
+ * 优先级：本人自备 KEY → 平台共享 KEY
+ * 跨日自动重置 used_today（quota_reset_at 早于今天则归零）
+ */
+export async function getImageModelConfigForUser(userId: number): Promise<any | null> {
+  const result = await query(
+    `SELECT * FROM image_model_config
+      WHERE is_active = true
+        AND api_key_encrypted IS NOT NULL AND api_key_encrypted != ''
+        AND (user_id = $1 OR user_id IS NULL)
+      ORDER BY (user_id IS NULL) ASC, id ASC
+      LIMIT 1`,
+    [userId]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+
+  // 跨日重置额度计数
+  const resetAt = row.quota_reset_at ? new Date(row.quota_reset_at) : null;
+  const today = new Date();
+  const isSameDay = resetAt
+    && resetAt.getFullYear() === today.getFullYear()
+    && resetAt.getMonth() === today.getMonth()
+    && resetAt.getDate() === today.getDate();
+  if (!isSameDay) {
+    await query('UPDATE image_model_config SET used_today = 0, quota_reset_at = NOW(), update_time = NOW() WHERE id = $1', [row.id]);
+    row.used_today = 0;
+  }
+  return row;
+}
+
+/** 管理端/桌面端配置页读取（不返回密文明文，只返回 has_api_key） */
+export async function listImageModelConfigs(userId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT id, user_id, platform, model_name, base_url, daily_quota, used_today, quota_reset_at, is_active,
+            (user_id IS NULL) AS is_shared,
+            CASE WHEN api_key_encrypted IS NOT NULL AND api_key_encrypted != '' THEN true ELSE false END AS has_api_key,
+            update_time
+       FROM image_model_config
+      WHERE user_id = $1 OR user_id IS NULL
+      ORDER BY (user_id IS NULL) ASC, id ASC`,
+    [userId]
+  );
+  return result.rows;
+}
+
+/**
+ * upsert 生图配置
+ * - user_id 为 null → 平台共享行（调用方必须是管理员，由路由层鉴权）
+ * - api_key 为空字符串/undefined 时保留原密文（与 pet_model_config 策略一致）
+ */
+export async function upsertImageModelConfig(data: {
+  user_id: number | null;
+  platform: string;
+  model_name: string;
+  api_key?: string;
+  base_url?: string;
+  daily_quota?: number | null;
+  is_active?: boolean;
+}): Promise<number> {
+  let apiKeyEncrypted: string | null = null;
+  if (data.api_key !== undefined && data.api_key !== null && String(data.api_key).trim() !== '') {
+    apiKeyEncrypted = encrypt(String(data.api_key).trim());
+  }
+
+  if (data.user_id === null) {
+    // 平台共享行：按 platform 唯一
+    const result = await query(
+      `INSERT INTO image_model_config (user_id, platform, model_name, api_key_encrypted, base_url, daily_quota, is_active)
+       VALUES (NULL, $1, $2, $3, $4, $5, $6)
+       ON CONFLICT (platform) WHERE user_id IS NULL DO UPDATE SET
+         model_name        = EXCLUDED.model_name,
+         api_key_encrypted = CASE WHEN EXCLUDED.api_key_encrypted IS NULL THEN image_model_config.api_key_encrypted
+                                  ELSE EXCLUDED.api_key_encrypted END,
+         base_url          = EXCLUDED.base_url,
+         daily_quota       = EXCLUDED.daily_quota,
+         is_active         = EXCLUDED.is_active,
+         update_time       = NOW()
+       RETURNING id`,
+      [data.platform, data.model_name, apiKeyEncrypted, data.base_url || null,
+       data.daily_quota ?? null, data.is_active ?? true]
+    );
+    return result.rows[0].id;
+  }
+
+  const result = await query(
+    `INSERT INTO image_model_config (user_id, platform, model_name, api_key_encrypted, base_url, daily_quota, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (user_id, platform) WHERE user_id IS NOT NULL DO UPDATE SET
+       model_name        = EXCLUDED.model_name,
+       api_key_encrypted = CASE WHEN EXCLUDED.api_key_encrypted IS NULL THEN image_model_config.api_key_encrypted
+                                ELSE EXCLUDED.api_key_encrypted END,
+       base_url          = EXCLUDED.base_url,
+       daily_quota       = EXCLUDED.daily_quota,
+       is_active         = EXCLUDED.is_active,
+       update_time       = NOW()
+     RETURNING id`,
+    [data.user_id, data.platform, data.model_name, apiKeyEncrypted, data.base_url || null,
+     data.daily_quota ?? null, data.is_active ?? true]
+  );
+  return result.rows[0].id;
+}
+
+/** 生图调用成功后配额 +1 */
+export async function incrementImageModelUsage(id: number): Promise<void> {
+  await query('UPDATE image_model_config SET used_today = COALESCE(used_today, 0) + 1, update_time = NOW() WHERE id = $1', [id]);
+}
+
+// ============ v3.x 小红书运营大师：发布台账 + 看板聚合（仅平台内自有数据） ============
+
+/** 小红书发布任务台账（target_platforms 含 xhs） */
+export async function getXhsPublishTasks(userId: number, page: number = 1, pageSize: number = 20): Promise<{ list: any[]; total: number }> {
+  const offset = (Math.max(1, page) - 1) * pageSize;
+  const countResult = await query(
+    `SELECT COUNT(*)::int AS total FROM publish_task WHERE user_id = $1 AND 'xhs' = ANY(target_platforms)`,
+    [userId]
+  );
+  const result = await query(
+    `SELECT pt.id, pt.article_id, pt.target_platforms, pt.status, pt.total_count,
+            pt.completed_count, pt.failed_count, pt.scheduled_at, pt.create_time, pt.finished_at,
+            a.title AS article_title, a.core_keyword AS article_core_keyword,
+            (SELECT COUNT(*)::int FROM publish_record r
+              WHERE r.task_id = pt.id AND r.platform = 'xhs' AND r.status = 'success') AS xhs_success_count,
+            (SELECT COUNT(*)::int FROM publish_record r
+              WHERE r.task_id = pt.id AND r.platform = 'xhs' AND r.status = 'failed') AS xhs_failed_count
+       FROM publish_task pt
+       LEFT JOIN article a ON a.id = pt.article_id
+      WHERE pt.user_id = $1 AND 'xhs' = ANY(pt.target_platforms)
+      ORDER BY pt.create_time DESC
+      LIMIT $2 OFFSET $3`,
+    [userId, pageSize, offset]
+  );
+  return { list: result.rows, total: Number(countResult.rows[0]?.total || 0) };
+}
+
+/** 看板汇总指标（发布量 / 成功 / 失败 / 进行中 / 成功率 / 失败原因 TOP / 内容产量 / 账号健康分布） */
+export async function getXhsDashboardOverview(userId: number, days: number = 30): Promise<any> {
+  const interval = `${Math.max(1, Math.min(365, days))} days`;
+
+  const statResult = await query(
+    `SELECT
+       COUNT(*)::int AS total,
+       COUNT(*) FILTER (WHERE pr.status = 'success')::int AS success,
+       COUNT(*) FILTER (WHERE pr.status = 'failed')::int AS failed,
+       COUNT(*) FILTER (WHERE pr.status IN ('pending', 'processing'))::int AS running
+     FROM publish_record pr
+     JOIN publish_task pt ON pt.id = pr.task_id
+     WHERE pt.user_id = $1 AND pr.platform = 'xhs'
+       AND pr.create_time >= NOW() - $2::interval`,
+    [userId, interval]
+  );
+  const stat = statResult.rows[0] || { total: 0, success: 0, failed: 0, running: 0 };
+
+  // 失败原因 TOP：publish_record 的失败原因列是 error_msg（设计文档写的 result_message 不存在，此处已修正）
+  const reasonResult = await query(
+    `SELECT COALESCE(NULLIF(LEFT(pr.error_msg, 60), ''), '未知错误') AS reason, COUNT(*)::int AS count
+       FROM publish_record pr
+       JOIN publish_task pt ON pt.id = pr.task_id
+      WHERE pt.user_id = $1 AND pr.platform = 'xhs' AND pr.status = 'failed'
+        AND pr.create_time >= NOW() - $2::interval
+      GROUP BY 1
+      ORDER BY count DESC
+      LIMIT 10`,
+    [userId, interval]
+  );
+
+  const articleResult = await query(
+    `SELECT COUNT(*)::int AS count
+       FROM xhs_note_meta m
+       JOIN article a ON a.id = m.article_id
+      WHERE m.user_id = $1 AND a.create_time >= NOW() - $2::interval`,
+    [userId, interval]
+  );
+
+  // 账号健康分布：账号池为运营者共享池，按平台整体统计（不按 user 过滤）
+  const healthResult = await query(
+    `SELECT health_status, COUNT(*)::int AS count
+       FROM platform_auth
+      WHERE platform = 'xhs'
+      GROUP BY health_status`
+  );
+
+  const total = Number(stat.total || 0);
+  const success = Number(stat.success || 0);
+  return {
+    days: Math.max(1, Math.min(365, days)),
+    total,
+    success,
+    failed: Number(stat.failed || 0),
+    running: Number(stat.running || 0),
+    success_rate: total > 0 ? Math.round((success / total) * 1000) / 10 : 0,
+    article_count: Number(articleResult.rows[0]?.count || 0),
+    failure_reasons: reasonResult.rows,
+    account_health: healthResult.rows,
+  };
+}
+
+/** 按账号维度聚合 */
+export async function getXhsDashboardByAccount(userId: number, days: number = 30): Promise<any[]> {
+  const result = await query(
+    `SELECT pr.platform_auth_id,
+            COALESCE(pa.account_name, '未知账号') AS account_name,
+            COALESCE(pa.health_status, 'unknown') AS health_status,
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE pr.status = 'success')::int AS success,
+            COUNT(*) FILTER (WHERE pr.status = 'failed')::int AS failed
+       FROM publish_record pr
+       JOIN publish_task pt ON pt.id = pr.task_id
+       LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
+      WHERE pt.user_id = $1 AND pr.platform = 'xhs'
+        AND pr.create_time >= NOW() - $2::interval
+      GROUP BY pr.platform_auth_id, pa.account_name, pa.health_status
+      ORDER BY total DESC`,
+    [userId, `${Math.max(1, Math.min(365, days))} days`]
+  );
+  return result.rows;
+}
+
+/** 按时间（天）维度聚合 */
+export async function getXhsDashboardByTime(userId: number, days: number = 30): Promise<any[]> {
+  const result = await query(
+    `SELECT to_char(pr.create_time, 'YYYY-MM-DD') AS date,
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE pr.status = 'success')::int AS success,
+            COUNT(*) FILTER (WHERE pr.status = 'failed')::int AS failed
+       FROM publish_record pr
+       JOIN publish_task pt ON pt.id = pr.task_id
+      WHERE pt.user_id = $1 AND pr.platform = 'xhs'
+        AND pr.create_time >= NOW() - $2::interval
+      GROUP BY 1
+      ORDER BY 1 ASC`,
+    [userId, `${Math.max(1, Math.min(365, days))} days`]
+  );
+  return result.rows;
 }
 

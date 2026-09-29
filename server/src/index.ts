@@ -34,6 +34,9 @@ import siteTemplatesRoutes from './routes/siteTemplates';
 import siteAnalyticsRoutes from './routes/siteAnalytics';
 // v2.9.0：灵犀站点引擎 v3 板块独立 AI 模型配置（SITE_ENGINE_PLAN）
 import siteAiConfigRoutes from './routes/siteAiConfig';
+// v3.x：小红书运营大师板块
+import xhsRoutes from './routes/xhs';
+import imageModelConfigRoutes from './routes/imageModelConfig';
 import { startRealCollectScheduler } from './services/realCollect/scheduler';
 import { startAeoScheduler } from './services/aeo/scheduler';
 import { initWsServer } from './wsServer';
@@ -383,6 +386,10 @@ app.use('/site-templates', siteTemplatesRoutes);
 app.use('/sites-analytics', siteAnalyticsRoutes);
 // v2.9.0：灵犀站点引擎 v3 板块独立 AI 模型配置
 app.use('/site-ai-config', siteAiConfigRoutes);
+// v3.x：小红书运营大师（笔记 / 封面模板 / 生图 / 看板）
+app.use('/xhs', xhsRoutes);
+// v3.x：小红书运营大师 — 生图模型配置
+app.use('/image-model-config', imageModelConfigRoutes);
 
 // 微信支付回调（无需鉴权，单独注册）
 app.post('/subscription/wechat/notify', wechatNotifyHandler);
