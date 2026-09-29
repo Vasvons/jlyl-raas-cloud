@@ -3391,14 +3391,21 @@ export async function migrate() {
       },
     ];
     for (const tpl of builtinCoverTemplates) {
-      await client.query(
-        `INSERT INTO xhs_cover_template (user_id, name, layout, font_config, builtin, is_active)
-         SELECT NULL, $1, $2, $3::jsonb, true, true
-         WHERE NOT EXISTS (
-           SELECT 1 FROM xhs_cover_template WHERE user_id IS NULL AND name = $1
-         )`,
-        [tpl.name, tpl.layout, JSON.stringify(tpl.font_config)]
+      // 注意：不能用 `INSERT ... SELECT $1, $2 ...` 的写法——SELECT 作为数据源时
+      // PostgreSQL 不会用目标列类型去推断参数类型，会报
+      // "could not determine data type of parameter $1"（parse_param.c / variable_coerce_param_hook）。
+      // 改为「先查存在性 → 再用 VALUES 插入」：VALUES 能拿到目标列类型，参数可正常推断。
+      const exists = await client.query(
+        `SELECT 1 FROM xhs_cover_template WHERE user_id IS NULL AND name = $1 LIMIT 1`,
+        [tpl.name]
       );
+      if (exists.rows.length === 0) {
+        await client.query(
+          `INSERT INTO xhs_cover_template (user_id, name, layout, font_config, builtin, is_active)
+           VALUES (NULL, $1, $2, $3::jsonb, true, true)`,
+          [tpl.name, tpl.layout, JSON.stringify(tpl.font_config)]
+        );
+      }
     }
     console.log('[Migrate] v3.x 小红书运营大师表创建/验证完成（xhs_cover_template / xhs_note_meta / image_model_config）');
 
