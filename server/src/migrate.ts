@@ -3434,6 +3434,234 @@ export async function migrate() {
       }
     }
 
+    // ============ v3.y 小红书图文写作系统（独立内核，XHS_WRITING_PLAN）============
+    // 1. 小红书写作指令（独立指令表，不复用 writing_instruction，避免跨板块泄漏）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xhs_writing_instruction (
+        id                   SERIAL PRIMARY KEY,
+        user_id              INTEGER REFERENCES users(id),
+        name                 VARCHAR(100) NOT NULL,
+        account_type         VARCHAR(16) NOT NULL,
+        note_style           VARCHAR(32),
+        title_prompt         TEXT NOT NULL,
+        body_prompt          TEXT NOT NULL,
+        cover_text_prompt    TEXT,
+        topic_prompt         TEXT,
+        image_script_prompt  TEXT,
+        target_word_count    INTEGER DEFAULT 700,
+        emoji_level          VARCHAR(16) DEFAULT 'medium',
+        require_drawback     BOOLEAN DEFAULT false,
+        include_image_script BOOLEAN DEFAULT true,
+        is_active            BOOLEAN DEFAULT true,
+        create_time          TIMESTAMP DEFAULT NOW(),
+        update_time          TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_writing_instruction_user ON xhs_writing_instruction(user_id)`);
+
+    // 2. 任务表加体系标记与小红书指令引用（instruction_id 是 FK 指向 writing_instruction，装不下本表）
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS writing_system VARCHAR(16) DEFAULT 'geo'`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS xhs_instruction_id INTEGER REFERENCES xhs_writing_instruction(id)`);
+
+    // 3. 笔记元数据加配图脚本
+    await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS image_script JSONB DEFAULT '[]'`);
+    console.log('[Migrate] v3.y 小红书写作系统表创建/验证完成（xhs_writing_instruction + ai_writing_task 两列 + xhs_note_meta.image_script）');
+
+    // 4. 两条平台预设写作指令（user_id IS NULL = 所有客户可用）
+    // 注意：不能用 `INSERT ... SELECT $1` 的写法（SELECT 作数据源时参数类型无法推断），
+    // 改用「先 SELECT 查存在性 → 再用 VALUES 插入」。
+    const xhsPresetInstructions: Array<{
+      name: string; account_type: string; note_style: string;
+      title_prompt: string; body_prompt: string; cover_text_prompt: string;
+      topic_prompt: string; image_script_prompt: string;
+      target_word_count: number; emoji_level: string; require_drawback: boolean;
+    }> = [
+      {
+        name: '小红书蓝V官号指令',
+        account_type: 'brand',
+        note_style: '官方种草',
+        target_word_count: 700,
+        emoji_level: 'medium',
+        require_drawback: false,
+        title_prompt: `为【蓝V官方账号】写小红书笔记标题。
+
+## 硬性要求
+1. 长度 8-20 字，一眼看懂，刷到时能停住
+2. 【允许出现品牌名】——这是品牌官方号，品牌词进标题是正常做法，也是品牌搜索流量的入口
+3. 官方但不高冷：可以有人味、有笑意，但不用网络烂梗、不玩谐音
+4. 至少含 1 个「具体信息」：新品/新版、数字（如"3个方法"）、官方动作（如"上线"、"开放预约"）、具体利益点
+5. 【禁止】绝对化用语（最/第一/唯一/国家级/顶级）、功效承诺（治愈/根治/包好）、诱导互动（点赞收藏/评论区扣1）
+6. 【禁止】"震惊""必看""不转不是中国人"等标题党
+
+## 输出
+只输出标题本身一行，不要引号、不要解释、不要序号。`,
+        body_prompt: `为【蓝V官方账号】写小红书笔记正文。
+
+## 主体人称
+用官方口吻「我们」，可以自称「官方」「主理人」。不装成消费者。
+
+## 品牌处理
+品牌是这篇笔记的**信息主体**：第一段就要自然出现「品牌名 + 核心业务 + 所在城市」，全篇可以出现 3-5 次。
+
+## 内容落点（选一个，不要贪多）
+- 新品/新服务介绍：讲清它解决什么问题、和之前有什么不同
+- 官方答疑：把用户最常问的那个问题正面答清楚
+- 资质/实力展示：用可核验的事实说（年份、资质、规模、合作方），不吹
+- 官方教程：教用户怎么用/怎么选，步骤可照做
+
+## 语气
+- 官方但不端着：可以有温度、可以承认"我们也在改"、可以有一点点幽默
+- 不用营销腔（"臻选""匠心智造""赋能"这类词一个都不要）
+- 不承诺效果，不贬低同行；做对比只讲客观差异
+
+## 结尾
+一句自然收尾：可以是"有问题的评论区问"、可以是引导看主页/私信，但不要写"立即抢购""限时优惠"这类硬广，也不要写总结段。`,
+        cover_text_prompt: `为这篇小红书笔记生成【封面大字】（显示在封面图上的大字）。
+
+## 硬性要求
+1. 长度 4-10 字，必须比标题更短更狠
+2. 【可以和标题不同】——它不是标题的截断，而是视觉钩子，负责在最外层抓住眼球
+3. 官方但有力的表达，如「新升级 3 代」「官方回应来了」「这次改对了」
+4. 不用标点堆砌，不用 emoji，不用绝对化用语
+
+## 输出
+只输出封面大字本身一行。`,
+        topic_prompt: `为这篇小红书笔记生成【话题标签】。
+
+## 硬性要求
+1. 输出 3-6 个，每个都带 # 号首尾包裹，形如 #护肤#
+2. 必须是小红书站内真实存在、用户在用的宽泛话题（如 #护肤 #油皮 #成分党 #平价好物），不要生造
+3. 至少 1 个与「品牌/产品品类」相关，至少 1 个与「目标人群或使用场景」相关
+4. 不要堆砌无关热门话题蹭流量
+
+## 输出
+只输出话题标签，用空格分隔成一行。`,
+        image_script_prompt: `为这篇小红书笔记生成【配图脚本】：说明每张图应该放什么画面，供运营按脚本挑图或拍摄。
+
+## 硬性要求
+1. 第 1 张固定是封面（role 填「封面」）；后续按阅读顺序给 3-5 张
+2. 每张图写清楚：角色 + 具体画面内容（放什么、拍什么角度、有没有文字）
+3. 画面要具体可执行（"产品正面特写，白底，能看到瓶身 logo"），不要写"精美的产品图"这种空话
+4. 与正文内容对应，不要出现正文没提到的内容
+
+## 输出格式（严格 JSON 数组，不要任何其他文字）
+[{"index":1,"role":"封面","scene":"..."},{"index":2,"role":"细节","scene":"..."}]`,
+      },
+      {
+        name: '小红书种草达人指令',
+        account_type: 'creator',
+        note_style: '真实体验',
+        target_word_count: 700,
+        emoji_level: 'medium',
+        require_drawback: true,
+        title_prompt: `为【种草达人账号】写小红书笔记标题。
+
+## 硬性要求
+1. 长度 10-20 字，像真人随手写的、甚至带一点个人情绪
+2. 【禁止出现品牌名】——达人标题带品牌名会显得像商单，容易被限流；品牌放到正文里说
+3. 用「结果 / 反差 / 疑问 / 自嘲」中的一种做钩子，例如：
+   - 结果型：用了两个月，我的皮肤状态变了
+   - 反差型：跟风买了三瓶，只有一瓶我会回购
+   - 疑问型：油皮夏天到底该不该用面霜
+   - 自嘲型：花了两千块才搞明白这件事
+4. 【禁止】绝对化用语（最/第一/唯一）、功效承诺、标题党（震惊/必看）、"内行人""不踩坑"这类模板套话
+
+## 输出
+只输出标题本身一行，不要引号、不要解释。`,
+        body_prompt: `为【种草达人账号】写小红书笔记正文。
+
+## 主体人称
+真人第一人称「我」。你是自己花钱/自己用过的人，不是官方，不是客服。
+
+## 品牌处理
+品牌只自然提及 1-3 次，**不是信息主体**。可以说"我后来换了XX"，但不要整段介绍品牌。
+
+## 必须写出「不完美」（这条最重要）
+正文里必须至少出现 1 处：
+- 一个真实的缺点（如"量有点少，一次要用两泵"、"味道我不太喜欢"）
+- 或明确说清"不适合谁"（如"干皮别买，太清爽了"）
+只夸不损 = 一眼假 = 平台和用户都会识别成广告。
+
+## 内容落点（选一个）
+- 真实使用体验：什么场景下用、用了多久、身体/皮肤/生活发生了什么变化
+- 踩坑复盘：我先买错了什么、后来怎么修正的
+- 同类对比：我试过的几类，各自适合谁
+- 保姆级教程：我怎么做的，一步一步
+
+## 语气
+- 像在跟朋友讲话：可以说"说实话""我真的会谢""血泪教训"
+- 有具体细节：用量、价格、用了多少天、在哪买的、当时什么季节
+- 不装专家、不用"医学研究表明"这类权威腔，也不用营销词
+- 允许口语化的不完美句子，但别真的写病句
+
+## 结尾
+真人式收尾：一句真实感受、或一个反问、或"有问题可以问我"。不要总结段，不要"以上就是"，不要免责声明。`,
+        cover_text_prompt: `为这篇小红书笔记生成【封面大字】（显示在封面图上的大字）。
+
+## 硬性要求
+1. 长度 4-10 字，必须比标题更短更抓人
+2. 【可以和标题不同】——它是视觉钩子，负责在最外层拦住滑动的手指
+3. 用真人语气，可以带情绪、可以自嘲，如「我的后悔药」「油皮别乱买」「真香了」
+4. 【禁止】品牌名、绝对化用语、emoji 堆砌
+
+## 输出
+只输出封面大字本身一行。`,
+        topic_prompt: `为这篇小红书笔记生成【话题标签】。
+
+## 硬性要求
+1. 输出 3-6 个，每个都带 # 号首尾包裹，形如 #油皮护肤#
+2. 必须是小红书站内真实存在、用户在用的宽泛话题，不要生造
+3. 至少 1 个与「人群/肤质/身份」相关（如 #油皮 #学生党 #宝妈），至少 1 个与「场景」相关（如 #夏天护肤 #通勤妆）
+4. 【不要】放品牌名话题，不要蹭无关热门话题
+
+## 输出
+只输出话题标签，用空格分隔成一行。`,
+        image_script_prompt: `为这篇小红书笔记生成【配图脚本】：说明每张图应该放什么画面，供运营按脚本挑图或拍摄。
+
+## 硬性要求
+1. 第 1 张固定是封面（role 填「封面」）；后续按阅读顺序给 3-5 张
+2. 画面必须**像真人随手拍的**：生活化场景、不完美构图、真实光线下拍的，而不是精修广告图
+3. 每张写清楚：角色 + 具体画面（放什么、什么角度、有没有文字）
+4. 与正文内容对应
+
+## 输出格式（严格 JSON 数组，不要任何其他文字）
+[{"index":1,"role":"封面","scene":"..."},{"index":2,"role":"细节","scene":"..."}]`,
+      },
+    ];
+
+    for (const inst of xhsPresetInstructions) {
+      const exists = await client.query(
+        `SELECT 1 FROM xhs_writing_instruction WHERE user_id IS NULL AND name = $1 LIMIT 1`,
+        [inst.name]
+      );
+      if (exists.rows.length === 0) {
+        await client.query(
+          `INSERT INTO xhs_writing_instruction
+             (user_id, name, account_type, note_style, title_prompt, body_prompt,
+              cover_text_prompt, topic_prompt, image_script_prompt,
+              target_word_count, emoji_level, require_drawback, include_image_script, is_active)
+           VALUES (NULL, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, true, true)`,
+          [inst.name, inst.account_type, inst.note_style, inst.title_prompt, inst.body_prompt,
+           inst.cover_text_prompt, inst.topic_prompt, inst.image_script_prompt,
+           inst.target_word_count, inst.emoji_level, inst.require_drawback]
+        );
+        console.log(`[Migrate] 已创建小红书预设指令：${inst.name}`);
+      } else {
+        // 预设指令随版本演进刷新 prompt（保留用户不可改的预设语义）
+        await client.query(
+          `UPDATE xhs_writing_instruction
+              SET title_prompt = $2, body_prompt = $3, cover_text_prompt = $4,
+                  topic_prompt = $5, image_script_prompt = $6,
+                  target_word_count = $7, emoji_level = $8, require_drawback = $9,
+                  update_time = NOW()
+            WHERE user_id IS NULL AND name = $1`,
+          [inst.name, inst.title_prompt, inst.body_prompt, inst.cover_text_prompt,
+           inst.topic_prompt, inst.image_script_prompt, inst.target_word_count,
+           inst.emoji_level, inst.require_drawback]
+        );
+      }
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
