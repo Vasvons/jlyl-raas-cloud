@@ -6565,8 +6565,8 @@ export async function createWritingTask(data: any): Promise<number> {
             model_config_id, generation_mode, agent_profile_id, status, total_count, started_at,
             cover_image_mode, cover_image_id, illustration_count, target_platforms, auto_generated, aeo_context,
             focus_cities, focus_keyword_weights, content_types, random_mode,
-            writing_system, xhs_instruction_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+            writing_system, xhs_instruction_id, xhs_customer_id, xhs_knowledge_id, xhs_topics)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
      data.model_config_id || null, data.generation_mode || 'expert', data.agent_profile_id || null,
@@ -6579,8 +6579,10 @@ export async function createWritingTask(data: any): Promise<number> {
      data.focus_keyword_weights && typeof data.focus_keyword_weights === 'object' ? JSON.stringify(data.focus_keyword_weights) : null,
      Array.isArray(contentTypes) ? JSON.stringify(contentTypes) : (contentTypes ? JSON.stringify([contentTypes]) : '[]'),
      !!randomMode,
-     // v3.y：写作体系（'geo' 默认 / 'xhs'）与小红书指令引用
-     data.writing_system || 'geo', data.xhs_instruction_id || null]
+     // v3.y/v3.z：写作体系与小红书归属
+     data.writing_system || 'geo', data.xhs_instruction_id || null,
+     data.xhs_customer_id || null, data.xhs_knowledge_id || null,
+     JSON.stringify(Array.isArray(data.xhs_topics) ? data.xhs_topics : [])]
   );
   return result.rows[0].id;
 }

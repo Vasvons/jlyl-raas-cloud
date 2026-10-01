@@ -5,7 +5,7 @@
  *  - 笔记（xhs_note_meta + article）读写
  *  - 创建小红书发布任务（内部复用 createPublishTask，不复制发布链路）
  *  - 封面模板 CRUD（内置模板只读）
- *  - 生图（调 services/content/imageGenerator）
+ *  - 生图（调 services/xhs/xhsImageGenerator，写 xhs_image）
  *  - 发布台账 + 数据看板聚合（仅平台内自有数据，无小红书后台抓取）
  */
 import { Router, Request, Response } from 'express';
@@ -16,7 +16,7 @@ import {
   updateXhsCoverTemplate, deleteXhsCoverTemplate,
   getXhsPublishTasks,
   getXhsDashboardOverview, getXhsDashboardByAccount, getXhsDashboardByTime,
-  createPublishTask, createImage,
+  createPublishTask,
   getXhsWritingInstructions, getXhsWritingInstructionById,
   createXhsWritingInstruction, updateXhsWritingInstruction, deleteXhsWritingInstruction,
   createWritingTask,
@@ -24,7 +24,6 @@ import {
   getXhsKnowledges, getXhsKnowledgeById, createXhsKnowledge, updateXhsKnowledge, deleteXhsKnowledge, countXhsKnowledgeRefs,
   getXhsImages, getXhsImageById, createXhsImage, updateXhsImage, deleteXhsImage,
 } from '../repository';
-import { generateImageToLibrary } from '../services/content/imageGenerator';
 
 const router = Router();
 router.use(authMiddleware);
@@ -361,13 +360,14 @@ router.delete('/instructions/:id', async (req: Request, res: Response) => {
 
 // ==================== 笔记 ====================
 
-/** GET /xhs/notes —— 笔记列表（仅返回已建立 xhs_note_meta 的文章） */
+/** GET /xhs/notes —— 笔记列表（按运营者 + 可选按小红书客户过滤） */
 router.get('/notes', async (req: Request, res: Response) => {
   try {
     const uid = getUserId(req);
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
-    const data = await getXhsNotes(uid, page, pageSize);
+    const xhsCustomerId = req.query.xhs_customer_id ? Number(req.query.xhs_customer_id) : null;
+    const data = await getXhsNotes(uid, page, pageSize, xhsCustomerId);
     res.json({ code: 200, data });
   } catch (e: any) {
     console.error('[Xhs] 笔记列表失败:', e.message);
@@ -393,7 +393,7 @@ router.get('/notes/:id', async (req: Request, res: Response) => {
  * PUT /xhs/notes/:id —— 更新笔记元数据
  * Body: { note_style?, cover_template_id?, cover_title?, cover_image_id?, image_ids?, topics?, cover_image_url? }
  * - cover_image_url 为封面合成产物：同时回写 article.cover_image_url（发布时用的就是它）
- *   并把该图登记进 image_library（source='compose'，image_type='cover'），返回的 id 写入 cover_image_id
+ *   并把该图登记进 xhs_image（source='compose'，image_type='cover'），返回的 id 写入 cover_image_id
  */
 router.put('/notes/:id', async (req: Request, res: Response) => {
   try {
@@ -406,24 +406,32 @@ router.put('/notes/:id', async (req: Request, res: Response) => {
     const body = req.body || {};
     let coverImageId: number | undefined;
 
-    // 封面合成产物：登记图库 + 回写 article.cover_image_url
+    // 封面合成产物：登记小红书图库 + 回写 article.cover_image_url
+    // v3.z：登记目标由 image_library 改为 xhs_image（cover_image_id 语义随 P4 变更见 spec §3.4）
     if (typeof body.cover_image_url === 'string' && body.cover_image_url.trim()) {
       const coverImageUrl = body.cover_image_url.trim();
       const detail = await getXhsNoteDetail(articleId);
-      const knowledgeId = detail?.knowledge_id ?? null;
-      coverImageId = await createImage({
-        user_id: uid,
-        knowledge_id: knowledgeId,
-        image_type: 'cover',
-        url: coverImageUrl,
-        file_path: null,
-        original_name: `xhs-cover-${articleId}.png`,
-        description: typeof body.cover_title === 'string' ? body.cover_title.slice(0, 200) : null,
-        tags: [],
-        sort_order: 0,
-        source: 'compose',
-        prompt: null,
-      });
+      const xhsCustomerId = detail?.xhs_customer_id != null
+        ? Number(detail.xhs_customer_id)
+        : (meta.xhs_customer_id != null ? Number(meta.xhs_customer_id) : null);
+      const xhsKnowledgeId = detail?.xhs_knowledge_id != null ? Number(detail.xhs_knowledge_id) : null;
+      // 历史笔记无客户归属（xhs_customer_id 为 NULL）时无法写入独立图库：仅回写封面 URL，不报错
+      if (xhsCustomerId) {
+        coverImageId = await createXhsImage({
+          xhs_customer_id: xhsCustomerId,
+          xhs_knowledge_id: xhsKnowledgeId,
+          owner_user_id: uid,
+          image_type: 'cover',
+          url: coverImageUrl,
+          file_path: null,
+          original_name: `xhs-cover-${articleId}.png`,
+          description: typeof body.cover_title === 'string' ? body.cover_title.slice(0, 200) : null,
+          tags: [],
+          sort_order: 0,
+          source: 'compose',
+          prompt: null,
+        });
+      }
       await updateArticleCoverImage(articleId, coverImageUrl);
     }
 
@@ -474,6 +482,9 @@ router.post('/notes/:id/publish', async (req: Request, res: Response) => {
 
 /**
  * POST /xhs/notes/generate —— 创建小红书图文写作任务（独立内核，异步执行）
+ * Body: { instruction_id, xhs_customer_id, xhs_knowledge_id, creation_mode?: 'smart'|'keyword',
+ *         topics?: XhsPlannedTopic[], keywords?: string[], article_count?, task_name?,
+ *         cover_image_mode?, cover_image_id?, illustration_count?, model_config_id? }
  * 与既有路由无冲突：现有 POST 路由是 /notes/:id/publish（3 段），本路由是 /notes/generate（2 段），
  * 且 Path 为字面量不参与 :id 匹配，因此注册位置不影响匹配。
  */
@@ -488,17 +499,40 @@ router.post('/notes/generate', async (req: Request, res: Response) => {
     if (inst.user_id !== null && Number(inst.user_id) !== uid) {
       return res.status(403).json({ code: 403, message: '无权使用该写作指令' });
     }
-    const knowledgeId = Number(b.knowledge_id);
-    if (!knowledgeId) return res.status(400).json({ code: 400, message: '缺少 knowledge_id' });
+    const xhsCustomerId = Number(b.xhs_customer_id);
+    if (!xhsCustomerId) return res.status(400).json({ code: 400, message: '缺少 xhs_customer_id' });
+    const customer = await getXhsCustomerById(xhsCustomerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+
+    const xhsKnowledgeId = Number(b.xhs_knowledge_id);
+    if (!xhsKnowledgeId) return res.status(400).json({ code: 400, message: '缺少 xhs_knowledge_id' });
+    const knowledge = await getXhsKnowledgeById(xhsKnowledgeId);
+    if (!knowledge || Number(knowledge.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '知识库不存在' });
+    }
+
+    // 选题：smart 模式来自 /xhs/topics/plan 的用户确认结果；keyword 模式走关键词
+    const rawTopics: any[] = Array.isArray(b.topics) ? b.topics : [];
+    const creationMode = String(b.creation_mode || (rawTopics.length > 0 ? 'smart' : 'keyword'));
     const rawKeywords: string[] = Array.isArray(b.keywords)
       ? b.keywords.map((s: any) => String(s || '').trim()).filter(Boolean)
       : [];
-    if (rawKeywords.length === 0) return res.status(400).json({ code: 400, message: '请至少填写 1 个关键词' });
-    const articleCount = Math.min(100, Math.max(1, Number(b.article_count) || 1));
+    if (creationMode === 'smart' && rawTopics.length === 0) {
+      return res.status(400).json({ code: 400, message: '智能选题模式请先确认选题' });
+    }
+    if (creationMode !== 'smart' && rawKeywords.length === 0) {
+      return res.status(400).json({ code: 400, message: '请至少填写 1 个关键词' });
+    }
+    const articleCount = Math.min(
+      100,
+      Math.max(1, Number(b.article_count) || (rawTopics.length || rawKeywords.length || 1)),
+    );
 
     // 关键词文本 → keyword_ids（复用既有查/建逻辑）
     const { getKeywordIdsByValues } = await import('../repository');
-    const keywordIds = await getKeywordIdsByValues(uid, rawKeywords);
+    const keywordIds = rawKeywords.length > 0 ? await getKeywordIdsByValues(uid, rawKeywords) : [];
 
     const taskId = await createWritingTask({
       user_id: uid,
@@ -507,7 +541,10 @@ router.post('/notes/generate', async (req: Request, res: Response) => {
       instruction_id: null,            // 小红书不使用 GEO 指令
       xhs_instruction_id: instructionId,
       writing_system: 'xhs',
-      knowledge_id: knowledgeId,
+      knowledge_id: null,              // GEO 知识库列保持 NULL
+      xhs_customer_id: xhsCustomerId,
+      xhs_knowledge_id: xhsKnowledgeId,
+      xhs_topics: creationMode === 'smart' ? rawTopics.slice(0, articleCount) : [],
       model_config_id: b.model_config_id || null,
       total_count: articleCount,
       cover_image_mode: b.cover_image_mode || 'random',
@@ -600,40 +637,56 @@ router.delete('/cover-templates/:id', async (req: Request, res: Response) => {
 // ==================== 生图 ====================
 
 /**
- * POST /xhs/images/generate —— 文生图并落库
- * Body: { prompt, image_type: 'cover'|'illustration', knowledge_id?, size? }
+ * POST /xhs/images/generate —— 单张文生图，写入小红书图库
+ * Body: { xhs_customer_id, xhs_knowledge_id?, image_type: 'cover'|'illustration', prompt, size? }
  * 业务失败（未配置/额度用尽）返回 400 + code 4001/4002，桌面端据此降级为图库选图
  */
 router.post('/images/generate', async (req: Request, res: Response) => {
   try {
     const uid = getUserId(req);
-    const { prompt, image_type, knowledge_id, size } = req.body || {};
-    if (!prompt || !String(prompt).trim()) {
+    const b = req.body || {};
+    const customerId = Number(b.xhs_customer_id);
+    if (!customerId) return res.status(400).json({ code: 400, message: '缺少 xhs_customer_id' });
+    const customer = await getXhsCustomerById(customerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    if (!b.prompt || !String(b.prompt).trim()) {
       return res.status(400).json({ code: 400, message: '缺少 prompt' });
     }
-    const result = await generateImageToLibrary({
+    if (!['cover', 'illustration'].includes(String(b.image_type))) {
+      return res.status(400).json({ code: 400, message: 'image_type 必须是 cover 或 illustration' });
+    }
+    const { generateXhsImageToLibrary } = await import('../services/xhs/xhsImageGenerator');
+    const result = await generateXhsImageToLibrary({
       userId: uid,
-      knowledgeId: knowledge_id != null ? Number(knowledge_id) : null,
-      imageType: image_type === 'cover' ? 'cover' : 'illustration',
-      prompt: String(prompt).trim(),
-      size: size ? String(size) : undefined,
+      xhsCustomerId: customerId,
+      xhsKnowledgeId: b.xhs_knowledge_id ? Number(b.xhs_knowledge_id) : null,
+      imageType: String(b.image_type) as 'cover' | 'illustration',
+      prompt: String(b.prompt).trim(),
+      size: b.size ? String(b.size) : undefined,
     });
     res.json({ code: 200, data: result });
   } catch (e: any) {
-    console.error('[Xhs] 生图失败:', e.message);
-    res.status(400).json({ code: e?.code || 400, message: e?.message || '生图失败' });
+    const msg = e?.message || '生图失败';
+    console.error('[Xhs] 生图失败:', msg);
+    // 业务错误透传 code（4001 未配置 / 4002 额度用尽），其余 500
+    const code = Number(e?.code);
+    if (code === 4001 || code === 4002) return res.status(400).json({ code, message: msg });
+    res.status(500).json({ code: 500, message: msg });
   }
 });
 
 // ==================== 发布台账与看板 ====================
 
-/** GET /xhs/publish-tasks —— 小红书发布任务台账 */
+/** GET /xhs/publish-tasks —— 小红书发布台账（可选按客户过滤） */
 router.get('/publish-tasks', async (req: Request, res: Response) => {
   try {
     const uid = getUserId(req);
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
-    const data = await getXhsPublishTasks(uid, page, pageSize);
+    const xhsCustomerId = req.query.xhs_customer_id ? Number(req.query.xhs_customer_id) : null;
+    const data = await getXhsPublishTasks(uid, page, pageSize, xhsCustomerId);
     res.json({ code: 200, data });
   } catch (e: any) {
     console.error('[Xhs] 发布台账失败:', e.message);
