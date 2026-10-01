@@ -20,6 +20,9 @@ import {
   getXhsWritingInstructions, getXhsWritingInstructionById,
   createXhsWritingInstruction, updateXhsWritingInstruction, deleteXhsWritingInstruction,
   createWritingTask,
+  getXhsCustomers, getXhsCustomerById, createXhsCustomer, updateXhsCustomer, deleteXhsCustomer, countXhsCustomerRefs,
+  getXhsKnowledges, getXhsKnowledgeById, createXhsKnowledge, updateXhsKnowledge, deleteXhsKnowledge, countXhsKnowledgeRefs,
+  getXhsImages, getXhsImageById, createXhsImage, updateXhsImage, deleteXhsImage,
 } from '../repository';
 import { generateImageToLibrary } from '../services/content/imageGenerator';
 
@@ -29,6 +32,251 @@ router.use(authMiddleware);
 function getUserId(req: any): number {
   return Number(req.user?.id ?? req.user?.userId ?? 0);
 }
+
+// ==================== 小红书客户 ====================
+
+/** 是否管理员（可显式查看指定运营者的客户） */
+function isAdminUser(req: any): boolean {
+  const u = req.user || {};
+  return u.level === '1' || u.role === 'admin' || u.role === 'super_admin';
+}
+
+/** 解析目标 owner（默认自己；管理员可传 ?owner_user_id=） */
+function resolveOwnerId(req: any): number {
+  const self = getUserId(req);
+  if (isAdminUser(req) && req.query.owner_user_id) {
+    const n = Number(req.query.owner_user_id);
+    if (n > 0) return n;
+  }
+  return self;
+}
+
+/** GET /xhs/customers —— 我的客户列表（带知识库数 / 笔记数） */
+router.get('/customers', async (req: Request, res: Response) => {
+  try {
+    const includeInactive = String(req.query.include_inactive || '') === '1';
+    const rows = await getXhsCustomers(resolveOwnerId(req), includeInactive);
+    res.json({ code: 200, data: rows });
+  } catch (e: any) {
+    console.error('[Xhs] 客户列表失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** POST /xhs/customers —— 新建客户 */
+router.post('/customers', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const b = req.body || {};
+    if (!b.name || !String(b.name).trim()) {
+      return res.status(400).json({ code: 400, message: '缺少客户名称' });
+    }
+    if (b.account_type && !['brand', 'creator'].includes(String(b.account_type))) {
+      return res.status(400).json({ code: 400, message: 'account_type 仅支持 brand / creator' });
+    }
+    const id = await createXhsCustomer({
+      owner_user_id: uid,
+      name: String(b.name).trim(),
+      contact_name: b.contact_name,
+      contact_phone: b.contact_phone,
+      contact_wechat: b.contact_wechat,
+      city: b.city,
+      industry: b.industry,
+      account_type: b.account_type,
+      remark: b.remark,
+    });
+    res.json({ code: 200, data: { id } });
+  } catch (e: any) {
+    console.error('[Xhs] 新建客户失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** PUT /xhs/customers/:id —— 更新客户 */
+router.put('/customers/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const affected = await updateXhsCustomer(id, getUserId(req), req.body || {});
+    if (affected === 0) return res.status(404).json({ code: 404, message: '客户不存在或无权修改' });
+    res.json({ code: 200, message: '更新成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 更新客户失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** DELETE /xhs/customers/:id —— 删除客户（有关联知识库/笔记时拒绝） */
+router.delete('/customers/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const uid = getUserId(req);
+    const customer = await getXhsCustomerById(id);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在或无权删除' });
+    }
+    const refs = await countXhsCustomerRefs(id);
+    if (refs.knowledge > 0 || refs.notes > 0) {
+      return res.status(400).json({
+        code: 400,
+        message: `该客户下还有 ${refs.knowledge} 个知识库、${refs.notes} 篇笔记，请先删除或转移后再删除客户`,
+      });
+    }
+    const affected = await deleteXhsCustomer(id, uid);
+    if (affected === 0) return res.status(404).json({ code: 404, message: '客户不存在或无权删除' });
+    res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 删除客户失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// ==================== 小红书企业知识库 ====================
+
+/** GET /xhs/knowledge?xhs_customer_id= —— 某客户的知识库列表 */
+router.get('/knowledge', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const customerId = Number(req.query.xhs_customer_id);
+    if (!customerId) return res.status(400).json({ code: 400, message: '缺少 xhs_customer_id' });
+    const customer = await getXhsCustomerById(customerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const rows = await getXhsKnowledges(customerId);
+    res.json({ code: 200, data: rows });
+  } catch (e: any) {
+    console.error('[Xhs] 知识库列表失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** POST /xhs/knowledge —— 新建知识库 */
+router.post('/knowledge', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const b = req.body || {};
+    const customerId = Number(b.xhs_customer_id);
+    if (!customerId) return res.status(400).json({ code: 400, message: '缺少 xhs_customer_id' });
+    if (!b.company_full_name || !String(b.company_full_name).trim()) {
+      return res.status(400).json({ code: 400, message: '缺少企业全称' });
+    }
+    const customer = await getXhsCustomerById(customerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const id = await createXhsKnowledge({ ...b, xhs_customer_id: customerId, owner_user_id: uid });
+    res.json({ code: 200, data: { id } });
+  } catch (e: any) {
+    console.error('[Xhs] 新建知识库失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** PUT /xhs/knowledge/:id —— 更新知识库 */
+router.put('/knowledge/:id', async (req: Request, res: Response) => {
+  try {
+    const affected = await updateXhsKnowledge(Number(req.params.id), getUserId(req), req.body || {});
+    if (affected === 0) return res.status(404).json({ code: 404, message: '知识库不存在或无权修改' });
+    res.json({ code: 200, message: '更新成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 更新知识库失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** DELETE /xhs/knowledge/:id —— 删除知识库（有图库/任务引用时拒绝） */
+router.delete('/knowledge/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const uid = getUserId(req);
+    const kb = await getXhsKnowledgeById(id);
+    if (!kb || Number(kb.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '知识库不存在或无权删除' });
+    }
+    const refs = await countXhsKnowledgeRefs(id);
+    if (refs.images > 0 || refs.tasks > 0) {
+      return res.status(400).json({
+        code: 400,
+        message: `该知识库下还有 ${refs.images} 张图片、${refs.tasks} 个写作任务，请先清理后再删除`,
+      });
+    }
+    const affected = await deleteXhsKnowledge(id, uid);
+    if (affected === 0) return res.status(404).json({ code: 404, message: '知识库不存在或无权删除' });
+    res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 删除知识库失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// ==================== 小红书图库 ====================
+
+/** GET /xhs/images?xhs_customer_id=&xhs_knowledge_id=&image_type= */
+router.get('/images', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const customerId = Number(req.query.xhs_customer_id);
+    if (!customerId) return res.status(400).json({ code: 400, message: '缺少 xhs_customer_id' });
+    const customer = await getXhsCustomerById(customerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const knowledgeId = req.query.xhs_knowledge_id ? Number(req.query.xhs_knowledge_id) : undefined;
+    const imageType = req.query.image_type ? String(req.query.image_type) : undefined;
+    const rows = await getXhsImages(customerId, knowledgeId, imageType);
+    res.json({ code: 200, data: rows });
+  } catch (e: any) {
+    console.error('[Xhs] 图库列表失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** POST /xhs/images —— 登记已上传到 OSS 的图片 */
+router.post('/images', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const b = req.body || {};
+    const customerId = Number(b.xhs_customer_id);
+    if (!customerId) return res.status(400).json({ code: 400, message: '缺少 xhs_customer_id' });
+    if (!b.url || !b.image_type) return res.status(400).json({ code: 400, message: 'url 和 image_type 必填' });
+    if (!['cover', 'illustration'].includes(String(b.image_type))) {
+      return res.status(400).json({ code: 400, message: 'image_type 必须是 cover 或 illustration' });
+    }
+    const customer = await getXhsCustomerById(customerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const id = await createXhsImage({ ...b, xhs_customer_id: customerId, owner_user_id: uid });
+    res.json({ code: 200, data: { id } });
+  } catch (e: any) {
+    console.error('[Xhs] 图片登记失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** PUT /xhs/images/:id */
+router.put('/images/:id', async (req: Request, res: Response) => {
+  try {
+    const affected = await updateXhsImage(Number(req.params.id), getUserId(req), req.body || {});
+    if (affected === 0) return res.status(404).json({ code: 404, message: '图片不存在或无权修改' });
+    res.json({ code: 200, message: '更新成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 更新图片失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** DELETE /xhs/images/:id（只删库记录，不删 OSS 对象） */
+router.delete('/images/:id', async (req: Request, res: Response) => {
+  try {
+    const affected = await deleteXhsImage(Number(req.params.id), getUserId(req));
+    if (affected === 0) return res.status(404).json({ code: 404, message: '图片不存在或无权删除' });
+    res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 删除图片失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
 
 // ==================== 小红书写作指令 ====================
 
