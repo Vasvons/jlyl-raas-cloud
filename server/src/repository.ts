@@ -7867,8 +7867,18 @@ export async function cancelPublishTask(id: number): Promise<void> {
  */
 async function selectBestAccountForPublish(
   client: PoolClient,
-  platform: string
+  platform: string,
+  /**
+   * v2.12.0 P4：账号池归属维度。
+   *  - isXhs=false（GEO 任务）：只在 `xhs_customer_id IS NULL` 的账号里取号（不碰小红书账号池）
+   *  - isXhs=true（小红书任务）：只在 `xhs_customer_id = xhsCustomerId` 的账号里取号；
+   *    xhsCustomerId 为空时取不到任何账号（记录保持 pending），避免串用其他客户的账号
+   */
+  isXhs: boolean = false,
+  xhsCustomerId?: number | null,
 ): Promise<number | null> {
+  const scopeSql = isXhs ? `AND xhs_customer_id = $2` : `AND xhs_customer_id IS NULL`;
+  const params: any[] = isXhs ? [platform, xhsCustomerId ?? null] : [platform];
   const result = await client.query(
     `SELECT id FROM platform_auth
      WHERE platform = $1
@@ -7881,6 +7891,7 @@ async function selectBestAccountForPublish(
          OR publish_last_used_date < CURRENT_DATE
          OR publish_used_today < publish_daily_limit
        )
+       ${scopeSql}
      ORDER BY
        (publish_daily_limit - COALESCE(
          CASE WHEN publish_last_used_date = CURRENT_DATE THEN publish_used_today ELSE 0 END,
@@ -7889,7 +7900,7 @@ async function selectBestAccountForPublish(
        publish_fail_count ASC,
        last_used_at ASC NULLS FIRST
      LIMIT 1`,
-    [platform]
+    params
   );
   return result.rows[0]?.id || null;
 }
@@ -7946,47 +7957,62 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
     //    若前 N 个平台都无账号，assignedIds 为空直接返回，其他有账号平台永远轮不到。
     //    修复：候选改为取所有有 pending 的平台（每平台 1 条），循环里跳过无账号的继续尝试。
     //    v2.5.36：支持按 agent_user_id 路由（混合模式 worker 分布式架构）
+    //    v2.12.0 P4：候选按「平台 + 账号池归属」分组（小红书任务只在自己的客户账号池里取号）
     const candidateResult = await client.query(
       `WITH candidate AS (
-         SELECT pr.id, pr.platform
+         SELECT pr.id, pr.platform,
+                CASE WHEN COALESCE(t.writing_system, 'geo') = 'xhs' THEN true ELSE false END AS is_xhs,
+                CASE WHEN COALESCE(t.writing_system, 'geo') = 'xhs' THEN t.xhs_customer_id ELSE NULL END AS xhs_cust
          FROM publish_record pr
          JOIN publish_task pt ON pt.id = pr.task_id
+         LEFT JOIN article a ON a.id = pt.article_id
+         LEFT JOIN ai_writing_task t ON t.id = a.task_id
          WHERE pr.status = 'pending'
            AND pt.status IN ('pending', 'processing')
            AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
            ${agentUserId ? 'AND pt.user_id = $2' : ''}
        ),
        ranked AS (
-         SELECT c.id, c.platform,
-                ROW_NUMBER() OVER (PARTITION BY c.platform ORDER BY c.id) as rn
+         SELECT c.id, c.platform, c.is_xhs, c.xhs_cust,
+                ROW_NUMBER() OVER (PARTITION BY c.platform, c.is_xhs, c.xhs_cust ORDER BY c.id) as rn
          FROM candidate c
-       ),
-       -- v2.5.33：统计每个平台的可用账号数（与 selectBestAccountForPublish 条件一致）
-       platform_avail AS (
-         SELECT platform, COUNT(*) AS avail_count
-         FROM platform_auth
-         WHERE platform_type IN ('publish', 'both')
-           AND status = 'active'
-           AND health_status = 'normal'
-           AND publish_fail_count < 3
-           AND (
-             publish_last_used_date IS NULL
-             OR publish_last_used_date < CURRENT_DATE
-             OR publish_used_today < publish_daily_limit
-           )
-         GROUP BY platform
        )
-       SELECT r.id, r.platform
+       -- v2.5.33：统计可用账号数（与 selectBestAccountForPublish 条件一致），按可用账号数降序优先
+       SELECT r.id, r.platform, r.is_xhs, r.xhs_cust,
+              (SELECT COUNT(*) FROM platform_auth pa
+                WHERE pa.platform = r.platform
+                  AND pa.platform_type IN ('publish', 'both')
+                  AND pa.status = 'active'
+                  AND pa.health_status = 'normal'
+                  AND pa.publish_fail_count < 3
+                  AND (
+                    pa.publish_last_used_date IS NULL
+                    OR pa.publish_last_used_date < CURRENT_DATE
+                    OR pa.publish_used_today < pa.publish_daily_limit
+                  )
+                  AND (
+                    (r.is_xhs AND pa.xhs_customer_id = r.xhs_cust)
+                    OR (NOT r.is_xhs AND pa.xhs_customer_id IS NULL)
+                  )
+              ) AS avail_count
        FROM ranked r
-       LEFT JOIN platform_avail pa ON pa.platform = r.platform
        WHERE r.rn = 1
-       ORDER BY COALESCE(pa.avail_count, 0) DESC, r.platform ASC`,
+       ORDER BY avail_count DESC, r.platform ASC`,
       agentUserId ? [agentUserId] : []
     );
 
     if (candidateResult.rows.length === 0) {
       await client.query('COMMIT');
       return [];
+    }
+
+    // 记录每条候选的账号池归属，供加锁后取号使用
+    const scopeMap = new Map<number, { isXhs: boolean; xhsCustomerId: number | null }>();
+    for (const r of candidateResult.rows) {
+      scopeMap.set(Number(r.id), {
+        isXhs: !!r.is_xhs,
+        xhsCustomerId: r.xhs_cust != null ? Number(r.xhs_cust) : null,
+      });
     }
 
     const candidateIds = candidateResult.rows.map((r: any) => r.id);
@@ -8006,7 +8032,9 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
     const assignedIds: number[] = [];
     for (const row of lockedResult.rows) {
       if (assignedIds.length >= limit) break;  // v3.7.11：达到 limit 后停止
-      const authId = await selectBestAccountForPublish(client, row.platform);
+      // v2.12.0 P4：按该记录的账号池归属取号（小红书任务只用自己的客户账号池）
+      const scope = scopeMap.get(Number(row.id)) || { isXhs: false, xhsCustomerId: null };
+      const authId = await selectBestAccountForPublish(client, row.platform, scope.isXhs, scope.xhsCustomerId);
       if (!authId) {
         // 无可用账号：保持 pending，本次不拉取，继续尝试下一个候选
         continue;
@@ -8927,8 +8955,14 @@ export async function getPublishAccounts(
   userId: number,
   poolType: 'public' | 'private' | 'all' = 'all',
   customerId?: number,
+  /**
+   * v2.12.0 P4：按小红书客户过滤。
+   *  - 传数字：只返回该小红书客户的账号（小红书板块专用；此时忽略 poolType）
+   *  - 不传（undefined/null）：走 GEO 原有逻辑，并**排除**小红书专属账号，避免两套账号串台
+   */
+  xhsCustomerId?: number | null,
 ): Promise<any[]> {
-  let sql = `SELECT pa.id, pa.user_id, pa.platform, pa.account_name, pa.avatar_url,
+  let sql = `SELECT pa.id, pa.user_id, pa.xhs_customer_id, pa.platform, pa.account_name, pa.avatar_url,
             pa.status, pa.health_status, pa.last_used_at,
             pa.platform_type, pa.created_at, pa.updated_at,
             pa.expires_at, pa.proxy_id, pp.name AS proxy_name,
@@ -8938,15 +8972,21 @@ export async function getPublishAccounts(
      LEFT JOIN proxy_pool pp ON pa.proxy_id = pp.id
      WHERE pa.platform_type IN ('publish', 'both')`;
   const params: any[] = [];
-  if (poolType === 'public') {
-    sql += ` AND pa.user_id IS NULL`;
-  } else if (poolType === 'private') {
-    if (customerId == null) {
-      // 未指定客户时返回所有私有账号（user_id IS NOT NULL）
-      sql += ` AND pa.user_id IS NOT NULL`;
-    } else {
-      sql += ` AND pa.user_id = $1`;
-      params.push(String(customerId));
+  if (xhsCustomerId != null) {
+    params.push(Number(xhsCustomerId));
+    sql += ` AND pa.xhs_customer_id = $${params.length}`;
+  } else {
+    sql += ` AND pa.xhs_customer_id IS NULL`;
+    if (poolType === 'public') {
+      sql += ` AND pa.user_id IS NULL`;
+    } else if (poolType === 'private') {
+      if (customerId == null) {
+        // 未指定客户时返回所有私有账号（user_id IS NOT NULL）
+        sql += ` AND pa.user_id IS NOT NULL`;
+      } else {
+        params.push(String(customerId));
+        sql += ` AND pa.user_id = $${params.length}`;
+      }
     }
   }
   sql += ` ORDER BY pa.platform ASC, pa.created_at DESC`;
@@ -8961,12 +9001,19 @@ export async function createPublishAccount(data: {
   storage_state: any;
   avatar_url?: string;
   expires_at?: string;
+  /** v2.12.0 P4：小红书账号归属的小红书客户（非小红书账号传 null/不传） */
+  xhs_customer_id?: number | null;
 }): Promise<number> {
   const result = await query(
-    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, avatar_url, expires_at, platform_type, status, health_status)
-     VALUES ($1, $2, $3, $4, $5, $6, 'publish', 'active', 'normal')
+    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, avatar_url, expires_at, platform_type, status, health_status, xhs_customer_id)
+     VALUES ($1, $2, $3, $4, $5, $6, 'publish', 'active', 'normal', $7)
      RETURNING id`,
-    [data.user_id == null ? null : String(data.user_id), data.platform, data.account_name, JSON.stringify(data.storage_state), data.avatar_url || null, data.expires_at || null]
+    [
+      data.user_id == null ? null : String(data.user_id),
+      data.platform, data.account_name, JSON.stringify(data.storage_state),
+      data.avatar_url || null, data.expires_at || null,
+      data.xhs_customer_id == null ? null : Number(data.xhs_customer_id),
+    ]
   );
   return result.rows[0].id;
 }

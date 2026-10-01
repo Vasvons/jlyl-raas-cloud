@@ -3746,7 +3746,13 @@ export async function migrate() {
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS xhs_customer_id INTEGER REFERENCES xhs_customer(id)`);
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS xhs_knowledge_id INTEGER REFERENCES xhs_knowledge(id)`);
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS xhs_topics JSONB DEFAULT '[]'`);
-    console.log('[Migrate] v3.z 小红书 P4 独立客户体系表创建/验证完成（xhs_customer / xhs_knowledge / xhs_image + 4 列）');
+
+    // 5. 发布账号归属小红书客户（小红书账号池按客户隔离；NULL = 非小红书账号，GEO 不受影响）
+    //    注意：platform_auth.user_id 是 TEXT，存的是 users.id；小红书客户是 xhs_customer 表的另一个 id 空间，
+    //    不能复用 user_id（会撞号），必须独立列。
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS xhs_customer_id INTEGER REFERENCES xhs_customer(id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_xhs_customer ON platform_auth(xhs_customer_id, platform)`);
+    console.log('[Migrate] v3.z 小红书 P4 独立客户体系表创建/验证完成（xhs_customer / xhs_knowledge / xhs_image + 5 列）');
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {
