@@ -9898,7 +9898,7 @@ export async function getXhsNotes(userId: number, page: number = 1, pageSize: nu
     `SELECT a.id, a.user_id, a.title, a.core_keyword, a.word_count, a.status,
             a.cover_image_url, a.tags, a.create_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
-            m.cover_image_id, m.image_ids, m.topics,
+            m.cover_image_id, m.image_ids, m.topics, m.image_script,
             (SELECT COUNT(*)::int FROM publish_record r
                JOIN publish_task t ON t.id = r.task_id
               WHERE r.platform = 'xhs' AND t.article_id = a.id AND r.status = 'success') AS publish_success_count,
@@ -9921,7 +9921,7 @@ export async function getXhsNoteDetail(articleId: number): Promise<any | null> {
     `SELECT a.id, a.user_id, a.title, a.content_html, a.core_keyword, a.word_count, a.status,
             a.cover_image_url, a.tags, a.model_used, a.create_time, a.update_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
-            m.cover_image_id, m.image_ids, m.topics,
+            m.cover_image_id, m.image_ids, m.topics, m.image_script,
             (SELECT t.knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS knowledge_id
        FROM article a
        JOIN xhs_note_meta m ON m.article_id = a.id
