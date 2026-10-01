@@ -10135,7 +10135,12 @@ export async function incrementImageModelUsage(id: number): Promise<void> {
 
 // ============ v3.x 小红书运营大师：发布台账 + 看板聚合（仅平台内自有数据） ============
 
-/** 小红书发布任务台账（target_platforms 含 xhs） */
+/**
+ * 小红书发布任务台账
+ *
+ * 只统计「小红书板块产出」的发布任务：`article → ai_writing_task.writing_system='xhs'`。
+ * GEO 内容中枢创建、恰好勾选了 xhs 平台的任务不属于小红书板块，必须排除（v2.12.0 P4 隔离）。
+ */
 export async function getXhsPublishTasks(
   userId: number,
   page: number = 1,
@@ -10143,18 +10148,26 @@ export async function getXhsPublishTasks(
   xhsCustomerId?: number | null,
 ): Promise<{ list: any[]; total: number }> {
   const offset = (Math.max(1, page) - 1) * pageSize;
-  // 客户过滤：经 article → ai_writing_task 关联（历史任务 xhs_customer_id 为 NULL，天然被排除）
-  const customerFilter = xhsCustomerId
-    ? `AND EXISTS (SELECT 1 FROM ai_writing_task t2 WHERE t2.id = a.task_id AND t2.xhs_customer_id = $4)`
-    : '';
-  const baseParams: any[] = [userId, pageSize, offset];
-  const listParams = xhsCustomerId ? [...baseParams, xhsCustomerId] : baseParams;
+
+  const filters: string[] = [
+    `pt.user_id = $1`,
+    `'xhs' = ANY(pt.target_platforms)`,
+    // 只认小红书写作任务产出的发布任务（writing_system='xhs'，兼容历史 NULL 归为 geo）
+    `EXISTS (SELECT 1 FROM ai_writing_task t2 WHERE t2.id = a.task_id AND COALESCE(t2.writing_system, 'geo') = 'xhs')`,
+  ];
+  const filterParams: any[] = [userId];
+  if (xhsCustomerId) {
+    filterParams.push(xhsCustomerId);
+    // 客户过滤：历史任务 xhs_customer_id 为 NULL，天然被排除
+    filters.push(`EXISTS (SELECT 1 FROM ai_writing_task t3 WHERE t3.id = a.task_id AND t3.xhs_customer_id = $${filterParams.length})`);
+  }
+  const whereSql = `WHERE ${filters.join(' AND ')}`;
 
   const countResult = await query(
     `SELECT COUNT(*)::int AS total FROM publish_task pt
        LEFT JOIN article a ON a.id = pt.article_id
-      WHERE pt.user_id = $1 AND 'xhs' = ANY(pt.target_platforms) ${customerFilter.replace('$4', '$2')}`,
-    xhsCustomerId ? [userId, xhsCustomerId] : [userId]
+      ${whereSql}`,
+    filterParams
   );
   const result = await query(
     `SELECT pt.id, pt.article_id, pt.target_platforms, pt.status, pt.total_count,
@@ -10166,10 +10179,10 @@ export async function getXhsPublishTasks(
               WHERE r.task_id = pt.id AND r.platform = 'xhs' AND r.status = 'failed') AS xhs_failed_count
        FROM publish_task pt
        LEFT JOIN article a ON a.id = pt.article_id
-      WHERE pt.user_id = $1 AND 'xhs' = ANY(pt.target_platforms) ${customerFilter}
+      ${whereSql}
       ORDER BY pt.create_time DESC
-      LIMIT $2 OFFSET $3`,
-    listParams
+      LIMIT $${filterParams.length + 1} OFFSET $${filterParams.length + 2}`,
+    [...filterParams, pageSize, offset]
   );
   return { list: result.rows, total: Number(countResult.rows[0]?.total || 0) };
 }
@@ -10186,7 +10199,9 @@ export async function getXhsDashboardOverview(userId: number, days: number = 30)
        COUNT(*) FILTER (WHERE pr.status IN ('pending', 'processing'))::int AS running
      FROM publish_record pr
      JOIN publish_task pt ON pt.id = pr.task_id
+     LEFT JOIN article a ON a.id = pt.article_id
      WHERE pt.user_id = $1 AND pr.platform = 'xhs'
+       AND EXISTS (SELECT 1 FROM ai_writing_task t2 WHERE t2.id = a.task_id AND COALESCE(t2.writing_system, 'geo') = 'xhs')
        AND pr.create_time >= NOW() - $2::interval`,
     [userId, interval]
   );
@@ -10197,7 +10212,9 @@ export async function getXhsDashboardOverview(userId: number, days: number = 30)
     `SELECT COALESCE(NULLIF(LEFT(pr.error_msg, 60), ''), '未知错误') AS reason, COUNT(*)::int AS count
        FROM publish_record pr
        JOIN publish_task pt ON pt.id = pr.task_id
+       LEFT JOIN article a ON a.id = pt.article_id
       WHERE pt.user_id = $1 AND pr.platform = 'xhs' AND pr.status = 'failed'
+        AND EXISTS (SELECT 1 FROM ai_writing_task t2 WHERE t2.id = a.task_id AND COALESCE(t2.writing_system, 'geo') = 'xhs')
         AND pr.create_time >= NOW() - $2::interval
       GROUP BY 1
       ORDER BY count DESC
@@ -10247,8 +10264,10 @@ export async function getXhsDashboardByAccount(userId: number, days: number = 30
             COUNT(*) FILTER (WHERE pr.status = 'failed')::int AS failed
        FROM publish_record pr
        JOIN publish_task pt ON pt.id = pr.task_id
+       LEFT JOIN article a ON a.id = pt.article_id
        LEFT JOIN platform_auth pa ON pa.id = pr.platform_auth_id
       WHERE pt.user_id = $1 AND pr.platform = 'xhs'
+        AND EXISTS (SELECT 1 FROM ai_writing_task t2 WHERE t2.id = a.task_id AND COALESCE(t2.writing_system, 'geo') = 'xhs')
         AND pr.create_time >= NOW() - $2::interval
       GROUP BY pr.platform_auth_id, pa.account_name, pa.health_status
       ORDER BY total DESC`,
@@ -10266,7 +10285,9 @@ export async function getXhsDashboardByTime(userId: number, days: number = 30): 
             COUNT(*) FILTER (WHERE pr.status = 'failed')::int AS failed
        FROM publish_record pr
        JOIN publish_task pt ON pt.id = pr.task_id
+       LEFT JOIN article a ON a.id = pt.article_id
       WHERE pt.user_id = $1 AND pr.platform = 'xhs'
+        AND EXISTS (SELECT 1 FROM ai_writing_task t2 WHERE t2.id = a.task_id AND COALESCE(t2.writing_system, 'geo') = 'xhs')
         AND pr.create_time >= NOW() - $2::interval
       GROUP BY 1
       ORDER BY 1 ASC`,
