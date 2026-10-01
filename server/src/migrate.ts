@@ -3662,6 +3662,92 @@ export async function migrate() {
       }
     }
 
+    // ============ v3.z 小红书 P4：独立客户体系（XHS_P4_ISOLATION）============
+    // 1. 小红书客户档案（owner_user_id = 运营者；小红书客户不需要注册平台账号）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xhs_customer (
+        id             SERIAL PRIMARY KEY,
+        owner_user_id  INTEGER NOT NULL REFERENCES users(id),
+        name           VARCHAR(100) NOT NULL,
+        contact_name   VARCHAR(64),
+        contact_phone  VARCHAR(32),
+        contact_wechat VARCHAR(64),
+        city           VARCHAR(64),
+        industry       VARCHAR(64),
+        account_type   VARCHAR(16) DEFAULT 'creator',
+        remark         TEXT,
+        is_active      BOOLEAN DEFAULT true,
+        create_time    TIMESTAMP DEFAULT NOW(),
+        update_time    TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_customer_owner ON xhs_customer(owner_user_id, is_active)`);
+
+    // 2. 小红书企业知识库（一个客户可多条，字段与 enterprise_knowledge 对齐便于上手）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xhs_knowledge (
+        id                 SERIAL PRIMARY KEY,
+        xhs_customer_id    INTEGER NOT NULL REFERENCES xhs_customer(id) ON DELETE CASCADE,
+        owner_user_id      INTEGER NOT NULL REFERENCES users(id),
+        name               VARCHAR(64),
+        company_full_name  VARCHAR(128) NOT NULL,
+        company_short_name VARCHAR(64),
+        city               VARCHAR(64),
+        address            VARCHAR(255),
+        industry           VARCHAR(64),
+        founded_year       INTEGER,
+        business_scope     TEXT,
+        entity_triples     JSONB,
+        intro_text         TEXT,
+        cases_text         TEXT,
+        products_services  TEXT,
+        product_features   TEXT,
+        user_pain_points   TEXT,
+        trust_endorsement  TEXT,
+        other_info         TEXT,
+        is_active          BOOLEAN DEFAULT true,
+        create_time        TIMESTAMP DEFAULT NOW(),
+        update_time        TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_knowledge_customer ON xhs_knowledge(xhs_customer_id, is_active)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_knowledge_owner ON xhs_knowledge(owner_user_id)`);
+
+    // 3. 小红书图库（不能复用 image_library：它的 knowledge_id 有 FK 指向 enterprise_knowledge）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xhs_image (
+        id               SERIAL PRIMARY KEY,
+        xhs_customer_id  INTEGER NOT NULL REFERENCES xhs_customer(id) ON DELETE CASCADE,
+        xhs_knowledge_id INTEGER REFERENCES xhs_knowledge(id) ON DELETE SET NULL,
+        owner_user_id    INTEGER NOT NULL REFERENCES users(id),
+        image_type       VARCHAR(16) NOT NULL,
+        url              TEXT NOT NULL,
+        file_path        TEXT,
+        original_name    VARCHAR(255),
+        file_size        INTEGER,
+        mime_type        VARCHAR(64),
+        width            INTEGER,
+        height           INTEGER,
+        description      TEXT,
+        tags             TEXT[],
+        sort_order       INTEGER DEFAULT 0,
+        source           VARCHAR(16) DEFAULT 'upload',
+        prompt           TEXT,
+        create_time      TIMESTAMP DEFAULT NOW(),
+        update_time      TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_image_knowledge ON xhs_image(xhs_knowledge_id, image_type)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_image_customer ON xhs_image(xhs_customer_id, image_type)`);
+
+    // 4. 既有表加列（必须在上面三张表建完之后）
+    await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS xhs_customer_id INTEGER REFERENCES xhs_customer(id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_note_meta_customer ON xhs_note_meta(xhs_customer_id)`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS xhs_customer_id INTEGER REFERENCES xhs_customer(id)`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS xhs_knowledge_id INTEGER REFERENCES xhs_knowledge(id)`);
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS xhs_topics JSONB DEFAULT '[]'`);
+    console.log('[Migrate] v3.z 小红书 P4 独立客户体系表创建/验证完成（xhs_customer / xhs_knowledge / xhs_image + 4 列）');
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
