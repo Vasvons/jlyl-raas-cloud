@@ -17,8 +17,8 @@ import {
   updateWritingTaskProgress,
   completeWritingTask,
   updateArticleCoverImage,
-  getImageById,
-  getRandomImages,
+  getXhsImageById,
+  getRandomXhsImages,
   getActiveManualRulesByIndustry,
   getAllActiveManualRules,
 } from '../../repository';
@@ -80,25 +80,34 @@ function truncateBody(body: string, max: number): { text: string; truncated: boo
   return { text: acc || plain.slice(0, max), truncated: true };
 }
 
-/** 取封面图（返回 image_library 行或 null） */
+/** 取封面图（返回 xhs_image 行或 null） */
 async function pickCoverImage(task: any, userId: number): Promise<any | null> {
   const mode = String(task.cover_image_mode || 'none');
+  const customerId = Number(task.xhs_customer_id) || 0;
   if (mode === 'fixed' && task.cover_image_id) {
-    const img = await getImageById(Number(task.cover_image_id));
-    if (img) return img;
+    const img = await getXhsImageById(Number(task.cover_image_id));
+    // 归属校验：只认本客户的图，避免跨客户串图
+    if (img && Number(img.xhs_customer_id) === customerId) return img;
+    return null;
   }
-  if ((mode === 'random' || mode === 'auto') && task.knowledge_id) {
-    const covers = await getRandomImages(userId, Number(task.knowledge_id), 'cover', 1);
+  if ((mode === 'random' || mode === 'auto') && customerId) {
+    const covers = await getRandomXhsImages(customerId, 'cover', 1, task.xhs_knowledge_id ? Number(task.xhs_knowledge_id) : null);
     if (covers.length > 0) return covers[0];
   }
   return null;
 }
 
-/** 取配图（返回 image_library 行数组，保持顺序） */
+/** 取配图（返回 xhs_image 行数组，保持顺序） */
 async function pickIllustrations(task: any, userId: number, excludeId?: number | null): Promise<any[]> {
   const want = Number(task.illustration_count) || 0;
-  if (want <= 0 || !task.knowledge_id) return [];
-  const rows = await getRandomImages(userId, Number(task.knowledge_id), 'illustration', Math.min(20, want + 3));
+  const customerId = Number(task.xhs_customer_id) || 0;
+  if (want <= 0 || !customerId) return [];
+  const rows = await getRandomXhsImages(
+    customerId,
+    'illustration',
+    Math.min(20, want + 3),
+    task.xhs_knowledge_id ? Number(task.xhs_knowledge_id) : null,
+  );
   return rows.filter((r: any) => !excludeId || Number(r.id) !== Number(excludeId)).slice(0, Math.min(20, want));
 }
 
@@ -141,23 +150,36 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
     console.warn(`[XhsGen] 任务 ${taskId} 合规规则读取失败（不阻断）:`, e?.message);
   }
 
-  // 3. 选题（一次调用产出 N 个不重复角度）
+  // 3. 选题：优先使用用户在两步向导里确认过的选题；否则调用选题器
   let topics: XhsTopic[] = [];
-  try {
-    topics = await pickXhsTopics({
-      keywords,
-      count: totalCount,
-      enterpriseText,
-      accountType: String(task.account_type || 'creator'),
-      model,
-    });
-  } catch (e: any) {
-    console.warn(`[XhsGen] 任务 ${taskId} 选题失败，降级为关键词直用:`, e?.message);
-    topics = Array.from({ length: totalCount }, (_, i) => ({
-      angle: keywords[i % Math.max(1, keywords.length)] || `第 ${i + 1} 篇`,
-      keyword: keywords[i % Math.max(1, keywords.length)] || '',
-      hook: '',
-    }));
+  const confirmed: any[] = Array.isArray(task.xhs_topics) ? task.xhs_topics : [];
+  if (confirmed.length > 0) {
+    topics = confirmed.map((t: any) => ({
+      angle: String(t?.angle || '').trim(),
+      keyword: String(t?.keyword || '').trim(),
+      hook: String(t?.hook || '').trim(),
+      title: String(t?.title || '').trim(),
+      topics: Array.isArray(t?.topics) ? t.topics.map((x: any) => String(x)) : [],
+    })).filter((t) => t.angle || t.title);
+    console.log(`[XhsGen] 任务 ${taskId} 使用用户确认的 ${topics.length} 个选题（跳过选题器）`);
+  }
+  if (topics.length === 0) {
+    try {
+      topics = await pickXhsTopics({
+        keywords,
+        count: totalCount,
+        enterpriseText,
+        accountType: String(task.account_type || 'creator'),
+        model,
+      });
+    } catch (e: any) {
+      console.warn(`[XhsGen] 任务 ${taskId} 选题失败，降级为关键词直用:`, e?.message);
+      topics = Array.from({ length: totalCount }, (_, i) => ({
+        angle: keywords[i % Math.max(1, keywords.length)] || `第 ${i + 1} 篇`,
+        keyword: keywords[i % Math.max(1, keywords.length)] || '',
+        hook: '',
+      }));
+    }
   }
 
   // 4. 逐篇成文
@@ -186,6 +208,8 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
         hook: topic.hook,
         enterpriseText,
         complianceBlock,
+        preferredTitle: topic.title || '',
+        preferredTopics: topic.topics || [],
         platformMaxLength: XHS_CONTENT_MAX,
       });
 
@@ -208,13 +232,15 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
       let title = String(parsed.title || '').trim().replace(/^["'「]|["'」]$/g, '');
       const coverText = String(parsed.cover_text || '').trim().replace(/^["'「]|["'」]$/g, '');
       const body = String(parsed.body || '').trim();
-      const topicsOut: string[] = Array.isArray(parsed.topics)
-        ? parsed.topics.map((t: any) => {
-            const s = String(t || '').trim();
-            if (!s) return '';
-            return s.startsWith('#') && s.endsWith('#') ? s : `#${s.replace(/^#+|#+$/g, '')}#`;
-          }).filter(Boolean).slice(0, 10)
-        : [];
+      const rawTopics: any[] = Array.isArray(parsed.topics) && parsed.topics.length > 0
+        ? parsed.topics
+        : (topic.topics || []);
+      const topicsOut: string[] = rawTopics
+        .map((t: any) => {
+          const s = String(t || '').trim();
+          if (!s) return '';
+          return s.startsWith('#') && s.endsWith('#') ? s : `#${s.replace(/^#+|#+$/g, '')}#`;
+        }).filter(Boolean).slice(0, 10);
       const imageScript: any[] = Array.isArray(parsed.image_script) ? parsed.image_script.slice(0, 8) : [];
 
       if (!title) title = coverText || topic.keyword || topic.angle;
@@ -259,6 +285,7 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
         cover_image_id: coverImg?.id ?? null,
         image_ids: illuImgs.map((r: any) => Number(r.id)),
         topics: topicsOut,
+        xhs_customer_id: Number(task.xhs_customer_id) || null,
       });
 
       // 4.5 配图脚本（单独更新，upsert 白名单不含该字段）

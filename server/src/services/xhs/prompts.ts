@@ -162,6 +162,10 @@ export function buildNoteMessages(params: {
   enterpriseText: string;
   complianceBlock: string;
   platformMaxLength: number;
+  /** v3.z：用户在两步向导里选定的标题（必须使用） */
+  preferredTitle?: string;
+  /** v3.z：智能选题产出的推荐话题（成文未给话题时兜底） */
+  preferredTopics?: string[];
 }): ChatMessage[] {
   const p = params;
   const system = `${HUMAN_VOICE_RULES.replace('{emoji_rule}', emojiRuleText(p.emojiLevel))}
@@ -173,6 +177,10 @@ ${p.requireDrawback ? '\n【强制】正文中必须包含至少 1 处真实的�
 
   const parts: string[] = [];
   parts.push(`【本篇选题】${p.topic}`);
+  if (p.preferredTitle) parts.push(`【指定标题（必须使用这个标题，可微调标点）】${p.preferredTitle}`);
+  if (p.preferredTopics && p.preferredTopics.length > 0) {
+    parts.push(`【推荐话题（优先使用，可增补）】${p.preferredTopics.join(' ')}`);
+  }
   if (p.keyword) parts.push(`【取材关键词】${p.keyword}`);
   if (p.hook) parts.push(`【钩子提示】${p.hook}`);
   parts.push(`\n【企业/产品信息】\n${p.enterpriseText}`);

@@ -11,6 +11,10 @@ export interface XhsTopic {
   angle: string;
   keyword: string;
   hook: string;
+  /** v3.z：用户在两步向导里选定的候选标题（智能选题模式带入；生成时作为指定标题） */
+  title?: string;
+  /** v3.z：智能选题产出的推荐话题（成文未给话题时兜底） */
+  topics?: string[];
 }
 
 /** 从模型返回中提取 JSON（容忍 markdown 代码块与前后噪音） */
