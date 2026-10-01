@@ -70,9 +70,7 @@ router.post('/customers', async (req: Request, res: Response) => {
     if (!b.name || !String(b.name).trim()) {
       return res.status(400).json({ code: 400, message: '缺少客户名称' });
     }
-    if (b.account_type && !['brand', 'creator'].includes(String(b.account_type))) {
-      return res.status(400).json({ code: 400, message: 'account_type 仅支持 brand / creator' });
-    }
+    // v2.12.0 P4：客户不再有「主推账号类型」——蓝V官号/种草达人由账号池区分（见 platform_auth.xhs_account_type）
     const id = await createXhsCustomer({
       owner_user_id: uid,
       name: String(b.name).trim(),
@@ -81,7 +79,6 @@ router.post('/customers', async (req: Request, res: Response) => {
       contact_wechat: b.contact_wechat,
       city: b.city,
       industry: b.industry,
-      account_type: b.account_type,
       remark: b.remark,
     });
     res.json({ code: 200, data: { id } });

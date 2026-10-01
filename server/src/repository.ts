@@ -8961,8 +8961,13 @@ export async function getPublishAccounts(
    *  - 不传（undefined/null）：走 GEO 原有逻辑，并**排除**小红书专属账号，避免两套账号串台
    */
   xhsCustomerId?: number | null,
+  /**
+   * v2.12.0 P4：小红书账号类型过滤（`brand` 蓝V官号 / `creator` 种草达人）。
+   * 一个客户可同时拥有两种账号池，仅在 xhsCustomerId 传入时生效；不传则返回该客户全部账号。
+   */
+  xhsAccountType?: 'brand' | 'creator' | null,
 ): Promise<any[]> {
-  let sql = `SELECT pa.id, pa.user_id, pa.xhs_customer_id, pa.platform, pa.account_name, pa.avatar_url,
+  let sql = `SELECT pa.id, pa.user_id, pa.xhs_customer_id, pa.xhs_account_type, pa.platform, pa.account_name, pa.avatar_url,
             pa.status, pa.health_status, pa.last_used_at,
             pa.platform_type, pa.created_at, pa.updated_at,
             pa.expires_at, pa.proxy_id, pp.name AS proxy_name,
@@ -8975,6 +8980,10 @@ export async function getPublishAccounts(
   if (xhsCustomerId != null) {
     params.push(Number(xhsCustomerId));
     sql += ` AND pa.xhs_customer_id = $${params.length}`;
+    if (xhsAccountType) {
+      params.push(xhsAccountType);
+      sql += ` AND pa.xhs_account_type = $${params.length}`;
+    }
   } else {
     sql += ` AND pa.xhs_customer_id IS NULL`;
     if (poolType === 'public') {
@@ -9003,16 +9012,19 @@ export async function createPublishAccount(data: {
   expires_at?: string;
   /** v2.12.0 P4：小红书账号归属的小红书客户（非小红书账号传 null/不传） */
   xhs_customer_id?: number | null;
+  /** v2.12.0 P4：小红书账号类型（brand 蓝V官号 / creator 种草达人），非小红书账号不传 */
+  xhs_account_type?: 'brand' | 'creator' | null;
 }): Promise<number> {
   const result = await query(
-    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, avatar_url, expires_at, platform_type, status, health_status, xhs_customer_id)
-     VALUES ($1, $2, $3, $4, $5, $6, 'publish', 'active', 'normal', $7)
+    `INSERT INTO platform_auth (user_id, platform, account_name, storage_state, avatar_url, expires_at, platform_type, status, health_status, xhs_customer_id, xhs_account_type)
+     VALUES ($1, $2, $3, $4, $5, $6, 'publish', 'active', 'normal', $7, $8)
      RETURNING id`,
     [
       data.user_id == null ? null : String(data.user_id),
       data.platform, data.account_name, JSON.stringify(data.storage_state),
       data.avatar_url || null, data.expires_at || null,
       data.xhs_customer_id == null ? null : Number(data.xhs_customer_id),
+      data.xhs_account_type || null,
     ]
   );
   return result.rows[0].id;
@@ -10486,24 +10498,23 @@ export async function createXhsCustomer(data: {
   contact_wechat?: string | null;
   city?: string | null;
   industry?: string | null;
-  account_type?: string;
   remark?: string | null;
 }): Promise<number> {
   const result = await query(
     `INSERT INTO xhs_customer
-       (owner_user_id, name, contact_name, contact_phone, contact_wechat, city, industry, account_type, remark)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       (owner_user_id, name, contact_name, contact_phone, contact_wechat, city, industry, remark)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING id`,
     [data.owner_user_id, data.name, data.contact_name || null, data.contact_phone || null,
      data.contact_wechat || null, data.city || null, data.industry || null,
-     data.account_type || 'creator', data.remark || null]
+     data.remark || null]
   );
   return result.rows[0].id;
 }
 
 /** 更新客户（SQL 带 owner_user_id 约束：越权返回 0 行） */
 export async function updateXhsCustomer(id: number, ownerUserId: number, data: Record<string, any>): Promise<number> {
-  const allowed = ['name', 'contact_name', 'contact_phone', 'contact_wechat', 'city', 'industry', 'account_type', 'remark', 'is_active'];
+  const allowed = ['name', 'contact_name', 'contact_phone', 'contact_wechat', 'city', 'industry', 'remark', 'is_active'];
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;

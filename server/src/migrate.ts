@@ -3674,7 +3674,6 @@ export async function migrate() {
         contact_wechat VARCHAR(64),
         city           VARCHAR(64),
         industry       VARCHAR(64),
-        account_type   VARCHAR(16) DEFAULT 'creator',
         remark         TEXT,
         is_active      BOOLEAN DEFAULT true,
         create_time    TIMESTAMP DEFAULT NOW(),
@@ -3752,7 +3751,14 @@ export async function migrate() {
     //    不能复用 user_id（会撞号），必须独立列。
     await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS xhs_customer_id INTEGER REFERENCES xhs_customer(id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_xhs_customer ON platform_auth(xhs_customer_id, platform)`);
-    console.log('[Migrate] v3.z 小红书 P4 独立客户体系表创建/验证完成（xhs_customer / xhs_knowledge / xhs_image + 5 列）');
+
+    // 6. 小红书账号类型（蓝V官号 / 种草达人）：一个客户可同时拥有两种账号池
+    //    NULL = 未分类（历史账号）或非小红书账号；GEO 账号不写此列
+    await client.query(`ALTER TABLE platform_auth ADD COLUMN IF NOT EXISTS xhs_account_type VARCHAR(16)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_xhs_customer_type ON platform_auth(xhs_customer_id, xhs_account_type)`);
+    // 7. 客户不再有「主推账号类型」——账号类型归属到具体账号（见第 6 项），删除历史列
+    await client.query(`ALTER TABLE xhs_customer DROP COLUMN IF EXISTS account_type`);
+    console.log('[Migrate] v3.z 小红书 P4 独立客户体系表创建/验证完成（xhs_customer / xhs_knowledge / xhs_image + 6 列）');
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {

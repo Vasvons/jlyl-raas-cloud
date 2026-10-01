@@ -2778,12 +2778,15 @@ router.get('/publish-accounts', async (req: Request, res: Response) => {
     const isAgent = userLevel !== '1' && (userRole === 'agent' || userRole === 'customer');
     // v2.12.0 P4：小红书板块按「小红书客户」隔离账号池（与 GEO 的 user_id 池互不可见）
     const xhsCustomerId = req.query.xhs_customer_id ? Number(req.query.xhs_customer_id) : undefined;
+    // v2.12.0 P4：可选按账号类型过滤（brand 蓝V官号 / creator 种草达人）
+    const rawType = String(req.query.xhs_account_type || '');
+    const xhsAccountType = ['brand', 'creator'].includes(rawType) ? (rawType as 'brand' | 'creator') : undefined;
     if (xhsCustomerId) {
       const customer = await getXhsCustomerById(xhsCustomerId);
       if (!customer || Number(customer.owner_user_id) !== userId) {
         return res.status(404).json({ code: 404, message: '客户不存在' });
       }
-      const list = await getPublishAccounts(userId, 'all', undefined, xhsCustomerId);
+      const list = await getPublishAccounts(userId, 'all', undefined, xhsCustomerId, xhsAccountType);
       res.json({ code: 200, data: list });
       return;
     }
@@ -2897,7 +2900,7 @@ router.get('/publish-accounts/health-check-batch', async (req: Request, res: Res
 router.post('/publish-accounts', async (req: Request, res: Response) => {
   try {
     const { platform, account_name, storage_state, avatar_url, expires_at, pool_type, customer_id, proxy_id,
-            xhs_customer_id } = req.body;
+            xhs_customer_id, xhs_account_type } = req.body;
     if (!platform || !account_name || !storage_state) {
       return res.status(400).json({ code: 400, message: 'platform, account_name, storage_state 必填' });
     }
@@ -2913,6 +2916,11 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
       if (!xhsCustomer || Number(xhsCustomer.owner_user_id) !== callerUserId) {
         return res.status(404).json({ code: 404, message: '客户不存在' });
       }
+      // v2.12.0 P4：账号类型（蓝V官号 / 种草达人），一个客户可同时拥有两种账号池
+      const type = String(xhs_account_type || '');
+      if (!['brand', 'creator'].includes(type)) {
+        return res.status(400).json({ code: 400, message: 'xhs_account_type 仅支持 brand（蓝V官号）/ creator（种草达人）' });
+      }
       const xhsAccountId = await createPublishAccount({
         user_id: null,
         platform,
@@ -2921,6 +2929,7 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
         avatar_url,
         expires_at,
         xhs_customer_id: Number(xhs_customer_id),
+        xhs_account_type: type as 'brand' | 'creator',
       });
       if (proxy_id) {
         await query('UPDATE platform_auth SET proxy_id = $1 WHERE id = $2', [proxy_id, xhsAccountId]);
@@ -2956,7 +2965,7 @@ router.post('/publish-accounts', async (req: Request, res: Response) => {
 router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const { storage_state, status, health_status, proxy_id, account_name, avatar_url, expires_at, publish_daily_limit, publish_mode } = req.body;
+    const { storage_state, status, health_status, proxy_id, account_name, avatar_url, expires_at, publish_daily_limit, publish_mode, xhs_account_type } = req.body;
     if (storage_state) {
       await updatePublishAccountStorageState(id, storage_state, expires_at);
     } else if (expires_at !== undefined) {
@@ -2991,6 +3000,14 @@ router.put('/publish-accounts/:id', async (req: Request, res: Response) => {
         return res.status(400).json({ code: 400, message: 'publish_mode 必须是 publish 或 mass' });
       }
       await query('UPDATE platform_auth SET publish_mode = $1 WHERE id = $2', [mode, id]);
+    }
+    // v2.12.0 P4：小红书账号类型（蓝V官号 / 种草达人），用于给历史账号补标记
+    if (xhs_account_type !== undefined) {
+      const type = String(xhs_account_type || '');
+      if (type && !['brand', 'creator'].includes(type)) {
+        return res.status(400).json({ code: 400, message: 'xhs_account_type 仅支持 brand / creator' });
+      }
+      await query('UPDATE platform_auth SET xhs_account_type = $1 WHERE id = $2', [type || null, id]);
     }
     res.json({ code: 200, data: { ok: true } });
   } catch (err: any) {
