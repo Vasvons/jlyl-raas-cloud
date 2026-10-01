@@ -17,6 +17,9 @@ import {
   getXhsPublishTasks,
   getXhsDashboardOverview, getXhsDashboardByAccount, getXhsDashboardByTime,
   createPublishTask, createImage,
+  getXhsWritingInstructions, getXhsWritingInstructionById,
+  createXhsWritingInstruction, updateXhsWritingInstruction, deleteXhsWritingInstruction,
+  createWritingTask,
 } from '../repository';
 import { generateImageToLibrary } from '../services/content/imageGenerator';
 
@@ -26,6 +29,87 @@ router.use(authMiddleware);
 function getUserId(req: any): number {
   return Number(req.user?.id ?? req.user?.userId ?? 0);
 }
+
+// ==================== 小红书写作指令 ====================
+
+/** GET /xhs/instructions —— 平台预设（user_id IS NULL）+ 本人自建 */
+router.get('/instructions', async (req: Request, res: Response) => {
+  try {
+    const onlyActive = String(req.query.onlyActive || '') === '1';
+    const rows = await getXhsWritingInstructions(getUserId(req), onlyActive);
+    res.json({ code: 200, data: rows });
+  } catch (e: any) {
+    console.error('[Xhs] 指令列表失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** POST /xhs/instructions —— 新建本人指令 */
+router.post('/instructions', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const b = req.body || {};
+    if (!b.name) return res.status(400).json({ code: 400, message: '缺少 name' });
+    if (!['brand', 'creator'].includes(String(b.account_type))) {
+      return res.status(400).json({ code: 400, message: 'account_type 仅支持 brand / creator' });
+    }
+    if (!b.title_prompt) return res.status(400).json({ code: 400, message: '缺少 title_prompt' });
+    if (!b.body_prompt) return res.status(400).json({ code: 400, message: '缺少 body_prompt' });
+    const id = await createXhsWritingInstruction({
+      user_id: uid,
+      name: String(b.name),
+      account_type: String(b.account_type),
+      note_style: b.note_style,
+      title_prompt: String(b.title_prompt),
+      body_prompt: String(b.body_prompt),
+      cover_text_prompt: b.cover_text_prompt,
+      topic_prompt: b.topic_prompt,
+      image_script_prompt: b.image_script_prompt,
+      target_word_count: b.target_word_count != null ? Number(b.target_word_count) : undefined,
+      emoji_level: b.emoji_level,
+      require_drawback: b.require_drawback === undefined ? undefined : !!b.require_drawback,
+      include_image_script: b.include_image_script === undefined ? undefined : !!b.include_image_script,
+    });
+    res.json({ code: 200, data: { id } });
+  } catch (e: any) {
+    console.error('[Xhs] 新建指令失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** PUT /xhs/instructions/:id —— 更新（预设指令 403） */
+router.put('/instructions/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await getXhsWritingInstructionById(id);
+    if (!exists) return res.status(404).json({ code: 404, message: '指令不存在' });
+    if (exists.user_id === null) {
+      return res.status(403).json({ code: 403, message: '平台预设指令不可修改，请复制为自定义指令' });
+    }
+    const affected = await updateXhsWritingInstruction(id, getUserId(req), req.body || {});
+    if (affected === 0) return res.status(404).json({ code: 404, message: '指令不存在或无权修改' });
+    res.json({ code: 200, message: '更新成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 更新指令失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** DELETE /xhs/instructions/:id —— 删除（预设指令 403） */
+router.delete('/instructions/:id', async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const exists = await getXhsWritingInstructionById(id);
+    if (!exists) return res.status(404).json({ code: 404, message: '指令不存在' });
+    if (exists.user_id === null) return res.status(403).json({ code: 403, message: '平台预设指令不可删除' });
+    const affected = await deleteXhsWritingInstruction(id, getUserId(req));
+    if (affected === 0) return res.status(404).json({ code: 404, message: '指令不存在或无权删除' });
+    res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 删除指令失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
 
 // ==================== 笔记 ====================
 
@@ -136,6 +220,63 @@ router.post('/notes/:id/publish', async (req: Request, res: Response) => {
     res.json({ code: 200, data: result });
   } catch (e: any) {
     console.error('[Xhs] 创建发布任务失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/**
+ * POST /xhs/notes/generate —— 创建小红书图文写作任务（独立内核，异步执行）
+ * 与既有路由无冲突：现有 POST 路由是 /notes/:id/publish（3 段），本路由是 /notes/generate（2 段），
+ * 且 Path 为字面量不参与 :id 匹配，因此注册位置不影响匹配。
+ */
+router.post('/notes/generate', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const b = req.body || {};
+    const instructionId = Number(b.instruction_id);
+    if (!instructionId) return res.status(400).json({ code: 400, message: '缺少 instruction_id' });
+    const inst = await getXhsWritingInstructionById(instructionId);
+    if (!inst) return res.status(404).json({ code: 404, message: '写作指令不存在' });
+    if (inst.user_id !== null && Number(inst.user_id) !== uid) {
+      return res.status(403).json({ code: 403, message: '无权使用该写作指令' });
+    }
+    const knowledgeId = Number(b.knowledge_id);
+    if (!knowledgeId) return res.status(400).json({ code: 400, message: '缺少 knowledge_id' });
+    const rawKeywords: string[] = Array.isArray(b.keywords)
+      ? b.keywords.map((s: any) => String(s || '').trim()).filter(Boolean)
+      : [];
+    if (rawKeywords.length === 0) return res.status(400).json({ code: 400, message: '请至少填写 1 个关键词' });
+    const articleCount = Math.min(100, Math.max(1, Number(b.article_count) || 1));
+
+    // 关键词文本 → keyword_ids（复用既有查/建逻辑）
+    const { getKeywordIdsByValues } = await import('../repository');
+    const keywordIds = await getKeywordIdsByValues(uid, rawKeywords);
+
+    const taskId = await createWritingTask({
+      user_id: uid,
+      task_name: b.task_name || `小红书笔记-${new Date().toISOString().slice(5, 16).replace('T', ' ')}`,
+      keyword_ids: keywordIds,
+      instruction_id: null,            // 小红书不使用 GEO 指令
+      xhs_instruction_id: instructionId,
+      writing_system: 'xhs',
+      knowledge_id: knowledgeId,
+      model_config_id: b.model_config_id || null,
+      total_count: articleCount,
+      cover_image_mode: b.cover_image_mode || 'random',
+      cover_image_id: b.cover_image_id || null,
+      illustration_count: Number(b.illustration_count) || 0,
+      target_platforms: ['xhs'],
+    });
+
+    // 异步执行（不阻塞响应）
+    const { executeWritingTask } = await import('../services/content/articleGenerator');
+    executeWritingTask(taskId, uid).catch((e: any) => {
+      console.error(`[Xhs] 任务 ${taskId} 异步执行异常:`, e?.message || e);
+    });
+
+    res.json({ code: 200, data: { taskId, totalCount: articleCount } });
+  } catch (e: any) {
+    console.error('[Xhs] 创建写作任务失败:', e.message);
     res.status(500).json({ code: 500, message: '服务器错误' });
   }
 });
