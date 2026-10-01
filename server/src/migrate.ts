@@ -3409,6 +3409,31 @@ export async function migrate() {
     }
     console.log('[Migrate] v3.x 小红书运营大师表创建/验证完成（xhs_cover_template / xhs_note_meta / image_model_config）');
 
+    // ============ v3.x 小红书板块编号修正（xhsmaster → xhs）============
+    // 背景：板块最初在门户里以编号 xhsmaster 创建，与桌面端菜单键 xhs 不一致，
+    // isModuleImplemented('xhsmaster') 判定失败 → 点击卡片进入「板块开发中」占位页。
+    // module_code 为字符串关联（无外键），需同步 4 张关联表：
+    // agent_module_grant / agent_subscription_plan / agent_order / module_trial。
+    // 幂等：xhs 已存在（用户已自行重建）或 xhsmaster 不存在（已修正过）时跳过。
+    const xhsModuleExists = await client.query(`SELECT 1 FROM module WHERE code = 'xhs' LIMIT 1`);
+    if (xhsModuleExists.rows.length === 0) {
+      const legacyModuleExists = await client.query(`SELECT 1 FROM module WHERE code = 'xhsmaster' LIMIT 1`);
+      if (legacyModuleExists.rows.length > 0) {
+        // agent_module_grant 有 UNIQUE(agent_user_id, module_code)，先清理会造成冲突的重复授权
+        await client.query(`
+          DELETE FROM agent_module_grant
+          WHERE module_code = 'xhsmaster'
+            AND agent_user_id IN (SELECT agent_user_id FROM agent_module_grant WHERE module_code = 'xhs')
+        `);
+        await client.query(`UPDATE module SET code = 'xhs', updated_at = NOW() WHERE code = 'xhsmaster'`);
+        await client.query(`UPDATE agent_module_grant SET module_code = 'xhs' WHERE module_code = 'xhsmaster'`);
+        await client.query(`UPDATE agent_subscription_plan SET module_code = 'xhs' WHERE module_code = 'xhsmaster'`);
+        await client.query(`UPDATE agent_order SET module_code = 'xhs' WHERE module_code = 'xhsmaster'`);
+        await client.query(`UPDATE module_trial SET module_code = 'xhs' WHERE module_code = 'xhsmaster'`);
+        console.log('[Migrate] v3.x 小红书板块编号已修正：xhsmaster → xhs（含 4 张关联表同步）');
+      }
+    }
+
     console.log('[Migrate] 数据库迁移完成');
   } finally {
     client.release();
