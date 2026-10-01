@@ -9857,13 +9857,15 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
   cover_image_id?: number | null;
   image_ids?: number[];
   topics?: string[];
+  xhs_customer_id?: number | null;
 }): Promise<void> {
   await query(
     `INSERT INTO xhs_note_meta
-       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics)
+       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id)
      VALUES ($1, $2, $3, $4, $5, $6,
              COALESCE($7::jsonb, '[]'::jsonb),
-             COALESCE($8::jsonb, '[]'::jsonb))
+             COALESCE($8::jsonb, '[]'::jsonb),
+             $9)
      ON CONFLICT (article_id) DO UPDATE SET
        note_style        = COALESCE(EXCLUDED.note_style, xhs_note_meta.note_style),
        cover_template_id = COALESCE(EXCLUDED.cover_template_id, xhs_note_meta.cover_template_id),
@@ -9871,6 +9873,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
        cover_image_id    = COALESCE(EXCLUDED.cover_image_id, xhs_note_meta.cover_image_id),
        image_ids         = COALESCE(EXCLUDED.image_ids, xhs_note_meta.image_ids),
        topics            = COALESCE(EXCLUDED.topics, xhs_note_meta.topics),
+       xhs_customer_id   = COALESCE(EXCLUDED.xhs_customer_id, xhs_note_meta.xhs_customer_id),
        update_time       = NOW()`,
     [
       articleId,
@@ -9881,6 +9884,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
       data.cover_image_id ?? null,
       data.image_ids !== undefined ? JSON.stringify(data.image_ids) : null,
       data.topics !== undefined ? JSON.stringify(data.topics) : null,
+      data.xhs_customer_id ?? null,
     ]
   );
 }
@@ -9891,14 +9895,28 @@ export async function updateArticleCoverImage(articleId: number, url: string): P
 }
 
 /** 小红书笔记列表（仅返回已建立 xhs_note_meta 的文章，即小红书笔记） */
-export async function getXhsNotes(userId: number, page: number = 1, pageSize: number = 20): Promise<{ list: any[]; total: number }> {
+export async function getXhsNotes(
+  userId: number,
+  page: number = 1,
+  pageSize: number = 20,
+  /** v3.z：按小红书客户过滤（不传则返回该运营者全部笔记，含历史无客户数据） */
+  xhsCustomerId?: number | null,
+): Promise<{ list: any[]; total: number }> {
   const offset = (Math.max(1, page) - 1) * pageSize;
-  const countResult = await query('SELECT COUNT(*)::int AS total FROM xhs_note_meta WHERE user_id = $1', [userId]);
+  const params: any[] = [userId];
+  const where: string[] = ['m.user_id = $1'];
+  let idx = 2;
+  if (xhsCustomerId) {
+    where.push(`m.xhs_customer_id = $${idx++}`);
+    params.push(xhsCustomerId);
+  }
+  const whereClause = `WHERE ${where.join(' AND ')}`;
+  const countResult = await query(`SELECT COUNT(*)::int AS total FROM xhs_note_meta m ${whereClause}`, params);
   const result = await query(
     `SELECT a.id, a.user_id, a.title, a.core_keyword, a.word_count, a.status,
             a.cover_image_url, a.tags, a.create_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
-            m.cover_image_id, m.image_ids, m.topics, m.image_script,
+            m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id,
             (SELECT COUNT(*)::int FROM publish_record r
                JOIN publish_task t ON t.id = r.task_id
               WHERE r.platform = 'xhs' AND t.article_id = a.id AND r.status = 'success') AS publish_success_count,
@@ -9907,22 +9925,23 @@ export async function getXhsNotes(userId: number, page: number = 1, pageSize: nu
               WHERE r.platform = 'xhs' AND t.article_id = a.id AND r.status = 'failed') AS publish_failed_count
        FROM xhs_note_meta m
        JOIN article a ON a.id = m.article_id
-      WHERE m.user_id = $1
+       ${whereClause}
       ORDER BY a.create_time DESC
-      LIMIT $2 OFFSET $3`,
-    [userId, pageSize, offset]
+      LIMIT $${idx} OFFSET $${idx + 1}`,
+    [...params, pageSize, offset]
   );
   return { list: result.rows, total: Number(countResult.rows[0]?.total || 0) };
 }
 
-/** 小红书笔记详情（article + meta + 配图明细） */
+/** 小红书笔记详情（article + meta + 配图明细）；knowledge_id 反查改为小红书知识库 */
 export async function getXhsNoteDetail(articleId: number): Promise<any | null> {
   const result = await query(
     `SELECT a.id, a.user_id, a.title, a.content_html, a.core_keyword, a.word_count, a.status,
             a.cover_image_url, a.tags, a.model_used, a.create_time, a.update_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
-            m.cover_image_id, m.image_ids, m.topics, m.image_script,
-            (SELECT t.knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS knowledge_id
+            m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id,
+            (SELECT t.xhs_knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS xhs_knowledge_id,
+            (SELECT t.xhs_knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS knowledge_id
        FROM article a
        JOIN xhs_note_meta m ON m.article_id = a.id
       WHERE a.id = $1`,
@@ -10115,11 +10134,25 @@ export async function incrementImageModelUsage(id: number): Promise<void> {
 // ============ v3.x 小红书运营大师：发布台账 + 看板聚合（仅平台内自有数据） ============
 
 /** 小红书发布任务台账（target_platforms 含 xhs） */
-export async function getXhsPublishTasks(userId: number, page: number = 1, pageSize: number = 20): Promise<{ list: any[]; total: number }> {
+export async function getXhsPublishTasks(
+  userId: number,
+  page: number = 1,
+  pageSize: number = 20,
+  xhsCustomerId?: number | null,
+): Promise<{ list: any[]; total: number }> {
   const offset = (Math.max(1, page) - 1) * pageSize;
+  // 客户过滤：经 article → ai_writing_task 关联（历史任务 xhs_customer_id 为 NULL，天然被排除）
+  const customerFilter = xhsCustomerId
+    ? `AND EXISTS (SELECT 1 FROM ai_writing_task t2 WHERE t2.id = a.task_id AND t2.xhs_customer_id = $4)`
+    : '';
+  const baseParams: any[] = [userId, pageSize, offset];
+  const listParams = xhsCustomerId ? [...baseParams, xhsCustomerId] : baseParams;
+
   const countResult = await query(
-    `SELECT COUNT(*)::int AS total FROM publish_task WHERE user_id = $1 AND 'xhs' = ANY(target_platforms)`,
-    [userId]
+    `SELECT COUNT(*)::int AS total FROM publish_task pt
+       LEFT JOIN article a ON a.id = pt.article_id
+      WHERE pt.user_id = $1 AND 'xhs' = ANY(pt.target_platforms) ${customerFilter.replace('$4', '$2')}`,
+    xhsCustomerId ? [userId, xhsCustomerId] : [userId]
   );
   const result = await query(
     `SELECT pt.id, pt.article_id, pt.target_platforms, pt.status, pt.total_count,
@@ -10131,10 +10164,10 @@ export async function getXhsPublishTasks(userId: number, page: number = 1, pageS
               WHERE r.task_id = pt.id AND r.platform = 'xhs' AND r.status = 'failed') AS xhs_failed_count
        FROM publish_task pt
        LEFT JOIN article a ON a.id = pt.article_id
-      WHERE pt.user_id = $1 AND 'xhs' = ANY(pt.target_platforms)
+      WHERE pt.user_id = $1 AND 'xhs' = ANY(pt.target_platforms) ${customerFilter}
       ORDER BY pt.create_time DESC
       LIMIT $2 OFFSET $3`,
-    [userId, pageSize, offset]
+    listParams
   );
   return { list: result.rows, total: Number(countResult.rows[0]?.total || 0) };
 }
@@ -10346,10 +10379,268 @@ export async function getXhsWritingTaskById(taskId: number): Promise<any | null>
             k.trust_endorsement, k.other_info
        FROM ai_writing_task t
        LEFT JOIN xhs_writing_instruction xi ON t.xhs_instruction_id = xi.id
-       LEFT JOIN enterprise_knowledge k ON t.knowledge_id = k.id
+       LEFT JOIN xhs_knowledge k ON t.xhs_knowledge_id = k.id
       WHERE t.id = $1`,
     [taskId]
   );
   return result.rows[0] || null;
+}
+
+// ============ 小红书 P4：独立客户体系（XHS_P4_ISOLATION）============
+
+/** 客户列表：只返回当前运营者创建的客户 */
+export async function getXhsCustomers(ownerUserId: number, includeInactive = false): Promise<any[]> {
+  const result = await query(
+    `SELECT c.*,
+            (SELECT COUNT(*)::int FROM xhs_knowledge k WHERE k.xhs_customer_id = c.id AND k.is_active = true) AS knowledge_count,
+            (SELECT COUNT(*)::int FROM xhs_note_meta m WHERE m.xhs_customer_id = c.id) AS note_count
+       FROM xhs_customer c
+      WHERE c.owner_user_id = $1
+        ${includeInactive ? '' : 'AND c.is_active = true'}
+      ORDER BY c.update_time DESC, c.id DESC`,
+    [ownerUserId]
+  );
+  return result.rows;
+}
+
+export async function getXhsCustomerById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM xhs_customer WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function createXhsCustomer(data: {
+  owner_user_id: number;
+  name: string;
+  contact_name?: string | null;
+  contact_phone?: string | null;
+  contact_wechat?: string | null;
+  city?: string | null;
+  industry?: string | null;
+  account_type?: string;
+  remark?: string | null;
+}): Promise<number> {
+  const result = await query(
+    `INSERT INTO xhs_customer
+       (owner_user_id, name, contact_name, contact_phone, contact_wechat, city, industry, account_type, remark)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     RETURNING id`,
+    [data.owner_user_id, data.name, data.contact_name || null, data.contact_phone || null,
+     data.contact_wechat || null, data.city || null, data.industry || null,
+     data.account_type || 'creator', data.remark || null]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新客户（SQL 带 owner_user_id 约束：越权返回 0 行） */
+export async function updateXhsCustomer(id: number, ownerUserId: number, data: Record<string, any>): Promise<number> {
+  const allowed = ['name', 'contact_name', 'contact_phone', 'contact_wechat', 'city', 'industry', 'account_type', 'remark', 'is_active'];
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = $${idx++}`);
+      values.push(data[key]);
+    }
+  }
+  if (fields.length === 0) return 0;
+  fields.push('update_time = NOW()');
+  values.push(id, ownerUserId);
+  const result = await query(
+    `UPDATE xhs_customer SET ${fields.join(', ')} WHERE id = $${idx++} AND owner_user_id = $${idx}`,
+    values
+  );
+  return result.rowCount || 0;
+}
+
+export async function deleteXhsCustomer(id: number, ownerUserId: number): Promise<number> {
+  const result = await query('DELETE FROM xhs_customer WHERE id = $1 AND owner_user_id = $2', [id, ownerUserId]);
+  return result.rowCount || 0;
+}
+
+/** 统计客户下的关联数据（删除前校验） */
+export async function countXhsCustomerRefs(customerId: number): Promise<{ knowledge: number; notes: number }> {
+  const result = await query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM xhs_knowledge WHERE xhs_customer_id = $1) AS knowledge,
+       (SELECT COUNT(*)::int FROM xhs_note_meta WHERE xhs_customer_id = $1) AS notes`,
+    [customerId]
+  );
+  const row = result.rows[0] || { knowledge: 0, notes: 0 };
+  return { knowledge: Number(row.knowledge || 0), notes: Number(row.notes || 0) };
+}
+
+// ---------- 知识库 ----------
+
+export async function getXhsKnowledges(customerId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT * FROM xhs_knowledge
+      WHERE xhs_customer_id = $1 AND is_active = true
+      ORDER BY create_time ASC, id ASC`,
+    [customerId]
+  );
+  return result.rows;
+}
+
+export async function getXhsKnowledgeById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM xhs_knowledge WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function createXhsKnowledge(data: Record<string, any>): Promise<number> {
+  const result = await query(
+    `INSERT INTO xhs_knowledge
+       (xhs_customer_id, owner_user_id, name, company_full_name, company_short_name, city, address, industry,
+        founded_year, business_scope, entity_triples, intro_text, cases_text,
+        products_services, product_features, user_pain_points, trust_endorsement, other_info)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16, $17, $18)
+     RETURNING id`,
+    [data.xhs_customer_id, data.owner_user_id, data.name || null, data.company_full_name,
+     data.company_short_name || null, data.city || null, data.address || null, data.industry || null,
+     data.founded_year || null, data.business_scope || null,
+     JSON.stringify(data.entity_triples || []),
+     data.intro_text || null, data.cases_text || null,
+     data.products_services || null, data.product_features || null, data.user_pain_points || null,
+     data.trust_endorsement || null, data.other_info || null]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新知识库（SQL 带 owner_user_id 约束） */
+export async function updateXhsKnowledge(id: number, ownerUserId: number, data: Record<string, any>): Promise<number> {
+  const allowed = ['name', 'company_full_name', 'company_short_name', 'city', 'address', 'industry',
+                   'founded_year', 'business_scope', 'entity_triples', 'intro_text', 'cases_text',
+                   'products_services', 'product_features', 'user_pain_points', 'trust_endorsement', 'other_info', 'is_active'];
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      if (key === 'entity_triples') {
+        fields.push(`${key} = $${idx++}::jsonb`);
+        values.push(JSON.stringify(data[key] || []));
+      } else {
+        fields.push(`${key} = $${idx++}`);
+        values.push(data[key]);
+      }
+    }
+  }
+  if (fields.length === 0) return 0;
+  fields.push('update_time = NOW()');
+  values.push(id, ownerUserId);
+  const result = await query(
+    `UPDATE xhs_knowledge SET ${fields.join(', ')} WHERE id = $${idx++} AND owner_user_id = $${idx}`,
+    values
+  );
+  return result.rowCount || 0;
+}
+
+export async function deleteXhsKnowledge(id: number, ownerUserId: number): Promise<number> {
+  const result = await query('DELETE FROM xhs_knowledge WHERE id = $1 AND owner_user_id = $2', [id, ownerUserId]);
+  return result.rowCount || 0;
+}
+
+/** 统计知识库下的关联数据（图库数 / 引用它的任务数） */
+export async function countXhsKnowledgeRefs(knowledgeId: number): Promise<{ images: number; tasks: number }> {
+  const result = await query(
+    `SELECT
+       (SELECT COUNT(*)::int FROM xhs_image WHERE xhs_knowledge_id = $1) AS images,
+       (SELECT COUNT(*)::int FROM ai_writing_task WHERE xhs_knowledge_id = $1) AS tasks`,
+    [knowledgeId]
+  );
+  const row = result.rows[0] || { images: 0, tasks: 0 };
+  return { images: Number(row.images || 0), tasks: Number(row.tasks || 0) };
+}
+
+// ---------- 图库 ----------
+
+export async function getXhsImages(customerId: number, knowledgeId?: number | null, imageType?: string): Promise<any[]> {
+  const where: string[] = ['xhs_customer_id = $1'];
+  const params: any[] = [customerId];
+  let idx = 2;
+  if (knowledgeId) {
+    where.push(`xhs_knowledge_id = $${idx++}`);
+    params.push(knowledgeId);
+  }
+  if (imageType) {
+    where.push(`image_type = $${idx++}`);
+    params.push(imageType);
+  }
+  const result = await query(
+    `SELECT * FROM xhs_image WHERE ${where.join(' AND ')}
+      ORDER BY sort_order ASC, id DESC`,
+    params
+  );
+  return result.rows;
+}
+
+export async function getXhsImageById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM xhs_image WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function createXhsImage(data: Record<string, any>): Promise<number> {
+  const result = await query(
+    `INSERT INTO xhs_image
+       (xhs_customer_id, xhs_knowledge_id, owner_user_id, image_type, url, file_path,
+        original_name, file_size, mime_type, width, height, description, tags, sort_order, source, prompt)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+     RETURNING id`,
+    [data.xhs_customer_id, data.xhs_knowledge_id || null, data.owner_user_id, data.image_type, data.url,
+     data.file_path || null, data.original_name || null, data.file_size || null, data.mime_type || null,
+     data.width || null, data.height || null, data.description || null, data.tags || [],
+     data.sort_order || 0, data.source || 'upload', data.prompt || null]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新图库记录（SQL 带 owner_user_id 约束） */
+export async function updateXhsImage(id: number, ownerUserId: number, data: Record<string, any>): Promise<number> {
+  const allowed = ['image_type', 'description', 'tags', 'sort_order', 'xhs_knowledge_id'];
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = $${idx++}`);
+      values.push(data[key]);
+    }
+  }
+  if (fields.length === 0) return 0;
+  fields.push('update_time = NOW()');
+  values.push(id, ownerUserId);
+  const result = await query(
+    `UPDATE xhs_image SET ${fields.join(', ')} WHERE id = $${idx++} AND owner_user_id = $${idx}`,
+    values
+  );
+  return result.rowCount || 0;
+}
+
+export async function deleteXhsImage(id: number, ownerUserId: number): Promise<number> {
+  const result = await query('DELETE FROM xhs_image WHERE id = $1 AND owner_user_id = $2', [id, ownerUserId]);
+  return result.rowCount || 0;
+}
+
+/** 随机取图（生成笔记时用；只按客户 + 类型，可选限定知识库） */
+export async function getRandomXhsImages(customerId: number, imageType: string, count: number, knowledgeId?: number | null): Promise<any[]> {
+  if (count <= 0) return [];
+  const params: any[] = [customerId, imageType];
+  let sql = `SELECT * FROM xhs_image WHERE xhs_customer_id = $1 AND image_type = $2`;
+  if (knowledgeId) {
+    params.push(knowledgeId);
+    sql += ` AND xhs_knowledge_id = $3`;
+  }
+  params.push(count);
+  sql += ` ORDER BY RANDOM() LIMIT $${params.length}`;
+  const result = await query(sql, params);
+  return result.rows;
+}
+
+/**
+ * 按笔记 id 找出它所属客户（供生成/发布链路复用）
+ */
+export async function getXhsNoteCustomerId(articleId: number): Promise<number | null> {
+  const result = await query('SELECT xhs_customer_id FROM xhs_note_meta WHERE article_id = $1', [articleId]);
+  return result.rows[0]?.xhs_customer_id ?? null;
 }
 
