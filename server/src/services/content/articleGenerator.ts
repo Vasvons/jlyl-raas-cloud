@@ -33,6 +33,7 @@ import {
   getAllActiveManualRules,
   updateArticleComplianceStatus,
   upsertXhsNoteMeta,
+  getTaskWritingSystem,
 } from '../../repository';
 import { decrypt } from '../../utils/crypto';
 import crypto from 'crypto';
@@ -920,6 +921,16 @@ ${rulesBlock}
 export async function executeWritingTask(taskId: number, userId: number): Promise<void> {
   // 整个函数主体包在 try-catch 中，任何异常都标记任务失败，避免卡在 'processing'
   try {
+    // v3.y：按 writing_system 分派到不同生成内核。
+    //   小红书图文写作系统是独立内核（services/xhs/**），与本文件的 GEO 逻辑零共享；
+    //   这里只做一次分派，GEO 侧 5 个强制注入函数一行不改。
+    //   见 docs/superpowers/specs/2026-10-02-xhs-writing-system-design.md §10
+    const system = await getTaskWritingSystem(taskId);
+    if (system === 'xhs') {
+      const { executeXhsWritingTask } = await import('../xhs/xhsNoteGenerator');
+      await executeXhsWritingTask(taskId, userId);
+      return;
+    }
     await executeWritingTaskInner(taskId, userId);
   } catch (err: any) {
     console.error(`[ArticleGen] 任务 ${taskId} 执行异常:`, err);
