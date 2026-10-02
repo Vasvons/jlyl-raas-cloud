@@ -286,6 +286,11 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
         image_ids: illuImgs.map((r: any) => Number(r.id)),
         topics: topicsOut,
         xhs_customer_id: Number(task.xhs_customer_id) || null,
+        // v2.12.0 P4：从写作指令的快照账号类型（蓝V官号/种草达人）落到笔记上，
+        // 发布取号时据此只在同类型的账号池里取号（NULL = 不限类型，兼容历史笔记）
+        xhs_account_type: ['brand', 'creator'].includes(String(task.account_type))
+          ? (String(task.account_type) as 'brand' | 'creator')
+          : null,
       });
 
       // 4.5 配图脚本（单独更新，upsert 白名单不含该字段）

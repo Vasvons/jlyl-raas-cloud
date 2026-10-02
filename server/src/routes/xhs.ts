@@ -23,6 +23,7 @@ import {
   getXhsCustomers, getXhsCustomerById, createXhsCustomer, updateXhsCustomer, deleteXhsCustomer, countXhsCustomerRefs,
   getXhsKnowledges, getXhsKnowledgeById, createXhsKnowledge, updateXhsKnowledge, deleteXhsKnowledge, countXhsKnowledgeRefs,
   getXhsImages, getXhsImageById, createXhsImage, updateXhsImage, deleteXhsImage,
+  countAvailableXhsPublishAccounts,
 } from '../repository';
 
 const router = Router();
@@ -439,6 +440,10 @@ router.put('/notes/:id', async (req: Request, res: Response) => {
       cover_image_id: coverImageId ?? body.cover_image_id,
       image_ids: Array.isArray(body.image_ids) ? body.image_ids.map((x: any) => Number(x)) : undefined,
       topics: Array.isArray(body.topics) ? body.topics.map((x: any) => String(x)) : undefined,
+      // v2.12.0 P4：允许把历史笔记补标记为蓝V官号/种草达人（发布取号据此匹配同类型账号池）
+      xhs_account_type: ['brand', 'creator'].includes(String(body.xhs_account_type))
+        ? (String(body.xhs_account_type) as 'brand' | 'creator')
+        : undefined,
     });
 
     const updated = await getXhsNoteDetail(articleId);
@@ -470,6 +475,30 @@ router.post('/notes/:id/publish', async (req: Request, res: Response) => {
       target_platforms: ['xhs'],
       scheduled_at: scheduledAt,
     });
+
+    // v2.12.0 P4：类型匹配预检——笔记所属客户若没有该类型的可用账号，提前告知
+    // （发布记录仍会创建并保持 pending，补号/恢复健康后自动发布）
+    try {
+      const noteDetail = await getXhsNoteDetail(articleId);
+      const xhsCustomerId = noteDetail?.xhs_customer_id != null ? Number(noteDetail.xhs_customer_id) : null;
+      if (xhsCustomerId) {
+        const typeRaw = String(noteDetail?.xhs_account_type || '');
+        const type = ['brand', 'creator'].includes(typeRaw) ? (typeRaw as 'brand' | 'creator') : null;
+        const avail = await countAvailableXhsPublishAccounts(xhsCustomerId, type);
+        if (avail === 0) {
+          const typeText = type === 'brand' ? '蓝V官号' : type === 'creator' ? '种草达人' : '';
+          result.skipped.push({
+            platform: 'xhs',
+            reason: type
+              ? `该客户暂无「${typeText}」类型的可用发布账号，笔记将保持待发布，请在「账号与素材 → 小红书发布账号」添加或恢复该类型账号`
+              : '该客户暂无可用的发布账号，笔记将保持待发布，请先在「账号与素材 → 小红书发布账号」添加账号',
+          });
+        }
+      }
+    } catch (e: any) {
+      console.warn('[Xhs] 发布账号预检失败（不影响任务创建）:', e?.message);
+    }
+
     res.json({ code: 200, data: result });
   } catch (e: any) {
     console.error('[Xhs] 创建发布任务失败:', e.message);

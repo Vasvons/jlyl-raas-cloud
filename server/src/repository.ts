@@ -7876,9 +7876,25 @@ async function selectBestAccountForPublish(
    */
   isXhs: boolean = false,
   xhsCustomerId?: number | null,
+  /**
+   * v2.12.0 P4：小红书账号类型匹配（来自笔记 `xhs_note_meta.xhs_account_type`）。
+   *  - 传 `brand` / `creator`：只在该客户同类型的账号池里取号（蓝V笔记只投蓝V号）
+   *  - 不传（null/undefined，历史笔记无法判定）：该客户内不限类型，保持旧行为
+   */
+  xhsAccountType?: 'brand' | 'creator' | null,
 ): Promise<number | null> {
-  const scopeSql = isXhs ? `AND xhs_customer_id = $2` : `AND xhs_customer_id IS NULL`;
-  const params: any[] = isXhs ? [platform, xhsCustomerId ?? null] : [platform];
+  const params: any[] = [platform];
+  let scopeSql = '';
+  if (isXhs) {
+    params.push(xhsCustomerId ?? null);
+    scopeSql += ` AND xhs_customer_id = $${params.length}`;
+    if (xhsAccountType) {
+      params.push(xhsAccountType);
+      scopeSql += ` AND xhs_account_type = $${params.length}`;
+    }
+  } else {
+    scopeSql += ` AND xhs_customer_id IS NULL`;
+  }
   const result = await client.query(
     `SELECT id FROM platform_auth
      WHERE platform = $1
@@ -7958,27 +7974,31 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
     //    修复：候选改为取所有有 pending 的平台（每平台 1 条），循环里跳过无账号的继续尝试。
     //    v2.5.36：支持按 agent_user_id 路由（混合模式 worker 分布式架构）
     //    v2.12.0 P4：候选按「平台 + 账号池归属」分组（小红书任务只在自己的客户账号池里取号）
+    //    v2.12.0 P4+：分组再叠加「笔记账号类型」——蓝V笔记与种草笔记各自独立候选，
+    //                 不会互相抢占名额，也不会串投到另一个类型的账号池
     const candidateResult = await client.query(
       `WITH candidate AS (
          SELECT pr.id, pr.platform,
                 CASE WHEN COALESCE(t.writing_system, 'geo') = 'xhs' THEN true ELSE false END AS is_xhs,
-                CASE WHEN COALESCE(t.writing_system, 'geo') = 'xhs' THEN t.xhs_customer_id ELSE NULL END AS xhs_cust
+                CASE WHEN COALESCE(t.writing_system, 'geo') = 'xhs' THEN t.xhs_customer_id ELSE NULL END AS xhs_cust,
+                CASE WHEN COALESCE(t.writing_system, 'geo') = 'xhs' THEN m.xhs_account_type ELSE NULL END AS xhs_type
          FROM publish_record pr
          JOIN publish_task pt ON pt.id = pr.task_id
          LEFT JOIN article a ON a.id = pt.article_id
          LEFT JOIN ai_writing_task t ON t.id = a.task_id
+         LEFT JOIN xhs_note_meta m ON m.article_id = a.id
          WHERE pr.status = 'pending'
            AND pt.status IN ('pending', 'processing')
            AND (pt.scheduled_at IS NULL OR pt.scheduled_at <= NOW())
            ${agentUserId ? 'AND pt.user_id = $2' : ''}
        ),
        ranked AS (
-         SELECT c.id, c.platform, c.is_xhs, c.xhs_cust,
-                ROW_NUMBER() OVER (PARTITION BY c.platform, c.is_xhs, c.xhs_cust ORDER BY c.id) as rn
+         SELECT c.id, c.platform, c.is_xhs, c.xhs_cust, c.xhs_type,
+                ROW_NUMBER() OVER (PARTITION BY c.platform, c.is_xhs, c.xhs_cust, c.xhs_type ORDER BY c.id) as rn
          FROM candidate c
        )
        -- v2.5.33：统计可用账号数（与 selectBestAccountForPublish 条件一致），按可用账号数降序优先
-       SELECT r.id, r.platform, r.is_xhs, r.xhs_cust,
+       SELECT r.id, r.platform, r.is_xhs, r.xhs_cust, r.xhs_type,
               (SELECT COUNT(*) FROM platform_auth pa
                 WHERE pa.platform = r.platform
                   AND pa.platform_type IN ('publish', 'both')
@@ -7991,7 +8011,8 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
                     OR pa.publish_used_today < pa.publish_daily_limit
                   )
                   AND (
-                    (r.is_xhs AND pa.xhs_customer_id = r.xhs_cust)
+                    (r.is_xhs AND pa.xhs_customer_id = r.xhs_cust
+                      AND (r.xhs_type IS NULL OR pa.xhs_account_type = r.xhs_type))
                     OR (NOT r.is_xhs AND pa.xhs_customer_id IS NULL)
                   )
               ) AS avail_count
@@ -8006,12 +8027,15 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
       return [];
     }
 
-    // 记录每条候选的账号池归属，供加锁后取号使用
-    const scopeMap = new Map<number, { isXhs: boolean; xhsCustomerId: number | null }>();
+    // 记录每条候选的账号池归属（客户 + 笔记账号类型），供加锁后取号使用
+    const scopeMap = new Map<number, { isXhs: boolean; xhsCustomerId: number | null; xhsAccountType: 'brand' | 'creator' | null }>();
     for (const r of candidateResult.rows) {
       scopeMap.set(Number(r.id), {
         isXhs: !!r.is_xhs,
         xhsCustomerId: r.xhs_cust != null ? Number(r.xhs_cust) : null,
+        xhsAccountType: ['brand', 'creator'].includes(String(r.xhs_type))
+          ? (String(r.xhs_type) as 'brand' | 'creator')
+          : null,
       });
     }
 
@@ -8032,9 +8056,9 @@ export async function getPendingPublishRecords(limit: number, agentUserId?: numb
     const assignedIds: number[] = [];
     for (const row of lockedResult.rows) {
       if (assignedIds.length >= limit) break;  // v3.7.11：达到 limit 后停止
-      // v2.12.0 P4：按该记录的账号池归属取号（小红书任务只用自己的客户账号池）
-      const scope = scopeMap.get(Number(row.id)) || { isXhs: false, xhsCustomerId: null };
-      const authId = await selectBestAccountForPublish(client, row.platform, scope.isXhs, scope.xhsCustomerId);
+      // v2.12.0 P4：按该记录的账号池归属取号（小红书任务只用自己的客户账号池，并按笔记类型匹配同类型账号）
+      const scope = scopeMap.get(Number(row.id)) || { isXhs: false, xhsCustomerId: null, xhsAccountType: null };
+      const authId = await selectBestAccountForPublish(client, row.platform, scope.isXhs, scope.xhsCustomerId, scope.xhsAccountType);
       if (!authId) {
         // 无可用账号：保持 pending，本次不拉取，继续尝试下一个候选
         continue;
@@ -9030,6 +9054,40 @@ export async function createPublishAccount(data: {
   return result.rows[0].id;
 }
 
+/**
+ * v2.12.0 P4：统计某小红书客户「可用」的发布账号数（可按账号类型过滤）。
+ * 与 selectBestAccountForPublish 的条件一致，用于发布前给出「账号池为空」的提前提示，
+ * 避免笔记进入 pending 后长时间无声等待。
+ */
+export async function countAvailableXhsPublishAccounts(
+  xhsCustomerId: number,
+  xhsAccountType?: 'brand' | 'creator' | null,
+): Promise<number> {
+  const params: any[] = [xhsCustomerId];
+  let typeSql = '';
+  if (xhsAccountType) {
+    params.push(xhsAccountType);
+    typeSql = ` AND xhs_account_type = $${params.length}`;
+  }
+  const result = await query(
+    `SELECT COUNT(*)::int AS cnt FROM platform_auth
+      WHERE platform = 'xhs'
+        AND platform_type IN ('publish', 'both')
+        AND status = 'active'
+        AND health_status = 'normal'
+        AND publish_fail_count < 3
+        AND (
+          publish_last_used_date IS NULL
+          OR publish_last_used_date < CURRENT_DATE
+          OR publish_used_today < publish_daily_limit
+        )
+        AND xhs_customer_id = $1
+        ${typeSql}`,
+    params
+  );
+  return Number(result.rows[0]?.cnt || 0);
+}
+
 export async function updatePublishAccountStorageState(id: number, storageState: any, expiresAt?: string): Promise<void> {
   await query(
     `UPDATE platform_auth
@@ -9919,14 +9977,16 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
   image_ids?: number[];
   topics?: string[];
   xhs_customer_id?: number | null;
+  /** v2.12.0 P4：笔记对应的账号类型（生成时从写作指令 account_type 快照），发布取号据此匹配同类型账号池 */
+  xhs_account_type?: 'brand' | 'creator' | null;
 }): Promise<void> {
   await query(
     `INSERT INTO xhs_note_meta
-       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id)
+       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id, xhs_account_type)
      VALUES ($1, $2, $3, $4, $5, $6,
              COALESCE($7::jsonb, '[]'::jsonb),
              COALESCE($8::jsonb, '[]'::jsonb),
-             $9)
+             $9, $10)
      ON CONFLICT (article_id) DO UPDATE SET
        note_style        = COALESCE(EXCLUDED.note_style, xhs_note_meta.note_style),
        cover_template_id = COALESCE(EXCLUDED.cover_template_id, xhs_note_meta.cover_template_id),
@@ -9935,6 +9995,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
        image_ids         = COALESCE(EXCLUDED.image_ids, xhs_note_meta.image_ids),
        topics            = COALESCE(EXCLUDED.topics, xhs_note_meta.topics),
        xhs_customer_id   = COALESCE(EXCLUDED.xhs_customer_id, xhs_note_meta.xhs_customer_id),
+       xhs_account_type  = COALESCE(EXCLUDED.xhs_account_type, xhs_note_meta.xhs_account_type),
        update_time       = NOW()`,
     [
       articleId,
@@ -9946,6 +10007,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
       data.image_ids !== undefined ? JSON.stringify(data.image_ids) : null,
       data.topics !== undefined ? JSON.stringify(data.topics) : null,
       data.xhs_customer_id ?? null,
+      data.xhs_account_type ?? null,
     ]
   );
 }
@@ -9977,7 +10039,7 @@ export async function getXhsNotes(
     `SELECT a.id, a.user_id, a.title, a.core_keyword, a.word_count, a.status,
             a.cover_image_url, a.tags, a.create_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
-            m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id,
+            m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id, m.xhs_account_type,
             (SELECT COUNT(*)::int FROM publish_record r
                JOIN publish_task t ON t.id = r.task_id
               WHERE r.platform = 'xhs' AND t.article_id = a.id AND r.status = 'success') AS publish_success_count,
@@ -10000,7 +10062,7 @@ export async function getXhsNoteDetail(articleId: number): Promise<any | null> {
     `SELECT a.id, a.user_id, a.title, a.content_html, a.core_keyword, a.word_count, a.status,
             a.cover_image_url, a.tags, a.model_used, a.create_time, a.update_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
-            m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id,
+            m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id, m.xhs_account_type,
             (SELECT t.xhs_knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS xhs_knowledge_id,
             (SELECT t.xhs_knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS knowledge_id
        FROM article a

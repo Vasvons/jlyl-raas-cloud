@@ -3758,6 +3758,11 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_pa_xhs_customer_type ON platform_auth(xhs_customer_id, xhs_account_type)`);
     // 7. 客户不再有「主推账号类型」——账号类型归属到具体账号（见第 6 项），删除历史列
     await client.query(`ALTER TABLE xhs_customer DROP COLUMN IF EXISTS account_type`);
+
+    // 8. 笔记记录自己的账号类型（生成时从写作指令 account_type 快照），发布取号据此匹配同类型账号池
+    //    NULL = 历史笔记/无法判定 → 取号时不做类型限制（兼容旧数据）
+    await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS xhs_account_type VARCHAR(16)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_note_meta_acct_type ON xhs_note_meta(xhs_account_type)`);
     console.log('[Migrate] v3.z 小红书 P4 独立客户体系表创建/验证完成（xhs_customer / xhs_knowledge / xhs_image + 6 列）');
 
     console.log('[Migrate] 数据库迁移完成');
