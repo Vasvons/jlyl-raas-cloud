@@ -1,6 +1,6 @@
 {
   "platform": "xhs",
-  "version": "2.0.9",
+  "version": "2.0.10",
   "description": "小红书图文发布流程（基于 red.pyc 反编译的真实确定性步骤 + AI 兜底）",
   "is_placeholder": false,
   "login_check_url": "https://creator.xiaohongshu.com/publish/publish?from=menu",
@@ -36,8 +36,15 @@
       "type": "input_files",
       "selector": "//input[@type='file']",
       "files": ["{cover_image_url}", "{image_urls}"],
-      "descript": "上传图片（封面 + 笔记内页配图，v2.0.9 支持多图图文；{image_urls} 为空时仅传封面）",
+      "descript": "上传图片（封面 + 笔记内页配图，v2.0.10 支持多图图文；{image_urls} 为空时仅传封面）",
       "timeout": 30000
+    },
+    {
+      "type": "evaluate_edit",
+      "value": "var start = Date.now(); var clearStreak = 0; while (Date.now() - start < 30000) { var busy = document.querySelectorAll('[class*=\"progress\"], [class*=\"uploading\"], [class*=\"upload-progress\"]').length > 0; var thumbs = document.querySelectorAll('img[src*=\"creator-media-private\"]').length; if (!busy) { clearStreak++; if (thumbs > 0 && clearStreak >= 2) { return 'uploads settled: thumbs=' + thumbs; } if (clearStreak >= 8) { return 'no progress for 4s: thumbs=' + thumbs; } } else { clearStreak = 0; } await new Promise(function(r) { setTimeout(r, 500); }); } return 'settle wait timeout (30s)';",
+      "descript": "v2.0.10 等待全部图片上传完成（多图图文：进度条消失且缩略图稳定；单图约 1-4 秒通过）",
+      "is_try": true,
+      "timeout": 35000
     },
     {
       "type": "evaluate_edit",
