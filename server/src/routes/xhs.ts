@@ -370,7 +370,10 @@ router.get('/notes', async (req: Request, res: Response) => {
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 20));
     const xhsCustomerId = req.query.xhs_customer_id ? Number(req.query.xhs_customer_id) : null;
-    const data = await getXhsNotes(uid, page, pageSize, xhsCustomerId);
+    // v2.13.5 双内容形态过滤：'note' 笔记 / 'card' 图文（不传 = 全部）
+    const contentForm = req.query.content_form === 'card' ? 'card'
+      : (req.query.content_form === 'note' ? 'note' : null);
+    const data = await getXhsNotes(uid, page, pageSize, xhsCustomerId, contentForm);
     res.json({ code: 200, data });
   } catch (e: any) {
     console.error('[Xhs] 笔记列表失败:', e.message);
@@ -679,6 +682,8 @@ router.post('/notes/generate', async (req: Request, res: Response) => {
       cover_image_mode: b.cover_image_mode || 'random',
       cover_image_id: b.cover_image_id || null,
       illustration_count: Number(b.illustration_count) || 0,
+      // v2.13.5 双内容形态：'note' 笔记（文章+图库配图）/ 'card' 图文（文章做成图片，生成后进卡片设计器）
+      content_form: b.content_form === 'card' ? 'card' : 'note',
       target_platforms: ['xhs'],
     });
 

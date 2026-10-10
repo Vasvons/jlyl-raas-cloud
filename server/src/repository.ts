@@ -6565,8 +6565,8 @@ export async function createWritingTask(data: any): Promise<number> {
             model_config_id, generation_mode, agent_profile_id, status, total_count, started_at,
             cover_image_mode, cover_image_id, illustration_count, target_platforms, auto_generated, aeo_context,
             focus_cities, focus_keyword_weights, content_types, random_mode,
-            writing_system, xhs_instruction_id, xhs_customer_id, xhs_knowledge_id, xhs_topics)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+            writing_system, xhs_instruction_id, xhs_customer_id, xhs_knowledge_id, xhs_topics, content_form)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
      data.model_config_id || null, data.generation_mode || 'expert', data.agent_profile_id || null,
@@ -6582,7 +6582,9 @@ export async function createWritingTask(data: any): Promise<number> {
      // v3.y/v3.z：写作体系与小红书归属
      data.writing_system || 'geo', data.xhs_instruction_id || null,
      data.xhs_customer_id || null, data.xhs_knowledge_id || null,
-     JSON.stringify(Array.isArray(data.xhs_topics) ? data.xhs_topics : [])]
+     JSON.stringify(Array.isArray(data.xhs_topics) ? data.xhs_topics : []),
+     // v2.13.5 双内容形态：'note' 笔记（文章+图库配图）/ 'card' 图文（文章做成图片）
+     data.content_form === 'card' ? 'card' : 'note']
   );
   return result.rows[0].id;
 }
@@ -9988,14 +9990,16 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
   xhs_account_type?: 'brand' | 'creator' | null;
   /** v2.13.0 图文卡片：整套卡片集设计稿 { version: 1, pages: [{ id, design }] } */
   card_designs?: Record<string, any> | null;
+  /** v2.13.5 双内容形态：'note' 笔记（文章+图库配图）/ 'card' 图文（文章做成图片） */
+  content_form?: 'note' | 'card' | null;
 }): Promise<void> {
   await query(
     `INSERT INTO xhs_note_meta
-       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id, xhs_account_type, card_designs)
+       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id, xhs_account_type, card_designs, content_form)
      VALUES ($1, $2, $3, $4, $5, $6,
              COALESCE($7::jsonb, '[]'::jsonb),
              COALESCE($8::jsonb, '[]'::jsonb),
-             $9, $10, $11::jsonb)
+             $9, $10, $11::jsonb, COALESCE($12, 'note'))
      ON CONFLICT (article_id) DO UPDATE SET
        note_style        = COALESCE(EXCLUDED.note_style, xhs_note_meta.note_style),
        cover_template_id = COALESCE(EXCLUDED.cover_template_id, xhs_note_meta.cover_template_id),
@@ -10006,6 +10010,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
        xhs_customer_id   = COALESCE(EXCLUDED.xhs_customer_id, xhs_note_meta.xhs_customer_id),
        xhs_account_type  = COALESCE(EXCLUDED.xhs_account_type, xhs_note_meta.xhs_account_type),
        card_designs      = COALESCE(EXCLUDED.card_designs, xhs_note_meta.card_designs),
+       content_form      = COALESCE(EXCLUDED.content_form, xhs_note_meta.content_form),
        update_time       = NOW()`,
     [
       articleId,
@@ -10019,6 +10024,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
       data.xhs_customer_id ?? null,
       data.xhs_account_type ?? null,
       data.card_designs != null ? JSON.stringify(data.card_designs) : null,
+      data.content_form === 'card' || data.content_form === 'note' ? data.content_form : null,
     ]
   );
 }
@@ -10035,6 +10041,8 @@ export async function getXhsNotes(
   pageSize: number = 20,
   /** v3.z：按小红书客户过滤（不传则返回该运营者全部笔记，含历史无客户数据） */
   xhsCustomerId?: number | null,
+  /** v2.13.5 双内容形态过滤：'note' 笔记 / 'card' 图文（不传 = 全部；历史数据 NULL 按 'note' 处理） */
+  contentForm?: 'note' | 'card' | null,
 ): Promise<{ list: any[]; total: number }> {
   const offset = (Math.max(1, page) - 1) * pageSize;
   const params: any[] = [userId];
@@ -10044,6 +10052,10 @@ export async function getXhsNotes(
     where.push(`m.xhs_customer_id = $${idx++}`);
     params.push(xhsCustomerId);
   }
+  if (contentForm === 'note' || contentForm === 'card') {
+    where.push(`COALESCE(m.content_form, 'note') = $${idx++}`);
+    params.push(contentForm);
+  }
   const whereClause = `WHERE ${where.join(' AND ')}`;
   const countResult = await query(`SELECT COUNT(*)::int AS total FROM xhs_note_meta m ${whereClause}`, params);
   const result = await query(
@@ -10051,6 +10063,7 @@ export async function getXhsNotes(
             a.cover_image_url, a.tags, a.create_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
             m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id, m.xhs_account_type,
+            COALESCE(m.content_form, 'note') AS content_form,
             m.card_designs,
             (SELECT COUNT(*)::int FROM publish_record r
                JOIN publish_task t ON t.id = r.task_id
@@ -10075,6 +10088,7 @@ export async function getXhsNoteDetail(articleId: number): Promise<any | null> {
             a.cover_image_url, a.tags, a.model_used, a.create_time, a.update_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
             m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id, m.xhs_account_type,
+            COALESCE(m.content_form, 'note') AS content_form,
             m.card_designs,
             (SELECT t.xhs_knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS xhs_knowledge_id,
             (SELECT t.xhs_knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS knowledge_id

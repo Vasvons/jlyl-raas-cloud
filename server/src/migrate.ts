@@ -3465,7 +3465,13 @@ export async function migrate() {
 
     // 3. 笔记元数据加配图脚本
     await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS image_script JSONB DEFAULT '[]'`);
-    console.log('[Migrate] v3.y 小红书写作系统表创建/验证完成（xhs_writing_instruction + ai_writing_task 两列 + xhs_note_meta.image_script）');
+
+    // 3.1 v2.13.5 双内容形态：content_form = 'note'（笔记：文章 + 企业图库配图）/ 'card'（图文：文章直接做成图片）
+    //   生成时选定，落库到任务与笔记；两种账号类型（蓝V/达人）均可选择任一形态
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS content_form VARCHAR(16) DEFAULT 'note'`);
+    await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS content_form VARCHAR(16) DEFAULT 'note'`);
+
+    console.log('[Migrate] v3.y 小红书写作系统表创建/验证完成（xhs_writing_instruction + ai_writing_task 两列 + xhs_note_meta.image_script + 双形态 content_form）');
 
     // 4. 两条平台预设写作指令（user_id IS NULL = 所有客户可用）
     // 注意：不能用 `INSERT ... SELECT $1` 的写法（SELECT 作数据源时参数类型无法推断），

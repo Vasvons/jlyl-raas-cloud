@@ -285,6 +285,8 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
         cover_image_id: coverImg?.id ?? null,
         image_ids: illuImgs.map((r: any) => Number(r.id)),
         topics: topicsOut,
+        // v2.13.5 双内容形态：随任务落库（'note' 笔记 / 'card' 图文），列表按形态分栏
+        content_form: task.content_form === 'card' ? 'card' : 'note',
         xhs_customer_id: Number(task.xhs_customer_id) || null,
         // v2.12.0 P4：从写作指令的快照账号类型（蓝V官号/种草达人）落到笔记上，
         // 发布取号时据此只在同类型的账号池里取号（NULL = 不限类型，兼容历史笔记）
