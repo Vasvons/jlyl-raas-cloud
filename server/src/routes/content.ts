@@ -2438,6 +2438,31 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
         const stepList = await getStepListByPlatform(r.platform);
         await markPublishRecordStarted(r.id);
 
+        // v2.13.2：小红书图文多图发布 —— 附上笔记内页配图（xhs_note_meta.image_ids → xhs_image.url，保持顺序）
+        //   封面单独走 article.cover_image_url（input_files 第一张）；内页由 step_list 中 {image_urls} 展开上传。
+        //   无内页时为空数组 → 仅传封面，行为与旧版一致。
+        let innerImages: string[] = [];
+        try {
+          const metaResult = await query(`SELECT image_ids FROM xhs_note_meta WHERE article_id = $1`, [r.article_id]);
+          const idsRaw = metaResult.rows[0]?.image_ids;
+          const ids: number[] = Array.isArray(idsRaw)
+            ? idsRaw.map((x: any) => Number(x)).filter((n) => Number.isFinite(n) && n > 0)
+            : [];
+          if (ids.length > 0) {
+            const imgResult = await query(`SELECT id, url FROM xhs_image WHERE id = ANY($1::int[])`, [ids]);
+            const urlById = new Map<number, string>(
+              imgResult.rows.map((row: any) => [Number(row.id), String(row.url)])
+            );
+            innerImages = ids.map((id) => urlById.get(id)).filter((u): u is string => Boolean(u));
+            // 与封面重复的图不重复上传（封面在前，内页只补其余）
+            if (r.article_cover) innerImages = innerImages.filter((u) => u !== r.article_cover);
+            // 小红书单篇图片上限 18 张（含封面），内页最多 17 张
+            innerImages = innerImages.slice(0, 17);
+          }
+        } catch (e: any) {
+          console.error(`[Publish] record ${r.id} 读取笔记内页配图失败:`, e.message);
+        }
+
         // 查询账号绑定的代理信息（Phase 2：代理池）
         let accountProxy: any = null;
         if (r.platform_auth_id) {
@@ -2486,6 +2511,8 @@ router.get('/publish/records/dequeue', async (req: Request, res: Response) => {
             tags: r.article_tags ? (typeof r.article_tags === 'string' ? JSON.parse(r.article_tags) : r.article_tags) : [],
             // v1.8.4：cover_image_url 兜底——若文章无封面图，从 image_library 取该客户第一张封面图
             cover_image_url: r.article_cover || await getFallbackCoverImage(r.article_id),
+            // v2.13.2：内页配图（有序，不含封面）——小红书图文多发用（step_list 的 {image_urls} 展开）
+            images: innerImages,
           },
           scheduled_at: r.scheduled_at,
           step_list: stepList ? {
