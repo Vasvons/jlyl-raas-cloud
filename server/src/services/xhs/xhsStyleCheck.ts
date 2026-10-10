@@ -20,6 +20,10 @@ const AI_WORD_HITS = /值得一提|不难发现|堪称|不失为|与此同时|�
 const AI_PATTERN_HITS = /不只是[^。]{0,14}更是|不仅[^。]{0,14}而且|让我们一起|希望能帮到|希望这篇|愿你/g;
 /** 空泛程度副词 */
 const VAGUE_ADVERBS = /非常|十分|极其/g;
+/** 平台风险 / 夸大词（v2.13.11）：导流、诱导互动、种草夸大词 */
+const HYPE_RISK_WORDS = /绝绝子|yyds|YYDS|闭眼入|闭眼冲|必入|评论区扣\d|一键三连|点赞收藏关注|加微信|微信号|加V|VX|淘宝|天猫|京东|二维码/g;
+/** 「emoji + 短标签」式小标题（📍🧠💡 这类 AI 腔分节标题） */
+const EMOJI_HEADING_LINE = /^(?:📍|🧠|💡|📌|🔖|🛠️|💬|🎯|📚|🔥|🌟|✨)\s*[^：:。！？!?\n]{1,12}[:：]?$/;
 
 export function checkXhsNoteStyle(body: string, opts?: { brandNames?: string[] }): string[] {
   const issues: string[] = [];
@@ -72,6 +76,21 @@ export function checkXhsNoteStyle(body: string, opts?: { brandNames?: string[] }
     if (maxCount < 2) {
       issues.push(`品牌名只出现 ${maxCount} 次（至少 2 次）：补一次"好在哪"的具体表达，读者要能记住推荐的是谁`);
     }
+  }
+
+  // 8. 平台风险 / 夸大词（v2.13.11）
+  const hypeHits = text.match(HYPE_RISK_WORDS) || [];
+  if (hypeHits.length > 0) {
+    issues.push(`出现平台风险/夸大词「${[...new Set(hypeHits)].join('、')}」：换成客观体验描述或删掉（导流/诱导互动/夸大词会被限流）`);
+  }
+
+  // 9. 「emoji + 短标签」式小标题（v2.13.11，📍场景引入 / 🧠概念 这类 AI 腔）
+  const headingLines = String(body || '')
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter((l) => l && l.length <= 16 && EMOJI_HEADING_LINE.test(l));
+  if (headingLines.length > 0) {
+    issues.push(`出现"emoji + 短标签"式小标题（${headingLines[0]}）：删掉标签，把内容并进自然段落`);
   }
 
   return issues;

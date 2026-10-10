@@ -165,6 +165,8 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
       angle: String(t?.angle || '').trim(),
       keyword: String(t?.keyword || '').trim(),
       hook: String(t?.hook || '').trim(),
+      // v2.13.11：正文形态随选题透传（两步向导的旧数据没有该字段，为空时模型按题材自选）
+      form: String(t?.form || '').trim(),
       title: String(t?.title || '').trim(),
       topics: Array.isArray(t?.topics) ? t.topics.map((x: any) => String(x)) : [],
     })).filter((t) => t.angle || t.title);
@@ -213,6 +215,8 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
         topic: topic.angle,
         keyword: topic.keyword,
         hook: topic.hook,
+        // v2.13.11：正文形态（叙述型 / 半干货型）随选题透传
+        bodyForm: topic.form || '',
         enterpriseText,
         complianceBlock,
         preferredTitle: topic.title || '',

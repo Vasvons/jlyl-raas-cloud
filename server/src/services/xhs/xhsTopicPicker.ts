@@ -11,6 +11,8 @@ export interface XhsTopic {
   angle: string;
   keyword: string;
   hook: string;
+  /** v2.13.11：正文形态（叙述型 / 半干货型，选题器按题材分配） */
+  form?: string;
   /** v3.z：用户在两步向导里选定的候选标题（智能选题模式带入；生成时作为指定标题） */
   title?: string;
   /** v3.z：智能选题产出的推荐话题（成文未给话题时兜底） */
@@ -77,6 +79,7 @@ export async function pickXhsTopics(params: {
       angle,
       keyword: String(item?.keyword || '').trim(),
       hook: String(item?.hook || '').trim(),
+      form: String(item?.form || '').trim(),
     });
   }
 
@@ -84,7 +87,7 @@ export async function pickXhsTopics(params: {
   let i = 0;
   while (topics.length < params.count) {
     const kw = params.keywords[i % Math.max(1, params.keywords.length)] || '';
-    topics.push({ angle: kw || `围绕关键词的第 ${topics.length + 1} 个角度`, keyword: kw, hook: '' });
+    topics.push({ angle: kw || `围绕关键词的第 ${topics.length + 1} 个角度`, keyword: kw, hook: '', form: '' });
     i++;
     if (i > params.count + 10) break; // 防死循环
   }
