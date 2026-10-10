@@ -10810,6 +10810,79 @@ export async function deleteXhsImagesByArticleCard(xhsCustomerId: number, articl
   );
 }
 
+/**
+ * v2.13.6：删除单篇笔记的全部 compose 合成图（图文卡片页 + 封面加字产物）
+ * 只删本笔记生成的合成图；图库原图与其他笔记的产物不受影响
+ */
+export async function deleteXhsNoteComposeImages(xhsCustomerId: number, articleId: number): Promise<void> {
+  await query(
+    `DELETE FROM xhs_image
+      WHERE xhs_customer_id = $1 AND source = 'compose'
+        AND (original_name LIKE $2 OR original_name = $3)`,
+    [xhsCustomerId, `xhs-card-${articleId}-p%`, `xhs-cover-${articleId}.png`]
+  );
+}
+
+/**
+ * v2.13.6：删除单篇小红书笔记（含发布记录/发布任务级联）
+ * 依赖顺序：publish_record → publish_task → article（xhs_note_meta 有 ON DELETE CASCADE 自动清理）
+ * @returns 删除的发布记录条数（前端提示用）
+ */
+export async function deleteXhsNote(articleId: number): Promise<number> {
+  const rec = await query(
+    `DELETE FROM publish_record
+      WHERE task_id IN (SELECT id FROM publish_task WHERE article_id = $1)`,
+    [articleId]
+  );
+  const count = rec.rowCount || 0;
+  await query(`DELETE FROM publish_task WHERE article_id = $1`, [articleId]);
+  await query(`DELETE FROM article WHERE id = $1`, [articleId]);
+  return count;
+}
+
+/** v2.13.6：任务下文章的合成图清理定位信息（article_id + 客户归属），删除任务前清理 compose 图用 */
+export async function getXhsTaskArticles(
+  taskId: number,
+): Promise<Array<{ article_id: number; xhs_customer_id: number | null }>> {
+  const result = await query(
+    `SELECT a.id AS article_id, m.xhs_customer_id
+       FROM article a
+       LEFT JOIN xhs_note_meta m ON m.article_id = a.id
+      WHERE a.task_id = $1`,
+    [taskId]
+  );
+  return result.rows.map((r: any) => ({
+    article_id: Number(r.article_id),
+    xhs_customer_id: r.xhs_customer_id != null ? Number(r.xhs_customer_id) : null,
+  }));
+}
+
+/** v2.13.6：删除前置检查 —— 统计进行中的发布记录（按单篇 articleId 或整个任务 taskId） */
+export async function countInflightXhsPublishRecords(
+  opts: { articleId?: number; taskId?: number },
+): Promise<number> {
+  const params: any[] = [];
+  let scope = '';
+  if (opts.articleId) {
+    params.push(opts.articleId);
+    scope = 'a.id = $1';
+  } else if (opts.taskId) {
+    params.push(opts.taskId);
+    scope = 'a.task_id = $1';
+  } else {
+    return 0;
+  }
+  const result = await query(
+    `SELECT COUNT(*)::int AS n
+       FROM publish_record pr
+       JOIN publish_task pt ON pr.task_id = pt.id
+       JOIN article a ON pt.article_id = a.id
+      WHERE ${scope} AND pr.status IN ('pending', 'processing')`,
+    params
+  );
+  return result.rows[0]?.n || 0;
+}
+
 /** 随机取图（生成笔记时用；只按客户 + 类型，可选限定知识库） */
 export async function getRandomXhsImages(customerId: number, imageType: string, count: number, knowledgeId?: number | null): Promise<any[]> {
   if (count <= 0) return [];

@@ -25,7 +25,9 @@ import {
   getXhsImages, getXhsImageById, createXhsImage, updateXhsImage, deleteXhsImage,
   countAvailableXhsPublishAccounts,
   deleteXhsImagesByArticleCard,
-  getWritingTasks,
+  // v2.13.6：删除已生成记录（笔记 / 生成任务）
+  deleteXhsNote, deleteXhsNoteComposeImages, getXhsTaskArticles, countInflightXhsPublishRecords,
+  getWritingTasks, getWritingTaskById, deleteWritingTask,
   updateArticle,
 } from '../repository';
 import { splitNoteIntoCardPages } from '../services/xhs/xhsCardSplitter';
@@ -532,6 +534,34 @@ router.put('/notes/:id/content', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * DELETE /xhs/notes/:id —— 删除单篇已生成笔记（v2.13.6）
+ * 级联：compose 合成图（图文卡片 / 封面加字）→ 发布记录 → 发布任务 → 文章（笔记元数据随 article 级联）
+ * 安全拦截：该内容有进行中的发布（pending/processing）时不允许删除，避免发布线程与删除竞态
+ */
+router.delete('/notes/:id', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const articleId = Number(req.params.id);
+    const meta = await getXhsNoteMeta(articleId);
+    if (!meta) return res.status(404).json({ code: 404, message: '笔记不存在' });
+    if (Number(meta.user_id) !== uid) return res.status(403).json({ code: 403, message: '无权删除该笔记' });
+
+    const inflight = await countInflightXhsPublishRecords({ articleId });
+    if (inflight > 0) {
+      return res.status(400).json({ code: 400, message: '该内容有发布任务进行中，请等发布完成后再删除' });
+    }
+    if (meta.xhs_customer_id != null) {
+      await deleteXhsNoteComposeImages(Number(meta.xhs_customer_id), articleId);
+    }
+    const deletedPublishRecords = await deleteXhsNote(articleId);
+    res.json({ code: 200, data: { deletedPublishRecords } });
+  } catch (e: any) {
+    console.error('[Xhs] 删除笔记失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
 /** POST /xhs/notes/:id/publish —— 创建小红书发布任务（内部复用 createPublishTask） */
 router.post('/notes/:id/publish', async (req: Request, res: Response) => {
   try {
@@ -721,6 +751,42 @@ router.get('/writing-tasks', async (req: Request, res: Response) => {
     res.json({ code: 200, data: result });
   } catch (e: any) {
     console.error('[Xhs] 生成任务列表失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/**
+ * DELETE /xhs/writing-tasks/:id —— 删除已生成任务记录（v2.13.6）
+ * 连带删除该任务生成的全部笔记（含 compose 合成图）与发布记录；进行中的任务不可删
+ * 复用 GEO 的 deleteWritingTask 级联顺序：publish_record → publish_task → article → ai_writing_task
+ */
+router.delete('/writing-tasks/:id', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const taskId = Number(req.params.id);
+    const task = await getWritingTaskById(taskId);
+    if (!task || String(task.writing_system || 'geo') !== 'xhs') {
+      return res.status(404).json({ code: 404, message: '任务不存在' });
+    }
+    if (Number(task.user_id) !== uid) return res.status(403).json({ code: 403, message: '无权删除该任务' });
+    if (['pending', 'processing'].includes(String(task.status))) {
+      return res.status(400).json({ code: 400, message: '任务进行中，完成后再删除' });
+    }
+    const inflight = await countInflightXhsPublishRecords({ taskId });
+    if (inflight > 0) {
+      return res.status(400).json({ code: 400, message: '该任务下有内容正在发布，请等发布完成后再删除' });
+    }
+    // 合成图先清（卡片/封面产物挂在图库，需按文章定位客户归属）
+    const refs = await getXhsTaskArticles(taskId);
+    for (const r of refs) {
+      if (r.xhs_customer_id != null) {
+        await deleteXhsNoteComposeImages(r.xhs_customer_id, r.article_id);
+      }
+    }
+    await deleteWritingTask(taskId);
+    res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 删除生成任务失败:', e.message);
     res.status(500).json({ code: 500, message: '服务器错误' });
   }
 });
