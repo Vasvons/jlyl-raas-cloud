@@ -52,8 +52,8 @@ export async function resolveXhsModel(task: any, userId: number): Promise<{ base
   return { baseUrl, apiKey: decrypt(cfg.api_key_encrypted), model: cfg.model_name };
 }
 
-/** 纯文本正文 → <p> 段落 HTML（不信任模型输出的 HTML） */
-function bodyTextToHtml(body: string): string {
+/** 纯文本正文 → <p> 段落 HTML（不信任模型输出的 HTML；笔记编辑器改正文复用此转换） */
+export function bodyTextToHtml(body: string): string {
   return String(body || '')
     .split(/\n\s*\n/)
     .map((seg) => seg.trim())
@@ -62,8 +62,8 @@ function bodyTextToHtml(body: string): string {
     .join('\n');
 }
 
-/** 剥离标签后的纯文本字数 */
-function countText(text: string): number {
+/** 剥离标签后的纯文本字数（笔记编辑器改正文后重算字数复用） */
+export function countText(text: string): number {
   return String(text || '').replace(/<[^>]+>/g, '').replace(/\s/g, '').length;
 }
 

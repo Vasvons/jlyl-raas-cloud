@@ -26,8 +26,10 @@ import {
   countAvailableXhsPublishAccounts,
   deleteXhsImagesByArticleCard,
   getWritingTasks,
+  updateArticle,
 } from '../repository';
 import { splitNoteIntoCardPages } from '../services/xhs/xhsCardSplitter';
+import { bodyTextToHtml, countText } from '../services/xhs/xhsNoteGenerator';
 
 const router = Router();
 router.use(authMiddleware);
@@ -495,6 +497,34 @@ router.put('/notes/:id', async (req: Request, res: Response) => {
     res.json({ code: 200, data: updated });
   } catch (e: any) {
     console.error('[Xhs] 更新笔记失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/**
+ * PUT /xhs/notes/:id/content —— 更新笔记正文（笔记编辑器内直接改文案）
+ * Body: { content_text: string }（纯文本，空行分段；服务端转 <p> HTML 并重算字数）
+ * 上限与小红书平台一致（1000 字），超限直接拒绝，避免发布时被平台拒绝
+ */
+router.put('/notes/:id/content', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const articleId = Number(req.params.id);
+    const meta = await getXhsNoteMeta(articleId);
+    if (!meta) return res.status(404).json({ code: 404, message: '笔记不存在' });
+    if (Number(meta.user_id) !== uid) return res.status(403).json({ code: 403, message: '无权修改该笔记' });
+
+    const contentText = String(req.body?.content_text ?? '').replace(/\r\n/g, '\n').trim();
+    if (!contentText) return res.status(400).json({ code: 400, message: '正文不能为空' });
+    if (contentText.length > 1000) {
+      return res.status(400).json({ code: 400, message: `正文超过小红书上限（1000 字），当前 ${contentText.length} 字` });
+    }
+    const contentHtml = bodyTextToHtml(contentText);
+    const wordCount = countText(contentHtml);
+    await updateArticle(articleId, { content_html: contentHtml, word_count: wordCount });
+    res.json({ code: 200, data: { word_count: wordCount } });
+  } catch (e: any) {
+    console.error('[Xhs] 更新笔记正文失败:', e.message);
     res.status(500).json({ code: 500, message: '服务器错误' });
   }
 });
