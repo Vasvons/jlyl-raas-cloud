@@ -18,8 +18,6 @@ import {
   updateWritingTaskProgress,
   completeWritingTask,
   updateArticleCoverImage,
-  getXhsImageById,
-  getRandomXhsImages,
   getActiveManualRulesByIndustry,
   getAllActiveManualRules,
 } from '../../repository';
@@ -31,6 +29,7 @@ import {
 } from './prompts';
 import { pickXhsTopics, extractJson, type XhsTopic } from './xhsTopicPicker';
 import { checkXhsNoteStyle } from './xhsStyleCheck';
+import { resolveNoteImages, normalizeImageStrategy } from './xhsImageStrategy';
 
 /** 小红书平台正文硬上限（与 platform_content_rule.platform='xhs'.content_max_length 一致） */
 const XHS_CONTENT_MAX = 1000;
@@ -82,37 +81,6 @@ function truncateBody(body: string, max: number): { text: string; truncated: boo
   return { text: acc || plain.slice(0, max), truncated: true };
 }
 
-/** 取封面图（返回 xhs_image 行或 null） */
-async function pickCoverImage(task: any, userId: number): Promise<any | null> {
-  const mode = String(task.cover_image_mode || 'none');
-  const customerId = Number(task.xhs_customer_id) || 0;
-  if (mode === 'fixed' && task.cover_image_id) {
-    const img = await getXhsImageById(Number(task.cover_image_id));
-    // 归属校验：只认本客户的图，避免跨客户串图
-    if (img && Number(img.xhs_customer_id) === customerId) return img;
-    return null;
-  }
-  if ((mode === 'random' || mode === 'auto') && customerId) {
-    const covers = await getRandomXhsImages(customerId, 'cover', 1, task.xhs_knowledge_id ? Number(task.xhs_knowledge_id) : null);
-    if (covers.length > 0) return covers[0];
-  }
-  return null;
-}
-
-/** 取配图（返回 xhs_image 行数组，保持顺序） */
-async function pickIllustrations(task: any, userId: number, excludeId?: number | null): Promise<any[]> {
-  const want = Number(task.illustration_count) || 0;
-  const customerId = Number(task.xhs_customer_id) || 0;
-  if (want <= 0 || !customerId) return [];
-  const rows = await getRandomXhsImages(
-    customerId,
-    'illustration',
-    Math.min(20, want + 3),
-    task.xhs_knowledge_id ? Number(task.xhs_knowledge_id) : null,
-  );
-  return rows.filter((r: any) => !excludeId || Number(r.id) !== Number(excludeId)).slice(0, Math.min(20, want));
-}
-
 /**
  * 执行小红书写作任务（由 articleGenerator.executeWritingTask 分派调用）
  */
@@ -126,6 +94,8 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
   }
 
   const totalCount = Math.max(1, Number(task.total_count) || 1);
+  // v2.14.0 配图策略（生成时选定，逐篇执行）
+  const imageStrategy = normalizeImageStrategy(task.image_strategy);
   const instruction = task.xhs_instruction_id ? task : null;
   if (!instruction) {
     await completeWritingTask(taskId, 'failed', '小红书写作任务缺少写作指令（xhs_instruction_id 为空）');
@@ -320,9 +290,19 @@ ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
       });
       createdArticleId = articleId;
 
-      // 4.3 取图（小红书配图不内嵌正文，只写图库引用）
-      const coverImg = await pickCoverImage(task, userId);
-      const illuImgs = await pickIllustrations(task, userId, coverImg?.id ?? null);
+      // 4.3 取图（v2.14.0 按任务配图策略执行：图库 / 图库+AI / AI / 正文转图 / 搜图候选）
+      const picked = await resolveNoteImages({
+        strategy: imageStrategy,
+        task,
+        userId,
+        imageScript,
+        title,
+        coverText,
+        topicAngle: topic.angle || '',
+        keyword: topic.keyword || '',
+      });
+      const coverImg = picked.cover;
+      const illuImgs = picked.illustrations;
       if (coverImg?.url) {
         await updateArticleCoverImage(articleId, coverImg.url);
       }
@@ -332,7 +312,7 @@ ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
         note_style: task.note_style || null,
         cover_title: coverText || title,
         cover_image_id: coverImg?.id ?? null,
-        image_ids: illuImgs.map((r: any) => Number(r.id)),
+        image_ids: illuImgs.map((r) => Number(r.id)),
         topics: topicsOut,
         // v2.13.5 双内容形态：随任务落库（'note' 笔记 / 'card' 图文），列表按形态分栏
         content_form: task.content_form === 'card' ? 'card' : 'note',

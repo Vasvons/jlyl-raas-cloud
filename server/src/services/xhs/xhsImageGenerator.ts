@@ -83,26 +83,10 @@ export async function generateXhsImageToLibrary(params: GenerateXhsImageParams):
   if (!imgResp.ok) throw new Error(`下载生成图失败 HTTP ${imgResp.status}`);
   const buffer = Buffer.from(await imgResp.arrayBuffer());
 
-  // 5. 上传 OSS
-  const ossCfg = await getCloudApiConfig(params.userId);
-  if (!ossCfg?.aliyun_access_key || !ossCfg?.aliyun_access_secret || !ossCfg?.aliyun_oss_bucket) {
-    throw bizError('未配置阿里云 OSS（请在「后台配置 → 云接口配置」中填写），可改用企业图库选图', 4001);
-  }
-  const OSS = (await import('ali-oss')).default; // 动态 import，避免启动时加载未使用依赖
-  const client = new OSS({
-    accessKeyId: ossCfg.aliyun_access_key,
-    accessKeySecret: ossCfg.aliyun_access_secret,
-    bucket: ossCfg.aliyun_oss_bucket,
-    endpoint: ossCfg.aliyun_oss_endpoint || 'oss-cn-hangzhou.aliyuncs.com',
-    secure: true,
-  });
-  const today = new Date().toISOString().slice(0, 10);
-  const ossKey = `xhs-ai-images/${today}/customer-${params.xhsCustomerId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
-  await client.put(ossKey, buffer);
-  const cdnBase = ossCfg.aliyun_oss_cdn ? String(ossCfg.aliyun_oss_cdn).replace(/\/$/, '') : '';
-  const url = cdnBase
-    ? `${cdnBase}/${ossKey}`
-    : `https://${ossCfg.aliyun_oss_bucket}.${String(ossCfg.aliyun_oss_endpoint || 'oss-cn-hangzhou.aliyuncs.com').replace('https://', '')}/${ossKey}`;
+  // 5. 上传 OSS（v2.14.0 抽成公共 helper，供搜图候选等复用）
+  const upload = await uploadXhsImageBuffer({ userId: params.userId, buffer, keyPrefix: 'xhs-ai-images', ext: 'png', contentType: 'image/png' });
+  const url = upload.url;
+  const ossKey = upload.ossKey;
 
   // 6. 写小红书图库（source='ai' 便于按来源筛选）
   const imageId = await createXhsImage({
@@ -125,4 +109,38 @@ export async function generateXhsImageToLibrary(params: GenerateXhsImageParams):
   // 7. 配额 +1
   await incrementImageModelUsage(cfg.id);
   return { imageId, url, source: 'ai', quotaUsedToday: Number(cfg.used_today || 0) + 1 };
+}
+
+/**
+ * v2.14.0：图片 buffer → 阿里云 OSS（AI 生图 / 搜图候选共用）
+ * 未配置 OSS 时抛 4001（调用方自行降级）
+ */
+export async function uploadXhsImageBuffer(params: {
+  userId: number;
+  buffer: Buffer;
+  keyPrefix?: string;
+  ext?: string;
+  contentType?: string;
+}): Promise<{ url: string; ossKey: string }> {
+  const ossCfg = await getCloudApiConfig(params.userId);
+  if (!ossCfg?.aliyun_access_key || !ossCfg?.aliyun_access_secret || !ossCfg?.aliyun_oss_bucket) {
+    throw bizError('未配置阿里云 OSS（请在「后台配置 → 云接口配置」中填写）', 4001);
+  }
+  const OSS = (await import('ali-oss')).default; // 动态 import，避免启动时加载未使用依赖
+  const client = new OSS({
+    accessKeyId: ossCfg.aliyun_access_key,
+    accessKeySecret: ossCfg.aliyun_access_secret,
+    bucket: ossCfg.aliyun_oss_bucket,
+    endpoint: ossCfg.aliyun_oss_endpoint || 'oss-cn-hangzhou.aliyuncs.com',
+    secure: true,
+  });
+  const today = new Date().toISOString().slice(0, 10);
+  const ext = params.ext || 'jpg';
+  const ossKey = `${params.keyPrefix || 'xhs-images'}/${today}/c-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  await client.put(ossKey, params.buffer, params.contentType ? { mime: params.contentType } : undefined);
+  const cdnBase = ossCfg.aliyun_oss_cdn ? String(ossCfg.aliyun_oss_cdn).replace(/\/$/, '') : '';
+  const url = cdnBase
+    ? `${cdnBase}/${ossKey}`
+    : `https://${ossCfg.aliyun_oss_bucket}.${String(ossCfg.aliyun_oss_endpoint || 'oss-cn-hangzhou.aliyuncs.com').replace('https://', '')}/${ossKey}`;
+  return { url, ossKey };
 }

@@ -6565,8 +6565,8 @@ export async function createWritingTask(data: any): Promise<number> {
             model_config_id, generation_mode, agent_profile_id, status, total_count, started_at,
             cover_image_mode, cover_image_id, illustration_count, target_platforms, auto_generated, aeo_context,
             focus_cities, focus_keyword_weights, content_types, random_mode,
-            writing_system, xhs_instruction_id, xhs_customer_id, xhs_knowledge_id, xhs_topics, content_form)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+            writing_system, xhs_instruction_id, xhs_customer_id, xhs_knowledge_id, xhs_topics, content_form, image_strategy)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'processing', $9, NOW(), $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
      RETURNING id`,
     [data.user_id, data.task_name, data.keyword_ids, data.instruction_id, data.knowledge_id,
      data.model_config_id || null, data.generation_mode || 'expert', data.agent_profile_id || null,
@@ -6584,7 +6584,9 @@ export async function createWritingTask(data: any): Promise<number> {
      data.xhs_customer_id || null, data.xhs_knowledge_id || null,
      JSON.stringify(Array.isArray(data.xhs_topics) ? data.xhs_topics : []),
      // v2.13.5 双内容形态：'note' 笔记（文章+图库配图）/ 'card' 图文（文章做成图片）
-     data.content_form === 'card' ? 'card' : 'note']
+     data.content_form === 'card' ? 'card' : 'note',
+     // v2.14.0 配图策略：gallery / gallery_ai / ai / article_to_image / search
+     data.image_strategy || 'gallery']
   );
   return result.rows[0].id;
 }
@@ -10731,7 +10733,7 @@ export async function countXhsKnowledgeRefs(knowledgeId: number): Promise<{ imag
 
 // ---------- 图库 ----------
 
-export async function getXhsImages(customerId: number, knowledgeId?: number | null, imageType?: string): Promise<any[]> {
+export async function getXhsImages(customerId: number, knowledgeId?: number | null, imageType?: string, opts?: { candidatesOnly?: boolean }): Promise<any[]> {
   const where: string[] = ['xhs_customer_id = $1'];
   const params: any[] = [customerId];
   let idx = 2;
@@ -10739,10 +10741,12 @@ export async function getXhsImages(customerId: number, knowledgeId?: number | nu
     where.push(`xhs_knowledge_id = $${idx++}`);
     params.push(knowledgeId);
   }
-  if (imageType) {
+  if (imageType && !opts?.candidatesOnly) {
     where.push(`image_type = $${idx++}`);
     params.push(imageType);
   }
+  // v2.14.0 搜图候选池：默认列表排除候选；candidatesOnly 时只返回候选
+  where.push(opts?.candidatesOnly ? `is_candidate = true` : `COALESCE(is_candidate, false) = false`);
   const result = await query(
     `SELECT * FROM xhs_image WHERE ${where.join(' AND ')}
       ORDER BY sort_order ASC, id DESC`,
@@ -10760,20 +10764,22 @@ export async function createXhsImage(data: Record<string, any>): Promise<number>
   const result = await query(
     `INSERT INTO xhs_image
        (xhs_customer_id, xhs_knowledge_id, owner_user_id, image_type, url, file_path,
-        original_name, file_size, mime_type, width, height, description, tags, sort_order, source, prompt)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        original_name, file_size, mime_type, width, height, description, tags, sort_order, source, prompt, is_candidate)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
      RETURNING id`,
     [data.xhs_customer_id, data.xhs_knowledge_id || null, data.owner_user_id, data.image_type, data.url,
      data.file_path || null, data.original_name || null, data.file_size || null, data.mime_type || null,
      data.width || null, data.height || null, data.description || null, data.tags || [],
-     data.sort_order || 0, data.source || 'upload', data.prompt || null]
+     data.sort_order || 0, data.source || 'upload', data.prompt || null,
+     // v2.14.0：搜图候选（true = 不进图库默认列表，人工挑选后才使用）
+     data.is_candidate === true]
   );
   return result.rows[0].id;
 }
 
 /** 更新图库记录（SQL 带 owner_user_id 约束） */
 export async function updateXhsImage(id: number, ownerUserId: number, data: Record<string, any>): Promise<number> {
-  const allowed = ['image_type', 'description', 'tags', 'sort_order', 'xhs_knowledge_id'];
+  const allowed = ['image_type', 'description', 'tags', 'sort_order', 'xhs_knowledge_id', 'is_candidate'];
   const fields: string[] = [];
   const values: any[] = [];
   let idx = 1;

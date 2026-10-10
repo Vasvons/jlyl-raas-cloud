@@ -32,6 +32,7 @@ import {
 } from '../repository';
 import { splitNoteIntoCardPages } from '../services/xhs/xhsCardSplitter';
 import { bodyTextToHtml, countText } from '../services/xhs/xhsNoteGenerator';
+import { normalizeImageStrategy } from '../services/xhs/xhsImageStrategy';
 
 const router = Router();
 router.use(authMiddleware);
@@ -227,10 +228,34 @@ router.get('/images', async (req: Request, res: Response) => {
     }
     const knowledgeId = req.query.xhs_knowledge_id ? Number(req.query.xhs_knowledge_id) : undefined;
     const imageType = req.query.image_type ? String(req.query.image_type) : undefined;
-    const rows = await getXhsImages(customerId, knowledgeId, imageType);
+    // v2.14.0 搜图候选池：?candidates=1 只看候选（未挑选）；默认排除候选
+    const candidatesOnly = String(req.query.candidates || '') === '1';
+    const rows = await getXhsImages(customerId, knowledgeId, imageType, { candidatesOnly });
     res.json({ code: 200, data: rows });
   } catch (e: any) {
     console.error('[Xhs] 图库列表失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/**
+ * POST /xhs/images/:id/adopt —— v2.14.0 采纳搜图候选（人工挑选后入正式图库）
+ * Body: { image_type?: 'cover'|'illustration' } 默认 illustration
+ */
+router.post('/images/:id/adopt', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const img = await getXhsImageById(Number(req.params.id));
+    if (!img || Number(img.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '图片不存在或无权操作' });
+    }
+    const kind = ['cover', 'illustration'].includes(String(req.body?.image_type))
+      ? String(req.body.image_type) as 'cover' | 'illustration'
+      : 'illustration';
+    await updateXhsImage(Number(req.params.id), uid, { is_candidate: false, image_type: kind });
+    res.json({ code: 200, message: '已加入图库' });
+  } catch (e: any) {
+    console.error('[Xhs] 采纳候选图失败:', e.message);
     res.status(500).json({ code: 500, message: '服务器错误' });
   }
 });
@@ -714,6 +739,8 @@ router.post('/notes/generate', async (req: Request, res: Response) => {
       illustration_count: Number(b.illustration_count) || 0,
       // v2.13.5 双内容形态：'note' 笔记（文章+图库配图）/ 'card' 图文（文章做成图片，生成后进卡片设计器）
       content_form: b.content_form === 'card' ? 'card' : 'note',
+      // v2.14.0 配图策略（缺省 gallery，兼容老客户端）
+      image_strategy: normalizeImageStrategy(b.image_strategy),
       target_platforms: ['xhs'],
     });
 

@@ -3471,6 +3471,11 @@ export async function migrate() {
     await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS content_form VARCHAR(16) DEFAULT 'note'`);
     await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS content_form VARCHAR(16) DEFAULT 'note'`);
 
+    // 3.2 v2.14.0 配图策略：gallery 图库优先 / gallery_ai 图库+AI补齐 / ai 生图为主 / article_to_image 正文转图 / search 搜图下载待选
+    await client.query(`ALTER TABLE ai_writing_task ADD COLUMN IF NOT EXISTS image_strategy VARCHAR(24) DEFAULT 'gallery'`);
+    // 3.3 v2.14.0 搜图候选池：xhs_image 加候选标记（true = 不进图库默认列表，人工挑选后才使用）
+    await client.query(`ALTER TABLE xhs_image ADD COLUMN IF NOT EXISTS is_candidate BOOLEAN DEFAULT false`);
+
     console.log('[Migrate] v3.y 小红书写作系统表创建/验证完成（xhs_writing_instruction + ai_writing_task 两列 + xhs_note_meta.image_script + 双形态 content_form）');
 
     // 4. 两条平台预设写作指令（user_id IS NULL = 所有客户可用）
