@@ -10893,7 +10893,8 @@ export async function countInflightXhsPublishRecords(
 export async function getRandomXhsImages(customerId: number, imageType: string, count: number, knowledgeId?: number | null): Promise<any[]> {
   if (count <= 0) return [];
   const params: any[] = [customerId, imageType];
-  let sql = `SELECT * FROM xhs_image WHERE xhs_customer_id = $1 AND image_type = $2`;
+  // v2.14.0 排除搜图候选（is_candidate=true 未采纳前不参与取图）
+  let sql = `SELECT * FROM xhs_image WHERE xhs_customer_id = $1 AND image_type = $2 AND COALESCE(is_candidate, false) = false`;
   if (knowledgeId) {
     params.push(knowledgeId);
     sql += ` AND xhs_knowledge_id = $3`;
