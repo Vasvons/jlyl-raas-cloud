@@ -24,7 +24,9 @@ import {
   getXhsKnowledges, getXhsKnowledgeById, createXhsKnowledge, updateXhsKnowledge, deleteXhsKnowledge, countXhsKnowledgeRefs,
   getXhsImages, getXhsImageById, createXhsImage, updateXhsImage, deleteXhsImage,
   countAvailableXhsPublishAccounts,
+  deleteXhsImagesByArticleCard,
 } from '../repository';
+import { splitNoteIntoCardPages } from '../services/xhs/xhsCardSplitter';
 
 const router = Router();
 router.use(authMiddleware);
@@ -433,17 +435,59 @@ router.put('/notes/:id', async (req: Request, res: Response) => {
       await updateArticleCoverImage(articleId, coverImageUrl);
     }
 
+    // v2.13.0 图文卡片：整页渲染产物写回（第 1 页=封面，其余=内页图片序列）
+    // 覆盖式登记：先清掉本笔记上一次的卡片产物，避免反复保存堆积重复图
+    let cardInnerIds: number[] | undefined;
+    if (Array.isArray(body.card_image_urls) && body.card_image_urls.length > 0) {
+      const detail = await getXhsNoteDetail(articleId);
+      const xhsCustomerId = detail?.xhs_customer_id != null ? Number(detail.xhs_customer_id) : null;
+      const xhsKnowledgeId = detail?.xhs_knowledge_id != null ? Number(detail.xhs_knowledge_id) : null;
+      if (!xhsCustomerId) {
+        console.warn(`[Xhs] 笔记 ${articleId} 无客户归属，卡片图无法登记图库（仅忽略）`);
+      } else {
+        const urls = body.card_image_urls.map((u: any) => String(u || '').trim()).filter(Boolean).slice(0, 12);
+        await deleteXhsImagesByArticleCard(xhsCustomerId, articleId);
+        for (let i = 0; i < urls.length; i++) {
+          const isCover = i === 0;
+          const id = await createXhsImage({
+            xhs_customer_id: xhsCustomerId,
+            xhs_knowledge_id: xhsKnowledgeId,
+            owner_user_id: uid,
+            image_type: isCover ? 'cover' : 'illustration',
+            url: urls[i],
+            file_path: null,
+            original_name: `xhs-card-${articleId}-p${i + 1}.png`,
+            description: `图文卡片 第${i + 1}页`,
+            tags: [],
+            sort_order: i,
+            source: 'compose',
+            prompt: null,
+          });
+          if (isCover) {
+            await updateArticleCoverImage(articleId, urls[i]);
+            coverImageId = id;
+          } else {
+            (cardInnerIds ||= []).push(id);
+          }
+        }
+      }
+    }
+
     await upsertXhsNoteMeta(articleId, uid, {
       note_style: body.note_style,
       cover_template_id: body.cover_template_id,
       cover_title: body.cover_title,
       cover_image_id: coverImageId ?? body.cover_image_id,
-      image_ids: Array.isArray(body.image_ids) ? body.image_ids.map((x: any) => Number(x)) : undefined,
+      // 卡片内页 id 优先于显式 image_ids（同一次保存来自同一套卡片）
+      image_ids: cardInnerIds ?? (Array.isArray(body.image_ids) ? body.image_ids.map((x: any) => Number(x)) : undefined),
       topics: Array.isArray(body.topics) ? body.topics.map((x: any) => String(x)) : undefined,
       // v2.12.0 P4：允许把历史笔记补标记为蓝V官号/种草达人（发布取号据此匹配同类型账号池）
       xhs_account_type: ['brand', 'creator'].includes(String(body.xhs_account_type))
         ? (String(body.xhs_account_type) as 'brand' | 'creator')
         : undefined,
+      // v2.13.0 图文卡片集设计稿（宽松校验：必须有 pages 数组）
+      card_designs: body.card_designs && Array.isArray(body.card_designs.pages)
+        ? body.card_designs : undefined,
     });
 
     const updated = await getXhsNoteDetail(articleId);
@@ -503,6 +547,34 @@ router.post('/notes/:id/publish', async (req: Request, res: Response) => {
   } catch (e: any) {
     console.error('[Xhs] 创建发布任务失败:', e.message);
     res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/**
+ * POST /xhs/notes/:id/cards/generate —— AI 拆页为图文卡片文案（XHS_CARD_STUDIO）
+ * Body: { page_count?: number|null, extra_requirement?: string }
+ * 返回 { pages: [{title,text}], source: 'ai'|'fallback' }（不落库，用户编辑后随 PUT 保存）
+ */
+router.post('/notes/:id/cards/generate', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const articleId = Number(req.params.id);
+    const meta = await getXhsNoteMeta(articleId);
+    if (!meta) return res.status(404).json({ code: 404, message: '笔记不存在' });
+    if (Number(meta.user_id) !== uid) return res.status(403).json({ code: 403, message: '无权操作该笔记' });
+    const pageCountRaw = req.body?.page_count;
+    const pageCount = pageCountRaw ? Number(pageCountRaw) : null;
+    if (pageCount != null && (Number.isNaN(pageCount) || pageCount < 3 || pageCount > 9)) {
+      return res.status(400).json({ code: 400, message: 'page_count 需在 3-9 之间' });
+    }
+    const data = await splitNoteIntoCardPages(articleId, uid, {
+      pageCount,
+      extraRequirement: String(req.body?.extra_requirement || '').slice(0, 200),
+    });
+    res.json({ code: 200, data });
+  } catch (e: any) {
+    console.error('[Xhs] 卡片拆页失败:', e.message);
+    res.status(500).json({ code: 500, message: e.message || '服务器错误' });
   }
 });
 
@@ -605,14 +677,18 @@ router.get('/cover-templates', async (req: Request, res: Response) => {
   }
 });
 
-/** POST /xhs/cover-templates —— 新建本人模板 */
+/** POST /xhs/cover-templates —— 新建本人模板（卡片设计器「另存为模板」layout='card' + design） */
 router.post('/cover-templates', async (req: Request, res: Response) => {
   try {
     const uid = getUserId(req);
-    const { name, layout, fontConfig, previewUrl } = req.body || {};
+    const { name, layout, fontConfig, previewUrl, design } = req.body || {};
     if (!name) return res.status(400).json({ code: 400, message: '缺少 name' });
-    if (!['solid_text', 'image_top_text', 'text_left_image'].includes(String(layout))) {
-      return res.status(400).json({ code: 400, message: 'layout 仅支持 solid_text / image_top_text / text_left_image' });
+    // v2.13.0：新增 'card'（卡片设计器另存，必须带完整 design 设计稿）
+    if (!['solid_text', 'image_top_text', 'text_left_image', 'card'].includes(String(layout))) {
+      return res.status(400).json({ code: 400, message: 'layout 仅支持 solid_text / image_top_text / text_left_image / card' });
+    }
+    if (String(layout) === 'card' && !design) {
+      return res.status(400).json({ code: 400, message: 'layout=card 时必须携带 design 设计稿' });
     }
     const id = await createXhsCoverTemplate({
       user_id: uid,
@@ -620,6 +696,7 @@ router.post('/cover-templates', async (req: Request, res: Response) => {
       layout: String(layout),
       font_config: fontConfig || {},
       preview_url: previewUrl,
+      design: design || undefined,
     });
     res.json({ code: 200, data: { id } });
   } catch (e: any) {

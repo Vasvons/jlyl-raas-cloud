@@ -9979,14 +9979,16 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
   xhs_customer_id?: number | null;
   /** v2.12.0 P4：笔记对应的账号类型（生成时从写作指令 account_type 快照），发布取号据此匹配同类型账号池 */
   xhs_account_type?: 'brand' | 'creator' | null;
+  /** v2.13.0 图文卡片：整套卡片集设计稿 { version: 1, pages: [{ id, design }] } */
+  card_designs?: Record<string, any> | null;
 }): Promise<void> {
   await query(
     `INSERT INTO xhs_note_meta
-       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id, xhs_account_type)
+       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id, xhs_account_type, card_designs)
      VALUES ($1, $2, $3, $4, $5, $6,
              COALESCE($7::jsonb, '[]'::jsonb),
              COALESCE($8::jsonb, '[]'::jsonb),
-             $9, $10)
+             $9, $10, $11::jsonb)
      ON CONFLICT (article_id) DO UPDATE SET
        note_style        = COALESCE(EXCLUDED.note_style, xhs_note_meta.note_style),
        cover_template_id = COALESCE(EXCLUDED.cover_template_id, xhs_note_meta.cover_template_id),
@@ -9996,6 +9998,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
        topics            = COALESCE(EXCLUDED.topics, xhs_note_meta.topics),
        xhs_customer_id   = COALESCE(EXCLUDED.xhs_customer_id, xhs_note_meta.xhs_customer_id),
        xhs_account_type  = COALESCE(EXCLUDED.xhs_account_type, xhs_note_meta.xhs_account_type),
+       card_designs      = COALESCE(EXCLUDED.card_designs, xhs_note_meta.card_designs),
        update_time       = NOW()`,
     [
       articleId,
@@ -10008,6 +10011,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
       data.topics !== undefined ? JSON.stringify(data.topics) : null,
       data.xhs_customer_id ?? null,
       data.xhs_account_type ?? null,
+      data.card_designs != null ? JSON.stringify(data.card_designs) : null,
     ]
   );
 }
@@ -10040,6 +10044,7 @@ export async function getXhsNotes(
             a.cover_image_url, a.tags, a.create_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
             m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id, m.xhs_account_type,
+            m.card_designs,
             (SELECT COUNT(*)::int FROM publish_record r
                JOIN publish_task t ON t.id = r.task_id
               WHERE r.platform = 'xhs' AND t.article_id = a.id AND r.status = 'success') AS publish_success_count,
@@ -10063,6 +10068,7 @@ export async function getXhsNoteDetail(articleId: number): Promise<any | null> {
             a.cover_image_url, a.tags, a.model_used, a.create_time, a.update_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
             m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id, m.xhs_account_type,
+            m.card_designs,
             (SELECT t.xhs_knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS xhs_knowledge_id,
             (SELECT t.xhs_knowledge_id FROM ai_writing_task t WHERE t.id = a.task_id) AS knowledge_id
        FROM article a
@@ -10098,12 +10104,17 @@ export async function createXhsCoverTemplate(data: {
   layout: string;
   font_config?: Record<string, any>;
   preview_url?: string;
+  /** v2.13.0 卡片设计器「另存为模板」：完整设计稿（layout='card' 时必填） */
+  design?: Record<string, any>;
 }): Promise<number> {
   const result = await query(
-    `INSERT INTO xhs_cover_template (user_id, name, layout, font_config, preview_url, builtin, is_active)
-     VALUES ($1, $2, $3, $4::jsonb, $5, false, true)
+    `INSERT INTO xhs_cover_template (user_id, name, layout, font_config, preview_url, design, builtin, is_active)
+     VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, false, true)
      RETURNING id`,
-    [data.user_id, data.name, data.layout, JSON.stringify(data.font_config || {}), data.preview_url || null]
+    [
+      data.user_id, data.name, data.layout, JSON.stringify(data.font_config || {}),
+      data.preview_url || null, data.design != null ? JSON.stringify(data.design) : null,
+    ]
   );
   return result.rows[0].id;
 }
@@ -10119,6 +10130,7 @@ export async function updateXhsCoverTemplate(id: number, userId: number, data: {
   font_config?: Record<string, any>;
   preview_url?: string;
   is_active?: boolean;
+  design?: Record<string, any>;
 }): Promise<number> {
   const fields: string[] = [];
   const values: any[] = [];
@@ -10128,6 +10140,7 @@ export async function updateXhsCoverTemplate(id: number, userId: number, data: {
   if (data.font_config !== undefined) { fields.push(`font_config = $${idx++}::jsonb`); values.push(JSON.stringify(data.font_config)); }
   if (data.preview_url !== undefined) { fields.push(`preview_url = $${idx++}`); values.push(data.preview_url); }
   if (data.is_active !== undefined) { fields.push(`is_active = $${idx++}`); values.push(!!data.is_active); }
+  if (data.design !== undefined) { fields.push(`design = $${idx++}::jsonb`); values.push(JSON.stringify(data.design)); }
   if (fields.length === 0) return 0;
   values.push(id, userId);
   const result = await query(
@@ -10762,6 +10775,18 @@ export async function updateXhsImage(id: number, ownerUserId: number, data: Reco
 export async function deleteXhsImage(id: number, ownerUserId: number): Promise<number> {
   const result = await query('DELETE FROM xhs_image WHERE id = $1 AND owner_user_id = $2', [id, ownerUserId]);
   return result.rowCount || 0;
+}
+
+/**
+ * v2.13.0 覆盖式登记卡片产物：删除本笔记上一次的卡片图库行（按命名前缀匹配）
+ * 保存卡片时先清后写，避免反复保存堆积重复图片（OSS 旧文件不清理，与封面重存行为一致）
+ */
+export async function deleteXhsImagesByArticleCard(xhsCustomerId: number, articleId: number): Promise<void> {
+  await query(
+    `DELETE FROM xhs_image
+      WHERE xhs_customer_id = $1 AND source = 'compose' AND original_name LIKE $2`,
+    [xhsCustomerId, `xhs-card-${articleId}-p%`]
+  );
 }
 
 /** 随机取图（生成笔记时用；只按客户 + 类型，可选限定知识库） */

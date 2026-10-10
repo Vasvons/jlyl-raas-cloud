@@ -3763,7 +3763,19 @@ export async function migrate() {
     //    NULL = 历史笔记/无法判定 → 取号时不做类型限制（兼容旧数据）
     await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS xhs_account_type VARCHAR(16)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_note_meta_acct_type ON xhs_note_meta(xhs_account_type)`);
+
+    // ============ v2.13.0 图文卡片设计器（XHS_CARD_STUDIO）============
+    // 9. 卡片集设计稿：一列存整套卡片集
+    //    { version: 1, pages: [{ id, design }] }；NULL = 未使用卡片功能
+    //    不建新表、不加索引（card_designs 不参与查询过滤）
+    await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS card_designs JSONB`);
+
+    // 10. 封面模板支持完整设计稿（卡片设计器「另存为模板」用）
+    //     历史 3 条内置模板 design 为空，前端按 layout 回退渲染，不影响旧「封面加字」功能
+    await client.query(`ALTER TABLE xhs_cover_template ADD COLUMN IF NOT EXISTS design JSONB`);
+
     console.log('[Migrate] v3.z 小红书 P4 独立客户体系表创建/验证完成（xhs_customer / xhs_knowledge / xhs_image + 6 列）');
+    console.log('[Migrate] v2.13.0 图文卡片列创建/验证完成（xhs_note_meta.card_designs / xhs_cover_template.design）');
 
     console.log('[Migrate] 数据库迁移完成');
   } finally {

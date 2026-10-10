@@ -203,3 +203,52 @@ ${p.requireDrawback ? '\n【强制】正文中必须包含至少 1 处真实的�
     { role: 'user', content: parts.join('\n') + p.complianceBlock },
   ];
 }
+
+/**
+ * 图文卡片拆页 prompt（XHS_CARD_STUDIO）
+ *
+ * 把一篇已有笔记拆成 N 页卡片文案（title 大字 + text 小字），
+ * 事实来源限定为「企业/产品信息 + 笔记正文」，只做提炼重排、不得编造。
+ */
+export function buildCardSplitMessages(params: {
+  noteTitle: string;
+  coverText: string;
+  bodyText: string;                 // 纯文本正文
+  enterpriseText: string;
+  imageScript?: Array<{ index: number; role: string; scene: string }>;
+  pageCount?: number | null;        // null = AI 自定 3-8 页
+  extraRequirement?: string;
+  complianceBlock?: string;
+}): ChatMessage[] {
+  const countRule = params.pageCount
+    ? `必须正好 ${params.pageCount} 页。`
+    : '根据内容体量自行决定页数，控制在 3-8 页。';
+  const scriptLines = (params.imageScript || [])
+    .map((s) => `图${s.index} ${s.role}：${s.scene}`).join('\n');
+  const system = `你是小红书图文卡片策划。把一篇已有的小红书笔记拆成多页「图文卡片」文案。
+
+【硬性规则】
+1. 第 1 页是封面卡：用一句最有钩子的大字（≤12 字），抓眼球，不做标题党承诺。
+2. 后续页按逻辑展开：痛点共鸣 / 核心卖点（每页只讲 1 个）/ 具体证据（数据、案例、资质）/ 行动建议。
+3. 每页 title ≤12 字（大字）；text 为 1-3 行短句、总计 ≤60 字（小字注释），可以留空字符串。
+4. 内容必须与【企业/产品信息】【笔记正文】一致，只做提炼与重排，不得编造任何事实、数据、资质。
+5. 口吻自然像真人分享，不用「首先/其次/综上」，不用序号词开头，每页最多 1 个 emoji。
+6. ${countRule}
+${params.complianceBlock || ''}
+
+【输出格式（严格 JSON，不要解释文字，不要 markdown 代码块标记）】
+{ "pages": [ { "title": "封面大字或本页要点（≤12字）", "text": "本页补充说明（≤60字，可为空字符串）" } ] }`;
+
+  const parts = [
+    `【笔记标题】${params.noteTitle}`,
+    params.coverText ? `【已有封面大字（第 1 页可参考或优化）】${params.coverText}` : '',
+    `【笔记正文】\n${params.bodyText}`,
+    `【企业/产品信息】\n${params.enterpriseText}`,
+  ].filter(Boolean);
+  if (scriptLines) parts.push(`【原有配图脚本（供参考，转成卡片文案口吻，不要照抄拍摄口吻）】\n${scriptLines}`);
+  if (params.extraRequirement) parts.push(`【用户额外要求】${params.extraRequirement}`);
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: parts.join('\n\n') },
+  ];
+}

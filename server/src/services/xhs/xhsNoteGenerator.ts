@@ -34,7 +34,7 @@ import { pickXhsTopics, extractJson, type XhsTopic } from './xhsTopicPicker';
 const XHS_CONTENT_MAX = 1000;
 
 /** 解析写作模型配置（不依赖 GEO 的 resolveModelConfig） */
-async function resolveXhsModel(task: any, userId: number): Promise<{ baseUrl: string; apiKey: string; model: string }> {
+export async function resolveXhsModel(task: any, userId: number): Promise<{ baseUrl: string; apiKey: string; model: string }> {
   let cfg: any = null;
   if (task.model_config_id) {
     cfg = await getAiModelConfigById(Number(task.model_config_id));
