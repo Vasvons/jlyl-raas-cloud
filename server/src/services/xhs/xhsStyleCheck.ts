@@ -1,8 +1,9 @@
 /**
- * 小红书正文质检（v2.13.8，v2.13.9 扩展 AI 味检测）
+ * 小红书正文质检（v2.13.8，v2.13.9 扩展 AI 味检测，v2.13.10 增品牌存在感）
  *
  * 背景：prompt 里的写作约束是「君子协定」，模型（尤其低成本模型）仍会写出
- * "先说/再说"清单腔、长句、说教句、AI 书面腔（值得一提/堪称/赋能）与排比升华句。
+ * "先说/再说"清单腔、长句、说教句、AI 书面腔（值得一提/堪称/赋能）与排比升华句，
+ * 或走向另一极端——纯生活日记、品牌只出现一次、没有种草核。
  * 这里做生成后程序化校验，返回具体问题清单；
  * 由 xhsNoteGenerator 带问题重写一次（只重试一次，失败保留原版，不阻断生成）。
  */
@@ -20,7 +21,7 @@ const AI_PATTERN_HITS = /不只是[^。]{0,14}更是|不仅[^。]{0,14}而且|�
 /** 空泛程度副词 */
 const VAGUE_ADVERBS = /非常|十分|极其/g;
 
-export function checkXhsNoteStyle(body: string): string[] {
+export function checkXhsNoteStyle(body: string, opts?: { brandNames?: string[] }): string[] {
   const issues: string[] = [];
   const text = String(body || '').replace(/\s+/g, ' ');
 
@@ -62,6 +63,15 @@ export function checkXhsNoteStyle(body: string): string[] {
   const vagueHits = text.match(VAGUE_ADVERBS) || [];
   if (vagueHits.length > 3) {
     issues.push(`"非常/十分/极其"这类空泛副词出现 ${vagueHits.length} 次（最多 2 个，感受直接写出来）`);
+  }
+
+  // 7. 品牌存在感（v2.13.10）：品牌名出现 < 2 次 → 读者记不住推荐的是谁（读不出一篇种草）
+  const brandNames = (opts?.brandNames || []).map((s) => String(s || '').trim()).filter(Boolean);
+  if (brandNames.length > 0) {
+    const maxCount = Math.max(...brandNames.map((n) => text.split(n).length - 1));
+    if (maxCount < 2) {
+      issues.push(`品牌名只出现 ${maxCount} 次（至少 2 次）：补一次"好在哪"的具体表达，读者要能记住推荐的是谁`);
+    }
   }
 
   return issues;

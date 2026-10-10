@@ -134,6 +134,11 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
 
   const model = await resolveXhsModel(task, userId);
   const enterpriseText = formatEnterpriseForXhs(task);
+  // v2.13.10 种草核质检用：品牌名（短名优先，全称兜底；知识库未填品牌时跳过该检测）
+  const brandNames = [
+    String(task.company_short_name || '').trim(),
+    String(task.company_full_name || '').trim(),
+  ].filter(Boolean);
 
   // 关键词：任务创建时按文本查 ID 落库，这里取回文本
   const { getKeywordsByIds } = await import('../../repository');
@@ -249,9 +254,9 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
       if (title.length > 20) title = title.slice(0, 20);
       if (!body) throw new Error('模型返回的正文为空');
 
-      // v2.13.8 正文质检（清单腔/长句/说教句）：命中时带具体问题重写一次（只重试一次，失败保留原版）
+      // v2.13.8 正文质检（清单腔/长句/说教句/AI 腔/品牌存在感）：命中时带具体问题重写一次（只重试一次，失败保留原版）
       let finalBody = body;
-      const styleIssues = checkXhsNoteStyle(finalBody);
+      const styleIssues = checkXhsNoteStyle(finalBody, { brandNames });
       if (styleIssues.length > 0) {
         console.warn(`${logTag} 正文质检未通过（${styleIssues.length} 项），带问题重写一次: ${styleIssues.join('；')}`);
         try {
@@ -263,7 +268,7 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
               content: `【上一版正文未通过质检，请重写并输出完整 JSON】
 需要修复的问题：
 ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
-重写要求：正文要像"我的经历分享"，不能像给读者的注意事项清单——把知识点和建议包进"我遇到了什么、当时怎么做的"里；句子拆短；标题/话题等其他字段保持原样；只输出 JSON，不要解释。`,
+重写要求：① 正文要像"我的经历分享"，不能像给读者的注意事项清单——把知识点和建议包进"我遇到了什么、当时怎么做的"里；② 保住种草核：至少 2 个产品价值的具体证据（用后的状态 / 材质做工体感 / 服务细节）、品牌出现 ≥2 次且至少一次说清"好在哪"、结尾给一句明确的推荐判断；③ 句子拆短；标题/话题等其他字段保持原样；只输出 JSON，不要解释。`,
             },
           ];
           const retryResp = await chatCompletion({
@@ -276,9 +281,9 @@ ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
             timeout: 180000,
           });
           const retryBody = String(extractJson(retryResp.content)?.body || '').trim();
-          if (retryBody && checkXhsNoteStyle(retryBody).length < styleIssues.length) {
+          if (retryBody && checkXhsNoteStyle(retryBody, { brandNames }).length < styleIssues.length) {
             finalBody = retryBody;
-            console.log(`${logTag} 质检重写通过（${styleIssues.length} → ${checkXhsNoteStyle(retryBody).length} 项）`);
+            console.log(`${logTag} 质检重写通过（${styleIssues.length} → ${checkXhsNoteStyle(retryBody, { brandNames }).length} 项）`);
           } else {
             console.warn(`${logTag} 质检重写未通过，保留原版`);
           }
