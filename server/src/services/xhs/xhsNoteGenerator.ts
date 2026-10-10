@@ -7,6 +7,7 @@
  * 只依赖 aiClient（调模型）、repository（数据）、wsServer（进度广播）。
  */
 import { chatCompletion, extractApiErrorMessage } from '../content/aiClient';
+import type { ChatMessage } from '../content/aiClient';
 import { wsBroadcast } from '../../wsServer';
 import {
   getXhsWritingTaskById,
@@ -29,6 +30,7 @@ import {
   formatEnterpriseForXhs,
 } from './prompts';
 import { pickXhsTopics, extractJson, type XhsTopic } from './xhsTopicPicker';
+import { checkXhsNoteStyle } from './xhsStyleCheck';
 
 /** 小红书平台正文硬上限（与 platform_content_rule.platform='xhs'.content_max_length 一致） */
 const XHS_CONTENT_MAX = 1000;
@@ -247,7 +249,45 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
       if (title.length > 20) title = title.slice(0, 20);
       if (!body) throw new Error('模型返回的正文为空');
 
-      const { text: safeBody, truncated } = truncateBody(body, XHS_CONTENT_MAX);
+      // v2.13.8 正文质检（清单腔/长句/说教句）：命中时带具体问题重写一次（只重试一次，失败保留原版）
+      let finalBody = body;
+      const styleIssues = checkXhsNoteStyle(finalBody);
+      if (styleIssues.length > 0) {
+        console.warn(`${logTag} 正文质检未通过（${styleIssues.length} 项），带问题重写一次: ${styleIssues.join('；')}`);
+        try {
+          const retryMessages: ChatMessage[] = [
+            ...messages,
+            { role: 'assistant', content: resp.content },
+            {
+              role: 'user',
+              content: `【上一版正文未通过质检，请重写并输出完整 JSON】
+需要修复的问题：
+${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+重写要求：正文要像"我的经历分享"，不能像给读者的注意事项清单——把知识点和建议包进"我遇到了什么、当时怎么做的"里；句子拆短；标题/话题等其他字段保持原样；只输出 JSON，不要解释。`,
+            },
+          ];
+          const retryResp = await chatCompletion({
+            baseUrl: model.baseUrl,
+            apiKey: model.apiKey,
+            model: model.model,
+            messages: retryMessages,
+            temperature: 0.7,
+            maxTokens: 8192,
+            timeout: 180000,
+          });
+          const retryBody = String(extractJson(retryResp.content)?.body || '').trim();
+          if (retryBody && checkXhsNoteStyle(retryBody).length < styleIssues.length) {
+            finalBody = retryBody;
+            console.log(`${logTag} 质检重写通过（${styleIssues.length} → ${checkXhsNoteStyle(retryBody).length} 项）`);
+          } else {
+            console.warn(`${logTag} 质检重写未通过，保留原版`);
+          }
+        } catch (e: any) {
+          console.warn(`${logTag} 质检重写失败（保留原版）:`, e?.message);
+        }
+      }
+
+      const { text: safeBody, truncated } = truncateBody(finalBody, XHS_CONTENT_MAX);
       if (truncated) console.warn(`${logTag} 正文超 ${XHS_CONTENT_MAX} 字已按句截断`);
 
       // 4.2 落库
