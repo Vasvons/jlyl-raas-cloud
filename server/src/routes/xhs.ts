@@ -25,6 +25,7 @@ import {
   getXhsImages, getXhsImageById, createXhsImage, updateXhsImage, deleteXhsImage,
   countAvailableXhsPublishAccounts,
   deleteXhsImagesByArticleCard,
+  getWritingTasks,
 } from '../repository';
 import { splitNoteIntoCardPages } from '../services/xhs/xhsCardSplitter';
 
@@ -660,6 +661,31 @@ router.post('/notes/generate', async (req: Request, res: Response) => {
     res.json({ code: 200, data: { taskId, totalCount: articleCount } });
   } catch (e: any) {
     console.error('[Xhs] 创建写作任务失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/**
+ * GET /xhs/writing-tasks —— 小红书生成任务列表（进度可视化数据源）
+ * Query: { page?, pageSize?, xhs_customer_id? }
+ * 只返回 writing_system='xhs' 的任务；传 xhs_customer_id 时按客户过滤（校验归属）
+ */
+router.get('/writing-tasks', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(req.query.pageSize) || 10));
+    const xhsCustomerId = req.query.xhs_customer_id ? Number(req.query.xhs_customer_id) : null;
+    if (xhsCustomerId) {
+      const customer = await getXhsCustomerById(xhsCustomerId);
+      if (!customer || Number(customer.owner_user_id) !== uid) {
+        return res.status(404).json({ code: 404, message: '客户不存在' });
+      }
+    }
+    const result = await getWritingTasks(uid, page, pageSize, false, 'xhs', xhsCustomerId);
+    res.json({ code: 200, data: result });
+  } catch (e: any) {
+    console.error('[Xhs] 生成任务列表失败:', e.message);
     res.status(500).json({ code: 500, message: '服务器错误' });
   }
 });
