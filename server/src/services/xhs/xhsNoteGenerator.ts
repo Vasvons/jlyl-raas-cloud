@@ -28,7 +28,7 @@ import {
   formatEnterpriseForXhs,
 } from './prompts';
 import { pickXhsTopics, extractJson, type XhsTopic } from './xhsTopicPicker';
-import { checkXhsNoteStyle } from './xhsStyleCheck';
+import { checkXhsNoteStyle, checkXhsCoverText } from './xhsStyleCheck';
 import { resolveNoteImages, normalizeImageStrategy } from './xhsImageStrategy';
 
 /** 小红书平台正文硬上限（与 platform_content_rule.platform='xhs'.content_max_length 一致） */
@@ -228,21 +228,28 @@ export async function executeXhsWritingTask(taskId: number, userId: number): Pro
       if (title.length > 20) title = title.slice(0, 20);
       if (!body) throw new Error('模型返回的正文为空');
 
-      // v2.13.8 正文质检（清单腔/长句/说教句/AI 腔/品牌存在感）：命中时带具体问题重写一次（只重试一次，失败保留原版）
+      // v2.13.8 正文质检（清单腔/长句/说教句/AI 腔/品牌存在感）+ v2.14.2 封面大字质检（产品品类词/种草落点）
+      // 命中时带具体问题重写一次（只重试一次，失败保留原版，不阻断生成）
       let finalBody = body;
-      const styleIssues = checkXhsNoteStyle(finalBody, { brandNames });
+      let finalCoverText = coverText;
+      const productWord = String(topic.keyword || '').trim();
+      const collectIssues = (b: string, c: string): string[] => [
+        ...checkXhsCoverText(c, { productWord }).map((s) => `封面大字：${s}`),
+        ...checkXhsNoteStyle(b, { brandNames }),
+      ];
+      const styleIssues = collectIssues(finalBody, finalCoverText);
       if (styleIssues.length > 0) {
-        console.warn(`${logTag} 正文质检未通过（${styleIssues.length} 项），带问题重写一次: ${styleIssues.join('；')}`);
+        console.warn(`${logTag} 质检未通过（${styleIssues.length} 项），带问题重写一次: ${styleIssues.join('；')}`);
         try {
           const retryMessages: ChatMessage[] = [
             ...messages,
             { role: 'assistant', content: resp.content },
             {
               role: 'user',
-              content: `【上一版正文未通过质检，请重写并输出完整 JSON】
+              content: `【上一版未通过质检，请重写并输出完整 JSON】
 需要修复的问题：
 ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
-重写要求：① 正文要像"我的经历分享"，不能像给读者的注意事项清单——把知识点和建议包进"我遇到了什么、当时怎么做的"里；② 保住种草核：至少 2 个产品价值的具体证据（用后的状态 / 材质做工体感 / 服务细节）、品牌出现 ≥2 次且至少一次说清"好在哪"、结尾给一句明确的推荐判断；③ 句子拆短；标题/话题等其他字段保持原样；只输出 JSON，不要解释。`,
+重写要求：① 封面大字必须点到本篇产品品类词（${productWord || '本篇核心产品'}），并落到种草结果——让人想知道"换成了什么、现在多好"，不要只复述踩坑；② 正文要像"我的经历分享"，不能像给读者的注意事项清单——把知识点和建议包进"我遇到了什么、当时怎么做的"里；③ 保住种草核：至少 2 个产品价值的具体证据（用后的状态 / 材质做工体感 / 服务细节）、品牌出现 ≥2 次且至少一次说清"好在哪"、结尾给一句明确的推荐判断；④ 句子拆短；标题/话题/配图脚本等其他字段保持原样；只输出 JSON，不要解释。`,
             },
           ];
           const retryResp = await chatCompletion({
@@ -254,10 +261,16 @@ ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
             maxTokens: 8192,
             timeout: 180000,
           });
-          const retryBody = String(extractJson(retryResp.content)?.body || '').trim();
-          if (retryBody && checkXhsNoteStyle(retryBody, { brandNames }).length < styleIssues.length) {
-            finalBody = retryBody;
-            console.log(`${logTag} 质检重写通过（${styleIssues.length} → ${checkXhsNoteStyle(retryBody, { brandNames }).length} 项）`);
+          const retryParsed: any = extractJson(retryResp.content) || {};
+          const retryBody = String(retryParsed.body || '').trim();
+          const retryCover = String(retryParsed.cover_text || '').trim().replace(/^["'「]|["'」]$/g, '');
+          const nextBody = retryBody || finalBody;
+          const nextCover = retryCover || finalCoverText;
+          const nextIssueCount = collectIssues(nextBody, nextCover).length;
+          if (nextIssueCount < styleIssues.length) {
+            finalBody = nextBody;
+            finalCoverText = nextCover;
+            console.log(`${logTag} 质检重写通过（${styleIssues.length} → ${nextIssueCount} 项）`);
           } else {
             console.warn(`${logTag} 质检重写未通过，保留原版`);
           }
@@ -297,7 +310,7 @@ ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
         userId,
         imageScript,
         title,
-        coverText,
+        coverText: finalCoverText,
         topicAngle: topic.angle || '',
         keyword: topic.keyword || '',
       });
@@ -310,7 +323,7 @@ ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
       // 4.4 笔记元数据
       await upsertXhsNoteMeta(articleId, userId, {
         note_style: task.note_style || null,
-        cover_title: coverText || title,
+        cover_title: finalCoverText || title,
         cover_image_id: coverImg?.id ?? null,
         image_ids: illuImgs.map((r) => Number(r.id)),
         topics: topicsOut,

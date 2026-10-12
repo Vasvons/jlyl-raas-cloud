@@ -1,5 +1,5 @@
 /**
- * 小红书正文质检（v2.13.8，v2.13.9 扩展 AI 味检测，v2.13.10 增品牌存在感）
+ * 小红书正文质检（v2.13.8，v2.13.9 扩展 AI 味检测，v2.13.10 增品牌存在感，v2.14.2 增封面大字）
  *
  * 背景：prompt 里的写作约束是「君子协定」，模型（尤其低成本模型）仍会写出
  * "先说/再说"清单腔、长句、说教句、AI 书面腔（值得一提/堪称/赋能）与排比升华句，
@@ -91,6 +91,53 @@ export function checkXhsNoteStyle(body: string, opts?: { brandNames?: string[] }
     .filter((l) => l && l.length <= 16 && EMOJI_HEADING_LINE.test(l));
   if (headingLines.length > 0) {
     issues.push(`出现"emoji + 短标签"式小标题（${headingLines[0]}）：删掉标签，把内容并进自然段落`);
+  }
+
+  return issues;
+}
+
+// ==================== v2.14.2 第 10 类：封面大字质检 ====================
+
+/** 封面大字负面信号：复述踩坑经历（命中 ≥2 且无正面落点即判"写成吐槽帖标题"） */
+const COVER_NEGATIVE_WORDS = [
+  '长毛', '发霉', '霉味', '翻车', '踩坑', '后悔', '血泪', '拆了', '拆掉', '烂了',
+  '生锈', '锈了', '鼓包', '返潮', '受潮', '白花钱', '别学', '劝退', '教训', '变形', '裂了',
+];
+/** 封面大字正面落点信号：种草结果 / 推荐判断（有其一即视为已落到种草） */
+const COVER_POSITIVE_WORDS = [
+  '真香', '推荐', '值得', '值了', '够用', '严丝合缝', '没再', '不用', '省心', '多出',
+  '这样装', '搞定', '好用', '方便', '好看', '干净', '通透', '放心', '省事', '没问题', '香',
+];
+
+/**
+ * v2.14.2 封面大字质检（第 10 类）——决定"划不划走"的最外层大字
+ *
+ * 命中即由生成器带问题重写一次：
+ *  ① 没点到产品品类词 → 读者不知道这篇讲什么（如关键词「阳台柜」，封面却只有"柜子"）
+ *  ② 整体在复述踩坑、没有种草落点 → 封面写成了吐槽帖标题（如"长毛/拆了"却没有正面结果）
+ */
+export function checkXhsCoverText(coverText: string, opts?: { productWord?: string }): string[] {
+  const issues: string[] = [];
+  const raw = String(coverText || '').trim();
+  if (!raw) return issues;
+  // 去掉空白便于跨行匹配（多行封面大字分行书写，产品词可能落在任意一行）
+  const text = raw.replace(/\s+/g, '');
+
+  // 10.1 必须点到产品品类词
+  const productWord = String(opts?.productWord || '').trim();
+  if (productWord.length >= 2 && !text.includes(productWord)) {
+    issues.push(`封面大字没有点到产品品类词「${productWord}」，划到的人看不出这篇讲的是什么`);
+  }
+
+  // 10.2 种草落点：不能只复述踩坑（否定表达不算负面，如"两年没长毛"）
+  const negRe = new RegExp(`(?<![没不无未])(?:${COVER_NEGATIVE_WORDS.join('|')})`, 'g');
+  const negHits = text.match(negRe) || [];
+  const posHits = COVER_POSITIVE_WORDS.filter((w) => text.includes(w));
+  if (negHits.length >= 2 && posHits.length === 0) {
+    issues.push(
+      `封面大字整体在复述踩坑（命中「${[...new Set(negHits)].join('、')}」）、没有落到种草结果：` +
+      '要让人想知道"换成了什么、现在多好"，不能写成吐槽帖标题',
+    );
   }
 
   return issues;
