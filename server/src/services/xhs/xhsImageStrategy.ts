@@ -222,17 +222,19 @@ export async function resolveNoteImages(params: {
   // gallery / gallery_ai / ai
   let cover: NoteImagePick | null = null;
   const illustrations: NoteImagePick[] = [];
+  // v2.15.3 封面模式「大字模式」：封面不出图（封面大字由桌面端渲染成纯文字封面图），插画不受影响
+  const textCover = String(task.cover_image_mode || '') === 'text';
 
   if (strategy !== 'ai') {
-    const gCover = await pickGalleryCover(task);
+    const gCover = textCover ? null : await pickGalleryCover(task);
     if (gCover?.url) cover = { id: Number(gCover.id), url: String(gCover.url) };
     const gIllu = await pickGalleryIllustrations(task, gCover?.id ?? null);
     for (const r of gIllu) illustrations.push({ id: Number(r.id), url: String(r.url) });
   }
 
   if (strategy === 'ai' || strategy === 'gallery_ai') {
-    // 封面：ai 策略必生成；gallery_ai 仅在图库缺封面时生成
-    if (!cover) {
+    // 封面：ai 策略必生成；gallery_ai 仅在图库缺封面时生成；大字模式一律不生成（留给桌面端渲染文字封面）
+    if (!cover && !textCover) {
       const scene = scriptScene(params.imageScript, 0, `${params.title}${params.coverText ? `（封面大字：${params.coverText}）` : ''}`);
       const gen = await aiGenerateOne({ userId, task, kind: 'cover', prompt: buildAiPrompt(scene, 'cover') });
       if (gen) cover = gen;

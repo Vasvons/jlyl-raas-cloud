@@ -3839,6 +3839,9 @@ export async function migrate() {
     //     历史 3 条内置模板 design 为空，前端按 layout 回退渲染，不影响旧「封面加字」功能
     await client.query(`ALTER TABLE xhs_cover_template ADD COLUMN IF NOT EXISTS design JSONB`);
 
+    // 11. v2.15.3 封面模式快照（'text' 大字模式：生成时不配图封面，桌面端把封面大字渲染成封面图）
+    await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS cover_image_mode VARCHAR(16)`);
+
     console.log('[Migrate] v3.z 小红书 P4 独立客户体系表创建/验证完成（xhs_customer / xhs_knowledge / xhs_image + 6 列）');
     console.log('[Migrate] v2.13.0 图文卡片列创建/验证完成（xhs_note_meta.card_designs / xhs_cover_template.design）');
 

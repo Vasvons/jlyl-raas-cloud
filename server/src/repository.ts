@@ -10040,14 +10040,16 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
   card_designs?: Record<string, any> | null;
   /** v2.13.5 双内容形态：'note' 笔记（文章+图库配图）/ 'card' 图文（文章做成图片） */
   content_form?: 'note' | 'card' | null;
+  /** v2.15.3 封面模式快照（'text' 大字模式：生成时不配图封面，桌面端据此把封面大字渲染成封面图） */
+  cover_image_mode?: string | null;
 }): Promise<void> {
   await query(
     `INSERT INTO xhs_note_meta
-       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id, xhs_account_type, card_designs, content_form)
+       (article_id, user_id, note_style, cover_template_id, cover_title, cover_image_id, image_ids, topics, xhs_customer_id, xhs_account_type, card_designs, content_form, cover_image_mode)
      VALUES ($1, $2, $3, $4, $5, $6,
              COALESCE($7::jsonb, '[]'::jsonb),
              COALESCE($8::jsonb, '[]'::jsonb),
-             $9, $10, $11::jsonb, COALESCE($12, 'note'))
+             $9, $10, $11::jsonb, COALESCE($12, 'note'), $13)
      ON CONFLICT (article_id) DO UPDATE SET
        note_style        = COALESCE(EXCLUDED.note_style, xhs_note_meta.note_style),
        cover_template_id = COALESCE(EXCLUDED.cover_template_id, xhs_note_meta.cover_template_id),
@@ -10059,6 +10061,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
        xhs_account_type  = COALESCE(EXCLUDED.xhs_account_type, xhs_note_meta.xhs_account_type),
        card_designs      = COALESCE(EXCLUDED.card_designs, xhs_note_meta.card_designs),
        content_form      = COALESCE(EXCLUDED.content_form, xhs_note_meta.content_form),
+       cover_image_mode  = COALESCE(EXCLUDED.cover_image_mode, xhs_note_meta.cover_image_mode),
        update_time       = NOW()`,
     [
       articleId,
@@ -10073,6 +10076,7 @@ export async function upsertXhsNoteMeta(articleId: number, userId: number, data:
       data.xhs_account_type ?? null,
       data.card_designs != null ? JSON.stringify(data.card_designs) : null,
       data.content_form === 'card' || data.content_form === 'note' ? data.content_form : null,
+      data.cover_image_mode ?? null,
     ]
   );
 }
@@ -10111,6 +10115,7 @@ export async function getXhsNotes(
             a.cover_image_url, a.tags, a.create_time,
             m.id AS meta_id, m.note_style, m.cover_template_id, m.cover_title,
             m.cover_image_id, m.image_ids, m.topics, m.image_script, m.xhs_customer_id, m.xhs_account_type,
+            m.cover_image_mode,
             COALESCE(m.content_form, 'note') AS content_form,
             m.card_designs,
             (SELECT COUNT(*)::int FROM publish_record r

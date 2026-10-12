@@ -335,6 +335,10 @@ ${styleIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}
         xhs_account_type: ['brand', 'creator'].includes(String(task.account_type))
           ? (String(task.account_type) as 'brand' | 'creator')
           : null,
+        // v2.15.3 封面模式快照：'text' 大字模式（生成时不算图封面，桌面端把封面大字渲染成封面图）
+        cover_image_mode: ['random', 'fixed', 'none', 'text', 'auto'].includes(String(task.cover_image_mode || ''))
+          ? String(task.cover_image_mode)
+          : null,
       });
 
       // 4.5 配图脚本（单独更新，upsert 白名单不含该字段）
