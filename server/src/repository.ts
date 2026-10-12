@@ -7345,6 +7345,52 @@ export async function getKeywordIdsByValues(userId: number, values: string[]): P
   return result.rows.map((r: any) => r.id);
 }
 
+/**
+ * v2.15.2：按文本「查不到就补录」并返回关键词 ID（保持输入顺序 + 去重）
+ *
+ * 背景：getKeywordIdsByValues 只查不建，小红书勾选的新词（尤其 AI 候选词）不在 zlgjc 时会被静默丢弃，
+ * 导致选题器拿不到关键词改为自主规划、笔记不紧扣所选词。
+ * 小红书生成链路专用：缺失的词按手动加词同款语义补录（keyword_type=0 蒸馏词桶、hxgjc=value、lxfs=''）。
+ * 仅新增函数，不改动 getKeywordIdsByValues 的既有行为（GEO / AEO 侧不受影响）。
+ */
+export async function ensureKeywordIdsByValues(userId: number, values: string[]): Promise<number[]> {
+  const uniq = Array.from(new Set(values.map((s) => String(s || '').trim()).filter(Boolean)));
+  if (uniq.length === 0) return [];
+  // 1. 查已有（与 getKeywordIdsByValues 语义一致：只按 value 匹配、不限 keyword_type；同词多类型取 id 最小一条）
+  const existing = await query(
+    `SELECT DISTINCT ON (value) value, id FROM zlgjc WHERE userid = $1 AND value = ANY($2::text[]) ORDER BY value, id`,
+    [String(userId), uniq]
+  );
+  const idByValue = new Map<string, number>();
+  for (const r of existing.rows) idByValue.set(String(r.value), Number(r.id));
+  // 2. 补录缺失的词（ON CONFLICT 双保险防并发重复）
+  const missing = uniq.filter((v) => !idByValue.has(v));
+  if (missing.length > 0) {
+    console.log(`[Keywords] 补录 ${missing.length}/${uniq.length} 个新关键词到用户 ${userId} 的词库（小红书生成）`);
+  }
+  for (const v of missing) {
+    const ins = await query(
+      `INSERT INTO zlgjc (value, hxgjc, userid, lxfs, keyword_type)
+       VALUES ($1, $1, $2, '', 0)
+       ON CONFLICT (userid, value, keyword_type) DO NOTHING
+       RETURNING id`,
+      [v, String(userId)]
+    );
+    let id = Number(ins.rows[0]?.id || 0);
+    if (!id) {
+      // 冲突（并发/其他类型已存在）时回查
+      const back = await query(
+        `SELECT id FROM zlgjc WHERE userid = $1 AND value = $2 ORDER BY id LIMIT 1`,
+        [String(userId), v]
+      );
+      id = Number(back.rows[0]?.id || 0);
+    }
+    if (id) idByValue.set(v, id);
+  }
+  // 3. 按输入顺序返回（极端情况下补录失败且回查不到的词跳过，不阻断生成）
+  return uniq.map((v) => idByValue.get(v)).filter((x): x is number => x !== undefined);
+}
+
 // ============ v2.3.0: AEO 写作建议池 ============
 
 export interface WritingSuggestionRow {

@@ -937,9 +937,11 @@ router.post('/notes/generate', async (req: Request, res: Response) => {
       Math.max(1, Number(b.article_count) || (rawTopics.length || rawKeywords.length || 1)),
     );
 
-    // 关键词文本 → keyword_ids（复用既有查/建逻辑）
-    const { getKeywordIdsByValues } = await import('../repository');
-    const keywordIds = rawKeywords.length > 0 ? await getKeywordIdsByValues(uid, rawKeywords) : [];
+    // 关键词文本 → keyword_ids
+    // v2.15.2：改为「查不到就补录」（ensureKeywordIdsByValues）——此前只查不建，
+    //   勾选/手填的新词不在 zlgjc 时被静默丢弃，选题器拿不到关键词会改为自主规划、笔记不紧扣所选词
+    const { ensureKeywordIdsByValues } = await import('../repository');
+    const keywordIds = rawKeywords.length > 0 ? await ensureKeywordIdsByValues(uid, rawKeywords) : [];
 
     const taskId = await createWritingTask({
       user_id: uid,
