@@ -23,6 +23,10 @@ import {
   getXhsCustomers, getXhsCustomerById, createXhsCustomer, updateXhsCustomer, deleteXhsCustomer, countXhsCustomerRefs,
   getXhsKnowledges, getXhsKnowledgeById, createXhsKnowledge, updateXhsKnowledge, deleteXhsKnowledge, countXhsKnowledgeRefs,
   getXhsImages, getXhsImageById, createXhsImage, updateXhsImage, deleteXhsImage,
+  // v2.15.0：小红书关键词库（每个客户独立）
+  getXhsKeywordLibraries, getXhsKeywordLibraryById, createXhsKeywordLibrary,
+  updateXhsKeywordLibrary, deleteXhsKeywordLibrary,
+  getXhsKeywords, getXhsKeywordsByCustomer, bulkCreateXhsKeywords, getXhsKeywordById, updateXhsKeyword, deleteXhsKeyword,
   countAvailableXhsPublishAccounts,
   deleteXhsImagesByArticleCard,
   // v2.13.6：删除已生成记录（笔记 / 生成任务）
@@ -120,10 +124,10 @@ router.delete('/customers/:id', async (req: Request, res: Response) => {
       return res.status(404).json({ code: 404, message: '客户不存在或无权删除' });
     }
     const refs = await countXhsCustomerRefs(id);
-    if (refs.knowledge > 0 || refs.notes > 0) {
+    if (refs.knowledge > 0 || refs.notes > 0 || refs.keywordLibraries > 0) {
       return res.status(400).json({
         code: 400,
-        message: `该客户下还有 ${refs.knowledge} 个知识库、${refs.notes} 篇笔记，请先删除或转移后再删除客户`,
+        message: `该客户下还有 ${refs.knowledge} 个知识库、${refs.notes} 篇笔记、${refs.keywordLibraries} 个关键词库，请先删除或转移后再删除客户`,
       });
     }
     const affected = await deleteXhsCustomer(id, uid);
@@ -303,6 +307,168 @@ router.delete('/images/:id', async (req: Request, res: Response) => {
     res.json({ code: 200, message: '删除成功' });
   } catch (e: any) {
     console.error('[Xhs] 删除图片失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+// ==================== 小红书关键词库（v2.15.0） ====================
+
+/**
+ * GET /xhs/keyword-libraries?xhs_customer_id= —— 某客户的关键词库列表（带词数）
+ * GET /xhs/keywords?library_id= —— 某库的词；?xhs_customer_id= —— 该客户全部词（带库名，供生成时选词）
+ */
+router.get('/keyword-libraries', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const customerId = Number(req.query.xhs_customer_id);
+    if (!customerId) return res.status(400).json({ code: 400, message: '缺少 xhs_customer_id' });
+    const customer = await getXhsCustomerById(customerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const rows = await getXhsKeywordLibraries(customerId);
+    res.json({ code: 200, data: rows });
+  } catch (e: any) {
+    console.error('[Xhs] 关键词库列表失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** POST /xhs/keyword-libraries —— 新建关键词库 */
+router.post('/keyword-libraries', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const b = req.body || {};
+    const customerId = Number(b.xhs_customer_id);
+    if (!customerId) return res.status(400).json({ code: 400, message: '缺少 xhs_customer_id' });
+    if (!b.name || !String(b.name).trim()) return res.status(400).json({ code: 400, message: '缺少库名称' });
+    const customer = await getXhsCustomerById(customerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const id = await createXhsKeywordLibrary({
+      xhs_customer_id: customerId,
+      owner_user_id: uid,
+      name: String(b.name).trim().slice(0, 64),
+      remark: b.remark,
+    });
+    res.json({ code: 200, data: { id } });
+  } catch (e: any) {
+    console.error('[Xhs] 新建关键词库失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** PUT /xhs/keyword-libraries/:id —— 改名 / 备注 */
+router.put('/keyword-libraries/:id', async (req: Request, res: Response) => {
+  try {
+    const affected = await updateXhsKeywordLibrary(Number(req.params.id), getUserId(req), req.body || {});
+    if (affected === 0) return res.status(404).json({ code: 404, message: '关键词库不存在或无权修改' });
+    res.json({ code: 200, message: '更新成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 更新关键词库失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** DELETE /xhs/keyword-libraries/:id —— 删除（库内词随之级联删除） */
+router.delete('/keyword-libraries/:id', async (req: Request, res: Response) => {
+  try {
+    const affected = await deleteXhsKeywordLibrary(Number(req.params.id), getUserId(req));
+    if (affected === 0) return res.status(404).json({ code: 404, message: '关键词库不存在或无权删除' });
+    res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 删除关键词库失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** GET /xhs/keywords —— 按库（library_id）或按客户（xhs_customer_id）取词 */
+router.get('/keywords', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const libraryId = req.query.library_id ? Number(req.query.library_id) : 0;
+    if (libraryId) {
+      const lib = await getXhsKeywordLibraryById(libraryId);
+      if (!lib || Number(lib.owner_user_id) !== uid) {
+        return res.status(404).json({ code: 404, message: '关键词库不存在' });
+      }
+      const rows = await getXhsKeywords(libraryId);
+      return res.json({ code: 200, data: rows });
+    }
+    const customerId = Number(req.query.xhs_customer_id);
+    if (!customerId) return res.status(400).json({ code: 400, message: '缺少 library_id 或 xhs_customer_id' });
+    const customer = await getXhsCustomerById(customerId);
+    if (!customer || Number(customer.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '客户不存在' });
+    }
+    const rows = await getXhsKeywordsByCustomer(customerId);
+    res.json({ code: 200, data: rows });
+  } catch (e: any) {
+    console.error('[Xhs] 关键词列表失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/**
+ * POST /xhs/keywords —— 批量加词（body: { library_id, keywords: string[] }，也兼容单个 keyword）
+ * 库内已存在的词自动跳过，返回 { inserted, skipped }
+ */
+router.post('/keywords', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const b = req.body || {};
+    const libraryId = Number(b.library_id);
+    if (!libraryId) return res.status(400).json({ code: 400, message: '缺少 library_id' });
+    const lib = await getXhsKeywordLibraryById(libraryId);
+    if (!lib || Number(lib.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '关键词库不存在' });
+    }
+    const raw: any[] = Array.isArray(b.keywords) ? b.keywords : (b.keyword ? [b.keyword] : []);
+    const list = raw.map((s: any) => String(s || '').trim()).filter(Boolean);
+    if (list.length === 0) return res.status(400).json({ code: 400, message: '请至少填写 1 个关键词' });
+    const r = await bulkCreateXhsKeywords(libraryId, Number(lib.xhs_customer_id), list);
+    res.json({ code: 200, data: r, message: `新增 ${r.inserted} 个${r.skipped > 0 ? `，跳过重复 ${r.skipped} 个` : ''}` });
+  } catch (e: any) {
+    console.error('[Xhs] 加关键词失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** PUT /xhs/keywords/:id —— 改词 / 排序 */
+router.put('/keywords/:id', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const kw = await getXhsKeywordById(Number(req.params.id));
+    if (!kw) return res.status(404).json({ code: 404, message: '关键词不存在' });
+    const lib = await getXhsKeywordLibraryById(Number(kw.library_id));
+    if (!lib || Number(lib.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '关键词不存在或无权修改' });
+    }
+    const affected = await updateXhsKeyword(Number(req.params.id), Number(kw.xhs_customer_id), req.body || {});
+    if (affected === 0) return res.status(404).json({ code: 404, message: '关键词不存在或无权修改' });
+    res.json({ code: 200, message: '更新成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 更新关键词失败:', e.message);
+    res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/** DELETE /xhs/keywords/:id —— 删除单个词 */
+router.delete('/keywords/:id', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const kw = await getXhsKeywordById(Number(req.params.id));
+    if (!kw) return res.status(404).json({ code: 404, message: '关键词不存在' });
+    const lib = await getXhsKeywordLibraryById(Number(kw.library_id));
+    if (!lib || Number(lib.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '关键词不存在或无权删除' });
+    }
+    const affected = await deleteXhsKeyword(Number(req.params.id), Number(kw.xhs_customer_id));
+    if (affected === 0) return res.status(404).json({ code: 404, message: '关键词不存在或无权删除' });
+    res.json({ code: 200, message: '删除成功' });
+  } catch (e: any) {
+    console.error('[Xhs] 删除关键词失败:', e.message);
     res.status(500).json({ code: 500, message: '服务器错误' });
   }
 });

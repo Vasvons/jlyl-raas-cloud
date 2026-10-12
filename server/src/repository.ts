@@ -10638,15 +10638,20 @@ export async function deleteXhsCustomer(id: number, ownerUserId: number): Promis
 }
 
 /** 统计客户下的关联数据（删除前校验） */
-export async function countXhsCustomerRefs(customerId: number): Promise<{ knowledge: number; notes: number }> {
+export async function countXhsCustomerRefs(customerId: number): Promise<{ knowledge: number; notes: number; keywordLibraries: number }> {
   const result = await query(
     `SELECT
        (SELECT COUNT(*)::int FROM xhs_knowledge WHERE xhs_customer_id = $1) AS knowledge,
-       (SELECT COUNT(*)::int FROM xhs_note_meta WHERE xhs_customer_id = $1) AS notes`,
+       (SELECT COUNT(*)::int FROM xhs_note_meta WHERE xhs_customer_id = $1) AS notes,
+       (SELECT COUNT(*)::int FROM xhs_keyword_library WHERE xhs_customer_id = $1) AS keyword_libraries`,
     [customerId]
   );
-  const row = result.rows[0] || { knowledge: 0, notes: 0 };
-  return { knowledge: Number(row.knowledge || 0), notes: Number(row.notes || 0) };
+  const row = result.rows[0] || { knowledge: 0, notes: 0, keyword_libraries: 0 };
+  return {
+    knowledge: Number(row.knowledge || 0),
+    notes: Number(row.notes || 0),
+    keywordLibraries: Number(row.keyword_libraries || 0),
+  };
 }
 
 // ---------- 知识库 ----------
@@ -10729,6 +10734,152 @@ export async function countXhsKnowledgeRefs(knowledgeId: number): Promise<{ imag
   );
   const row = result.rows[0] || { images: 0, tasks: 0 };
   return { images: Number(row.images || 0), tasks: Number(row.tasks || 0) };
+}
+
+// ---------- 关键词库（v2.15.0） ----------
+
+/** 某客户的关键词库列表（带词数） */
+export async function getXhsKeywordLibraries(customerId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT l.*, (SELECT COUNT(*)::int FROM xhs_keyword k WHERE k.library_id = l.id) AS keyword_count
+       FROM xhs_keyword_library l
+      WHERE l.xhs_customer_id = $1 AND l.is_active = true
+      ORDER BY l.create_time ASC, l.id ASC`,
+    [customerId]
+  );
+  return result.rows;
+}
+
+export async function getXhsKeywordLibraryById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM xhs_keyword_library WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+export async function createXhsKeywordLibrary(data: Record<string, any>): Promise<number> {
+  const result = await query(
+    `INSERT INTO xhs_keyword_library (xhs_customer_id, owner_user_id, name, remark)
+     VALUES ($1, $2, $3, $4) RETURNING id`,
+    [data.xhs_customer_id, data.owner_user_id, data.name, data.remark || null]
+  );
+  return result.rows[0].id;
+}
+
+/** 更新关键词库（SQL 带 owner_user_id 约束） */
+export async function updateXhsKeywordLibrary(id: number, ownerUserId: number, data: Record<string, any>): Promise<number> {
+  const allowed = ['name', 'remark', 'is_active'];
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = $${idx++}`);
+      values.push(data[key]);
+    }
+  }
+  if (fields.length === 0) return 0;
+  values.push(id, ownerUserId);
+  const result = await query(
+    `UPDATE xhs_keyword_library SET ${fields.join(', ')}, update_time = NOW()
+      WHERE id = $${idx} AND owner_user_id = $${idx + 1}`,
+    values
+  );
+  return result.rowCount || 0;
+}
+
+/** 删除关键词库（xhs_keyword 有 ON DELETE CASCADE 自动清理） */
+export async function deleteXhsKeywordLibrary(id: number, ownerUserId: number): Promise<number> {
+  const result = await query(
+    'DELETE FROM xhs_keyword_library WHERE id = $1 AND owner_user_id = $2',
+    [id, ownerUserId]
+  );
+  return result.rowCount || 0;
+}
+
+export async function getXhsKeywordById(id: number): Promise<any | null> {
+  const result = await query('SELECT * FROM xhs_keyword WHERE id = $1', [id]);
+  return result.rows[0] || null;
+}
+
+/** 某库的关键词列表（按排序 + id） */
+export async function getXhsKeywords(libraryId: number): Promise<any[]> {
+  const result = await query(
+    'SELECT * FROM xhs_keyword WHERE library_id = $1 ORDER BY sort_order ASC, id ASC',
+    [libraryId]
+  );
+  return result.rows;
+}
+
+/** 某客户全部关键词（跨库，用于生成时选词；带库名） */
+export async function getXhsKeywordsByCustomer(customerId: number): Promise<any[]> {
+  const result = await query(
+    `SELECT k.*, l.name AS library_name
+       FROM xhs_keyword k
+       JOIN xhs_keyword_library l ON l.id = k.library_id
+      WHERE k.xhs_customer_id = $1
+      ORDER BY l.create_time ASC, l.id ASC, k.sort_order ASC, k.id ASC`,
+    [customerId]
+  );
+  return result.rows;
+}
+
+/**
+ * 批量加词（粘贴多行用）：库内已存在的词跳过（依赖 uq_xhs_keyword_lib_text）
+ * 返回 { inserted, skipped }
+ */
+export async function bulkCreateXhsKeywords(
+  libraryId: number,
+  customerId: number,
+  keywords: string[],
+): Promise<{ inserted: number; skipped: number }> {
+  const list = [...new Set(keywords.map((s) => String(s || '').trim()).filter(Boolean))];
+  if (list.length === 0) return { inserted: 0, skipped: 0 };
+  // 续接现有 sort_order，保持粘贴顺序
+  const maxRow = await query('SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM xhs_keyword WHERE library_id = $1', [libraryId]);
+  let order = Number(maxRow.rows[0]?.max_order ?? -1) + 1;
+  let inserted = 0;
+  for (const kw of list) {
+    const r = await query(
+      `INSERT INTO xhs_keyword (library_id, xhs_customer_id, keyword, sort_order)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (library_id, keyword) DO NOTHING`,
+      [libraryId, customerId, kw.slice(0, 128), order]
+    );
+    if ((r.rowCount || 0) > 0) {
+      inserted++;
+      order++;
+    }
+  }
+  return { inserted, skipped: list.length - inserted };
+}
+
+/** 更新关键词（改词本身或排序；SQL 带 xhs_customer_id 约束防跨客户越权） */
+export async function updateXhsKeyword(id: number, customerId: number, data: Record<string, any>): Promise<number> {
+  const allowed = ['keyword', 'sort_order'];
+  const fields: string[] = [];
+  const values: any[] = [];
+  let idx = 1;
+  for (const key of allowed) {
+    if (data[key] !== undefined) {
+      fields.push(`${key} = $${idx++}`);
+      values.push(key === 'keyword' ? String(data[key]).trim().slice(0, 128) : data[key]);
+    }
+  }
+  if (fields.length === 0) return 0;
+  values.push(id, customerId);
+  const result = await query(
+    `UPDATE xhs_keyword SET ${fields.join(', ')} WHERE id = $${idx} AND xhs_customer_id = $${idx + 1}`,
+    values
+  );
+  return result.rowCount || 0;
+}
+
+/** 删除关键词 */
+export async function deleteXhsKeyword(id: number, customerId: number): Promise<number> {
+  const result = await query(
+    'DELETE FROM xhs_keyword WHERE id = $1 AND xhs_customer_id = $2',
+    [id, customerId]
+  );
+  return result.rowCount || 0;
 }
 
 // ---------- 图库 ----------

@@ -3776,6 +3776,34 @@ export async function migrate() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_image_knowledge ON xhs_image(xhs_knowledge_id, image_type)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_image_customer ON xhs_image(xhs_customer_id, image_type)`);
 
+    // 3.5 v2.15.0 小红书关键词库（每个客户可建多个命名库；生成笔记时直接选库/选词，无需每次手填）
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xhs_keyword_library (
+        id              SERIAL PRIMARY KEY,
+        xhs_customer_id INTEGER NOT NULL REFERENCES xhs_customer(id) ON DELETE CASCADE,
+        owner_user_id   INTEGER NOT NULL REFERENCES users(id),
+        name            VARCHAR(64) NOT NULL,
+        remark          TEXT,
+        is_active       BOOLEAN DEFAULT true,
+        create_time     TIMESTAMP DEFAULT NOW(),
+        update_time     TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_kw_lib_customer ON xhs_keyword_library(xhs_customer_id, is_active)`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS xhs_keyword (
+        id              SERIAL PRIMARY KEY,
+        library_id      INTEGER NOT NULL REFERENCES xhs_keyword_library(id) ON DELETE CASCADE,
+        xhs_customer_id INTEGER NOT NULL REFERENCES xhs_customer(id) ON DELETE CASCADE,
+        keyword         VARCHAR(128) NOT NULL,
+        sort_order      INTEGER DEFAULT 0,
+        create_time     TIMESTAMP DEFAULT NOW()
+      )
+    `);
+    // 同库内不重复（批量粘贴时 ON CONFLICT DO NOTHING 依赖这个唯一索引）
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_xhs_keyword_lib_text ON xhs_keyword(library_id, keyword)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_keyword_customer ON xhs_keyword(xhs_customer_id)`);
+
     // 4. 既有表加列（必须在上面三张表建完之后）
     await client.query(`ALTER TABLE xhs_note_meta ADD COLUMN IF NOT EXISTS xhs_customer_id INTEGER REFERENCES xhs_customer(id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_xhs_note_meta_customer ON xhs_note_meta(xhs_customer_id)`);
