@@ -2,7 +2,7 @@
  * 图文卡片 AI 拆页（XHS_CARD_STUDIO）
  *
  * 输入：笔记详情（正文 / 封面大字 / 配图脚本 / 知识库）→ 输出每页 {title, text}。
- * 失败兜底：image_script 转换 → 正文段落切分（source: 'fallback'）。
+ * 失败兜底：正文段落切页 → 正文为空时才用 image_script（source: 'fallback'）。
  *
  * 解耦约束：复用小红书独立内核（prompts / xhsNoteGenerator 的模型解析），不碰 GEO 逻辑。
  */
@@ -77,7 +77,7 @@ export async function splitNoteIntoCardPages(
     if (pages.length === 0) return { pages: fallback, source: 'fallback' };
     return { pages, source: 'ai' };
   } catch (e: any) {
-    console.warn(`[XhsCards] 笔记 ${articleId} AI 拆页失败，降级配图脚本/段落切页:`, e?.message);
+    console.warn(`[XhsCards] 笔记 ${articleId} AI 拆页失败，降级正文段落切页:`, e?.message);
     return { pages: fallback, source: 'fallback' };
   }
 }
@@ -96,26 +96,38 @@ function normalizePages(raw: any, requested: number | null): CardSplitPage[] {
   return pages.slice(0, max).map((p, i) => ({ ...p, title: p.title || `第 ${i + 1} 页` }));
 }
 
-/** 兜底：配图脚本（role→title / scene→text）→ 无脚本时正文段落切页 */
+/**
+ * 兜底：优先用【笔记正文】段落切页；仅当正文为空时才退回【配图脚本】。
+ *
+ * 说明（v2.16.2 修复）：此前是「配图脚本优先」，而绝大多数笔记都带配图脚本，
+ * 导致未配置写作模型 / AI 失败时，卡片载入的是"拍什么画面"的脚本而不是标题+正文。
+ */
 function fallbackPages(detail: any, requested: number | null): CardSplitPage[] {
   const max = requested || 6;
+  const head = String(detail.cover_title || detail.title || '本篇要点').trim().slice(0, 12);
+
+  const paras = stripHtml(String(detail.content_html || ''))
+    .split(/\n+/).map((s: string) => s.trim()).filter(Boolean);
+
+  if (paras.length > 0) {
+    const pages: CardSplitPage[] = [{ title: head, text: paras[0].slice(0, 60) }];
+    paras.slice(1, max).forEach((p: string) => {
+      pages.push({ title: p.slice(0, 12), text: p.length > 12 ? p.slice(12, 72) : '' });
+    });
+    if (pages.length < 2) pages.push({ title: '核心要点', text: '' });
+    return pages;
+  }
+
+  // 正文为空：退回配图脚本（role→title / scene→text）
   const script = Array.isArray(detail.image_script) ? detail.image_script : [];
-  if (script.length >= 2) {
+  if (script.length > 0) {
     return script.slice(0, max).map((s: any, i: number) => ({
       title: String(s?.role || `第 ${i + 1} 页`).trim().slice(0, 12),
       text: String(s?.scene || '').trim().slice(0, 60),
     }));
   }
-  const paras = stripHtml(String(detail.content_html || ''))
-    .split(/\n+/).map((s: string) => s.trim()).filter(Boolean);
-  const head = String(detail.cover_title || detail.title || '本篇要点').trim().slice(0, 12);
-  const pages: CardSplitPage[] = [{ title: head, text: '' }];
-  paras.slice(0, max - 1).forEach((p: string) => {
-    pages.push({ title: p.slice(0, 12), text: p.length > 12 ? p.slice(12, 72) : '' });
-  });
-  return pages.length >= 2
-    ? pages
-    : [{ title: head, text: '' }, { title: '要点 1', text: String(paras[0] || '').slice(0, 60) }];
+
+  return [{ title: head, text: '' }];
 }
 
 /** 去标签 → 纯文本（段落之间填空行） */
