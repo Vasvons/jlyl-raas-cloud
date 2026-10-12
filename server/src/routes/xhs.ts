@@ -33,10 +33,15 @@ import {
   deleteXhsNote, deleteXhsNoteComposeImages, getXhsTaskArticles, countInflightXhsPublishRecords,
   getWritingTasks, getWritingTaskById, deleteWritingTask,
   updateArticle,
+  // v2.15.1：AI 候选词生成用（写作模型兜底）
+  getDefaultModelConfig,
 } from '../repository';
 import { splitNoteIntoCardPages } from '../services/xhs/xhsCardSplitter';
 import { bodyTextToHtml, countText } from '../services/xhs/xhsNoteGenerator';
 import { normalizeImageStrategy } from '../services/xhs/xhsImageStrategy';
+import { formatEnterpriseForXhs } from '../services/xhs/prompts';
+import { generateXhsKeywordCandidates } from '../services/xhs/xhsKeywordGenerator';
+import { decrypt } from '../utils/crypto';
 
 const router = Router();
 router.use(authMiddleware);
@@ -470,6 +475,55 @@ router.delete('/keywords/:id', async (req: Request, res: Response) => {
   } catch (e: any) {
     console.error('[Xhs] 删除关键词失败:', e.message);
     res.status(500).json({ code: 500, message: '服务器错误' });
+  }
+});
+
+/**
+ * POST /xhs/keyword-libraries/:id/generate —— AI 生成候选关键词（v2.15.1）
+ *
+ * 依据「库名称（+备注）+ 该客户企业知识库」调写作模型生成一批候选词；
+ * body.exclude 传上一批候选词即实现「换一批」；库内已有词与排除词都会在服务端过滤。
+ * 不落库——候选词由前端逐个「加号」选择性追加进库。
+ */
+router.post('/keyword-libraries/:id/generate', async (req: Request, res: Response) => {
+  try {
+    const uid = getUserId(req);
+    const lib = await getXhsKeywordLibraryById(Number(req.params.id));
+    if (!lib || Number(lib.owner_user_id) !== uid) {
+      return res.status(404).json({ code: 404, message: '关键词库不存在' });
+    }
+    const knowledges = await getXhsKnowledges(Number(lib.xhs_customer_id));
+    if (!knowledges || knowledges.length === 0) {
+      return res.status(400).json({ code: 400, message: '当前客户还没有企业知识库，请先到「账号与素材 → 企业知识库」创建后再生成关键词' });
+    }
+    const cfg = await getDefaultModelConfig(uid);
+    if (!cfg) {
+      return res.status(400).json({ code: 400, message: '未配置可用于写作的 AI 模型，请到「后台配置 → AI模型配置」中配置并开启「用于写作」' });
+    }
+    const baseUrl = String(cfg.base_url || '').trim();
+    if (!baseUrl) {
+      return res.status(400).json({ code: 400, message: `模型配置「${cfg.model_name || cfg.platform}」缺少 Base URL，请先到「后台配置 → AI模型配置」补全` });
+    }
+    // 排除：库内已有词 + 前端传来的上一批候选（换一批）
+    const existingRows = await getXhsKeywords(Number(lib.id));
+    const existing = existingRows.map((r: any) => String(r.keyword || '')).filter(Boolean);
+    const excludeBody: string[] = Array.isArray(req.body?.exclude)
+      ? req.body.exclude.map((s: any) => String(s || '').trim()).filter(Boolean)
+      : [];
+    const keywords = await generateXhsKeywordCandidates({
+      libraryName: String(lib.name || ''),
+      remark: lib.remark ? String(lib.remark) : '',
+      knowledgeText: formatEnterpriseForXhs(knowledges[0]),
+      exclude: [...existing, ...excludeBody],
+      model: { baseUrl, apiKey: decrypt(cfg.api_key_encrypted), model: cfg.model_name },
+    });
+    if (keywords.length === 0) {
+      return res.status(500).json({ code: 500, message: '模型未返回有效候选词，请重试或更换写作模型' });
+    }
+    res.json({ code: 200, data: { keywords } });
+  } catch (e: any) {
+    console.error('[Xhs] 生成候选关键词失败:', e.message);
+    res.status(500).json({ code: 500, message: e.message || '服务器错误' });
   }
 });
 
