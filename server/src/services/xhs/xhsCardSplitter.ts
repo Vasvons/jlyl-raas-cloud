@@ -16,7 +16,21 @@ import { extractJson } from './xhsTopicPicker';
 const MIN_PAGES = 3;
 const MAX_PAGES = 9;
 
-export interface CardSplitPage { title: string; text: string }
+/** 内容块类型（与桌面端排版引擎 ContentBlockType 对齐） */
+export type CardBlockType = 'heading' | 'section' | 'subheading' | 'paragraph' | 'bullet' | 'quote';
+export interface CardSplitBlock { type: CardBlockType; text: string }
+
+/**
+ * 单页拆页结果。
+ * - blocks：结构化内容块（v2.17.0 起，桌面端排版引擎据此自适应排版）
+ * - title / text：由 blocks 派生，保留字段以兼容旧版桌面端
+ */
+export interface CardSplitPage { title: string; text: string; blocks: CardSplitBlock[] }
+
+const BLOCK_TYPES: CardBlockType[] = ['heading', 'section', 'subheading', 'paragraph', 'bullet', 'quote'];
+const BLOCK_MAX: Record<CardBlockType, number> = {
+  heading: 14, section: 16, subheading: 16, paragraph: 80, bullet: 50, quote: 60,
+};
 
 export async function splitNoteIntoCardPages(
   articleId: number,
@@ -82,52 +96,108 @@ export async function splitNoteIntoCardPages(
   }
 }
 
-/** 清洗 AI 输出：title ≤12 字、text ≤60 字、条数收敛到 [MIN, requested/MAX] */
+/**
+ * 清洗 AI 输出：解析 blocks（白名单归一 + 各类型字数截断），
+ * 兼容旧格式 {title, text}（→ heading + paragraph），条数收敛到 [MIN, requested/MAX]。
+ */
 function normalizePages(raw: any, requested: number | null): CardSplitPage[] {
   if (!Array.isArray(raw)) return [];
-  const pages = raw
-    .map((p: any) => ({
-      title: String(p?.title || '').trim().slice(0, 12),
-      text: String(p?.text || '').trim().slice(0, 60),
-    }))
-    .filter((p) => p.title || p.text);
+  const pages: CardSplitPage[] = [];
+  for (const p of raw) {
+    let blocks = normalizeBlocks(p?.blocks);
+    // 兼容旧格式：无 blocks 时用 {title, text} 还原成 heading + paragraph
+    if (blocks.length === 0) {
+      const title = String(p?.title || '').trim().slice(0, BLOCK_MAX.heading);
+      const text = String(p?.text || '').trim().slice(0, BLOCK_MAX.paragraph);
+      if (title) blocks.push({ type: 'heading', text: title });
+      if (text) blocks.push({ type: 'paragraph', text });
+    }
+    if (blocks.length === 0) continue;
+    pages.push(withDerived(blocks));
+  }
   if (pages.length === 0) return [];
   const max = requested || MAX_PAGES;
-  return pages.slice(0, max).map((p, i) => ({ ...p, title: p.title || `第 ${i + 1} 页` }));
+  return pages.slice(0, max).map((pg, i) => (
+    pg.blocks.some((b) => b.type === 'heading') ? pg : withDerived([{ type: 'heading', text: `第 ${i + 1} 页` }, ...pg.blocks])
+  ));
+}
+
+/** blocks 白名单归一：未知类型丢弃、空文本丢弃、按类型上限截断、压缩空白 */
+function normalizeBlocks(raw: any): CardSplitBlock[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CardSplitBlock[] = [];
+  for (const b of raw) {
+    const type = String(b?.type || '').trim().toLowerCase() as CardBlockType;
+    if (!BLOCK_TYPES.includes(type)) continue;
+    const text = String(b?.text ?? '').trim().replace(/\s+/g, ' ').slice(0, BLOCK_MAX[type]);
+    if (!text) continue;
+    out.push({ type, text });
+  }
+  return out;
+}
+
+/** 由 blocks 派生 title / text（兼容字段）：title 取首个 heading、text 取首个 paragraph/quote */
+function withDerived(blocks: CardSplitBlock[]): CardSplitPage {
+  const heading = blocks.find((b) => b.type === 'heading');
+  const para = blocks.find((b) => b.type === 'paragraph' || b.type === 'quote');
+  return { blocks, title: heading?.text || '', text: para?.text || '' };
 }
 
 /**
- * 兜底：优先用【笔记正文】段落切页；仅当正文为空时才退回【配图脚本】。
+ * 兜底：优先用【笔记正文】结构化切页；仅当正文为空时才退回【配图脚本】。
  *
  * 说明（v2.16.2 修复）：此前是「配图脚本优先」，而绝大多数笔记都带配图脚本，
  * 导致未配置写作模型 / AI 失败时，卡片载入的是"拍什么画面"的脚本而不是标题+正文。
+ * v2.17.0：产出结构化 blocks（识别有序列表 / 分区标题），交由桌面端排版引擎自适应排版。
  */
 function fallbackPages(detail: any, requested: number | null): CardSplitPage[] {
   const max = requested || 6;
-  const head = String(detail.cover_title || detail.title || '本篇要点').trim().slice(0, 12);
+  const head = String(detail.cover_title || detail.title || '本篇要点').trim().slice(0, BLOCK_MAX.heading);
 
   const paras = stripHtml(String(detail.content_html || ''))
     .split(/\n+/).map((s: string) => s.trim()).filter(Boolean);
 
   if (paras.length > 0) {
-    const pages: CardSplitPage[] = [{ title: head, text: paras[0].slice(0, 60) }];
-    paras.slice(1, max).forEach((p: string) => {
-      pages.push({ title: p.slice(0, 12), text: p.length > 12 ? p.slice(12, 72) : '' });
-    });
-    if (pages.length < 2) pages.push({ title: '核心要点', text: '' });
+    // 第 1 页：封面标题 + 首段正文
+    const pages: CardSplitPage[] = [withDerived([
+      { type: 'heading', text: head },
+      { type: 'paragraph', text: paras[0].slice(0, BLOCK_MAX.paragraph) },
+    ])];
+    // 后续段：按本地规则识别块类型（列表项 / 分区标题 / 普通段落）
+    for (const p of paras.slice(1, max)) {
+      pages.push(withDerived([localBlockOf(p)]));
+    }
+    if (pages.length < 2) pages.push(withDerived([{ type: 'heading', text: '核心要点' }]));
     return pages;
   }
 
-  // 正文为空：退回配图脚本（role→title / scene→text）
+  // 正文为空：退回配图脚本（role→heading / scene→paragraph）
   const script = Array.isArray(detail.image_script) ? detail.image_script : [];
   if (script.length > 0) {
-    return script.slice(0, max).map((s: any, i: number) => ({
-      title: String(s?.role || `第 ${i + 1} 页`).trim().slice(0, 12),
-      text: String(s?.scene || '').trim().slice(0, 60),
-    }));
+    return script.slice(0, max).map((s: any, i: number) => withDerived([
+      { type: 'heading', text: String(s?.role || `第 ${i + 1} 页`).trim().slice(0, BLOCK_MAX.heading) },
+      { type: 'paragraph', text: String(s?.scene || '').trim().slice(0, BLOCK_MAX.paragraph) },
+    ]));
   }
 
-  return [{ title: head, text: '' }];
+  return [withDerived([{ type: 'heading', text: head }])];
+}
+
+const BULLET_RE = /^\s*(?:\d{1,2}\s*[、.．)）]|[①-⑳]|[（(]\s*\d{1,2}\s*[)）]|[•·▪◦*\-–—])\s*/;
+const SUBHEADING_RE = /^(?:核心要点|要点|重点|小贴士|温馨提示|提示|注意|结论|总结|说明|建议|Tips)\s*[:：]?/i;
+const EMOJI_LEAD_RE = /^\p{Extended_Pictographic}/u;
+
+/** 单段文本 → 内容块（本地兜底规则，与桌面端 structurePlainText 语义一致） */
+function localBlockOf(raw: string): CardSplitBlock {
+  const text = String(raw || '').trim();
+  if (BULLET_RE.test(text)) {
+    const body = text.replace(BULLET_RE, '').slice(0, BLOCK_MAX.bullet);
+    return { type: 'bullet', text: body || text.slice(0, BLOCK_MAX.bullet) };
+  }
+  if (SUBHEADING_RE.test(text) || (EMOJI_LEAD_RE.test(text) && text.length <= 20)) {
+    return { type: 'section', text: text.slice(0, BLOCK_MAX.section) };
+  }
+  return { type: 'paragraph', text: text.slice(0, BLOCK_MAX.paragraph) };
 }
 
 /** 去标签 → 纯文本（段落之间填空行） */
